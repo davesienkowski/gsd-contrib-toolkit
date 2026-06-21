@@ -149,14 +149,14 @@ merge_settings() {
     # EP-6) and is idempotent. An empty snippet.hooks ({}) iterates zero keys →
     # byte-identical output.
     #
-    # The dedupe key MUST be order-insensitive: `jq -S` writes objects with SORTED
-    # keys, but the snippet entries arrive in their authored key order. A naive
-    # `unique_by(tojson)` would then see the already-written (sorted) entry and the
-    # re-added (authored-order) entry as DIFFERENT strings on the second run and
-    # append a duplicate. `canon/0` recursively sorts every object's keys before
-    # serializing, so an entry compares equal regardless of key order — making the
-    # merge truly idempotent (byte-identical on every re-run, not just convergent).
-    jq -S --slurpfile snip "${SNIPPET}" '
+    # The dedupe key MUST be order-insensitive. We do NOT pass `-S` (--sort-keys)
+    # because that would re-sort every key in the user's file, breaking the
+    # `cmp -s` no-change check against a hand-edited settings.json and rewriting
+    # it on every run (WR-02). Instead, `canon/0` recursively sorts each object's
+    # keys ONLY for the dedupe comparison (`canon | tojson`), so an entry compares
+    # equal regardless of key order while the file's own key order is preserved —
+    # making the merge truly idempotent (byte-identical on every re-run).
+    jq --slurpfile snip "${SNIPPET}" '
       def canon: walk(if type == "object" then to_entries | sort | from_entries else . end);
       ($snip[0].hooks // {}) as $sh
       | reduce ($sh | keys[]) as $evt (
@@ -174,7 +174,7 @@ merge_settings() {
     fi
   else
     # No settings yet — create from the snippet's hooks block.
-    jq -S '{hooks: (.hooks // {})}' "${SNIPPET}" > "${tmp}"
+    jq '{hooks: (.hooks // {})}' "${SNIPPET}" > "${tmp}"
     mv "${tmp}" "${settings}"
     log "Settings: created ${settings} from snippet hooks block."
   fi
