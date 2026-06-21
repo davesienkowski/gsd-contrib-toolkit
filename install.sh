@@ -104,7 +104,7 @@ restore_symlinks() {
     ln -sfn "${abs_src}" "${tgt}"
     linked=$((linked + 1))
   done
-  log "Symlinks: ${linked} (re)created, ${already} already correct (4 total)."
+  log "Symlinks: ${linked} (re)created, ${already} already correct (${#ASSETS[@]} total)."
 }
 
 # ---------------------------------------------------------------------------
