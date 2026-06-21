@@ -61,6 +61,31 @@ For each flagged ADR, record:
 
 Then apply the firing `skills-from-the-artificer` law-lenses to the diff (Hyrum's Law, etc.) and also check the diff against the `docs/agents/*` contribution norms. **Surface any LOCKED-decision conflict before filing.** Honest scope: this is a rigorous *quoted-source* review (model-driven), not a deterministic guarantee for arbitrary ADRs — the mechanizable gate-enforced subset is POLICY-02 (Phase 3).
 
+## QA matrix by surface (KNOW-01)
+
+The `CONTRIBUTING` QA matrix is not a single "is it tested?" box — it has a **distinct checklist per surface**. Identify which surface(s) your diff touches and satisfy the row(s). This is the concrete content the Phase-3 one-liner points to.
+
+| Surface | What "covered" means — the per-surface checklist |
+|---|---|
+| **parser** | [ ] malformed / truncated / empty input cases · [ ] boundary & edge inputs (off-by-one, nesting depth, duplicate keys) · [ ] **assert on the typed/structured parse result, never a stdout/source substring** (`local/no-source-grep`) · [ ] round-trip / idempotent re-parse where applicable · [ ] error path returns a structured error, not a throw/exit |
+| **FS-write** | [ ] **atomic** write (temp-then-rename, no partial file on crash) · [ ] **idempotent** re-run (second run is a no-op / byte-identical) · [ ] **path-escape** guard (no `..`/symlink/absolute-path escape outside the intended root) · [ ] permissions/mode preserved · [ ] no clobber of an existing file without the documented fail-safe |
+| **CLI** | [ ] argv & **flag-ordering** variants (flag before/after positional, `=` vs space) · [ ] **exit codes** asserted (0 success / non-zero per failure class) · [ ] stdout vs stderr routing · [ ] `--help`/usage and unknown-flag handling · [ ] no interactive prompt in non-TTY |
+| **security** | [ ] **injection / escaping** at the trust boundary (shell, SQL, path, template) · [ ] input validation rejects hostile input · [ ] **private-advisory routing** for a real vulnerability (see *Security routing (KNOW-03)* below — a real vuln is NOT a public issue) · [ ] no secret/PII in logs or error text · [ ] authZ/authN check on any new protected path |
+
+Touch more than one surface → satisfy every row that fires. This checklist **supplements** the RED-before-GREEN `[GATE]` (Phase 3); it does not replace it.
+
+## Test bar by contribution type (KNOW-02)
+
+What "tested" *means* depends on the kind of change. Match the row for your contribution type — the bar is different for a fix vs an enhancement vs a feature.
+
+| Type | The test requirement (what the bar IS for this type) |
+|---|---|
+| **fix** | A **regression test that FAILS before the fix and passes after** — RED-before-GREEN, the failing test pasted as evidence (Phase-3 `[GATE]`). It must reproduce the exact reported mechanism, so a revert of the fix re-reds it. One concern, one regression test. |
+| **enhancement** | **Behavior tests for the new/changed capability** *plus* **no-regression on existing behavior** — the existing suite stays green and new tests assert the added behavior. Cover the QA-matrix surfaces the enhancement touches. Disclose any Hyrum's-Law behavior change (artificer pass) in the PR. |
+| **feature** | **Full coverage of the new surface** — happy path + the firing QA-matrix-by-surface checks for every surface the feature introduces (parser/FS-write/CLI/security as applicable) + error/edge paths. A new feature owns its whole test surface, not just one happy-path test. |
+
+All three sit **on top of** the RED-before-GREEN gate and `npm run lint:ci` — the per-type bar says *what to test*, the gate says *prove it ran red first / prove lint is green*.
+
 ## Worktree setup (per fix; fresh worktrees have no deps, and bin/lib is gitignored)
 
 ```bash
