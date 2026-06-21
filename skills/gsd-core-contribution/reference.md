@@ -24,6 +24,23 @@ npm run lint:ci   # composes eslint + ~9 project linters; must exit 0
 
 `### GSD Version` value for engine-internal findings: **`1.6.0-rc.1 (next @ <8-char-sha>)`** (sha = current `origin/next`).
 
+## ADR / CONTEXT awareness (POLICY-03)
+
+Run this **before authoring** to surface the governing decisions touching the changed area. The output is a **LIST of governing decisions surfaced for review (awareness)** — it is **not** a pass/fail gate, and a listed `CONTEXT.md` predicate is awareness, **not** deterministic enforcement (the mechanizable floor is POLICY-02, Phase 3).
+
+```bash
+# 1) Governing ADRs for the changed area — grep docs/adr/ for the area's keywords / IDs.
+#    <AREA-KEYWORDS> = the file/function/feature words your diff touches (e.g. 'bin/lib|generated|build:lib').
+grep -rniE '<AREA-KEYWORDS>' docs/adr/        # list every ADR that fires; note its ID + the clause line
+
+# 2) Relevant CONTEXT.md predicates for the touched area — grep/gsd-tools over CONTEXT.md.
+grep -niE '<AREA-KEYWORDS>' CONTEXT.md        # the greppable domain predicates for the area
+gsd-tools query <predicate-query> 2>/dev/null # gsd-tools is the CLI fallback's structured form; grep is always-available
+
+# 3) Write the LIST: governing ADRs/policies (by ID) + the relevant CONTEXT.md predicates.
+#    This list feeds the Policy-conformance step (POLICY-01) below — it does NOT pass/fail anything by itself.
+```
+
 ## Worktree setup (per fix; fresh worktrees have no deps, and bin/lib is gitignored)
 
 ```bash

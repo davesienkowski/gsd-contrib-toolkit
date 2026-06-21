@@ -42,8 +42,10 @@ When this skill activates, **your FIRST action — before any Read, Bash, `gh`, 
 ```
 [ ] P-1 Create this checklist as tool-tracked todos (todo tool, NOT a printed list)   [GATE: todos exist BEFORE any other tool call]
 [ ] P0  Read CONTRIBUTING.md + matching issue template + PR template + governing ADR(s) + CONTEXT.md
+[ ] P0b ADR/CONTEXT awareness sweep (POLICY-03) — LIST governing ADRs/policies + CONTEXT.md predicates for the changed area BEFORE authoring (grep/gsd-tools over docs/adr/ + CONTEXT.md). Awareness only, NOT a pass/fail gate
 [ ] P1  Run trust-but-verify; reproduce the mechanism live on src/*.cts (probe or failing test)   [GATE: reproduced, else WITHDRAW]
 [ ] P2  Run skills-from-the-artificer; apply each firing law to the diff
+[ ] P2b Policy conformance (POLICY-01) — check the DIFF vs the relevant ADRs + docs/agents/* via trust-but-verify (open+QUOTE the ADR) + skills-from-the-artificer law-lenses; surface any LOCKED-decision conflict before filing
 [ ] P3a Worktree off origin/next; hooks rewired; node_modules linked; build:lib
 [ ] P3b Regression test written FIRST and watched FAIL                            [GATE: pasted RED output]
 [ ] P3c Implement the fix; tests GREEN
@@ -65,6 +67,8 @@ Epic instead of a single fix? Swap P4–P5 for the **Epic variant** below, but t
 
 ### Phase 0 — Ground in the canon (read first, every time)
 Read before authoring: `CONTRIBUTING.md`, the matching **issue** template (`.github/ISSUE_TEMPLATE/{bug_report,enhancement,feature_request}.yml`), the matching **PR** template (`.github/PULL_REQUEST_TEMPLATE/{fix,enhancement,feature}.md`), the governing **ADR(s)** in `docs/adr/`, and `CONTEXT.md` for the touched area. Know the gate scripts (see [reference.md](reference.md)).
+
+**ADR/CONTEXT awareness sweep (POLICY-03) — run BEFORE you author.** Don't just passively read the canon: produce an explicit **LIST** of the governing decisions touching the changed area. Run a `grep`/`gsd-tools` sweep over `docs/adr/` **and** `CONTEXT.md` for the area's keywords/IDs (see the exact commands in [reference.md](reference.md)), and write down (a) the governing **ADRs/policies** that apply and (b) the relevant **`CONTEXT.md` predicates** for the touched area — so the governing decisions are in view up front, not discovered at review. This is **AWARENESS surfaced to the human/agent**: it puts the governing decisions on the table before authoring. It is explicitly **NOT deterministic enforcement** — a `CONTEXT.md` predicate listed here is awareness, **not** a pass/fail gate (the mechanizable, unbypassable floor is **POLICY-02**, Phase 3). The conformance *check* of the diff against this list happens in the pre-file Policy-conformance step below (POLICY-01).
 
 ### Phase 1 — Verify the finding (trust-but-verify)
 **Invoke the `trust-but-verify` skill by name** and apply it to the finding: reproduce the mechanism on live `src/*.cts` with a throwaway probe or a failing test before you trust the premise. Remember **`bin/lib/*.cjs` is generated** from `src/*.cts` (ADR-457) — author in `src`, `npm run build:lib`. Correct the premise if wrong; record falsified findings rather than filing them.
