@@ -100,7 +100,13 @@ merge_settings() {
     return 0
   fi
 
-  local settings="${gsd_core}/.claude/settings.json"
+  # Resolve the path BEFORE building the settings var so the user-global guard
+  # below cannot be bypassed by `..` traversal or a symlink (CR-01). Both sides
+  # of the case comparison must be canonical for the string match to be sound.
+  local real_gsd_core
+  real_gsd_core="$(realpath -- "${gsd_core}")" || die "cannot resolve gsd-core path: ${gsd_core}"
+
+  local settings="${real_gsd_core}/.claude/settings.json"
 
   # NEVER write to the user-global settings — project-scoped only (T-03-03).
   case "${settings}" in
