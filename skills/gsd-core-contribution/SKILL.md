@@ -1,0 +1,137 @@
+---
+name: gsd-core-contribution
+description: Use when filing or preparing a bug/fix issue and pull request for the open-gsd/gsd-core repository — including turning an audit or review finding into a contribution, filing a confirmed-bug + fix PR, or filing an epic and its children. Triggers include "file this as an issue/PR", "submit the fix", "open a confirmed-bug", "work item M-N as a fix PR", and any maintainer-style gsd-core contribution that must pass the repo's intake gates and match trek-e conventions.
+---
+
+# GSD-Core Contribution Pipeline
+
+> **STEP ZERO — your very first tool call, before reading further, reproducing, or running anything:** create the P0–P6 checklist (in *Execution Protocol* below) as **tool-tracked todos** via your todo tool (Claude Code: **TodoWrite**). Not a printed markdown list, not "in your head." No exceptions — time pressure and "I'll move fast" do NOT waive it; the todos ARE how you move fast without dropping a gate. If you've already typed an orientation message, your next action is still the TodoWrite call, not a `Bash`/`Read`.
+>
+> **NEVER open the issue or PR before its gate is green.** Do not "file now and run lint/tests as a follow-up" — a PR that then fails `lint:ci` or the suite is the #1543/#1532 failure mode (lands red on the cut, doesn't beat the deadline). Gates run *before* the push, always.
+
+## Overview
+
+Author a verified finding into a **properly-filed issue + fix PR** on `open-gsd/gsd-core` that passes every intake gate on the first try and matches how the lead maintainer (trek-e) files. This is the **authoring** counterpart to `maintainer-review-sweep` (which reviews *others'* PRs).
+
+**Core principle (load-bearing):** *Every submission is correct by construction, not by retry.* The repo's gates (version-gate, pr-template-policy, changeset-lint, `lint:ci`, intake bots) are deterministic and locally runnable — validate against them **before** you push, never discover failures from red CI. And never file a finding whose mechanism you have not reproduced live.
+
+## When to use
+
+- "File this as an issue/PR", "submit the fix", "open a confirmed-bug + fix PR"
+- Turning an audit/review finding (e.g. "work item M-N") into a contribution
+- Filing an epic umbrella + its children
+- Any contribution to `open-gsd/gsd-core` that must clear the intake gates and match maintainer conventions
+
+**Not for:** reviewing/triaging existing PRs (use `maintainer-review-sweep`); authoring in a repo without these specific gates.
+
+## The two non-negotiables
+
+1. **Verify before you file.** Reproduce the *mechanism* against live `src/*.cts`. Audit/review premises are wrong about a third of the time (this repo: M5, M7, PD-1 all had false stated mechanisms that "verified against source"). If it doesn't reproduce as described, find the real mechanism or **don't file**.
+2. **Validate gates locally before pushing.** Run the gate scripts on your exact issue/PR body and `npm run lint:ci` on your branch. Red CI on a maintainer-filed item is a process failure, not a signal.
+
+## Execution protocol — follow exactly, no skipping, no reordering
+
+When this skill activates, **your FIRST action — before any Read, Bash, `gh`, or `git` call — is to create the checklist below as real, tool-tracked todos** using your platform's todo/task tool (in Claude Code, the **TodoWrite** tool), one todo per line. **Do NOT just print a markdown checklist in a message** — a printed list scrolls out of context on a long or interrupted run, which is the exact moment a gate gets dropped; tool-tracked todos persist and update as you go. If your first action is anything else, STOP and create the todos. This is not ceremony — "I can hold the six phases in my head" is how a gate gets silently dropped on a less-careful run, so the todos exist *every* time, even when you're confident. Then work them strictly top-to-bottom, flipping each to in-progress/complete in the tool as you go.
+
+**HARD GATE rule:** a todo marked `[GATE]` may NOT be checked off without pasting the actual command output showing its pass condition. Do not start the next phase while any `[GATE]` in the current phase is unmet. Skipping, reordering, or "I'll do that later" = stop and restart the phase.
+
+**Violating the letter of these steps is violating the spirit.** "I'm confident it reproduces" is not Phase 1. "It probably lints" is not the lint gate. Evidence or it didn't happen.
+
+```
+[ ] P-1 Create this checklist as tool-tracked todos (todo tool, NOT a printed list)   [GATE: todos exist BEFORE any other tool call]
+[ ] P0  Read CONTRIBUTING.md + matching issue template + PR template + governing ADR(s) + CONTEXT.md
+[ ] P1  Reproduce the mechanism live on src/*.cts (probe or failing test)        [GATE: reproduced, else WITHDRAW]
+[ ] P2  Run skills-from-the-artificer; apply each firing law to the diff
+[ ] P3a Worktree off origin/next; hooks rewired; node_modules linked; build:lib
+[ ] P3b Regression test written FIRST and watched FAIL                            [GATE: pasted RED output]
+[ ] P3c Implement the fix; tests GREEN
+[ ] P3d Full relevant suites + `npm run lint:ci`                                  [GATE: all green, lint exit 0]
+[ ] P4a Issue body: ### GSD Version + user-impact + template shape + cross-links + precedents
+[ ] P4b version-gate on the EXACT body                                           [GATE: valid-version]
+[ ] P4c gh issue create with labels; remove needs-triage via REST
+[ ] P5a Branch fix/<issue#>-slug → base next; fix-template body + Fixes #<issue#>
+[ ] P5b pr-template-policy on the EXACT body                                      [GATE: valid:true, template:fix]
+[ ] P5c gh pr create with `area:` (+ security/runtime/no-changelog) label; add changeset
+[ ] P6  Read real check-runs on the head SHA                                     [GATE: Tests ran + green on latest commit]
+```
+
+Epic instead of a single fix? Swap P4–P5 for the **Epic variant** below, but the protocol (todos + gates + evidence) is unchanged.
+
+## Pipeline (run in order; adversarial gate between phases)
+
+**REQUIRED SUB-SKILLS:** `superpowers:test-driven-development` (Phase 3), `skills-from-the-artificer` (Phase 2). **Companion:** `maintainer-review-sweep` (shared repo facts: labels, gotchas, authority).
+
+### Phase 0 — Ground in the canon (read first, every time)
+Read before authoring: `CONTRIBUTING.md`, the matching **issue** template (`.github/ISSUE_TEMPLATE/{bug_report,enhancement,feature_request}.yml`), the matching **PR** template (`.github/PULL_REQUEST_TEMPLATE/{fix,enhancement,feature}.md`), the governing **ADR(s)** in `docs/adr/`, and `CONTEXT.md` for the touched area. Know the gate scripts (see [reference.md](reference.md)).
+
+### Phase 1 — Verify the finding (trust-but-verify)
+Reproduce the mechanism on live `src/*.cts` with a throwaway probe or a failing test. Remember **`bin/lib/*.cjs` is generated** from `src/*.cts` (ADR-457) — author in `src`, `npm run build:lib`. Correct the premise if wrong; record falsified findings rather than filing them.
+
+### Phase 2 — Adversarial law pass
+Invoke `skills-from-the-artificer` on the proposed change; apply each *firing* law's key questions to the concrete diff. Capture any Hyrum's-Law behavior change to disclose in the PR. Don't force-fit laws.
+
+### Phase 3 — TDD the fix in a worktree
+Worktree off `origin/next`; rewire hooks; symlink `node_modules`; `build:lib` (see [reference.md](reference.md) for exact commands — fresh worktrees have no deps and `bin/lib` is gitignored). **Regression test FIRST, watch it fail** (if you wrote the fix first, stash it, build, watch RED, restore). Then GREEN. **Run the FULL relevant suites AND `npm run lint:ci`** — not just the module's own tests (a deleted call can break a *structural/count* test elsewhere; `lint:ci` composes ~10 linters `eslint` alone doesn't). Cover the `CONTRIBUTING` QA matrix for the surface (parser / FS-write / CLI / security).
+
+### Phase 4 — File the issue (validate gate first)
+Body = template shape + a **`### GSD Version`** heading (`1.6.0-rc.1 (next @ <sha>)`) + a **user-impact statement** (what the user/agent/CI would *notice*, not just the mechanism) + Summary / Root-cause / Repro / Fix + cross-links to umbrellas and cited precedents. **Run the version-gate locally on the exact body** → must be `valid-version`. Labels: `bug`→`confirmed-bug` + `area: X` + `priority: X` (+ `security`). Then **remove the bot-added `needs-triage` via REST** (`gh issue edit` GraphQL is broken on this repo).
+
+### Phase 5 — Open the PR (validate gate first)
+Branch `fix/<issue#>-slug` → base `next`. **Push target:** if you have push access to the repo (CODEOWNER / member / collaborator) push the branch to **`origin`** and open a same-repo PR — the maintainer-style flow; only push to a **fork** and open a cross-fork PR if you're an external contributor without push access. (Check once with `gh api repos/open-gsd/gsd-core -q .permissions.push`.) Body = the **fix** template with **every** required heading + `Fixes #<issue#>`. **Run pr-template-policy locally on the exact body** → `valid:true,template:fix`. Conventional commits; **one concern per PR**; a stale-test correction lands as its own `test:`/`fix:` commit (never under `docs:` — the hotfix cherry-pick filter routes by prefix). Add a **changeset** (`Fixed`/`Security` don't trigger docs-lint). **Label the PR** to mirror the issue: `area: X` (always), `security`/`runtime: X` if applicable, `no-changelog` only if there's no changeset — NOT the issue-only `bug`/`confirmed-bug`/`priority:` labels, and not the maintainer/bot `review:`/`needs rebase` labels. The repo has no auto-labeler; an unlabeled PR is a gap.
+
+### Phase 6 — Confirm CI green on the LATEST commit
+Read **real check-run conclusions** (branch protection is evaluate-mode — "CI green" from the ruleset is not a gate). A **changeset-only commit can skip the Tests workflow**, leaving a stale FAILED run hidden behind green meta-checks — confirm Tests actually ran on the head SHA. Don't chase `BEHIND` (maintainer clears on merge). Fix any failure as a follow-up commit on the same branch.
+
+## Epic variant (trek-e format)
+
+Umbrellas use the **enhancement** template, labels `enhancement, approved-enhancement, area: X`, title `epic(<area>): <imperative> — <ADR/finish-the-rollout>`, body = Problem (hard numbers + prior-issue cites) / Goal + "Done when:" / Non-goals / children table. Governance line: *an approved epic does NOT approve its children — each child is its own issue + own `confirmed-bug`/`approved-enhancement` before code.* File children incrementally as worked (cadence, not bundling). See [reference.md](reference.md).
+
+## Quick reference
+
+| Step | Command / gate | Pass condition |
+|---|---|---|
+| version-gate | `node -e '…evaluateVersionGate({labels,body})'` | `{action:'skip',reason:'valid-version'}` |
+| pr-template | `PR_BODY=… AUTHOR_ASSOCIATION=MEMBER node scripts/pr-template-policy.cjs` | `valid:true, template:fix` |
+| lint (full) | `npm run lint:ci` | exit 0 (≠ `eslint .`) |
+| changeset | `npm run changeset -- --type Fixed --pr <PR#> --body "…"` | fragment written |
+| label cleanup | `gh api -X DELETE repos/open-gsd/gsd-core/issues/<#>/labels/needs-triage` | removed |
+
+Exact snippets, body skeletons, label sets, and worktree setup → **[reference.md](reference.md)**.
+
+## Gotchas (verified live)
+
+- **`gh pr edit` / `gh issue edit` GraphQL is broken** on open-gsd (Projects-classic) — body/label edits silently fail. Use REST: `gh api -X PATCH repos/open-gsd/gsd-core/{pulls,issues}/<#> -f body=…` and `-X DELETE …/labels/<l>`.
+- **`version-exempt` label does not exist** — the only version-gate bypass is a valid `### GSD Version` value.
+- **`lint:ci` ≠ `eslint .`** — it runs skill-deps, test-file-count, command-contract, legacy-name, regression-names, windows-portability, **allow-test-rule-refs (needs `see #NNN` per ADR-456)**, resolution-provenance. Reproduce lint in a **clean worktree** (a stray untracked `gsd-core/bin/lib/*.cjs` poisons `eslint .`).
+- **`bin/lib/*.cjs` is generated** (ADR-457) — edit `src/*.cts`, never the compiled output; `build:lib` before `node --test`.
+- **No source-grep tests** — assert on typed/structured values, not stdout/file-content substrings (CONTRIBUTING; `local/no-source-grep`).
+- **Security findings** are filed **public** `security`+`confirmed-bug` (precedents #751/#1406/#116) — but a real injection vector: check `SECURITY.md`'s private path first.
+
+## Rationalization table (from real failures this program hit)
+
+| Excuse | Reality |
+|---|---|
+| "I can hold the six phases in my head / I'll just start with P0" | In-head tracking is what drops a gate when context compacts or the task drags. Create the todo list FIRST, every time — it's the backstop, not ceremony. |
+| "Deadline — I'll file the issue/PR now and run lint:ci + the suite as a follow-up" | A PR that then fails lint/tests is the #1543/#1532 failure — it lands RED on the cut, it doesn't beat the deadline. The gates ARE the fast path. Green locally, THEN push. |
+| "I'll compress per your call and skip the slow gates" | Compress by doing the gates fast (they take seconds), not by skipping them. The only thing you compress is ceremony, never a `[GATE]`. |
+| "The audit verified it against source, so it's real" | Premise ≠ mechanism. Reproduce it live or don't file. (M5/M7/PD-1 were wrong.) |
+| "Module tests pass, ship it" | A deleted call breaks a structural/count test elsewhere (#1543). Run the full suite + `lint:ci`. |
+| "CI shows green on the PR" | Meta-checks aren't Tests; a changeset-only commit can skip Tests and hide a stale FAIL (#1532). Read real check-runs on the head SHA. |
+| "`eslint` is clean" | `lint:ci` runs 10 linters eslint doesn't (#1532 allow-test-rule-refs). |
+| "I'll just `gh issue edit` the body" | GraphQL is broken here — it silently no-ops. Use REST. |
+| "It's engine-internal, skip the user impact" | Every issue states what the user/agent/CI notices. Translate the mechanism. |
+| "Bundle the test fix into the docs commit" | The hotfix picker routes by prefix; test fix = its own `test:` commit. |
+
+## Red flags — STOP
+
+- Your first action was a Read / Bash / `gh` / `git` call instead of creating the P0–P6 todos
+- You printed a markdown checklist instead of creating real tool-tracked todos (it won't survive context compaction)
+- About to `gh pr create` / `gh issue create` before that step's gate is green ("file now, validate after")
+- Created the PR without an `area:` label (the repo has no auto-labeler)
+- About to `gh issue create` without running the version-gate on the body
+- About to `gh pr create` without running pr-template-policy on the body
+- Filing a finding you only read about, never reproduced
+- Ran the module's tests but not `lint:ci` / the full relevant suite
+- Trusting "green" from the rollup without reading the head SHA's check-runs
+- Editing `bin/lib/*.cjs` or treating it as source
+- Calling work "done" while the latest commit never re-ran Tests
