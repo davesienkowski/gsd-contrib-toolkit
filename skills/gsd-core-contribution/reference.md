@@ -41,6 +41,26 @@ gsd-tools query <predicate-query> 2>/dev/null # gsd-tools is the CLI fallback's 
 #    This list feeds the Policy-conformance step (POLICY-01) below — it does NOT pass/fail anything by itself.
 ```
 
+## Policy conformance (POLICY-01)
+
+Run this **pre-file**, after the awareness sweep, on the proposed **diff**. The two skills that run it are **`trust-but-verify`** (open+quote discipline) and **`skills-from-the-artificer`** (law-lenses). Check the diff against the relevant ADRs (from the awareness list) + the `docs/agents/*` contribution norms.
+
+```bash
+# For EACH ADR the awareness sweep flagged: open it and QUOTE the governing clause —
+# a report / summary / awareness-list entry is a LEAD, not a fact (trust-but-verify).
+sed -n '1,200p' docs/adr/<ADR-ID>-*.md     # open the actual ADR; copy the governing clause verbatim
+git diff --staged                          # the proposed diff under review (or the working diff pre-stage)
+```
+
+For each flagged ADR, record:
+
+```
+- ADR-<ID> — quoted clause: "<verbatim governing text from the ADR>"
+  diff-vs-clause: conforms | CONFLICTS (LOCKED) — <why, citing the quote>
+```
+
+Then apply the firing `skills-from-the-artificer` law-lenses to the diff (Hyrum's Law, etc.) and also check the diff against the `docs/agents/*` contribution norms. **Surface any LOCKED-decision conflict before filing.** Honest scope: this is a rigorous *quoted-source* review (model-driven), not a deterministic guarantee for arbitrary ADRs — the mechanizable gate-enforced subset is POLICY-02 (Phase 3).
+
 ## Worktree setup (per fix; fresh worktrees have no deps, and bin/lib is gitignored)
 
 ```bash
