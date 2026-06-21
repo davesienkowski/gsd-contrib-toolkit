@@ -13,6 +13,8 @@ description: Use when filing or preparing a bug/fix issue and pull request for t
 
 Author a verified finding into a **properly-filed issue + fix PR** on `open-gsd/gsd-core` that passes every intake gate on the first try and matches how the lead maintainer (trek-e) files. This is the **authoring** counterpart to `maintainer-review-sweep` (which reviews *others'* PRs).
 
+> **Reuse + methodology decisions for this pipeline are fixed in [docs/REUSE-AND-METHODOLOGY.md](../../docs/REUSE-AND-METHODOLOGY.md)** — the `skills-from-the-artificer` + `trust-but-verify` pre-file review (ALIGN-01), Pocock `tdd` authoring + the gsd-core-native triage divergence (ALIGN-02), and the per-command reuse map (ALIGN-03). That record is the single source of truth; this skill wires to it, it does not re-decide.
+
 **Core principle (load-bearing):** *Every submission is correct by construction, not by retry.* The repo's gates (version-gate, pr-template-policy, changeset-lint, `lint:ci`, intake bots) are deterministic and locally runnable — validate against them **before** you push, never discover failures from red CI. And never file a finding whose mechanism you have not reproduced live.
 
 ## When to use
@@ -40,7 +42,7 @@ When this skill activates, **your FIRST action — before any Read, Bash, `gh`, 
 ```
 [ ] P-1 Create this checklist as tool-tracked todos (todo tool, NOT a printed list)   [GATE: todos exist BEFORE any other tool call]
 [ ] P0  Read CONTRIBUTING.md + matching issue template + PR template + governing ADR(s) + CONTEXT.md
-[ ] P1  Reproduce the mechanism live on src/*.cts (probe or failing test)        [GATE: reproduced, else WITHDRAW]
+[ ] P1  Run trust-but-verify; reproduce the mechanism live on src/*.cts (probe or failing test)   [GATE: reproduced, else WITHDRAW]
 [ ] P2  Run skills-from-the-artificer; apply each firing law to the diff
 [ ] P3a Worktree off origin/next; hooks rewired; node_modules linked; build:lib
 [ ] P3b Regression test written FIRST and watched FAIL                            [GATE: pasted RED output]
@@ -59,19 +61,21 @@ Epic instead of a single fix? Swap P4–P5 for the **Epic variant** below, but t
 
 ## Pipeline (run in order; adversarial gate between phases)
 
-**REQUIRED SUB-SKILLS:** `superpowers:test-driven-development` (Phase 3), `skills-from-the-artificer` (Phase 2). **Companion:** `maintainer-review-sweep` (shared repo facts: labels, gotchas, authority).
+**REQUIRED SUB-SKILLS:** `tdd` (Matt Pocock — Phase 3 authoring; ALIGN-02, supersedes the former `superpowers:test-driven-development`), `skills-from-the-artificer` + `trust-but-verify` (Phase 1–2 pre-file review; ALIGN-01). **Companion:** `maintainer-review-sweep` (shared repo facts: labels, gotchas, authority). Verdicts and the named-skill choices are fixed in [docs/REUSE-AND-METHODOLOGY.md](../../docs/REUSE-AND-METHODOLOGY.md).
 
 ### Phase 0 — Ground in the canon (read first, every time)
 Read before authoring: `CONTRIBUTING.md`, the matching **issue** template (`.github/ISSUE_TEMPLATE/{bug_report,enhancement,feature_request}.yml`), the matching **PR** template (`.github/PULL_REQUEST_TEMPLATE/{fix,enhancement,feature}.md`), the governing **ADR(s)** in `docs/adr/`, and `CONTEXT.md` for the touched area. Know the gate scripts (see [reference.md](reference.md)).
 
 ### Phase 1 — Verify the finding (trust-but-verify)
-Reproduce the mechanism on live `src/*.cts` with a throwaway probe or a failing test. Remember **`bin/lib/*.cjs` is generated** from `src/*.cts` (ADR-457) — author in `src`, `npm run build:lib`. Correct the premise if wrong; record falsified findings rather than filing them.
+**Invoke the `trust-but-verify` skill by name** and apply it to the finding: reproduce the mechanism on live `src/*.cts` with a throwaway probe or a failing test before you trust the premise. Remember **`bin/lib/*.cjs` is generated** from `src/*.cts` (ADR-457) — author in `src`, `npm run build:lib`. Correct the premise if wrong; record falsified findings rather than filing them.
 
 ### Phase 2 — Adversarial law pass
-Invoke `skills-from-the-artificer` on the proposed change; apply each *firing* law's key questions to the concrete diff. Capture any Hyrum's-Law behavior change to disclose in the PR. Don't force-fit laws.
+**Invoke the `skills-from-the-artificer` skill by name** on the proposed change; apply each *firing* law's key questions to the concrete diff. Capture any Hyrum's-Law behavior change to disclose in the PR. Don't force-fit laws.
+
+> **Pre-file review (ALIGN-01):** the contribution path's review step runs BOTH named skills — `skills-from-the-artificer` AND `trust-but-verify` — exactly as the alignment record fixes them ([docs/REUSE-AND-METHODOLOGY.md](../../docs/REUSE-AND-METHODOLOGY.md)). Neither is optional; a finding reaches the file step only after both have run.
 
 ### Phase 3 — TDD the fix in a worktree
-Worktree off `origin/next`; rewire hooks; symlink `node_modules`; `build:lib` (see [reference.md](reference.md) for exact commands — fresh worktrees have no deps and `bin/lib` is gitignored). **Regression test FIRST, watch it fail** (if you wrote the fix first, stash it, build, watch RED, restore). Then GREEN. **Run the FULL relevant suites AND `npm run lint:ci`** — not just the module's own tests (a deleted call can break a *structural/count* test elsewhere; `lint:ci` composes ~10 linters `eslint` alone doesn't). Cover the `CONTRIBUTING` QA matrix for the surface (parser / FS-write / CLI / security).
+**Author with the `tdd` skill (Matt Pocock; ALIGN-02)** — the red/green/refactor discipline for this path. Worktree off `origin/next`; rewire hooks; symlink `node_modules`; `build:lib` (see [reference.md](reference.md) for exact commands — fresh worktrees have no deps and `bin/lib` is gitignored). **Regression test FIRST, watch it fail** (if you wrote the fix first, stash it, build, watch RED, restore). Then GREEN. **Run the FULL relevant suites AND `npm run lint:ci`** — not just the module's own tests (a deleted call can break a *structural/count* test elsewhere; `lint:ci` composes ~10 linters `eslint` alone doesn't). Cover the `CONTRIBUTING` QA matrix for the surface (parser / FS-write / CLI / security).
 
 ### Phase 4 — File the issue (validate gate first)
 Body = template shape + a **`### GSD Version`** heading (`1.6.0-rc.1 (next @ <sha>)`) + a **user-impact statement** (what the user/agent/CI would *notice*, not just the mechanism) + Summary / Root-cause / Repro / Fix + cross-links to umbrellas and cited precedents. **Run the version-gate locally on the exact body** → must be `valid-version`. Labels: `bug`→`confirmed-bug` + `area: X` + `priority: X` (+ `security`). Then **remove the bot-added `needs-triage` via REST** (`gh issue edit` GraphQL is broken on this repo).
