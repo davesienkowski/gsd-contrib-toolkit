@@ -15,6 +15,8 @@ Do not list issues, post any review, relabel, dismiss, or merge until that skill
 - **Stop at merge-readiness.** Merge ONLY if the task below carries an explicit `merge=#N` token AND the verdict is a plain, evidence-backed CLEAR AND no other maintainer has an unresolved change-request.
 - In sweep mode, present the ranked buckets and **await my pick** before any per-PR re-review.
 
+Which GSD commands this toolkit delegates to, wraps, or leaves alone — and the methodology this path inherits — is documented in `docs/REUSE-AND-METHODOLOGY.md` (the reuse map governs which commands the sweep delegates to).
+
 **Interpreting my request below (it may be plain prose — figure out the mode):**
 - Status / "what's ready" / "what should I clear" / "triage the repo" / empty → **sweep mode** (Phases 0–8).
 - Names or describes a specific PR (a number, or e.g. "the roadmap rollback PR") → **re-review** it; resolve the PR number from the open list first. If the description matches more than one open PR, ask which before reviewing.
