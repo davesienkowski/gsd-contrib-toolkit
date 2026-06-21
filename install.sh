@@ -128,7 +128,14 @@ merge_settings() {
   # Track the temp file in a script-level var so the EXIT trap (registered at
   # script top) cleans it up on EVERY exit path — including die() and set -e
   # aborts, which the old RETURN trap missed (CR-02).
-  _TMPFILE="$(mktemp)"
+  #
+  # Create the temp file in the SAME directory as the destination (WR-01) so the
+  # final `mv` is a same-filesystem rename(2) — atomic. mktemp in $TMPDIR (/tmp)
+  # risks a cross-filesystem copy-then-delete (non-atomic, corruptible on crash)
+  # when /tmp is a separate mount from the target repo.
+  local settings_dir
+  settings_dir="$(dirname "${settings}")"
+  _TMPFILE="$(mktemp "${settings_dir}/.settings.json.tmp.XXXXXX")"
   local tmp="${_TMPFILE}"
 
   if [ -f "${settings}" ]; then
