@@ -40,6 +40,14 @@ log()  { printf '%s\n' "$*"; }
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
 die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
+# --- Temp-file cleanup on ALL exit paths (CR-02). `RETURN` does not fire on
+#     die()/exit or a set -e abort, leaking the temp file on every error path
+#     after mktemp. An EXIT trap covers die(), set -e, and normal completion.
+#     rm -f on an already-moved (non-existent) temp file is a harmless no-op.
+_TMPFILE=""
+# shellcheck disable=SC2154
+trap 'rm -f "${_TMPFILE}"' EXIT
+
 # --- Preflight: jq is required for the settings merge (and cheap to assert up
 #     front so the failure mode is clear rather than a mid-run crash).
 command -v jq >/dev/null 2>&1 || die "jq is required but was not found on PATH."
@@ -117,10 +125,11 @@ merge_settings() {
   [ -f "${SNIPPET}" ] || die "settings snippet not found: ${SNIPPET}"
   jq -e . "${SNIPPET}" >/dev/null 2>&1 || die "settings snippet is not valid JSON: ${SNIPPET}"
 
-  local tmp
-  tmp="$(mktemp)"
-  # shellcheck disable=SC2064
-  trap "rm -f '${tmp}'" RETURN
+  # Track the temp file in a script-level var so the EXIT trap (registered at
+  # script top) cleans it up on EVERY exit path — including die() and set -e
+  # aborts, which the old RETURN trap missed (CR-02).
+  _TMPFILE="$(mktemp)"
+  local tmp="${_TMPFILE}"
 
   if [ -f "${settings}" ]; then
     # Refuse to overwrite a file we can't parse (T-03-02).
