@@ -52,6 +52,20 @@ trap 'rm -f "${_TMPFILE}"' EXIT
 #     front so the failure mode is clear rather than a mid-run crash).
 command -v jq >/dev/null 2>&1 || die "jq is required but was not found on PATH."
 
+# jq >= 1.5 is required for the `walk` builtin and `--slurpfile` used in the
+# merge filter (WR-03). Older jq (1.3/1.4 on legacy Debian/Ubuntu) fails with a
+# cryptic "walk/1 is not defined" mid-run; assert up front with a clear message.
+_jq_ver="$(jq --version 2>/dev/null | sed 's/jq-//')"
+_jq_maj="${_jq_ver%%.*}"
+_jq_min="${_jq_ver#*.}"; _jq_min="${_jq_min%%.*}"
+if ! [ "${_jq_maj}" -ge 1 ] 2>/dev/null; then
+  die "could not determine jq version (got '${_jq_ver}'); jq >= 1.5 required."
+fi
+if [ "${_jq_maj}" -lt 1 ] || { [ "${_jq_maj}" -eq 1 ] && [ "${_jq_min}" -lt 5 ]; }; then
+  die "jq >= 1.5 required (found ${_jq_ver}); upgrade via your package manager."
+fi
+unset _jq_ver _jq_maj _jq_min
+
 # ---------------------------------------------------------------------------
 # 1. SYMLINK RESTORE (INST-01 / INST-03) — runs FIRST and unconditionally.
 # ---------------------------------------------------------------------------
