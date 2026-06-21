@@ -24,6 +24,34 @@ npm run lint:ci   # composes eslint + ~9 project linters; must exit 0
 
 `### GSD Version` value for engine-internal findings: **`1.6.0-rc.1 (next @ <8-char-sha>)`** (sha = current `origin/next`).
 
+## Issue types (all six) (KNOW-04)
+
+The repo ships **six** issue templates, not three — route a contribution to the one that fits so a `chore`/`docs_issue`/`config` change isn't force-fit into the bug/enhancement/feature shape. (Source for the set: the project gap-analysis `C5`, `.planning/notes/gap-analysis-2026-06-21.md` — templates exist for `bug_report, enhancement, feature_request, chore, docs_issue, config`.)
+
+| # | Issue type (template) | Use for | Typical labels |
+|---|---|---|---|
+| 1 | **bug_report** | a defect / wrong behavior with a reproduced mechanism | `bug` → `confirmed-bug` + `area: X` + `priority: X` (+ `security`) |
+| 2 | **enhancement** | improving an existing capability (also the **epic** umbrella shape) | `enhancement` → `approved-enhancement` + `area: X` |
+| 3 | **feature_request** | a net-new capability | `feature` → `approved-feature` + `area: X` |
+| 4 | **chore** | maintenance / tooling / deps / build / non-behavioral upkeep | `chore` + `area: X` |
+| 5 | **docs_issue** | documentation defect or gap (not code behavior) | `documentation` + `area: X` |
+| 6 | **config** | configuration / schema / settings surface change | `chore`/`config` + `area: X` (mirror the touched config area) |
+
+Pick the template by the *nature of the change*, then apply that row's labels. A `chore` or `docs_issue` filed under `bug_report` trips the wrong intake gate (e.g. version-gate expectations / `confirmed-bug` fix-gate) — match the template to the work.
+
+## Security routing (KNOW-03)
+
+**WARN — route a real vulnerability to the PRIVATE advisory, not a public issue.** A **real / exploitable** vulnerability is reported via the repo's **private GitHub security advisory** at **`/security/advisories/new`** (per `SECURITY.md`) — **NOT** a public `gh issue create`. Filing a live, exploitable vector as a public issue discloses it before a fix exists.
+
+The existing **public** path stays for the rest: a security finding that is **already public / precedented / non-exploitable** is filed as a public `security` + `confirmed-bug` issue (precedents #751 / #1406 / #116). Don't over-privatize an already-public finding either — the split is:
+
+| Finding | Route |
+|---|---|
+| real / exploitable vulnerability (a live injection/escape vector) | **PRIVATE advisory `/security/advisories/new`** (per `SECURITY.md`) — never a public issue |
+| non-exploitable / already-public / precedented security finding | public `security` + `confirmed-bug` issue (precedents #751 / #1406 / #116) |
+
+When in doubt about exploitability, treat it as real and use the private advisory first — you can always downgrade to the public path, you cannot un-disclose.
+
 ## ADR / CONTEXT awareness (POLICY-03)
 
 Run this **before authoring** to surface the governing decisions touching the changed area. The output is a **LIST of governing decisions surfaced for review (awareness)** — it is **not** a pass/fail gate, and a listed `CONTEXT.md` predicate is awareness, **not** deterministic enforcement (the mechanizable floor is POLICY-02, Phase 3).
