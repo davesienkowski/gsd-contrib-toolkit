@@ -122,16 +122,25 @@ merge_settings() {
 
     # APPEND/UNION the snippet's hooks into each hook-event array, deduped.
     #   For each event key in snippet.hooks:
-    #     .hooks[evt] = ((.hooks[evt] // []) + snippet[evt]) | unique_by(tojson)
+    #     .hooks[evt] = ((.hooks[evt] // []) + snippet[evt]) | unique_by(canonical)
     # This PRESERVES pre-existing arrays (never array-replaces — NOT `.[0] * .[1]`,
-    # EP-6) and is idempotent (unique_by drops our re-added duplicate). An empty
-    # snippet.hooks ({}) iterates zero keys → byte-identical output.
+    # EP-6) and is idempotent. An empty snippet.hooks ({}) iterates zero keys →
+    # byte-identical output.
+    #
+    # The dedupe key MUST be order-insensitive: `jq -S` writes objects with SORTED
+    # keys, but the snippet entries arrive in their authored key order. A naive
+    # `unique_by(tojson)` would then see the already-written (sorted) entry and the
+    # re-added (authored-order) entry as DIFFERENT strings on the second run and
+    # append a duplicate. `canon/0` recursively sorts every object's keys before
+    # serializing, so an entry compares equal regardless of key order — making the
+    # merge truly idempotent (byte-identical on every re-run, not just convergent).
     jq -S --slurpfile snip "${SNIPPET}" '
+      def canon: walk(if type == "object" then to_entries | sort | from_entries else . end);
       ($snip[0].hooks // {}) as $sh
       | reduce ($sh | keys[]) as $evt (
           .;
           .hooks = (.hooks // {})
-          | .hooks[$evt] = (((.hooks[$evt] // []) + $sh[$evt]) | unique_by(tojson))
+          | .hooks[$evt] = (((.hooks[$evt] // []) + $sh[$evt]) | unique_by(canon | tojson))
         )
     ' "${settings}" > "${tmp}"
 
