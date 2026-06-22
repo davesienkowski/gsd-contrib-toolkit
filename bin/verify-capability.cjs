@@ -271,7 +271,22 @@ function runVerifyCapability(opts = {}) {
   results.push(result('manifest-read', 'pass', 'parsed ' + manifestPath));
 
   // ── Schema conformance via the LIVE exported validators (zero local schema rules — HARD-02). ──
-  const checkErrors = (name, errs, note) => {
+  // `callLiveValidator` is a THUNK so the invocation happens INSIDE the try/catch (WR-02): a LIVE
+  // validator that THROWS (bad arg shape, internal assertion, gsd-core API change) becomes a clean
+  // [FAIL] line naming the validator — never an uncaught stack trace propagating through runCli().
+  const checkErrors = (name, callLiveValidator, note) => {
+    let errs;
+    try {
+      errs = callLiveValidator();
+    } catch (err) {
+      results.push(result(
+        name,
+        'fail',
+        note + ' — LIVE validator THREW: ' + ((err && err.message) || String(err)) +
+          ' (a thrown validator FAILS LOUD per HARD-02 — a crashing check is NEVER a silent conformant)'
+      ));
+      return;
+    }
     const arr = Array.isArray(errs) ? errs : ['validator did not return an array (got ' + typeof errs + ')'];
     if (arr.length === 0) {
       results.push(result(name, 'pass', note));
@@ -281,13 +296,13 @@ function runVerifyCapability(opts = {}) {
   };
 
   // validateCapability(cap, folderId) — folderId is the literal folder name 'contrib-gate'.
-  checkErrors('validateCapability', live.validateCapability(manifest, FOLDER_ID), 'LIVE validateCapability(manifest, ' + JSON.stringify(FOLDER_ID) + ')');
+  checkErrors('validateCapability', () => live.validateCapability(manifest, FOLDER_ID), 'LIVE validateCapability(manifest, ' + JSON.stringify(FOLDER_ID) + ')');
   // validateVersionEnvelope(cap) — semver version + engines.gsd range (ADR-1244 D1).
-  checkErrors('validateVersionEnvelope', live.validateVersionEnvelope(manifest), 'LIVE validateVersionEnvelope(manifest)');
+  checkErrors('validateVersionEnvelope', () => live.validateVersionEnvelope(manifest), 'LIVE validateVersionEnvelope(manifest)');
   // validateRuntimeCompat(capId, runtimeCompat) — capId FIRST, runtimeCompat SECOND (per LIVE signature).
-  checkErrors('validateRuntimeCompat', live.validateRuntimeCompat(FOLDER_ID, manifest.runtimeCompat), 'LIVE validateRuntimeCompat(' + JSON.stringify(FOLDER_ID) + ', manifest.runtimeCompat)');
+  checkErrors('validateRuntimeCompat', () => live.validateRuntimeCompat(FOLDER_ID, manifest.runtimeCompat), 'LIVE validateRuntimeCompat(' + JSON.stringify(FOLDER_ID) + ', manifest.runtimeCompat)');
   // validateAgainstContract(cap, capId) — contribution.into vs the loop-host contract + when refs a config key.
-  checkErrors('validateAgainstContract', live.validateAgainstContract(manifest, FOLDER_ID), 'LIVE validateAgainstContract(manifest, ' + JSON.stringify(FOLDER_ID) + ')');
+  checkErrors('validateAgainstContract', () => live.validateAgainstContract(manifest, FOLDER_ID), 'LIVE validateAgainstContract(manifest, ' + JSON.stringify(FOLDER_ID) + ')');
 
   // ── SHARE-01 surface disclosure (T-09-02-UNDERDISCLOSE): declared == shipped, data-driven from disk. ──
   // LOUD-on-miss (CR-01): if the skills dir can't be read at all, the disclosure check COULD NOT RUN —
