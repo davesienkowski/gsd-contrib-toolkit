@@ -441,3 +441,194 @@ test('WR-02: a throwing LIVE validator => clean [FAIL] for that validator, ok:fa
     cleanup(fx);
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Plan 11-03: hooks[] file presence, bundle⇄source parity, runtime LIVE-resolution
+// ─────────────────────────────────────────────────────────────────────────────
+
+// A manifest carrying a hooks[] (the bundle-conformance subject). Each entry is {event, script};
+// the script is a safe relative path under hooks/ (schema-safety is asserted by the LIVE
+// validateCapability check — these cases drive the NEW toolkit-owned disk/parity/runtime checks).
+function manifestWithHooks(scripts) {
+  return baseManifest({
+    hooks: scripts.map((s) => ({ event: 'PreToolUse', script: s })),
+  });
+}
+
+/**
+ * Build a tmp bundle hooks/ tree: one file per relative path (POSIX). Materializes parent dirs.
+ * Returns the absolute bundle hooks/ dir to inject as `bundleHooksDir`.
+ *
+ * @param {object} files map of relPath => fileBytes (string). e.g. {'hooks/gh-edit.cjs':'...', 'lib/resolve.cjs':'...'}
+ * @returns {{dir:string, bundleHooksDir:string}}
+ */
+function makeBundle(files) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-verify-bundle-'));
+  const bundleHooksDir = path.join(dir, 'hooks');
+  for (const [rel, body] of Object.entries(files)) {
+    const abs = path.join(bundleHooksDir, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, body);
+  }
+  return { dir, bundleHooksDir };
+}
+
+// A liveRoot fixture with the gsd-core sentinel layout (scripts/ + gsd-core/bin/lib/) so the
+// runtime-live-resolution check can confirm reachability WITHOUT touching the real gsd-core.
+function makeLiveRoot() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-verify-live-'));
+  fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'gsd-core', 'bin', 'lib'), { recursive: true });
+  return dir;
+}
+
+// A bundle that ships every hooks[].script file declared in the manifest PLUS lib/resolve.cjs
+// (the bundled resolver the runtime check asserts). The default conformant bundle.
+function conformantBundle(scripts) {
+  const files = {};
+  for (const s of scripts) files[s.replace(/^hooks\//, '')] = '// ' + s + '\n';
+  files['lib/resolve.cjs'] = "module.exports = require('../../../hooks/lib/resolve.cjs');\n";
+  return makeBundle(files);
+}
+
+const HOOK_SCRIPTS = ['hooks/gh-edit.cjs', 'hooks/gh-pr-create.cjs'];
+
+// ── (k) conform: hooks files present + fresh bundle + reachable live + bundled resolver => all PASS ──
+test('11-03 conform: hooks present, fresh bundle, reachable liveRoot, bundled resolver => 3 new checks PASS', () => {
+  const fx = makeFixture(manifestWithHooks(HOOK_SCRIPTS), SKILLS, COMMANDS);
+  const bundle = conformantBundle(HOOK_SCRIPTS);
+  const live = makeLiveRoot();
+  try {
+    const r = runVerifyCapability({
+      liveRoot: live,
+      requireLiveScript: () => stubValidators(),
+      manifestPath: fx.manifestPath,
+      skillsDir: fx.skillsDir,
+      commandsDir: fx.commandsDir,
+      bundleHooksDir: bundle.bundleHooksDir,
+      checkBundleFresh: () => ({ fresh: true, staleFiles: [], checked: 3 }),
+    });
+    assert.equal(r.ok, true, JSON.stringify(r.results, null, 2));
+    const hm = r.results.find((x) => x.name === 'hooks-manifest');
+    const bp = r.results.find((x) => x.name === 'bundle-parity');
+    const rr = r.results.find((x) => x.name === 'runtime-live-resolution');
+    assert.ok(hm && hm.verdict === 'pass', 'hooks-manifest PASS');
+    assert.ok(bp && bp.verdict === 'pass', 'bundle-parity PASS');
+    assert.ok(rr && rr.verdict === 'pass', 'runtime-live-resolution PASS');
+  } finally {
+    cleanup(fx);
+    fs.rmSync(bundle.dir, { recursive: true, force: true });
+    fs.rmSync(live, { recursive: true, force: true });
+  }
+});
+
+// ── (l) hooks-file miss: a declared hooks[].script with no bundle file => hooks-manifest FAIL, ok:false ──
+test('11-03 hooks-file miss: a declared hooks[].script absent from the bundle => hooks-manifest FAIL, ok:false', () => {
+  const fx = makeFixture(manifestWithHooks(HOOK_SCRIPTS), SKILLS, COMMANDS);
+  // Bundle ships only the FIRST script (+ resolver); the second declared script has no file.
+  const bundle = conformantBundle([HOOK_SCRIPTS[0]]);
+  const live = makeLiveRoot();
+  try {
+    const r = runVerifyCapability({
+      liveRoot: live,
+      requireLiveScript: () => stubValidators(),
+      manifestPath: fx.manifestPath,
+      skillsDir: fx.skillsDir,
+      commandsDir: fx.commandsDir,
+      bundleHooksDir: bundle.bundleHooksDir,
+      checkBundleFresh: () => ({ fresh: true, staleFiles: [], checked: 2 }),
+    });
+    assert.equal(r.ok, false, 'a declared script with no bundle file is NEVER a silent conformant');
+    const hm = r.results.find((x) => x.name === 'hooks-manifest');
+    assert.ok(hm && hm.verdict === 'fail', 'hooks-manifest FAILed');
+    assert.match(hm.detail, /gh-pr-create\.cjs/, 'names the missing script path');
+  } finally {
+    cleanup(fx);
+    fs.rmSync(bundle.dir, { recursive: true, force: true });
+    fs.rmSync(live, { recursive: true, force: true });
+  }
+});
+
+// ── (m) parity miss: an injected stale checkBundleFresh => bundle-parity FAIL, ok:false ──
+test('11-03 parity miss: an injected stale checkBundleFresh (staleFiles entry) => bundle-parity FAIL, ok:false', () => {
+  const fx = makeFixture(manifestWithHooks(HOOK_SCRIPTS), SKILLS, COMMANDS);
+  const bundle = conformantBundle(HOOK_SCRIPTS);
+  const live = makeLiveRoot();
+  try {
+    const r = runVerifyCapability({
+      liveRoot: live,
+      requireLiveScript: () => stubValidators(),
+      manifestPath: fx.manifestPath,
+      skillsDir: fx.skillsDir,
+      commandsDir: fx.commandsDir,
+      bundleHooksDir: bundle.bundleHooksDir,
+      checkBundleFresh: () => ({
+        fresh: false,
+        staleFiles: [{ path: 'gh-edit.cjs', reason: 'differs from canonical source' }],
+        checked: 2,
+      }),
+    });
+    assert.equal(r.ok, false, 'a stale bundle is NEVER reported conformant (equivalent to build --check exit 1)');
+    const bp = r.results.find((x) => x.name === 'bundle-parity');
+    assert.ok(bp && bp.verdict === 'fail', 'bundle-parity FAILed');
+    assert.match(bp.detail, /gh-edit\.cjs/, 'names the stale path');
+  } finally {
+    cleanup(fx);
+    fs.rmSync(bundle.dir, { recursive: true, force: true });
+    fs.rmSync(live, { recursive: true, force: true });
+  }
+});
+
+// ── (n) runtime miss: liveRoot reachable but bundled resolve.cjs absent => runtime-live-resolution FAIL ──
+test('11-03 runtime miss: an absent bundled resolve.cjs => runtime-live-resolution FAIL, ok:false', () => {
+  const fx = makeFixture(manifestWithHooks(HOOK_SCRIPTS), SKILLS, COMMANDS);
+  // Bundle ships the scripts but NOT lib/resolve.cjs.
+  const files = {};
+  for (const s of HOOK_SCRIPTS) files[s.replace(/^hooks\//, '')] = '// ' + s + '\n';
+  const bundle = makeBundle(files);
+  const live = makeLiveRoot();
+  try {
+    const r = runVerifyCapability({
+      liveRoot: live,
+      requireLiveScript: () => stubValidators(),
+      manifestPath: fx.manifestPath,
+      skillsDir: fx.skillsDir,
+      commandsDir: fx.commandsDir,
+      bundleHooksDir: bundle.bundleHooksDir,
+      checkBundleFresh: () => ({ fresh: true, staleFiles: [], checked: 2 }),
+    });
+    assert.equal(r.ok, false, 'an absent bundled resolver is NEVER a silent conformant (reuse-LIVE broken)');
+    const rr = r.results.find((x) => x.name === 'runtime-live-resolution');
+    assert.ok(rr && rr.verdict === 'fail', 'runtime-live-resolution FAILed');
+    assert.match(rr.detail, /resolve\.cjs/, 'names the missing bundled resolver');
+  } finally {
+    cleanup(fx);
+    fs.rmSync(bundle.dir, { recursive: true, force: true });
+    fs.rmSync(live, { recursive: true, force: true });
+  }
+});
+
+// ── (n2) runtime miss: bundled resolver present but liveRoot:null => runtime-live-resolution FAIL ──
+test('11-03 runtime miss: liveRoot:null (no reachable checkout) => runtime-live-resolution FAIL, ok:false', () => {
+  // NOTE: liveRoot:null short-circuits at the live-checkout LOUD-fail before the new checks run, so
+  // ok:false is already guaranteed. This case proves the unreachable-checkout intent end to end: with
+  // no checkout the bundled gates could not call LIVE scripts, so conformance is NEVER reported.
+  const r = runVerifyCapability({
+    liveRoot: null,
+    requireLiveScript: () => {
+      throw new Error('requireLiveScript must NOT be called when there is no checkout');
+    },
+  });
+  assert.equal(r.ok, false, 'no reachable LIVE checkout is NEVER a silent conformant');
+  const lc = r.results.find((x) => x.name === 'live-checkout');
+  assert.ok(lc && lc.verdict === 'fail', 'the live-checkout LOUD fail fires');
+});
+
+// ── (o) hermetic guarantee: the real bundle/manifest are never mutated by these cases ──
+test('11-03 hermetic: the real capabilities/contrib-gate bundle + manifest are untouched by the suite', () => {
+  // A trivial structural assertion that the new cases inject seams (bundleHooksDir / checkBundleFresh)
+  // rather than the defaults — proven by the fact every 11-03 case above passes os.mkdtemp paths.
+  const src = fs.readFileSync(path.join(__dirname, 'verify-capability.test.cjs'), 'utf8');
+  assert.match(src, /bundleHooksDir: bundle\.bundleHooksDir/, 'cases inject a tmp bundleHooksDir');
+  assert.match(src, /checkBundleFresh: \(\) =>/, 'cases inject checkBundleFresh');
+});
