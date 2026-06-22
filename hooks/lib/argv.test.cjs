@@ -180,3 +180,68 @@ test('parseCommand: top-level fields mirror first segment', () => {
   assert.strictEqual(p.program, 'gh');
   assert.deepStrictEqual(p.subcommands, ['issue', 'create']);
 });
+
+// ---------------------------------------------------------------------------
+// Heredoc handling (G3)
+//
+// A bare heredoc body is opaque shell input, NOT command syntax. Previously the
+// tokenizer walked the body char-by-char: an apostrophe in prose tripped the
+// unbalanced-quote guard → ok:false → fail-closed → a legit `gh pr create
+// --body-file - <<EOF` was over-blocked; and `;`/`&&`/`|` in the body wrongly
+// split segments. parseCommand must treat the heredoc body (next line → terminator
+// line) as opaque in both splitSegments and tokenize.
+// ---------------------------------------------------------------------------
+
+test('heredoc body with an apostrophe does NOT unbalance quotes (ok:true) [G3]', () => {
+  const p = parseCommand("gh pr create --body-file - <<EOF\nit's a fix\nEOF");
+  assert.strictEqual(p.ok, true, p.reason);
+  assert.strictEqual(p.program, 'gh');
+  assert.deepStrictEqual(p.subcommands, ['pr', 'create']);
+});
+
+test('heredoc body with ; && | does NOT split into extra segments [G3]', () => {
+  const p = parseCommand('gh issue create --body-file - <<EOF\na; b && c | d\nEOF');
+  assert.strictEqual(p.ok, true, p.reason);
+  assert.strictEqual(p.segments.length, 1);
+  assert.deepStrictEqual(p.segments[0].subcommands, ['issue', 'create']);
+});
+
+test('quoted heredoc delimiter <<\'EOF\' is recognized [G3]', () => {
+  const p = parseCommand("gh pr create --body-file - <<'EOF'\nliteral $stuff and it's fine\nEOF");
+  assert.strictEqual(p.ok, true, p.reason);
+  assert.deepStrictEqual(p.subcommands, ['pr', 'create']);
+});
+
+test('double-quoted heredoc delimiter <<"EOF" is recognized [G3]', () => {
+  const p = parseCommand('gh pr create --body-file - <<"EOF"\nbody; with & metachars\nEOF');
+  assert.strictEqual(p.ok, true, p.reason);
+  assert.deepStrictEqual(p.subcommands, ['pr', 'create']);
+});
+
+test('<<-EOF strips leading tabs on the terminator line [G3]', () => {
+  const p = parseCommand('gh issue create --body-file - <<-EOF\n\tindented body; ok\n\tEOF');
+  assert.strictEqual(p.ok, true, p.reason);
+  assert.strictEqual(p.segments.length, 1);
+  assert.deepStrictEqual(p.segments[0].subcommands, ['issue', 'create']);
+});
+
+test('heredoc body running to end-of-string (no trailing newline) parses [G3]', () => {
+  const p = parseCommand('gh pr create --body-file - <<EOF\nline one\nline two; still body\nEOF\n');
+  assert.strictEqual(p.ok, true, p.reason);
+  assert.strictEqual(p.segments.length, 1);
+});
+
+test('a real pipe AFTER the heredoc terminator still splits [G3]', () => {
+  // `cat <<EOF ... EOF` then `| gh pr create` on the line after the terminator.
+  const p = parseCommand('cat <<EOF\nbody; text\nEOF\n| gh pr create --title x');
+  assert.strictEqual(p.ok, true, p.reason);
+  assert.strictEqual(p.segments.length, 2);
+  assert.deepStrictEqual(p.segments[1].subcommands, ['pr', 'create']);
+});
+
+test('single < redirection is NOT treated as a heredoc [G3 guard]', () => {
+  const p = parseCommand('gh pr create --title x < file.txt');
+  assert.strictEqual(p.ok, true, p.reason);
+  assert.strictEqual(p.segments.length, 1);
+  assert.deepStrictEqual(p.subcommands, ['pr', 'create']);
+});

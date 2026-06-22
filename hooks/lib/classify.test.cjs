@@ -275,6 +275,16 @@ test('curl POST to a non-github host → other (out of scope)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Heredoc body must not derail classification (G3 end-to-end)
+// ---------------------------------------------------------------------------
+
+test('gh pr create --body-file - <<EOF (heredoc body) → pr-create [G3]', () => {
+  const r = cls("gh pr create --title x --body-file - <<EOF\nit's fine; really\nEOF");
+  assert.strictEqual(r.action, 'pr-create', JSON.stringify(r));
+  assert.notStrictEqual(r.failClosed, true);
+});
+
+// ---------------------------------------------------------------------------
 // Parser fail-closed propagation
 // ---------------------------------------------------------------------------
 

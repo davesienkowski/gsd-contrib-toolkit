@@ -18,6 +18,72 @@
  */
 
 /**
+ * Recognize a heredoc redirection operator at index `i` (caller guarantees an
+ * UNQUOTED, unescaped context): `<<WORD`, `<<-WORD`, with the delimiter optionally
+ * quoted (`<<'WORD'`, `<<"WORD"`) and optional spaces/tabs between `<<` and WORD.
+ *
+ * Returns `{ delim, dash, end }` where `end` is the index just past the delimiter,
+ * or null when this is not a heredoc we model (a single `<` redirect, a here-string
+ * `<<<`, an unterminated quoted delimiter, or `<<` with no following word).
+ *
+ * @param {string} str
+ * @param {number} i index of the first `<`
+ * @returns {{delim:string, dash:boolean, end:number}|null}
+ */
+function parseHeredocOperator(str, i) {
+  if (str[i] !== '<' || str[i + 1] !== '<') return null;
+  if (str[i + 2] === '<') return null; // here-string <<<, not a heredoc
+
+  let j = i + 2;
+  let dash = false;
+  if (str[j] === '-') { dash = true; j += 1; }
+  while (str[j] === ' ' || str[j] === '\t') j += 1;
+
+  let delim = '';
+  const q = str[j];
+  if (q === "'" || q === '"') {
+    j += 1;
+    while (j < str.length && str[j] !== q) { delim += str[j]; j += 1; }
+    if (j >= str.length) return null; // unterminated delimiter quote → let normal parsing fail closed
+    j += 1; // consume the closing quote
+  } else {
+    while (j < str.length && /[A-Za-z0-9_]/.test(str[j])) { delim += str[j]; j += 1; }
+  }
+
+  if (delim.length === 0) return null; // `<<` with no word — a redirection we don't treat as a heredoc
+  return { delim, dash, end: j };
+}
+
+/**
+ * Given `bodyStart` (index of the first character of a heredoc body — i.e. just
+ * after the newline that ends the introducing line), return the index just past the
+ * heredoc terminator line. The body is every line up to one equal to `delim` (with
+ * leading tabs stripped from the terminator when `dash` is set, per `<<-`). If no
+ * terminator is found, the body runs to end-of-string.
+ *
+ * @param {string} str
+ * @param {number} bodyStart
+ * @param {string} delim
+ * @param {boolean} dash
+ * @returns {number}
+ */
+function findHeredocBodyEnd(str, bodyStart, delim, dash) {
+  let lineStart = bodyStart;
+  while (lineStart <= str.length) {
+    let lineEnd = str.indexOf('\n', lineStart);
+    if (lineEnd === -1) lineEnd = str.length;
+    let line = str.slice(lineStart, lineEnd);
+    if (dash) line = line.replace(/^\t+/, '');
+    if (line === delim) {
+      return lineEnd === str.length ? str.length : lineEnd + 1;
+    }
+    if (lineEnd === str.length) return str.length;
+    lineStart = lineEnd + 1;
+  }
+  return str.length;
+}
+
+/**
  * POSIX-style shell tokenizer.
  *
  * Walks the string one character at a time tracking single-quote / double-quote /
@@ -43,6 +109,7 @@ function tokenize(str) {
   let inSingle = false;
   let inDouble = false;
   let escaped = false;
+  const pendingHeredocs = []; // delimiters seen on the current line, bodies consumed at \n
 
   for (let i = 0; i < str.length; i++) {
     const ch = str[i];
@@ -84,6 +151,20 @@ function tokenize(str) {
     }
 
     // Unquoted, unescaped context:
+
+    // Heredoc operator (<<WORD / <<-WORD / <<'WORD'): the body (the lines after the
+    // current one, up to the terminator) is opaque shell input, not command syntax.
+    // Record the delimiter and keep the operator text; the body is fast-forwarded
+    // when the introducing line ends, so quotes/separators inside it never apply.
+    const hd = parseHeredocOperator(str, i);
+    if (hd) {
+      cur += str.slice(i, hd.end);
+      hasToken = true;
+      pendingHeredocs.push({ delim: hd.delim, dash: hd.dash });
+      i = hd.end - 1; // resume just after the delimiter (loop i++)
+      continue;
+    }
+
     if (ch === "'") {
       inSingle = true;
       hasToken = true;
@@ -92,6 +173,21 @@ function tokenize(str) {
     if (ch === '"') {
       inDouble = true;
       hasToken = true;
+      continue;
+    }
+    if (ch === '\n' && pendingHeredocs.length > 0) {
+      // End of the introducing line → consume each pending heredoc body opaquely.
+      if (hasToken) {
+        tokens.push(cur);
+        cur = '';
+        hasToken = false;
+      }
+      let bodyStart = i + 1;
+      for (const h of pendingHeredocs) {
+        bodyStart = findHeredocBodyEnd(str, bodyStart, h.delim, h.dash);
+      }
+      pendingHeredocs.length = 0;
+      i = bodyStart - 1; // resume after the last terminator (loop i++)
       continue;
     }
     if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f' || ch === '\v') {
@@ -142,6 +238,7 @@ function splitSegments(str) {
   let inSingle = false;
   let inDouble = false;
   let escaped = false;
+  const pendingHeredocs = []; // delimiters seen on the current line, bodies consumed at \n
 
   for (let i = 0; i < str.length; i++) {
     const ch = str[i];
@@ -166,6 +263,19 @@ function splitSegments(str) {
       if (ch === '"') inDouble = false;
       continue;
     }
+
+    // Heredoc operator: keep the operator text and treat the body as opaque so a
+    // `;`/`&&`/`|` inside it does NOT split the command (the body is one segment's
+    // input, not a new command). The body is preserved verbatim in `cur` so the
+    // per-segment re-tokenize stays consistent.
+    const hd = parseHeredocOperator(str, i);
+    if (hd) {
+      cur += str.slice(i, hd.end);
+      pendingHeredocs.push({ delim: hd.delim, dash: hd.dash });
+      i = hd.end - 1; // resume just after the delimiter (loop i++)
+      continue;
+    }
+
     if (ch === "'") {
       cur += ch;
       inSingle = true;
@@ -174,6 +284,19 @@ function splitSegments(str) {
     if (ch === '"') {
       cur += ch;
       inDouble = true;
+      continue;
+    }
+    if (ch === '\n' && pendingHeredocs.length > 0) {
+      // End of the introducing line → append each pending heredoc body verbatim.
+      cur += ch;
+      let bodyStart = i + 1;
+      for (const h of pendingHeredocs) {
+        const end = findHeredocBodyEnd(str, bodyStart, h.delim, h.dash);
+        cur += str.slice(bodyStart, end);
+        bodyStart = end;
+      }
+      pendingHeredocs.length = 0;
+      i = bodyStart - 1; // resume after the last terminator (loop i++)
       continue;
     }
 
