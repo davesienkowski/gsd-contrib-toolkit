@@ -107,15 +107,21 @@ function resolveGsdCoreCwd() {
  * Read the toolkit's ACTUAL shipped skill set from disk: the immediate subdirectories of skillsDir
  * that contain a SKILL.md. Data-driven so adding an undisclosed skill fails the disclosure check.
  *
+ * LOUD-on-miss (CR-01): an unreadable/missing skills dir is NOT the same as "read succeeded, zero
+ * skills". Returning [] on a readdir error would let the caller compare [] vs an empty manifest.skills
+ * and report a PASS for a check that COULD NOT RUN — a forged green, violating the load-bearing
+ * invariant. So a readdir error returns {ok:false} and the caller turns it into a [FAIL], mirroring
+ * the doctor / unresolved-liveRoot LOUD discipline already used in this file.
+ *
  * @param {string} skillsDir
- * @returns {string[]} sorted skill folder names
+ * @returns {{ok:boolean, skills:string[], error?:string}} ok:false => the dir was unreadable/missing.
  */
 function readShippedSkills(skillsDir) {
   let entries;
   try {
     entries = fs.readdirSync(skillsDir, { withFileTypes: true });
-  } catch (_) {
-    return [];
+  } catch (err) {
+    return { ok: false, skills: [], error: (err && err.message) || String(err) };
   }
   const out = [];
   for (const ent of entries) {
@@ -123,22 +129,26 @@ function readShippedSkills(skillsDir) {
     if (fs.existsSync(path.join(skillsDir, ent.name, 'SKILL.md'))) out.push(ent.name);
   }
   out.sort();
-  return out;
+  return { ok: true, skills: out };
 }
 
 /**
  * Read the toolkit's ACTUAL shipped command set from disk: the basenames (sans .md) of
  * commandsDir/gsd-*.md files. Data-driven so adding an undisclosed command fails the check.
  *
+ * LOUD-on-miss (CR-01): symmetric to readShippedSkills — an unreadable/missing commands dir returns
+ * {ok:false} so the caller emits a [FAIL]. (Previously this returned [] on error, surviving only
+ * because an empty command set unconditionally FAILs downstream; the intent is now explicit and robust.)
+ *
  * @param {string} commandsDir
- * @returns {string[]} sorted command names (e.g. 'gsd-submit')
+ * @returns {{ok:boolean, commands:string[], error?:string}} ok:false => the dir was unreadable/missing.
  */
 function readShippedCommands(commandsDir) {
   let entries;
   try {
     entries = fs.readdirSync(commandsDir, { withFileTypes: true });
-  } catch (_) {
-    return [];
+  } catch (err) {
+    return { ok: false, commands: [], error: (err && err.message) || String(err) };
   }
   const out = [];
   for (const ent of entries) {
@@ -146,7 +156,7 @@ function readShippedCommands(commandsDir) {
     if (/^gsd-.*\.md$/.test(ent.name)) out.push(ent.name.replace(/\.md$/, ''));
   }
   out.sort();
-  return out;
+  return { ok: true, commands: out };
 }
 
 /**
@@ -252,26 +262,48 @@ function runVerifyCapability(opts = {}) {
   checkErrors('validateAgainstContract', live.validateAgainstContract(manifest, FOLDER_ID), 'LIVE validateAgainstContract(manifest, ' + JSON.stringify(FOLDER_ID) + ')');
 
   // ── SHARE-01 surface disclosure (T-09-02-UNDERDISCLOSE): declared == shipped, data-driven from disk. ──
-  const shippedSkills = readShippedSkills(skillsDir);
-  const declaredSkills = Array.isArray(manifest.skills) ? manifest.skills.slice().sort() : [];
-  const skillsUndisclosed = shippedSkills.filter((s) => !declaredSkills.includes(s));
-  const skillsOverdeclared = declaredSkills.filter((s) => !shippedSkills.includes(s));
-  if (skillsUndisclosed.length === 0 && skillsOverdeclared.length === 0) {
-    results.push(result('surface-skills', 'pass', 'manifest.skills == shipped skills/: [' + shippedSkills.join(', ') + ']'));
-  } else {
-    const parts = [];
-    if (skillsUndisclosed.length) parts.push('UNDER-discloses (shipped but not declared): ' + skillsUndisclosed.join(', '));
-    if (skillsOverdeclared.length) parts.push('declares but does not ship: ' + skillsOverdeclared.join(', '));
+  // LOUD-on-miss (CR-01): if the skills dir can't be read at all, the disclosure check COULD NOT RUN —
+  // never silently PASS it (that would forge a green when skills/ is missing/permission-denied AND
+  // manifest.skills is empty).
+  const skillsResult = readShippedSkills(skillsDir);
+  if (!skillsResult.ok) {
     results.push(result(
       'surface-skills',
       'fail',
-      'manifest skill surface != shipped skills/ — ' + parts.join(' | ') +
-        ' — under-disclosure defeats the ADR-1244 D5 consent gate'
+      'cannot read skills/ directory (' + skillsResult.error + ') — the surface-disclosure check COULD NOT ' +
+        'RUN; a check that did not run is NEVER reported conformant (LOUD-on-miss)'
     ));
+  } else {
+    const shippedSkills = skillsResult.skills;
+    const declaredSkills = Array.isArray(manifest.skills) ? manifest.skills.slice().sort() : [];
+    const skillsUndisclosed = shippedSkills.filter((s) => !declaredSkills.includes(s));
+    const skillsOverdeclared = declaredSkills.filter((s) => !shippedSkills.includes(s));
+    if (skillsUndisclosed.length === 0 && skillsOverdeclared.length === 0) {
+      results.push(result('surface-skills', 'pass', 'manifest.skills == shipped skills/: [' + shippedSkills.join(', ') + ']'));
+    } else {
+      const parts = [];
+      if (skillsUndisclosed.length) parts.push('UNDER-discloses (shipped but not declared): ' + skillsUndisclosed.join(', '));
+      if (skillsOverdeclared.length) parts.push('declares but does not ship: ' + skillsOverdeclared.join(', '));
+      results.push(result(
+        'surface-skills',
+        'fail',
+        'manifest skill surface != shipped skills/ — ' + parts.join(' | ') +
+          ' — under-disclosure defeats the ADR-1244 D5 consent gate'
+      ));
+    }
   }
 
-  const shippedCommands = readShippedCommands(commandsDir);
   const description = typeof manifest.description === 'string' ? manifest.description : '';
+  const commandsResult = readShippedCommands(commandsDir);
+  if (!commandsResult.ok) {
+    results.push(result(
+      'surface-commands',
+      'fail',
+      'cannot read commands/ directory (' + commandsResult.error + ') — the surface-disclosure check ' +
+        'COULD NOT RUN; a check that did not run is NEVER reported conformant (LOUD-on-miss)'
+    ));
+  } else {
+  const shippedCommands = commandsResult.commands;
   const commandsUndisclosed = shippedCommands.filter((c) => !description.includes(c));
   if (shippedCommands.length > 0 && commandsUndisclosed.length === 0) {
     results.push(result('surface-commands', 'pass', 'every shipped command named in description: [' + shippedCommands.join(', ') + ']'));
@@ -284,6 +316,7 @@ function runVerifyCapability(opts = {}) {
       'manifest under-discloses executable surface: ' + commandsUndisclosed.join(', ') +
         ' — command(s) ship under commands/ but are not named in the description; defeats the ADR-1244 D5 consent gate'
     ));
+  }
   }
 
   // ── SHARE-01 enforcement honesty (T-09-02-OVERSELL): no capability-self unbypassable/PreToolUse claim. ──
