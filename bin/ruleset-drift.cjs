@@ -46,8 +46,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { resolveGsdCoreRoot } = require('../hooks/lib/resolve.cjs');
-const { parseCommand } = require('../hooks/lib/argv.cjs');
-const { hasFlag } = require('../hooks/lib/flags.cjs');
 
 // The declared ruleset source-of-truth, relative to the gsd-core root.
 const RULESETS_DIR_REL = path.join('.github', 'rulesets');
@@ -283,7 +281,13 @@ function runRulesetDrift(deps = {}) {
   // --- remediation: reachable ONLY with --apply AND only when there is drift ---
   let applied = false;
   if (apply && !inSync) {
-    applyRemediation({ root, repo, drift });
+    try {
+      applyRemediation({ root, repo, drift });
+    } catch (err) {
+      // A failure running the LIVE remediation scripts (gh/bash/network/auth)
+      // must surface as the clean LOUD error path, never a raw stack trace (WR-02).
+      return { error: '--apply remediation failed (LIVE script error): ' + ((err && err.message) || String(err)) };
+    }
     applied = true;
   }
 
@@ -304,12 +308,15 @@ function runCli(deps = {}) {
   const write = deps.write || ((s) => process.stdout.write(s));
   const writeErr = deps.writeErr || ((s) => process.stderr.write(s));
 
-  // Parse --apply from process.argv via the SHARED structured-argv flags helper
-  // (never a raw-string match) when not explicitly injected.
+  // Detect --apply from the ALREADY-tokenized process.argv when not explicitly
+  // injected. `process.argv` elements are discrete shell tokens, so `--apply`
+  // is present ONLY when the user actually typed it as a standalone flag — a
+  // positional argument whose text merely contains `--apply` does NOT re-tokenize
+  // into a real flag (the prior join-then-parseCommand idiom false-positived
+  // here, defeating the mutation guard — CR-01).
   let apply = deps.apply;
   if (apply === undefined) {
-    const parsed = parseCommand(['ruleset-drift'].concat(process.argv.slice(2)).join(' '));
-    apply = hasFlag(parsed, ['--apply']);
+    apply = process.argv.slice(2).includes('--apply');
   }
 
   const r = runRulesetDrift(Object.assign({}, deps, { apply }));
