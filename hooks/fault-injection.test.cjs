@@ -35,6 +35,48 @@ const {
   SANDBOX_SCRIPTS,
 } = require('./lib/sandbox.cjs');
 const { resolveGsdCoreRoot, hasSentinel } = require('./lib/resolve.cjs');
+const { spawnHook } = require('./lib/proof-harness.cjs');
+const { runDoctor } = require('./lib/doctor.cjs');
+
+const GH_PR_CREATE_HOOK = path.join(__dirname, 'gh-pr-create.cjs');
+
+/**
+ * A complete, valid `fix` PR-template body (all required headings) WITH a Fixes #N — borrowed
+ * from gh-pr-create.test.cjs so the gate reaches LIVE script resolution before any policy deny.
+ */
+const GOOD_PR_BODY = [
+  '## Fix PR',
+  '',
+  '## Linked Issue',
+  'Fixes #12',
+  '',
+  '## What was broken',
+  'the thing',
+  '',
+  '## What this fix does',
+  'fixes the thing',
+  '',
+  '## Testing',
+  'node --test',
+  '',
+  '## Checklist',
+  '- [x] tests',
+].join('\n');
+
+/** Build a PreToolUse stdin payload for a `gh pr create` Bash command. */
+function prCreateStdin(body) {
+  const cmd = 'gh pr create --base next --title x --body "' + body.replace(/"/g, '\\"') + '"';
+  return JSON.stringify({ tool_name: 'Bash', tool_input: { command: cmd } });
+}
+
+/** Extract the emitted permissionDecisionReason from a spawnHook result (or '' if unparseable). */
+function denyReason(res) {
+  try {
+    return JSON.parse(res.rawStdout).hookSpecificOutput.permissionDecisionReason || '';
+  } catch (_) {
+    return '';
+  }
+}
 
 /**
  * Resolve the REAL gsd-core checkout from this toolkit's cwd, or null if unreachable.
@@ -169,6 +211,84 @@ test('removeScript actually removes the sandbox file; driftScriptShape rewrites 
     // remove: the file is gone.
     removeScript(sb.root, 'scripts/issue-dedupe.cjs');
     assert.strictEqual(fs.existsSync(path.join(sb.root, 'scripts', 'issue-dedupe.cjs')), false);
+  } finally {
+    sb.dispose();
+  }
+});
+
+// ───────────────────── Task 2: fault-injection proofs (HARD-01 / HARD-02) ─────────────────────
+
+test('HARD-01: a REMOVED live script makes gh-pr-create emit a CONCLUSIVE deny naming the missing script', { skip: SOURCE_ROOT ? false : SKIP_NOTE }, () => {
+  const sb = makeSandbox({ sourceRoot: SOURCE_ROOT });
+  try {
+    // The gate resolves pr-template-policy FIRST (gh-pr-create.cjs), so removing it forces a
+    // requireLiveScript ScriptResolveError → runGate catch → fail-closed deny BEFORE any
+    // branch/template policy can decide. The deny reason therefore NAMES the missing script,
+    // distinguishing a script-resolution fail-close from a generic policy deny.
+    removeScript(sb.root, 'scripts/pr-template-policy.cjs');
+
+    const res = spawnHook(GH_PR_CREATE_HOOK, { stdin: prCreateStdin(GOOD_PR_BODY), cwd: sb.root });
+
+    // It is a CONCLUSIVE deny — NOT allow, NOT inconclusive (a crash/non-zero exit is NOT a pass).
+    assert.strictEqual(res.conclusive, true, 'deny must be conclusive (clean exit 0 + parseable envelope), got: ' + res.reason);
+    assert.strictEqual(res.decision, 'deny', 'a missing LIVE script must FAIL CLOSED (deny), got: ' + res.decision);
+    assert.notStrictEqual(res.decision, 'allow', 'a missing LIVE script must NEVER allow');
+    assert.strictEqual(res.status, 0, 'the gate emits a real deny envelope on exit 0, not a crash');
+
+    // The deny is CAUSED by the missing script (names it), not by branch/template policy.
+    const reason = denyReason(res);
+    assert.match(
+      reason,
+      /live script not found|pr-template-policy\.cjs|requireLiveScript/i,
+      'the deny must name the missing live script (script-resolution fail-close), got: ' + reason
+    );
+  } finally {
+    sb.dispose();
+  }
+});
+
+test('HARD-02 (control): runDoctor on a faithful CLEAN sandbox returns ok:true (4/4 shapes hold)', { skip: SOURCE_ROOT ? false : SKIP_NOTE }, () => {
+  const sb = makeSandbox({ sourceRoot: SOURCE_ROOT });
+  try {
+    const report = runDoctor(sb.root);
+    assert.strictEqual(
+      report.ok,
+      true,
+      'the doctor must PASS on a faithful copy (proves a later red is meaningful, not always-red): ' +
+        JSON.stringify(report.results.filter((r) => !r.ok))
+    );
+    assert.strictEqual(report.results.length, 4, 'all four SHAPE_CHECKS run');
+    assert.ok(report.results.every((r) => r.ok === true), 'every shape check holds on the clean copy');
+  } finally {
+    sb.dispose();
+  }
+});
+
+test('HARD-02: a SHAPE-DRIFTED live script makes runDoctor report ok:false naming it — while the file STILL EXISTS (shape, not absence)', { skip: SOURCE_ROOT ? false : SKIP_NOTE }, () => {
+  const sb = makeSandbox({ sourceRoot: SOURCE_ROOT });
+  try {
+    const target = path.join(sb.root, 'scripts', 'pr-target-policy.cjs');
+    driftScriptShape(sb.root, 'scripts/pr-target-policy.cjs', 'classifyPrTarget');
+
+    // CRITICAL: the file STILL EXISTS post-drift — so an existence-only check would PASS. This
+    // proves the doctor caught the RETURN SHAPE, not mere absence (T-05-03-FAKEPASS).
+    assert.strictEqual(fs.existsSync(target), true, 'the drifted script must still exist on disk');
+
+    const report = runDoctor(sb.root);
+    assert.strictEqual(report.ok, false, 'a drifted return shape must make the doctor report ok:false');
+
+    const drifted = report.results.find((r) => r.script === 'scripts/pr-target-policy.cjs');
+    assert.ok(drifted, 'the report must include the drifted script');
+    assert.strictEqual(drifted.ok, false, 'the drifted script entry must be ok:false');
+    assert.match(
+      drifted.detail,
+      /shape|drift/i,
+      'the failing detail must name a SHAPE drift, not a missing file: ' + drifted.detail
+    );
+
+    // The OTHER three scripts (untouched) must still pass — the doctor pinpoints the drift, not a blanket red.
+    const others = report.results.filter((r) => r.script !== 'scripts/pr-target-policy.cjs');
+    assert.ok(others.every((r) => r.ok === true), 'untouched scripts must still pass (precise drift detection)');
   } finally {
     sb.dispose();
   }
