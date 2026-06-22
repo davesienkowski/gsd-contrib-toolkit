@@ -18,6 +18,17 @@ deadline pressure. Claude Code `PreToolUse` hooks are the only layer the harness
 *always* runs — they enforce the outcomes that matter (no broken issue/PR/push,
 no generated-file edit) at a boundary the model cannot talk its way around.
 
+## The lint:ci-before-push gate + its model-driven companion
+
+Phase 4 adds a **lint:ci-before-push** gate. Its model-driven companion,
+**`ci-preflight`**, drives `bin/lint-ci-stamp.cjs` to run `npm run lint:ci` and —
+only on green — stamp a tree-SHA marker. Before a `git push`, the `lint-ci-marker`
+hook READS that marker (DENY if absent/stale/changed) and the `scan-gate` hook runs
+the secret/injection/base64 scans (DENY on any hit). The companion gives the model a
+guided path to GREEN; the hooks lock the outcome. See
+[`skills/gsd-core-contribution/reference.md`](skills/gsd-core-contribution/reference.md)
+for the full stamp → marker → gate → scan loop (ALIGN-04).
+
 ## Directory layout
 
 | Path                    | Purpose                                                                                  |

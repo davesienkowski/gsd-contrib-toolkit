@@ -2,6 +2,26 @@
 
 **See also:** the reuse + methodology decisions governing this pipeline live in [docs/REUSE-AND-METHODOLOGY.md](../../docs/REUSE-AND-METHODOLOGY.md) (reuse map, `skills-from-the-artificer` + `trust-but-verify` pre-file review, Pocock `tdd` authoring).
 
+## Named model-driven companions (referenced, NOT vendored)
+
+These are the named skills/companions the pipeline drives by name — like `skills-from-the-artificer` and `trust-but-verify` (law-lens + quoted-source review) and Pocock's `tdd` (RED-before-GREEN authoring), each is referenced, never vendored:
+
+- **`ci-preflight`** — the model-driven companion to the **lint:ci-before-push** gate (ALIGN-04). Invoke it **before** `git push` / `gh pr create`: it drives `bin/lint-ci-stamp.cjs` (04-01) to run `npm run lint:ci` and, **only on green**, stamp a tree-SHA marker. The PreToolUse `lint-ci-marker` gate (04-02) then READS that marker and the `scan-gate` (04-03) runs the secret/injection/base64 scans — a red lint, a dirty/changed tree, or a scan hit **DENIES** the push. `ci-preflight` is the human-loop partner that gives the model a guided path to GREEN *before* it hits those hard gates (honesty: the gates lock the outcome, `ci-preflight` is the model-driven step toward it).
+
+### The Phase-4 stamp → marker → gate → scan loop (ALIGN-04)
+
+```
+ci-preflight                         # model-driven companion (this loop's driver)
+  └─ bin/lint-ci-stamp.cjs           # 04-01: runs `npm run lint:ci`; on GREEN, stamps the tree-SHA marker
+                                     #        (ENF-05 lint:ci-before-push)
+git push / gh pr create
+  ├─ hooks/lint-ci-marker.cjs        # 04-02: READS the marker — DENY if absent / stale / tree changed
+  └─ hooks/scan-gate.cjs             # 04-03: runs LIVE secret-scan.sh / prompt-injection-scan.sh /
+                                     #        base64-scan.sh — DENY on any hit (ENF-09)
+```
+
+Registration-surface awareness: during preflight, `hooks/preflight-shipped-paths.cjs` (an **advisory** companion, NOT a blocking gate) calls the LIVE `scripts/diff-touches-shipped-paths.cjs` to surface whether the working diff touches **shipped** paths (package.json + the package `files` whitelist + CI-gating `tests/*`). If it does, run the `ci-preflight` + `lint-ci-stamp` loop before pushing. It reimplements no ship-prefix logic and fails LOUD if the LIVE script is missing.
+
 All commands assume `--repo open-gsd/gsd-core` (the clone has multiple remotes). Base branch is always **`next`**.
 
 ## Gate scripts (validate locally BEFORE filing/pushing)
