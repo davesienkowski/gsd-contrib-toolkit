@@ -274,9 +274,35 @@ function runVerify(opts = {}) {
 
     if (entry.kind === 'advisory') {
       // INJECT case: surfaces advisory content; NONE case: stays quiet. BOTH: no permissionDecision.
+      //
+      // WR-02 invariant: an advisory entry proves itself by SURFACING context on its `inject`
+      // fixture. An entry that omits `inject` (entry.inject === undefined) has ZERO positive
+      // assertions — its `none` case (a quiet clean exit) must NOT be recorded as `pass`, or the
+      // runner would report a meaningful green for an advisory hook it never actually exercised.
+      // So when no inject fixture is present, the inject case is `skipped` AND the orphan `none`
+      // case is recorded `skipped` too (no positive surface assertion possible). A deliberately
+      // PAIRED entry (both inject and none present) keeps the original pass/pass behavior, so the
+      // live PROOF_TABLE stays byte-stable. `skipped` does not flip ok (line ~314), so this never
+      // forces a false RED — it only refuses to claim a false GREEN.
+      const hasInject = entry.inject !== undefined;
       for (const kase of ['inject', 'none']) {
         const fixture = entry[kase];
-        if (fixture === undefined) continue; // entry doesn't define this case
+        if (fixture === undefined && kase === 'inject') {
+          // No inject fixture: record the missing positive-assertion case as skipped, never drop it.
+          const art = buildArtifact(
+            entry.name,
+            kase,
+            null,
+            'advisory-surface',
+            null,
+            'skipped',
+            'advisory entry defines no inject fixture — no positive surface assertion possible (WR-02)'
+          );
+          results.push(art);
+          if (write) writeAtomic(path.join(proofsDir, `${entry.name}-${kase}.json`), serializeArtifact(art));
+          continue;
+        }
+        if (fixture === undefined) continue; // entry doesn't define this case (e.g. no `none`)
         const spawnOpts = { cwd };
         if (typeof fixture === 'string') spawnOpts.stdin = fixture;
         const cap = spawn(hookPath, spawnOpts);
@@ -289,10 +315,17 @@ function runVerify(opts = {}) {
           verdict = 'fail';
         } else if (kase === 'inject') {
           verdict = surfaced ? 'pass' : 'fail';
-        } else { // 'none'
+        } else if (!hasInject) {
+          // Orphan `none` (no sibling inject) contributes zero positive assertion — never a pass.
+          verdict = 'skipped';
+        } else { // 'none' with a paired inject
           verdict = 'pass'; // a quiet companion is acceptable; the key invariant is no decision
         }
-        const art = buildArtifact(entry.name, kase, fixture, kase === 'inject' ? 'advisory-surface' : 'advisory-quiet', cap, verdict, hasDecision ? 'UNEXPECTED permissionDecision from an advisory hook' : '');
+        let note = hasDecision ? 'UNEXPECTED permissionDecision from an advisory hook' : '';
+        if (verdict === 'skipped' && kase === 'none' && !hasInject) {
+          note = 'advisory entry has no inject fixture — none case asserts nothing positive, recorded skipped (WR-02)';
+        }
+        const art = buildArtifact(entry.name, kase, fixture, kase === 'inject' ? 'advisory-surface' : 'advisory-quiet', cap, verdict, note);
         results.push(art);
         if (write) writeAtomic(path.join(proofsDir, `${entry.name}-${kase}.json`), serializeArtifact(art));
       }

@@ -146,3 +146,64 @@ test('write:true emits proofs/<hook>-<case>.json with the actual emitted JSON + 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ── (g) WR-02: an advisory entry with NO inject fixture cannot report a sole `pass` ──
+// An advisory hook proves itself by SURFACING context on its inject case. An entry that
+// defines `none` but omits `inject` (entry.inject === undefined) has zero positive
+// assertions — it must NOT yield a trivially-green `none` pass that makes ok:true.
+test('WR-02: advisory entry missing its inject fixture records skipped (never a sole pass)', () => {
+  // A quiet-clean-exit capture (no permissionDecision, no surfaced output).
+  const quietCap = () => ({
+    decision: null,
+    conclusive: true,
+    reason: 'clean exit, no decision',
+    rawStdout: '',
+    rawStderr: '',
+    status: 0,
+    spawnError: null,
+  });
+  const advisoryNoInject = [{ name: 'advnoinj', kind: 'advisory', none: '', needsLive: false }];
+  const spawn = () => quietCap();
+  const r = runVerify({ write: false, spawnHook: spawn, table: advisoryNoInject });
+  const advCases = r.results.filter((a) => a.case === 'inject' || a.case === 'none');
+  assert.ok(advCases.length > 0, 'the advisory entry produced at least one case result');
+  assert.equal(
+    advCases.some((a) => a.verdict === 'pass'),
+    false,
+    'no advisory case for an un-asserted entry may be a pass'
+  );
+  // ok must not be flipped false purely by this entry (skipped does not flip ok), but
+  // critically it cannot be GREEN on a positive pass either — there are no passes here.
+});
+
+// ── (h) WR-02 no-regression: a fully-paired advisory entry still passes both cases ──
+test('WR-02: a paired advisory entry (inject surfaces, none quiet) still passes both cases', () => {
+  const surfaceCap = () => ({
+    decision: null,
+    conclusive: true,
+    reason: 'clean exit, surfaced context, no decision',
+    rawStdout: 'advisory: heads up about shipped paths',
+    rawStderr: '',
+    status: 0,
+    spawnError: null,
+  });
+  const quietCap = () => ({
+    decision: null,
+    conclusive: true,
+    reason: 'clean exit, no decision',
+    rawStdout: '',
+    rawStderr: '',
+    status: 0,
+    spawnError: null,
+  });
+  const pairedAdvisory = [
+    { name: 'advpaired', kind: 'advisory', inject: 'INJECT', none: '', needsLive: false },
+  ];
+  const spawn = (absPath, opts) => (opts.stdin === 'INJECT' ? surfaceCap() : quietCap());
+  const r = runVerify({ write: false, spawnHook: spawn, table: pairedAdvisory });
+  const inj = r.results.find((a) => a.case === 'inject');
+  const none = r.results.find((a) => a.case === 'none');
+  assert.equal(inj.verdict, 'pass', 'inject surfaces => pass');
+  assert.equal(none.verdict, 'pass', 'none stays quiet => pass');
+  assert.equal(r.ok, true);
+});
