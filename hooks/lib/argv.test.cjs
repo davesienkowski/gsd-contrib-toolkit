@@ -245,3 +245,57 @@ test('single < redirection is NOT treated as a heredoc [G3 guard]', () => {
   assert.strictEqual(p.segments.length, 1);
   assert.deepStrictEqual(p.subcommands, ['pr', 'create']);
 });
+
+// ---------------------------------------------------------------------------
+// Leading env-assignment stripping (CR-02)
+//
+// A shell env-assignment prefix (`GIT_DIR=/x git commit …`, `A=1 B=2 git push …`)
+// pushed the program out of reach: classifyTokens read `tokens[0]` ('GIT_DIR=/x')
+// as the program, so the verb never surfaced → action:'other' → silent allow of a
+// gated mutation. classifyTokens must drop the LEADING run of `NAME=VALUE` tokens
+// before reading the program, while keeping `seg.tokens` the full raw argv (HARD-04).
+// ---------------------------------------------------------------------------
+
+test('env-prefix: GIT_DIR=/x git commit → program git, subcommand commit [CR-02]', () => {
+  const p = parseCommand('GIT_DIR=/x git commit -m bad');
+  assert.strictEqual(p.ok, true, p.reason);
+  assert.strictEqual(p.program, 'git');
+  assert.strictEqual(p.subcommands[0], 'commit');
+});
+
+test('env-prefix: multiple leading assignments all stripped [CR-02]', () => {
+  const p = parseCommand('A=1 B=2 git push origin main');
+  assert.strictEqual(p.ok, true, p.reason);
+  assert.strictEqual(p.program, 'git');
+  assert.strictEqual(p.subcommands[0], 'push');
+});
+
+test('env-prefix control: no-env command is unchanged [CR-02]', () => {
+  const p = parseCommand('git commit -m ok');
+  assert.strictEqual(p.ok, true, p.reason);
+  assert.strictEqual(p.program, 'git');
+  assert.strictEqual(p.subcommands[0], 'commit');
+});
+
+test('env-prefix guard: a NON-leading key=val token is NOT stripped [CR-02]', () => {
+  // The `=`-bearing token follows the program, so it is a positional, not an
+  // env-assignment prefix — the program must still be the first real token.
+  const p = parseCommand('git -c user.name=x commit -m y');
+  assert.strictEqual(p.ok, true, p.reason);
+  assert.strictEqual(p.program, 'git');
+});
+
+test('env-prefix: seg.tokens retains the FULL argv incl. assignments [CR-02 / HARD-04]', () => {
+  const p = parseCommand('GIT_DIR=/x git commit -m bad');
+  assert.strictEqual(p.ok, true, p.reason);
+  assert.strictEqual(p.tokens[0], 'GIT_DIR=/x');
+  assert.strictEqual(p.tokens[1], 'git');
+});
+
+test('env-prefix: an env-ONLY command neither throws nor becomes a gated program [CR-02]', () => {
+  const p = parseCommand('FOO=bar');
+  // Must not throw; program resolves to '' (no real program after the assignments).
+  assert.strictEqual(p.ok, true, p.reason);
+  assert.strictEqual(p.program, '');
+  assert.deepStrictEqual(p.subcommands, []);
+});
