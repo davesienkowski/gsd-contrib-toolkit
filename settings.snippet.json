@@ -1,3 +1,73 @@
 {
-  "hooks": {}
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/gh-issue-create.cjs\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/gh-pr-create.cjs\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/gh-edit.cjs\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/githooks-seal.cjs\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/issue-dedupe.cjs\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/freshness.cjs\"",
+            "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/containment.cjs\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/policy-invariants.cjs\"",
+            "timeout": 120
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/binlib-edit.cjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/protocol-reminder.cjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
 }
