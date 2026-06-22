@@ -288,6 +288,39 @@ test('infra throw WITH a logged override → allow (HARD-03)', () => {
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
 });
 
+// ---- WR-05: needsRoot covers runAffectedTier (partial-injection seam) ----
+
+test('WR-05: three readers injected but NOT runAffectedTier and no root → root resolves, no undefined-root throw', () => {
+  // Today (pre-fix) needsRoot would be false (all three readers present), worktreeRoot stays
+  // undefined, and the default runAffectedTier calls requireLiveScript(undefined, ...) →
+  // ScriptResolveError(undefined) → a confusing fail-closed DENY. After the fix needsRoot is
+  // true (runAffectedTier is missing), the root is resolved from the command start dir; since
+  // the test cwd is NOT a gsd-core checkout, resolveGsdCoreRoot throws ScriptResolveError and
+  // the gate ALLOWS (not this gate's concern) — the verdict follows the RESOLVED-root path, not
+  // the undefined-root throw.
+  const d = runLintCiMarkerGate(
+    input('git push origin main'),
+    {
+      // three readers present, runAffectedTier OMITTED, worktreeRoot OMITTED
+      readTreeSha: () => 'abc123',
+      readWorkingTreeStatus: () => '',
+      readMarkerExists: () => true,
+      overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
+    }
+  );
+  // Allow because the cwd is not a gsd-core checkout (root resolution short-circuits to allow),
+  // NOT a deny carrying the undefined-root ScriptResolveError text.
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  if (d.permissionDecisionReason) {
+    assert.doesNotMatch(d.permissionDecisionReason, /undefined/i, 'no undefined-root throw leaked');
+  }
+});
+
+test('WR-05 no-regression: all deps incl runAffectedTier injected + worktreeRoot → behaves as today', () => {
+  const d = runLintCiMarkerGate(input('git push origin main'), deps());
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
 // ---- the pure gate fn is directly callable (read-only, deps fully injected) ----
 
 test('pure gate() denies a no-marker push without touching real git', () => {

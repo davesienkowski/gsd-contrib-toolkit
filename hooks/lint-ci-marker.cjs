@@ -167,8 +167,17 @@ function runLintCiMarkerGate(stdinString, deps = {}) {
 
   return runGate(() => {
     const resolved = Object.assign({}, deps);
+    // WR-05: needsRoot must cover EVERY LIVE-backed dep that defaults to a root-bound wrapper.
+    // runAffectedTier (defaulted below at requireLiveScript(root, ...)) is one of them — if a
+    // caller injects the three readers but NOT runAffectedTier and provides no worktreeRoot, the
+    // root would stay undefined and the default runAffectedTier would call requireLiveScript with
+    // root === undefined (a confusing ScriptResolveError fail-closed deny). Including it here keeps
+    // root resolution consistent with the set of deps actually defaulted.
     const needsRoot =
-      !resolved.readTreeSha || !resolved.readWorkingTreeStatus || !resolved.readMarkerExists;
+      !resolved.readTreeSha ||
+      !resolved.readWorkingTreeStatus ||
+      !resolved.readMarkerExists ||
+      !resolved.runAffectedTier;
     if (needsRoot && !resolved.worktreeRoot) {
       try {
         resolved.worktreeRoot = resolveGsdCoreRoot(commandStartDir(parseCommand(ctx.command), process.cwd()));
