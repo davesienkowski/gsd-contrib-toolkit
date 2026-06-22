@@ -175,20 +175,23 @@ function resolveCommitMessage(seg, readMessageFile) {
  * The first non-empty line of a message (the conventional-commit subject). Trims a leading
  * UTF-8 BOM and surrounding whitespace.
  *
+ * WR-03 model: the subject boundary is the first REAL newline only (the `\n` control char).
+ * A literal backslash-n in a single-quoted body (token `fix: a\nb`) is part of the subject,
+ * NOT a boundary — and a double-quoted `-m "a\nb"` is collapsed by tokenize to `anb` (the
+ * backslash is consumed) before this function ever sees it. Splitting on the literal two-char
+ * `\\n` was a quoting-dependent divergence: it truncated single-quoted subjects (e.g. a regex
+ * or path containing `\n`) while having no effect on the double-quoted form. Treating only the
+ * real newline as the boundary makes both quoting forms judge the SAME subject and removes the
+ * silent-truncation hazard.
+ *
  * @param {string} s
  * @returns {string}
  */
 function firstLine(s) {
   if (typeof s !== 'string') return '';
   const noBom = s.replace(/^﻿/, '');
-  // Split on the first real OR escaped newline (a `-m "a\nb"` token may carry a literal \n).
-  const idx = (() => {
-    const real = noBom.indexOf('\n');
-    const esc = noBom.indexOf('\\n');
-    if (real === -1) return esc;
-    if (esc === -1) return real;
-    return Math.min(real, esc);
-  })();
+  // Subject boundary = first REAL newline only (WR-03). Literal backslash-n is NOT a boundary.
+  const idx = noBom.indexOf('\n');
   const line = idx === -1 ? noBom : noBom.slice(0, idx);
   return line.trim();
 }
@@ -354,4 +357,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { runCommitConventionGate, gate, resolveCommitMessage, checkPrefix };
+module.exports = { runCommitConventionGate, gate, resolveCommitMessage, checkPrefix, firstLine };

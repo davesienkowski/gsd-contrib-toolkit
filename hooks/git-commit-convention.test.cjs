@@ -12,7 +12,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { runCommitConventionGate } = require('./git-commit-convention.cjs');
+const { runCommitConventionGate, firstLine } = require('./git-commit-convention.cjs');
 
 // Build a PreToolUse stdin payload for a Bash command.
 function input(command) {
@@ -183,4 +183,30 @@ test('git push origin HEAD → ALLOW (no-op)', () => {
 test('gh pr create … → ALLOW (no-op, not a commit)', () => {
   const d = runCommitConventionGate(input('gh pr create --title x --body y'), deps());
   assert.strictEqual(d.permissionDecision, 'allow');
+});
+
+// ── WR-03: firstLine subject boundary = first REAL newline ONLY ──────────────────
+// A double-quoted `-m "a\nb"` token is collapsed by tokenize to `anb` (backslash consumed),
+// so there is no boundary at all and the whole collapsed token is the subject. A
+// single-quoted `-m 'fix: a\nb'` token keeps the literal backslash-n — which is NOT a
+// boundary either (only a real control-char newline is). Both forms are judged on the SAME
+// model, eliminating the quoting-dependent divergence WR-03 flagged.
+test('WR-03: firstLine treats a literal backslash-n as part of the subject (no truncation)', () => {
+  // single-quoted body: the token carries a literal two-char \n.
+  assert.strictEqual(firstLine('fix: a\\nb'), 'fix: a\\nb');
+  assert.strictEqual(firstLine('a\\nb'), 'a\\nb');
+});
+
+test('WR-03: firstLine splits only on a REAL newline (control char)', () => {
+  assert.strictEqual(firstLine('x\ny'), 'x');
+  assert.strictEqual(firstLine('feat: subject\n\nbody text'), 'feat: subject');
+});
+
+test('WR-03: both quoting forms of an equivalently-typed subject yield the same verdict', () => {
+  // double-quoted "feat: a\nb" → tokenize collapses to `feat: anb` (one token, no boundary).
+  const dq = runCommitConventionGate(input('git commit -m "feat: a\\nb"'), deps());
+  // single-quoted 'feat: a\nb' → literal backslash-n retained, still one subject, no boundary.
+  const sq = runCommitConventionGate(input("git commit -m 'feat: a\\nb'"), deps());
+  assert.strictEqual(dq.permissionDecision, sq.permissionDecision, 'quoting must not change the verdict');
+  assert.strictEqual(dq.permissionDecision, 'allow', 'a valid feat: prefix passes regardless of quoting');
 });
