@@ -157,10 +157,16 @@ test('gh api POST to github issues with unmappable path → failClosed', () => {
   assert.strictEqual(r.action, 'unknown');
 });
 
-test('curl POST to api.github.com unknown endpoint shape → failClosed', () => {
-  const r = cls('curl -X POST https://api.github.com/repos/o/r/something');
+test('curl POST to api.github.com issues with unmappable path → failClosed', () => {
+  const r = cls('curl -X POST https://api.github.com/repos/o/r/issues/weird/extra');
   assert.strictEqual(r.failClosed, true);
   assert.strictEqual(r.action, 'unknown');
+});
+
+test('curl POST to api.github.com non-issues/pulls endpoint → other (out of THIS gate scope)', () => {
+  const r = cls('curl -X POST https://api.github.com/repos/o/r/labels');
+  assert.strictEqual(r.action, 'other');
+  assert.notStrictEqual(r.failClosed, true);
 });
 
 // ---------------------------------------------------------------------------
