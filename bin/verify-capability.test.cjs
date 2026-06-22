@@ -289,3 +289,155 @@ test('honesty no-regression: the honest disclaimer (PreToolUse only re the perso
     cleanup(fx);
   }
 });
+
+// ── (h) CR-01: an unreadable/missing skillsDir FAILs surface-skills (LOUD), even with skills:[] ──
+test('CR-01: a missing skillsDir => surface-skills FAIL / ok:false, even when manifest.skills is empty', () => {
+  // Build a normal fixture, then point skillsDir at a path that does NOT exist. With manifest.skills:[]
+  // the OLD code compared [] vs [] and reported a silent PASS — a forged green for a check that could
+  // not run. The hardened readShippedSkills must surface this as a [FAIL].
+  const fx = makeFixture(baseManifest({ skills: [] }), SKILLS, COMMANDS);
+  const missingSkillsDir = path.join(fx.dir, 'no-such-skills-dir');
+  try {
+    const r = runVerifyCapability({
+      liveRoot: '/fake/gsd-core',
+      requireLiveScript: () => stubValidators(),
+      manifestPath: fx.manifestPath,
+      skillsDir: missingSkillsDir,
+      commandsDir: fx.commandsDir,
+    });
+    assert.equal(r.ok, false, 'an unreadable skills dir is NEVER a silent conformant (LOUD-on-miss)');
+    const surf = r.results.find((x) => x.name === 'surface-skills');
+    assert.ok(surf && surf.verdict === 'fail', 'surface-skills FAILed because the dir could not be read');
+    assert.match(surf.detail, /could not run|COULD NOT RUN/i, 'detail explains the check could not run');
+  } finally {
+    cleanup(fx);
+  }
+});
+
+// ── (h2) CR-01 symmetry: an unreadable/missing commandsDir FAILs surface-commands (LOUD) ──
+test('CR-01: a missing commandsDir => surface-commands FAIL / ok:false (LOUD-on-miss)', () => {
+  const fx = makeFixture(baseManifest(), SKILLS, COMMANDS);
+  const missingCommandsDir = path.join(fx.dir, 'no-such-commands-dir');
+  try {
+    const r = runVerifyCapability({
+      liveRoot: '/fake/gsd-core',
+      requireLiveScript: () => stubValidators(),
+      manifestPath: fx.manifestPath,
+      skillsDir: fx.skillsDir,
+      commandsDir: missingCommandsDir,
+    });
+    assert.equal(r.ok, false, 'an unreadable commands dir is NEVER a silent conformant');
+    const surf = r.results.find((x) => x.name === 'surface-commands');
+    assert.ok(surf && surf.verdict === 'fail', 'surface-commands FAILed because the dir could not be read');
+    assert.match(surf.detail, /could not run|COULD NOT RUN/i, 'detail explains the check could not run');
+  } finally {
+    cleanup(fx);
+  }
+});
+
+// ── (h3) CR-01 no-regression: a readable-but-empty skillsDir + manifest.skills:[] still PASSes ──
+test('CR-01 no-regression: a readable EMPTY skillsDir with manifest.skills:[] => surface-skills PASS', () => {
+  // "read succeeded, zero skills found" is a legitimate PASS (declared:[] == shipped:[]). Only an
+  // unreadable dir is a FAIL — distinguish the two.
+  const fx = makeFixture(baseManifest({ skills: [] }), [], COMMANDS); // skillsDir exists, ships no skills
+  try {
+    const r = runVerifyCapability({
+      liveRoot: '/fake/gsd-core',
+      requireLiveScript: () => stubValidators(),
+      manifestPath: fx.manifestPath,
+      skillsDir: fx.skillsDir,
+      commandsDir: fx.commandsDir,
+    });
+    const surf = r.results.find((x) => x.name === 'surface-skills');
+    assert.ok(surf && surf.verdict === 'pass', 'an empty-but-readable skills dir matching skills:[] PASSes');
+  } finally {
+    cleanup(fx);
+  }
+});
+
+// ── (i) WR-01: an honest in-sentence disclaimer PASSes; a genuine oversell FAILs ──
+test('WR-01: honest in-sentence disclaimer ("adds no PreToolUse hooks") => honesty PASS', () => {
+  // The OLD regex tripped on mere co-presence; the negation-aware check must release this.
+  const honest = baseManifest({
+    description:
+      'Ships the gsd-fake-one and gsd-fake-two commands. This capability adds no PreToolUse hooks and ' +
+      'explicitly avoids unbypassable enforcement; it is advisory-only.',
+  });
+  const fx = makeFixture(honest, SKILLS, COMMANDS);
+  try {
+    const r = runVerifyCapability({
+      liveRoot: '/fake/gsd-core',
+      requireLiveScript: () => stubValidators(),
+      manifestPath: fx.manifestPath,
+      skillsDir: fx.skillsDir,
+      commandsDir: fx.commandsDir,
+    });
+    const h = r.results.find((x) => x.name === 'honesty');
+    assert.ok(h && h.verdict === 'pass', 'an honest in-sentence disclaimer is not a false oversell');
+  } finally {
+    cleanup(fx);
+  }
+});
+
+test('WR-01: a genuine in-sentence oversell ("this capability is unbypassable") => honesty FAIL', () => {
+  const oversold = baseManifest({
+    description:
+      'Ships the gsd-fake-one and gsd-fake-two commands. This capability is unbypassable and enforces at ' +
+      'the PreToolUse boundary on every tool call.',
+  });
+  const fx = makeFixture(oversold, SKILLS, COMMANDS);
+  try {
+    const r = runVerifyCapability({
+      liveRoot: '/fake/gsd-core',
+      requireLiveScript: () => stubValidators(),
+      manifestPath: fx.manifestPath,
+      skillsDir: fx.skillsDir,
+      commandsDir: fx.commandsDir,
+    });
+    assert.equal(r.ok, false, 'a genuine oversell still FAILs');
+    const h = r.results.find((x) => x.name === 'honesty');
+    assert.ok(h && h.verdict === 'fail', 'the positively-asserted unbypassable claim is caught');
+  } finally {
+    cleanup(fx);
+  }
+});
+
+// ── (i2) WR-01 unit: isOversold negation-awareness across honest/oversell phrasings ──
+test('WR-01 unit: isOversold releases honest negations and catches positive assertions', () => {
+  const { isOversold } = require('./verify-capability.cjs');
+  // Honest negating disclaimers — must NOT be flagged.
+  assert.equal(isOversold('This capability adds no PreToolUse hooks.'), false);
+  assert.equal(isOversold('This capability does not install any PreToolUse hooks.'), false);
+  assert.equal(isOversold('This capability explicitly avoids unbypassable enforcement.'), false);
+  assert.equal(isOversold('This capability is not unbypassable.'), false);
+  // Genuine oversells — must be flagged.
+  assert.equal(isOversold('This capability is unbypassable.'), true);
+  assert.equal(isOversold('This capability enforces at the PreToolUse boundary.'), true);
+  assert.equal(isOversold('This capability reaches PreToolUse.'), true);
+});
+
+// ── (j) WR-02: a LIVE validator that THROWS yields a clean [FAIL] + ok:false (no uncaught exception) ──
+test('WR-02: a throwing LIVE validator => clean [FAIL] for that validator, ok:false, no uncaught throw', () => {
+  const fx = makeFixture(baseManifest(), SKILLS, COMMANDS);
+  try {
+    // runVerifyCapability must NOT propagate the throw — it returns {ok:false} with a [FAIL] line.
+    const r = runVerifyCapability({
+      liveRoot: '/fake/gsd-core',
+      requireLiveScript: () =>
+        stubValidators({
+          validateRuntimeCompat: () => {
+            throw new Error('boom: validator API drift');
+          },
+        }),
+      manifestPath: fx.manifestPath,
+      skillsDir: fx.skillsDir,
+      commandsDir: fx.commandsDir,
+    });
+    assert.equal(r.ok, false, 'a thrown validator FAILs LOUD, never ok:true');
+    const vc = r.results.find((x) => x.name === 'validateRuntimeCompat');
+    assert.ok(vc && vc.verdict === 'fail', 'the throwing validator produced a [FAIL] line');
+    assert.match(vc.detail, /THREW|boom: validator API drift/, 'the failure names the throw');
+  } finally {
+    cleanup(fx);
+  }
+});
