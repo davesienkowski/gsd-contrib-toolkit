@@ -61,18 +61,46 @@ const REQUIRED_VALIDATORS = [
 
 /**
  * ENFORCEMENT-HONESTY regex (T-09-02-OVERSELL). FAILS the check when the manifest description binds
- * the capability SELF-SUBJECT to an unbypassable / PreToolUse claim. Anchored to a "this capability"
- * subject so the HONEST disclaimer ("It does NOT and cannot reach the harness tool-call boundary";
- * "The separate, personal Claude Code PreToolUse hooks remain the harness-wide enforcement layer")
- * does NOT trip it — those mention PreToolUse/unbypassable only about the SEPARATE personal hooks.
- *   - /this capability\b[^.]*\b(unbypassable|pretooluse)/i  → "this capability ... unbypassable|PreToolUse"
- *     within a single sentence (no '.' between subject and claim).
- *   - /\bcapability is unbypassable\b/i                     → the bald "capability is unbypassable" claim.
+ * the capability SELF-SUBJECT to a POSITIVELY-ASSERTED unbypassable / PreToolUse claim. Anchored to a
+ * "this capability" subject so the HONEST disclaimer ("It does NOT and cannot reach the harness
+ * tool-call boundary"; "The separate, personal Claude Code PreToolUse hooks remain the harness-wide
+ * enforcement layer") does NOT trip it — those mention PreToolUse/unbypassable only about the SEPARATE
+ * personal hooks.
+ *
+ * NEGATION-AWARE (WR-01): the OLD pattern /this capability\b[^.]*\b(unbypassable|pretooluse)/i fired on
+ * mere CO-PRESENCE — so honest negating disclaimers such as "This capability adds no PreToolUse hooks"
+ * or "This capability explicitly avoids unbypassable enforcement" were FALSE positives. The match is
+ * now two-stage:
+ *   1. require a POSITIVE asserting verb (is / acts as / provides / reaches / enforces / fires at)
+ *      between the "this capability" subject and the unbypassable/PreToolUse claim, within one sentence.
+ *   2. exclude an explicit negator ("no" / "not" / "never" / "avoids" / "does not" / "adds no") sitting
+ *      between the subject and the claim — so "this capability is NOT unbypassable" still passes.
+ * This stays CONSERVATIVE: a genuine oversell ("this capability is unbypassable", "this capability
+ * fires at PreToolUse") is still caught; only honest in-sentence disclaimers are released.
  */
-const HONESTY_RE = [
-  /this capability\b[^.]*\b(unbypassable|pretooluse)/i,
+const HONESTY_OVERSELL_RE = [
+  /this capability\b[^.]*\b(?:is|are|acts? as|provides?|reaches?|enforces?|fires? at|guarantees?)\b[^.]*\b(unbypassable|pretooluse)/i,
   /\bcapability is unbypassable\b/i,
 ];
+// A negator between "this capability" and the claim (within the sentence) means the sentence is an
+// honest disclaimer, not an oversell — release it even if an asserting verb is also present.
+const HONESTY_NEGATOR_RE =
+  /this capability\b[^.]*\b(?:no|not|never|n't|avoids?|without|lacks?|cannot|can't|does not)\b[^.]*\b(unbypassable|pretooluse)/i;
+
+/**
+ * True iff `text` POSITIVELY oversells THIS capability as unbypassable/PreToolUse-reaching. An honest
+ * negating disclaimer (negator between subject and claim) is NOT an oversell.
+ * @param {string} text
+ * @returns {boolean}
+ */
+function isOversold(text) {
+  const s = typeof text === 'string' ? text : '';
+  if (HONESTY_NEGATOR_RE.test(s)) return false;
+  return HONESTY_OVERSELL_RE.some((re) => re.test(s));
+}
+
+// Back-compat export name (the test suite + module consumers reference HONESTY_RE).
+const HONESTY_RE = HONESTY_OVERSELL_RE;
 
 /**
  * Resolve a gsd-core checkout carrying the sentinel layout (scripts/ + gsd-core/bin/lib/) so the
@@ -320,7 +348,7 @@ function runVerifyCapability(opts = {}) {
   }
 
   // ── SHARE-01 enforcement honesty (T-09-02-OVERSELL): no capability-self unbypassable/PreToolUse claim. ──
-  const oversold = HONESTY_RE.some((re) => re.test(description));
+  const oversold = isOversold(description);
   if (oversold) {
     results.push(result(
       'honesty',
@@ -370,4 +398,4 @@ if (require.main === module) {
   process.exit(runCli());
 }
 
-module.exports = { runVerifyCapability, runCli, resolveGsdCoreCwd, readShippedSkills, readShippedCommands, HONESTY_RE };
+module.exports = { runVerifyCapability, runCli, resolveGsdCoreCwd, readShippedSkills, readShippedCommands, HONESTY_RE, isOversold };
