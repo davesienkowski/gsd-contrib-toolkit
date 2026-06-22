@@ -97,7 +97,7 @@ test('git commit with only legitimate source staged → allow', () => {
 test('git push origin main where origin=open-gsd → DENY (ENF-07 containment B)', () => {
   const d = runContainmentGate(
     input('git push origin main'),
-    deps({ remoteUrl: (r) => (r === 'origin' ? UPSTREAM : FORK), currentBranch: () => 'main' })
+    deps({ remoteUrl: (root, r) => (r === 'origin' ? UPSTREAM : FORK), currentBranch: () => 'main' })
   );
   assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
   assert.match(d.permissionDecisionReason, /open-gsd|upstream|fork/i);
@@ -115,7 +115,7 @@ test('git push origin fix/12-x to upstream origin → DENY (contribution goes vi
 test('git push fork fix/12-x (fork remote, contribution branch) → allow', () => {
   const d = runContainmentGate(
     input('git push fork fix/12-x'),
-    deps({ remoteUrl: (r) => (r === 'fork' ? FORK : UPSTREAM), currentBranch: () => 'fix/12-x' })
+    deps({ remoteUrl: (root, r) => (r === 'fork' ? FORK : UPSTREAM), currentBranch: () => 'fix/12-x' })
   );
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
 });
