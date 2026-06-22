@@ -1,0 +1,182 @@
+'use strict';
+
+const { test } = require('node:test');
+const assert = require('node:assert');
+
+const { tokenize, parseCommand } = require('./argv.cjs');
+
+// ---------------------------------------------------------------------------
+// tokenize: POSIX-aware shell tokenizer
+// ---------------------------------------------------------------------------
+
+test('tokenize splits on unquoted whitespace', () => {
+  assert.deepStrictEqual(tokenize('gh issue create'), ['gh', 'issue', 'create']);
+});
+
+test('tokenize preserves double-quoted whitespace as one token', () => {
+  assert.deepStrictEqual(tokenize('git commit -m "a b c"'), [
+    'git',
+    'commit',
+    '-m',
+    'a b c',
+  ]);
+});
+
+test('tokenize preserves single-quoted whitespace as one token', () => {
+  assert.deepStrictEqual(tokenize("git commit -m 'a b c'"), [
+    'git',
+    'commit',
+    '-m',
+    'a b c',
+  ]);
+});
+
+test('tokenize honours backslash escape outside quotes', () => {
+  assert.deepStrictEqual(tokenize('echo a\\ b'), ['echo', 'a b']);
+});
+
+test('tokenize keeps single quotes literal inside double quotes', () => {
+  assert.deepStrictEqual(tokenize('echo "it\'s"'), ['echo', "it's"]);
+});
+
+test('tokenize joins adjacent quoted+unquoted into one token', () => {
+  assert.deepStrictEqual(tokenize('--body="inline value"'), [
+    '--body=inline value',
+  ]);
+});
+
+test('tokenize throws on unbalanced double quote', () => {
+  assert.throws(() => tokenize('git commit -m "oops'));
+});
+
+test('tokenize throws on unbalanced single quote', () => {
+  assert.throws(() => tokenize("git commit -m 'oops"));
+});
+
+test('tokenize throws on dangling trailing escape', () => {
+  assert.throws(() => tokenize('echo foo\\'));
+});
+
+// ---------------------------------------------------------------------------
+// parseCommand: structured parse
+// ---------------------------------------------------------------------------
+
+test('parseCommand parses program/subcommands/flags', () => {
+  const p = parseCommand('gh issue create --title "x" --body-file body.md');
+  assert.strictEqual(p.ok, true);
+  assert.strictEqual(p.program, 'gh');
+  assert.deepStrictEqual(p.subcommands, ['issue', 'create']);
+  assert.strictEqual(p.flags.title, 'x');
+  assert.strictEqual(p.flags['body-file'], 'body.md');
+});
+
+test('parseCommand: reordered flags yield identical flag maps', () => {
+  const a = parseCommand('gh pr create --base next --title x');
+  const b = parseCommand('gh pr create --title x --base next');
+  assert.strictEqual(a.ok, true);
+  assert.strictEqual(b.ok, true);
+  assert.deepStrictEqual(a.flags, b.flags);
+});
+
+test('parseCommand: --body-file - records stdin sentinel (not missing body)', () => {
+  const p = parseCommand('gh issue create --title x --body-file -');
+  assert.strictEqual(p.ok, true);
+  assert.strictEqual(p.flags['body-file'], '-');
+});
+
+test('parseCommand: --body=inline equals-form parses to flags.body', () => {
+  const p = parseCommand('gh issue create --body=inline');
+  assert.strictEqual(p.ok, true);
+  assert.strictEqual(p.flags.body, 'inline');
+});
+
+test('parseCommand: --body inline space-form parses to flags.body', () => {
+  const p = parseCommand('gh issue create --body inline');
+  assert.strictEqual(p.ok, true);
+  assert.strictEqual(p.flags.body, 'inline');
+});
+
+test('parseCommand: short flag -t x captured as shortFlags.t', () => {
+  const p = parseCommand('gh issue create -t x');
+  assert.strictEqual(p.ok, true);
+  assert.strictEqual(p.shortFlags.t, 'x');
+});
+
+test('parseCommand: -m "msg" captured with quoted value', () => {
+  const p = parseCommand('git commit -m "my message"');
+  assert.strictEqual(p.ok, true);
+  assert.strictEqual(p.shortFlags.m, 'my message');
+});
+
+test('parseCommand: unknown short flag retained, not dropped', () => {
+  const p = parseCommand('curl -XPOST https://api.github.com/repos/o/r/issues');
+  assert.strictEqual(p.ok, true);
+  // -XPOST should be retained somewhere recoverable
+  assert.ok('X' in p.shortFlags || p.raw.includes('-XPOST'));
+});
+
+// --------------------------- FAIL CLOSED ----------------------------------
+
+test('parseCommand FAILS CLOSED on unbalanced quote (no throw, ok:false)', () => {
+  const p = parseCommand('gh issue create --title "unterminated');
+  assert.strictEqual(p.ok, false);
+  assert.ok(typeof p.reason === 'string' && p.reason.length > 0);
+});
+
+test('parseCommand FAILS CLOSED on null byte', () => {
+  const p = parseCommand('gh issue create --title x' + String.fromCharCode(0) + 'evil');
+  assert.strictEqual(p.ok, false);
+  assert.ok(typeof p.reason === 'string' && p.reason.length > 0);
+});
+
+test('parseCommand FAILS CLOSED on empty command', () => {
+  const p = parseCommand('');
+  assert.strictEqual(p.ok, false);
+});
+
+test('parseCommand FAILS CLOSED on whitespace-only command', () => {
+  const p = parseCommand('   \t  ');
+  assert.strictEqual(p.ok, false);
+});
+
+test('parseCommand FAILS CLOSED on null/undefined input (never throws)', () => {
+  assert.strictEqual(parseCommand(null).ok, false);
+  assert.strictEqual(parseCommand(undefined).ok, false);
+  assert.strictEqual(parseCommand(42).ok, false);
+});
+
+// --------------------------- segments -------------------------------------
+
+test('parseCommand splits ;-chained commands into segments, each parsed', () => {
+  const p = parseCommand('gh issue create --title a ; gh pr create --title b');
+  assert.strictEqual(p.ok, true);
+  assert.strictEqual(p.segments.length, 2);
+  assert.deepStrictEqual(p.segments[0].subcommands, ['issue', 'create']);
+  assert.deepStrictEqual(p.segments[1].subcommands, ['pr', 'create']);
+});
+
+test('parseCommand splits && and || chained commands', () => {
+  const p = parseCommand('git add . && git commit -m x || echo fail');
+  assert.strictEqual(p.ok, true);
+  assert.strictEqual(p.segments.length, 3);
+});
+
+test('parseCommand splits on unquoted pipe', () => {
+  const p = parseCommand('cat x | gh pr create --title y');
+  assert.strictEqual(p.ok, true);
+  assert.strictEqual(p.segments.length, 2);
+  assert.deepStrictEqual(p.segments[1].subcommands, ['pr', 'create']);
+});
+
+test('parseCommand does NOT split on quoted separators', () => {
+  const p = parseCommand('git commit -m "a ; b && c | d"');
+  assert.strictEqual(p.ok, true);
+  assert.strictEqual(p.segments.length, 1);
+  assert.strictEqual(p.shortFlags.m, 'a ; b && c | d');
+});
+
+test('parseCommand: top-level fields mirror first segment', () => {
+  const p = parseCommand('gh issue create --title a ; gh pr create --title b');
+  assert.strictEqual(p.program, 'gh');
+  assert.deepStrictEqual(p.subcommands, ['issue', 'create']);
+});
