@@ -7,8 +7,8 @@
  * injected so the unit suite is hermetic (no filesystem / no env reads).
  *
  * Coverage (plan <behavior>):
- *   - a `**\/bin/lib/*.cjs` Edit/Write (top-level AND nested) → DENY, reason names src/*.cts + ADR-457
- *   - a `src/*.cts` source path → ALLOW (the correct file to edit)
+ *   - a `**\/bin/lib/*.cjs` Edit/Write (top-level AND nested) → DENY, reason names src/*.ts + ADR-457
+ *   - a `src/*.ts` source path → ALLOW (the correct file to edit)
  *   - a `bin/lib` SUBSTRING that is not a path SEGMENT (e.g. src/bin-lib-notes.md) → ALLOW
  *   - a doc/test/non-bin-lib file → ALLOW
  *   - a bin/lib path whose leaf is NOT .cjs (e.g. bin/lib/README.md) → ALLOW (segment+leaf accurate)
@@ -35,10 +35,13 @@ function deps(over = {}) {
   );
 }
 
-test('top-level bin/lib/*.cjs Edit → deny, reason names src/*.cts + ADR-457', () => {
+test('top-level bin/lib/*.cjs Edit → deny, reason names src/*.ts + ADR-457', () => {
   const d = runBinlibGate(input('/home/x/gsd-core/bin/lib/decisions.cjs'), deps());
   assert.strictEqual(d.permissionDecision, 'deny');
-  assert.match(d.permissionDecisionReason, /src\/.*\.cts/);
+  // ADR-457 source extension is `.ts` (a TS `src/` tree built by tsc), matching the
+  // sibling freshness.cjs gate — NOT `.cts` (CONFLICT-02 / F-01).
+  assert.match(d.permissionDecisionReason, /src\/\*\.ts/);
+  assert.doesNotMatch(d.permissionDecisionReason, /\.cts/);
   assert.match(d.permissionDecisionReason, /457/);
 });
 

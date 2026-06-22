@@ -6,12 +6,12 @@
  * (ENF-03, ADR-457, HARD-01/03 fail-closed).
  *
  * The #1 zero-source bounce in a gsd-core contribution is editing a GENERATED
- * `bin/lib/*.cjs` artifact instead of its `src/*.cts` source (PROJECT.md, ADR-457):
+ * `bin/lib/*.cjs` artifact instead of its `src/*.ts` source (PROJECT.md, ADR-457):
  * the hand-edit is silently overwritten by the next `build:lib`, so the change looks
  * applied but evaporates. This gate makes that physically impossible — a
  * PreToolUse(Write|Edit) whose `tool_input.file_path` resolves to any
  * `**\/bin/lib/*.cjs` leaf is DENIED, with a reason pointing the author at the
- * `src/*.cts` source + ADR-457.
+ * `src/*.ts` source + ADR-457.
  *
  * Segment-accuracy (threat T-03-04-SUBSTR / edge-probe EP-1 class): the match is NOT a
  * naive `includes('bin/lib')` substring. A `bin` PATH SEGMENT must be immediately
@@ -84,7 +84,7 @@ function binLibDenyReason(filePath) {
     'This file is a GENERATED artifact (`' +
     filePath +
     '`). Editing a `bin/lib/*.cjs` by hand is overwritten by the next `build:lib` ' +
-    '(ADR-457: generated CJS has a single source). Edit the `src/*.cts` source instead, ' +
+    '(ADR-457: generated CJS has a single source). Edit the `src/*.ts` source instead, ' +
     'then run `build:lib` to regenerate. (ENF-03)'
   );
 }
