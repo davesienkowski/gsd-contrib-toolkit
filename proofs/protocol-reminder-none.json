@@ -1,0 +1,11 @@
+{
+  "hook": "protocol-reminder",
+  "case": "none",
+  "fixture": "{\"prompt\":\"refactor this function to be cleaner\",\"hook_event_name\":\"UserPromptSubmit\"}",
+  "expected": "advisory-quiet",
+  "verdict": "pass",
+  "decision": null,
+  "exitCode": 0,
+  "reason": "empty stdout — no decision emitted",
+  "emitted": null
+}

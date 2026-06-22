@@ -1,0 +1,17 @@
+{
+  "hook": "gh-edit",
+  "case": "deny",
+  "fixture": "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gh pr edit 9 --body \\\"just prose, no template\\\"\"}}",
+  "expected": "deny",
+  "verdict": "pass",
+  "decision": "deny",
+  "exitCode": 0,
+  "reason": "parsed permissionDecision:deny",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "permissionDecisionReason": "This PR edit would set a body that fails the LIVE pr-template-policy: PR body does not match the fix, enhancement, or feature template.. To edit it the sanctioned way, use the REST form: `gh api -X PATCH repos/OWNER/REPO/pulls/N -f body=<conforming-body>` (ENF-04) — with a body that satisfies the policy below."
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "hook": "containment",
+  "case": "deny",
+  "fixture": "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git add .planning/STATE.md\"}}",
+  "expected": "deny",
+  "verdict": "pass",
+  "decision": "deny",
+  "exitCode": 0,
+  "reason": "parsed permissionDecision:deny",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "permissionDecisionReason": "Containment breach blocked (ENF-06): these toolkit / `.planning` artifacts must NOT enter the gsd-core repo:\n  - .planning/STATE.md\nThey belong in the private gsd-contrib-toolkit repo only. Unstage them (`git restore --staged <path>`) before committing."
+    }
+  }
+}

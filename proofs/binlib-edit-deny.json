@@ -1,0 +1,17 @@
+{
+  "hook": "binlib-edit",
+  "case": "deny",
+  "fixture": "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/g/gsd-core/bin/lib/decisions.cjs\"}}",
+  "expected": "deny",
+  "verdict": "pass",
+  "decision": "deny",
+  "exitCode": 0,
+  "reason": "parsed permissionDecision:deny",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "permissionDecisionReason": "This file is a GENERATED artifact (`/g/gsd-core/bin/lib/decisions.cjs`). Editing a `bin/lib/*.cjs` by hand is overwritten by the next `build:lib` (ADR-457: generated CJS has a single source). Edit the `src/*.cts` source instead, then run `build:lib` to regenerate. (ENF-03)"
+    }
+  }
+}

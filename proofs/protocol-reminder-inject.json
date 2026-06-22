@@ -1,0 +1,16 @@
+{
+  "hook": "protocol-reminder",
+  "case": "inject",
+  "fixture": "{\"prompt\":\"please file an issue on gsd-core for this parser bug\",\"hook_event_name\":\"UserPromptSubmit\"}",
+  "expected": "advisory-surface",
+  "verdict": "pass",
+  "decision": null,
+  "exitCode": 0,
+  "reason": "no parseable permissionDecision (deny|allow) — inconclusive, not coerced to allow",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "UserPromptSubmit",
+      "additionalContext": "gsd-core contribution detected — follow the P0–P6 contribution protocol (the\ngsd-core-contribution skill is the source of truth; create it as tool-tracked todos BEFORE\nany other tool call). This is an ADVISORY reminder, not a gate:\n\n  P0  Ground in the canon: read CONTRIBUTING.md + the matching issue/PR templates + the\n      governing ADR(s) + CONTEXT.md. Do a POLICY-03 ADR/CONTEXT awareness sweep first.\n  P1  Verify the finding (trust-but-verify): reproduce the mechanism LIVE on src/*.cts —\n      a probe or a failing test. No repro → WITHDRAW.\n  P2  Adversarial law pass (skills-from-the-artificer): apply each firing law to the diff;\n      run POLICY-01 policy conformance (open + QUOTE the relevant ADRs) before filing.\n  P3  TDD the fix in a worktree off origin/next (rewire hooks, link node_modules,\n      build:lib): write the regression test FIRST and watch it FAIL, then GREEN. Run the\n      FULL relevant suites + `npm run lint:ci` + the QA-matrix-by-surface checklist.\n  P4  File the issue: body = template shape + `### GSD Version` + a user-impact statement +\n      cross-links. Run the version-gate on the EXACT body (must be valid-version), create\n      with labels, then remove `needs-triage` via REST.\n  P5  Open the PR: branch fix/<issue#>-slug off next; fix-template body + `Fixes #<issue#>`.\n      Run pr-template-policy on the EXACT body (valid:true). Add the `area:` label + changeset.\n  P6  Confirm CI is green on the LATEST commit: read the real check-runs on the head SHA.\n\nHARD GATE rule: a `[GATE]` step needs pasted command output proving its pass condition;\ndo not advance a phase with an unmet gate. Skipping/reordering = stop and restart the phase."
+    }
+  }
+}

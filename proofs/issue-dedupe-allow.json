@@ -1,0 +1,16 @@
+{
+  "hook": "issue-dedupe",
+  "case": "allow",
+  "fixture": "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git status\"}}",
+  "expected": "allow",
+  "verdict": "pass",
+  "decision": "allow",
+  "exitCode": 0,
+  "reason": "parsed permissionDecision:allow",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "allow"
+    }
+  }
+}

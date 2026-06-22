@@ -1,0 +1,17 @@
+{
+  "hook": "gh-pr-create",
+  "case": "deny",
+  "fixture": "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gh pr create --base next --title x --body \\\"\\\"\"}}",
+  "expected": "deny",
+  "verdict": "pass",
+  "decision": "deny",
+  "exitCode": 0,
+  "reason": "parsed permissionDecision:deny",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "permissionDecisionReason": "PR blocked by the LIVE pr-template-policy (ENF-02): PR body is empty; a typed pull request template is required.. Use a fix / enhancement / feature template."
+    }
+  }
+}

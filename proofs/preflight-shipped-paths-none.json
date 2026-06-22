@@ -1,0 +1,11 @@
+{
+  "hook": "preflight-shipped-paths",
+  "case": "none",
+  "fixture": null,
+  "expected": "advisory-quiet",
+  "verdict": "pass",
+  "decision": null,
+  "exitCode": 0,
+  "reason": "stdout did not parse to a JSON object",
+  "emitted": null
+}

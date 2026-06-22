@@ -1,0 +1,16 @@
+{
+  "hook": "binlib-edit",
+  "case": "allow",
+  "fixture": "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/g/gsd-core/sdk/src/query/decisions.cts\"}}",
+  "expected": "allow",
+  "verdict": "pass",
+  "decision": "allow",
+  "exitCode": 0,
+  "reason": "parsed permissionDecision:allow",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "allow"
+    }
+  }
+}

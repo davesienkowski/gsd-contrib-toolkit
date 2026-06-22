@@ -1,0 +1,17 @@
+{
+  "hook": "githooks-seal",
+  "case": "deny",
+  "fixture": "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git commit --no-verify -m x\"}}",
+  "expected": "deny",
+  "verdict": "pass",
+  "decision": "deny",
+  "exitCode": 0,
+  "reason": "parsed permissionDecision:deny",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "permissionDecisionReason": "`--no-verify` / `-n` bypasses the repo's `.githooks` gates (pre-commit / pre-push). Remove it and let the local gates run. If a bypass is TRULY necessary, use a logged `GSD_CONTRIB_OVERRIDE=<reason>` (which writes a receipt) — that is the sanctioned, accountable escape, distinct from silently skipping the hooks. (ENF-12)"
+    }
+  }
+}

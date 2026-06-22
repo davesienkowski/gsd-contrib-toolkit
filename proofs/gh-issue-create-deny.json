@@ -1,0 +1,17 @@
+{
+  "hook": "gh-issue-create",
+  "case": "deny",
+  "fixture": "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gh issue create --label bug --title x --body \\\"### GSD Version\\\\n_No response_\\\"\"}}",
+  "expected": "deny",
+  "verdict": "pass",
+  "decision": "deny",
+  "exitCode": 0,
+  "reason": "parsed permissionDecision:deny",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "permissionDecisionReason": "Issue blocked by the LIVE issue-version-gate (missing-version): a bug report must include a valid GSD Version (e.g. `1.18.0`) under a `### GSD Version` heading. Add the version, or apply the `version-exempt` label."
+    }
+  }
+}
