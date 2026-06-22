@@ -29,7 +29,9 @@ const { requireLiveScript } = require('./resolve.cjs');
  *   - script:      path relative to the gsd-core root (what requireLiveScript loads)
  *   - exportName:  the function the toolkit invokes
  *   - fixtureInput: a deterministic argument list (spread into the export)
- *   - assertShape(result) -> boolean : the SHAPE contract on the return value
+ *   - assertShape(result, mod) -> boolean : the SHAPE contract on the return value; the loaded
+ *       live module is passed as a 2nd arg so an entry can also assert sibling exports exist
+ *       (e.g. a pure-fixture export proves the module while a non-pure sibling is the real dep)
  *   - describe:    a human label for the report
  *
  * These shapes were verified against the live gsd-core checkout (2026-06-21/22):
@@ -37,6 +39,15 @@ const { requireLiveScript } = require('./resolve.cjs');
  *   classifyPrTarget('next','x')                             -> {decision:'allowed'}
  *   evaluatePrTemplate('', 'OWNER', [...])                   -> {valid:false, ...}
  *   scoreCandidates('t',[{number,title}],{})  (identical)    -> [{number,title,score:1}], len>=1
+ *   resolveRunPlan({selected,widenRequired,criticalPath,noChanges}) -> {mode:'suite'|'suites'|'files', ...}
+ *
+ * The affected-tests-lib entry shape-checks `runAffectedTests`'s SIBLING pure export
+ * `resolveRunPlan` (the documented "No I/O is performed here" run-plan classifier). The toolkit
+ * gate calls `runAffectedTests` (which executes a real suite — not a side-effect-free fixture),
+ * so the doctor cannot invoke it deterministically. It instead loads the SAME live module and
+ * asserts its run-plan contract via the pure sibling: a gsd-core refactor that reshapes the lib
+ * (renames/removes runAffectedTests or changes resolveRunPlan's shape) surfaces as a loud doctor
+ * FAIL (HARD-02 / H-E) rather than a silent fail-closed brick on the next push.
  */
 const SHAPE_CHECKS = Object.freeze([
   Object.freeze({
@@ -78,6 +89,24 @@ const SHAPE_CHECKS = Object.freeze([
       typeof r[0].number === 'number' &&
       typeof r[0].score === 'number',
     describe: 'scoreCandidates(title,cands,opts) -> Array<{number,title,score}> (len>=1, score 1 on identical)',
+  }),
+  Object.freeze({
+    // ENF-17 Tier-1: the push gate's affected dimension delegates to this LIVE module's
+    // runAffectedTests (NEVER reimplemented — HARD-02). runAffectedTests EXECUTES a real test
+    // suite, so it is not a side-effect-free fixture; the doctor shape-checks the SAME module
+    // via its documented PURE sibling `resolveRunPlan` and ALSO asserts that `runAffectedTests`
+    // (the actual gate dependency) is still an exported function (`assertShape`'s 2nd arg is the
+    // loaded module). A reshaped lib surfaces as a loud FAIL, not a silent fail-closed brick.
+    script: 'scripts/affected-tests-lib.cjs',
+    exportName: 'resolveRunPlan',
+    fixtureInput: [{ selected: [], widenRequired: false, criticalPath: false, noChanges: true }],
+    assertShape: (r, mod) =>
+      isObj(r) &&
+      (r.mode === 'suite' || r.mode === 'suites' || r.mode === 'files') &&
+      !!mod &&
+      typeof mod.runAffectedTests === 'function',
+    describe:
+      "resolveRunPlan(sel) -> {mode:'suite'|'suites'|'files'} AND module exports runAffectedTests:function (test:affected)",
   }),
 ]);
 
@@ -131,7 +160,10 @@ function checkOne(root, entry) {
 
   let shapeOk = false;
   try {
-    shapeOk = entry.assertShape(result) === true;
+    // Pass the loaded module as a 2nd arg so an entry can also assert sibling exports exist
+    // (e.g. affected-tests-lib proves the module via the pure resolveRunPlan while asserting
+    // the non-pure runAffectedTests gate-dependency is still a function).
+    shapeOk = entry.assertShape(result, mod) === true;
   } catch (_) {
     shapeOk = false;
   }

@@ -33,6 +33,10 @@ function makeFixtureRoot(overrides = {}) {
     classifyPrTarget: "module.exports = { classifyPrTarget: () => ({ decision: 'allowed' }) };",
     evaluatePrTemplate: "module.exports = { evaluatePrTemplate: () => ({ valid: false, action: 'warn' }) };",
     scoreCandidates: "module.exports = { scoreCandidates: () => ([{ number: 5, title: 'x', score: 1 }]) };",
+    // affected-tests-lib: the entry checks the PURE resolveRunPlan shape AND that the non-pure
+    // runAffectedTests gate-dependency is still an exported function (assertShape's 2nd arg).
+    resolveRunPlan:
+      "module.exports = { resolveRunPlan: () => ({ mode: 'suite', suite: 'unit' }), runAffectedTests: () => undefined };",
   };
 
   for (const entry of SHAPE_CHECKS) {
@@ -154,6 +158,26 @@ test('a DRIFTED scoreCandidates (empty array where a match is expected) → fail
     assert.strictEqual(report.ok, false);
     const r = report.results.find((x) => x.script === sc.script);
     assert.strictEqual(r.ok, false);
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('affected-tests-lib: a module whose runAffectedTests gate-dependency vanished → fails (H-E)', () => {
+  // resolveRunPlan still returns a valid shape, but runAffectedTests (the actual ENF-17 push
+  // gate dependency) is gone — a gsd-core refactor must surface as a doctor FAIL, not a silent
+  // fail-closed brick on the next push.
+  const at = SHAPE_CHECKS.find((c) => c.script === 'scripts/affected-tests-lib.cjs');
+  assert.ok(at, 'affected-tests-lib shape check must be registered');
+  const root = makeFixtureRoot({
+    [at.script]: "module.exports = { resolveRunPlan: () => ({ mode: 'suite', suite: 'unit' }) };",
+  });
+  try {
+    const report = runDoctor(root);
+    assert.strictEqual(report.ok, false);
+    const r = report.results.find((x) => x.script === at.script);
+    assert.strictEqual(r.ok, false);
+    assert.match(r.detail, /shape|drift|function/i);
   } finally {
     cleanup(root);
   }
