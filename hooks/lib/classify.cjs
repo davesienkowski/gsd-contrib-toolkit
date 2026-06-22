@@ -26,10 +26,109 @@
  * @module hooks/lib/classify
  */
 
+const path = require('node:path'); // CR-03: basename-normalize the program
 require('./argv.cjs'); // contract dependency (parseCommand output shape)
 
 const MUTATING_METHODS = new Set(['POST', 'PATCH', 'PUT']);
 const GITHUB_API_HOSTS = new Set(['api.github.com']);
+
+// CR-03: wrapper builtins that PRECEDE the real program (`command git …`,
+// `env git …`, `sudo git …`). We advance past the wrapper (and any wrapper flags)
+// to the wrapped program. Toolkit-OWNED rule (no LIVE shared classifier exists to
+// delegate to; repoint per #1549 if gsd-core extracts one).
+const WRAPPER_BUILTINS = new Set(['command', 'env', 'exec', 'sudo', 'nice']);
+
+// CR-01: git GLOBAL options that take a VALUE (the following token). When skipping
+// the global-option run to find the verb, these consume one extra token. Boolean
+// globals (--no-pager, --paginate, -p, --bare, …) consume no value. Short value
+// options: -C <path>, -c <kv>. The verb is the first non-flag token NOT consumed as
+// one of these values. Toolkit-OWNED (CR-01).
+const GIT_GLOBAL_VALUE_LONG = new Set(['git-dir', 'work-tree', 'namespace', 'super-prefix']);
+const GIT_GLOBAL_VALUE_SHORT = new Set(['C', 'c']);
+
+/**
+ * CR-01/CR-03: resolve the effective program (basename, past wrapper builtins) and
+ * the ordered NON-FLAG argument tokens (verb candidates) for a segment, reading ONLY
+ * the structured token list from argv (never re-tokenizing the raw string — that
+ * would re-introduce the EP-2 bypass).
+ *
+ * For git, value-taking global options (`-C <path>`, `-c <kv>`, `--git-dir <d>`, …)
+ * have their value token skipped so it is not mistaken for the verb. For a wrapper
+ * builtin (`command`/`env`/`sudo`/…) the wrapped program is read from the first
+ * non-flag token after the wrapper and basenamed.
+ *
+ * @param {Object} seg structured segment from argv.parseCommand
+ * @returns {{prog:string, args:string[], wrapped:boolean}}
+ */
+function resolveProgram(seg) {
+  const tokens = Array.isArray(seg.tokens) ? seg.tokens : [];
+
+  // Find the program index = first token that is not a leading env-assignment.
+  // (argv already strips env assignments from seg.program, but seg.tokens is the
+  // full argv; walk it so wrapper/global handling sees the real argv order.)
+  let i = 0;
+  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i += 1;
+
+  let prog = path.basename(tokens[i] || '');
+  let wrapped = false;
+
+  // Advance past wrapper builtins (and their flags) to the wrapped program.
+  // Guard against runaway loops with a small bound.
+  let guard = 0;
+  while (WRAPPER_BUILTINS.has(prog) && guard < 8) {
+    wrapped = true;
+    guard += 1;
+    i += 1;
+    // Skip wrapper flags (e.g. `env -i`, `sudo -u user`). Conservatively skip any
+    // token starting with '-'; for `-u`/`-i` style we do not consume a value (the
+    // wrapped program is the next non-flag token regardless).
+    while (i < tokens.length && tokens[i].startsWith('-')) i += 1;
+    prog = path.basename(tokens[i] || '');
+  }
+
+  // Collect the ordered non-flag argument tokens AFTER the (wrapped) program,
+  // skipping git global-option values so the verb is not shadowed.
+  const args = [];
+  const isGit = prog === 'git';
+  const nextIsFlag = (k) => {
+    const n = tokens[k];
+    return n !== undefined && n.startsWith('-') && n.length > 1 && n !== '-';
+  };
+  for (let j = i + 1; j < tokens.length; j += 1) {
+    const tok = tokens[j];
+    if (tok.startsWith('--') && tok.length > 2) {
+      const body = tok.slice(2);
+      const eq = body.indexOf('=');
+      const name = eq === -1 ? body : body.slice(0, eq);
+      if (eq === -1) {
+        // For git, ONLY the known value-taking globals consume the next token —
+        // boolean globals (--no-pager, --paginate, --bare, …) must NOT eat the verb.
+        // For gh (and other programs), a long flag without `=` consumes the next
+        // non-flag token as its value (e.g. `gh --repo o/r pr create`), mirroring
+        // argv's own long-flag value rule so the verb is not shadowed.
+        if (isGit) {
+          if (GIT_GLOBAL_VALUE_LONG.has(name) && !nextIsFlag(j + 1)) j += 1;
+        } else if (!nextIsFlag(j + 1)) {
+          j += 1;
+        }
+      }
+      continue;
+    }
+    if (tok.startsWith('-') && tok.length > 1 && tok !== '-') {
+      const body = tok.slice(1);
+      // short option; consume a value for git -C/-c when given as a SEPARATE token
+      // (`-C /path`) — for the attached form (`-cuser.name=x`) there is no separate
+      // value token to skip.
+      if (isGit && body.length === 1 && GIT_GLOBAL_VALUE_SHORT.has(body) && !nextIsFlag(j + 1)) {
+        j += 1; // consume the value token
+      }
+      continue;
+    }
+    args.push(tok);
+  }
+
+  return { prog, args, wrapped };
+}
 
 const FAIL_CLOSED = Object.freeze({ action: 'unknown', failClosed: true });
 const OTHER = Object.freeze({ action: 'other' });
@@ -70,9 +169,18 @@ function explicitMethod(seg) {
 function hasWriteBody(seg) {
   const flags = seg.flags || {};
   const shortFlags = seg.shortFlags || {};
+  // CR-04: a PR/issue opened via `gh api … --raw-field body=x` or `curl …
+  // --data-raw/--data-binary/--data-urlencode` carries a write body but used a long
+  // flag the original set missed → no inferred POST → silent allow. Cover the full
+  // curl --data-* family and the gh api --field/--raw-field synonyms (toolkit-OWNED).
   return (
     'data' in flags ||
+    'data-raw' in flags ||
+    'data-binary' in flags ||
+    'data-urlencode' in flags ||
+    'data-ascii' in flags ||
     'field' in flags ||
+    'raw-field' in flags ||
     'd' in shortFlags ||
     'f' in shortFlags ||
     'F' in shortFlags
@@ -196,20 +304,27 @@ function extractTarget(seg, isCurl) {
  */
 function classifySegment(seg) {
   if (!seg || typeof seg !== 'object') return null;
-  const program = seg.program;
-  const sub = seg.subcommands || [];
+
+  // CR-01/CR-03: resolve the effective program (basename, past wrapper builtins)
+  // and the ordered non-flag verb candidates (past git global options). Reading the
+  // STRUCTURED token list only — never re-tokenizing the raw string (EP-2).
+  const { prog, args, wrapped } = resolveProgram(seg);
 
   // ---- git ----
-  if (program === 'git') {
-    if (sub[0] === 'commit') return { action: 'commit' };
-    if (sub[0] === 'push') return { action: 'push' };
+  if (prog === 'git') {
+    // CR-01: the verb may be in positionals (global flag seen) or shadowed by a
+    // boolean global's swallowed "value" — resolveProgram's `args` is the
+    // global-option-stripped verb stream, so the verb is args[0].
+    const verb = args[0];
+    if (verb === 'commit') return { action: 'commit' };
+    if (verb === 'push') return { action: 'push' };
     return null; // git status, git add, … → other
   }
 
   // ---- gh ----
-  if (program === 'gh') {
-    const area = sub[0]; // issue | pr | api | repo | …
-    const verb = sub[1]; // create | edit | view | …
+  if (prog === 'gh') {
+    const area = args[0]; // issue | pr | api | repo | …
+    const verb = args[1]; // create | edit | view | …
 
     if (area === 'issue' || area === 'pr') {
       if (verb === 'create') {
@@ -225,13 +340,23 @@ function classifySegment(seg) {
       return classifyRestSegment(seg, 'gh-api', false);
     }
 
+    // CR-03 conservatism: if a wrapper preceded gh but the gh verb is unmappable to
+    // a recognized area, do NOT silently fall through to other for a MUTATING form.
+    // gh repo view / auth status carry no mutating body, so they stay other below.
     return null; // gh repo view, gh auth status … → other
   }
 
   // ---- curl ----
-  if (program === 'curl') {
+  if (prog === 'curl') {
     return classifyRestSegment(seg, 'curl', true);
   }
+
+  // CR-03 conservatism: an UNRECOGNIZED wrapper around something we could not map to
+  // git/gh/curl. A wrapper with NO git/gh underneath (e.g. `command ls`) is a plain
+  // unrelated command → other. Only fail closed when a wrapped form is plausibly a
+  // mutating git/gh call we failed to resolve — here `prog` is neither git/gh/curl,
+  // so there is no mutating github surface to protect; stay other (no over-block).
+  if (wrapped) return null;
 
   return null;
 }
