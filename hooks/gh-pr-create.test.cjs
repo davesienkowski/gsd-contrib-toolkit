@@ -12,7 +12,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { runPrGate, evaluateCiResult } = require('./gh-pr-create.cjs');
+const { runPrGate, evaluateCiResult, ownerRepoFromRemote } = require('./gh-pr-create.cjs');
 
 const liveTemplate = require('/home/dave/repos/gsd-core/scripts/pr-template-policy.cjs');
 const liveTarget = require('/home/dave/repos/gsd-core/scripts/pr-target-policy.cjs');
@@ -373,6 +373,41 @@ test('WR-04 no-regression: a fully-valid --body PR still ALLOWS', () => {
     deps()
   );
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+// ── IN-01: the ENF-18 CI deny reason states the all-runs-must-conclude-success stance ──
+test('IN-01: ENF-18 deny reason prominently states EVERY check-run must conclude success', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({
+      readCheckRuns: () =>
+        ci({ allRequiredGreen: false, conclusions: [{ name: 'Tests', status: 'completed', conclusion: 'failure' }] }),
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /every check-run.*success/i);
+  // The stance is explicit that it does NOT use branch-protection required_status_checks.
+  assert.match(d.permissionDecisionReason, /required_status_checks|does NOT consult/i);
+});
+
+// ── IN-02: ownerRepoFromRemote validates owner/repo and fails closed on unsafe chars ──
+test('IN-02: ownerRepoFromRemote parses a valid ssh remote', () => {
+  assert.deepStrictEqual(
+    ownerRepoFromRemote('git@github.com:open-gsd/gsd-core.git'),
+    { owner: 'open-gsd', repo: 'gsd-core' }
+  );
+});
+
+test('IN-02: ownerRepoFromRemote parses a valid https remote', () => {
+  assert.deepStrictEqual(
+    ownerRepoFromRemote('https://github.com/open-gsd/gsd-core.git'),
+    { owner: 'open-gsd', repo: 'gsd-core' }
+  );
+});
+
+test('IN-02: ownerRepoFromRemote returns null (fail closed) on an unsafe owner/repo char', () => {
+  assert.strictEqual(ownerRepoFromRemote('https://github.com/o;rm/r$x.git'), null);
+  assert.strictEqual(ownerRepoFromRemote('https://github.com/o;rm/r.git'), null);
 });
 
 // Helpers. A real `gh pr create --body "..."` command carries REAL newlines inside the

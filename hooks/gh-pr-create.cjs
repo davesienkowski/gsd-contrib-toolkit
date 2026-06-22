@@ -406,7 +406,10 @@ function gate(stdinString, deps) {
     return deny(
       'PR blocked (ENF-18 / Tier-2): ' +
         ci.reason +
-        '. The cross-platform matrix runs on GitHub, so a contribution cannot open a PR ' +
+        '. ENF-18 stance: EVERY check-run on the head SHA must conclude exactly `success` — this ' +
+        'toolkit treats all runs as required and does NOT consult branch-protection ' +
+        'required_status_checks. ' +
+        'The cross-platform matrix runs on GitHub, so a contribution cannot open a PR ' +
         'until the LIVE CI check-runs for the head SHA ' +
         (headSha ? '(' + headSha + ') ' : '') +
         'show Tests genuinely ran and concluded success. This reads the authoritative CI ' +
@@ -643,7 +646,15 @@ function ownerRepoFromRemote(url) {
   s = s.replace(/\.git$/i, '');
   const parts = s.split('/').filter((p) => p.length > 0);
   if (parts.length < 2) return null;
-  return { owner: parts[parts.length - 2], repo: parts[parts.length - 1] };
+  const owner = parts[parts.length - 2];
+  const repo = parts[parts.length - 1];
+  // IN-02: owner/repo are interpolated into the `gh api repos/<owner>/<repo>/...` path. The call
+  // uses execFileSync with an array arg (no shell) today, so this is hardening — validate both
+  // against a conservative safe-character set so a future shell-based refactor cannot become
+  // injectable, and an odd remote fails CLOSED (return null → caller throws FailClosed → deny).
+  const SAFE = /^[A-Za-z0-9._-]+$/;
+  if (!SAFE.test(owner) || !SAFE.test(repo)) return null;
+  return { owner, repo };
 }
 
 /**
