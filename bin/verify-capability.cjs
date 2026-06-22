@@ -43,13 +43,19 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { requireLiveScript: liveRequireLiveScript, ScriptResolveError } = require('../hooks/lib/resolve.cjs');
+// Plan 11-01's bundle staleness truth: the parity check REUSES this single source so verify-capability
+// and `build-capability --check` can NEVER disagree about whether the bundle is fresh (design §4).
+const { checkBundleFresh: liveCheckBundleFresh } = require('./build-capability.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const MANIFEST_PATH = path.join(REPO_ROOT, 'capabilities', 'contrib-gate', 'capability.json');
+const BUNDLE_HOOKS_DIR = path.join(REPO_ROOT, 'capabilities', 'contrib-gate', 'hooks');
 const SKILLS_DIR = path.join(REPO_ROOT, 'skills');
 const COMMANDS_DIR = path.join(REPO_ROOT, 'commands');
 const FOLDER_ID = 'contrib-gate';
 const LIVE_SCRIPT_REL = 'scripts/gen-capability-registry.cjs';
+// The bundled resolver whose presence + reachability proves reuse-LIVE survives bundling (design §10).
+const BUNDLED_RESOLVER_REL = path.join('lib', 'resolve.cjs');
 
 // The four LIVE exported validators this check REUSES (HARD-02: never reimplemented here).
 const REQUIRED_VALIDATORS = [
@@ -208,6 +214,8 @@ function result(name, verdict, detail) {
  * @param {string}      [opts.manifestPath]        path to capability.json; default MANIFEST_PATH.
  * @param {string}      [opts.skillsDir]           default SKILLS_DIR.
  * @param {string}      [opts.commandsDir]         default COMMANDS_DIR.
+ * @param {string}      [opts.bundleHooksDir]      bundle hooks/ dir; default BUNDLE_HOOKS_DIR.
+ * @param {Function}    [opts.checkBundleFresh]    () => {fresh, staleFiles, checked}; default the real one.
  * @returns {{ok:boolean, results:Array<{name,verdict,detail}>}}
  */
 function runVerifyCapability(opts = {}) {
@@ -216,6 +224,8 @@ function runVerifyCapability(opts = {}) {
   const manifestPath = opts.manifestPath || MANIFEST_PATH;
   const skillsDir = opts.skillsDir || SKILLS_DIR;
   const commandsDir = opts.commandsDir || COMMANDS_DIR;
+  const bundleHooksDir = opts.bundleHooksDir || BUNDLE_HOOKS_DIR;
+  const checkBundleFresh = opts.checkBundleFresh || liveCheckBundleFresh;
 
   const results = [];
 
@@ -374,6 +384,126 @@ function runVerifyCapability(opts = {}) {
     ));
   } else {
     results.push(result('honesty', 'pass', 'description does not oversell — no capability-self unbypassable/PreToolUse claim'));
+  }
+
+  // ── CAP-02 #1: hooks[] manifest FILE PRESENCE (closes the schema↔disk gap). ──
+  // The LIVE validateCapability check above already asserts the hooks[] SCHEMA + script-safety (rule
+  // C4 / isSafeHookScriptPath) — we do NOT reimplement that (HARD-02). This TOOLKIT-OWNED check asserts
+  // the schema-safe path actually points at a file shipped in OUR bundle: every manifest hooks[].script
+  // must EXIST under bundleHooksDir. A declared-but-absent script FAILs LOUD (never a silent pass).
+  const declaredHooks = Array.isArray(manifest.hooks) ? manifest.hooks : [];
+  const missingHookFiles = [];
+  for (const h of declaredHooks) {
+    const script = h && typeof h.script === 'string' ? h.script : '';
+    if (!script) {
+      missingHookFiles.push('(hooks[] entry with no string script)');
+      continue;
+    }
+    // The manifest script path is relative to the bundle ROOT (e.g. 'hooks/gh-edit.cjs'); the bundle
+    // hooks/ dir is that 'hooks/' prefix, so strip a leading 'hooks/' to land inside bundleHooksDir.
+    const rel = script.replace(/^hooks\//, '');
+    const abs = path.join(bundleHooksDir, rel);
+    let present = false;
+    try {
+      present = fs.statSync(abs).isFile();
+    } catch (_) {
+      present = false;
+    }
+    if (!present) missingHookFiles.push(script);
+  }
+  if (declaredHooks.length === 0) {
+    // No hooks[] declared — nothing to assert presence for; the schema check governs whether an empty
+    // hooks[] is legal. A clean PASS here (the disk-presence invariant is vacuously satisfied).
+    results.push(result('hooks-manifest', 'pass', 'manifest declares no hooks[] — no bundle script files to assert'));
+  } else if (missingHookFiles.length === 0) {
+    results.push(result(
+      'hooks-manifest',
+      'pass',
+      'every manifest hooks[].script file exists under the bundle (' + declaredHooks.length + ' script(s))'
+    ));
+  } else {
+    results.push(result(
+      'hooks-manifest',
+      'fail',
+      'manifest hooks[].script file(s) MISSING from the bundle ' + bundleHooksDir + ': ' +
+        missingHookFiles.join(', ') +
+        ' — a declared script with no bundle file is NEVER a silent conformant (schema says safe-path, ' +
+        'parity says present-and-identical; this closes the schema↔disk gap)'
+    ));
+  }
+
+  // ── CAP-02 #2: bundle⇄source PARITY via Plan 11-01's checkBundleFresh (single staleness truth). ──
+  // REUSE checkBundleFresh() rather than re-deriving the byte comparison so verify-capability and
+  // `build-capability --check` can never disagree (design §4). A stale/missing bundle file is a [FAIL]
+  // naming the path — equivalent to `build-capability --check` exiting 1 (T-11-03-01 integrity guard).
+  let parity;
+  try {
+    parity = checkBundleFresh();
+  } catch (err) {
+    results.push(result(
+      'bundle-parity',
+      'fail',
+      'bundle-parity check COULD NOT RUN (checkBundleFresh threw: ' + ((err && err.message) || String(err)) +
+        ') — a check that did not run is NEVER reported conformant (LOUD-on-miss)'
+    ));
+    parity = null;
+  }
+  if (parity) {
+    if (parity.fresh) {
+      results.push(result(
+        'bundle-parity',
+        'pass',
+        'bundle byte-identical to canonical hooks/ source (' + parity.checked + ' file(s) checked, not stale)'
+      ));
+    } else {
+      const stale = (Array.isArray(parity.staleFiles) ? parity.staleFiles : [])
+        .map((s) => (s && s.path ? s.path + ' (' + (s.reason || 'stale') + ')' : String(s)))
+        .join(', ');
+      results.push(result(
+        'bundle-parity',
+        'fail',
+        'bundle is STALE/forged vs canonical source: ' + stale +
+          ' — run `node bin/build-capability.cjs` to regenerate (equivalent to build --check exiting 1; ' +
+          'a stale or forged bundle is NEVER a silent conformant — T-11-03-01)'
+      ));
+    }
+  }
+
+  // ── CAP-02 #3: runtime LIVE-resolution — the bundled hooks still reach LIVE gsd-core at runtime. ──
+  // The bundle ships its own hooks/lib/resolve.cjs (Plan 11-01). This check asserts (a) that bundled
+  // resolver FILE exists AND (b) a LIVE gsd-core checkout is reachable (liveRoot resolved above), so the
+  // bundled gates' sentinel walk would still call LIVE scripts — proving reuse-LIVE survives bundling
+  // (design §10 / T-11-03-02). An absent resolver or an unreachable checkout FAILs LOUD. (liveRoot:null
+  // already short-circuited at live-checkout above, so reaching here means liveRoot is non-null.)
+  const bundledResolver = path.join(bundleHooksDir, BUNDLED_RESOLVER_REL);
+  let resolverPresent = false;
+  try {
+    resolverPresent = fs.statSync(bundledResolver).isFile();
+  } catch (_) {
+    resolverPresent = false;
+  }
+  if (!resolverPresent) {
+    results.push(result(
+      'runtime-live-resolution',
+      'fail',
+      'bundled resolver MISSING: ' + bundledResolver +
+        ' — without hooks/lib/resolve.cjs the bundled gates cannot sentinel-walk to a LIVE gsd-core ' +
+        'checkout; reuse-LIVE is broken in the bundle (NEVER a silent pass — T-11-03-02)'
+    ));
+  } else if (!liveRoot) {
+    // Defensive: liveRoot:null is already a live-checkout LOUD fail above; keep the invariant explicit.
+    results.push(result(
+      'runtime-live-resolution',
+      'fail',
+      'no reachable LIVE gsd-core checkout — the bundled gates could not call LIVE scripts at runtime (LOUD-on-miss)'
+    ));
+  } else {
+    results.push(result(
+      'runtime-live-resolution',
+      'pass',
+      'bundled resolver present (' + bundledResolver + ') and a LIVE gsd-core checkout is reachable (' +
+        liveRoot + ') — reuse-LIVE survives bundling'
+    ));
   }
 
   const ok = results.every((r) => r.verdict === 'pass');
