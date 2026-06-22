@@ -261,3 +261,59 @@ test('runCli: returns nonzero and writes LOUD to stderr on a LIVE-script miss (n
   assert.notEqual(code, 0);
   assert.ok(/LOUD|could NOT|error/i.test(err.join('')));
 });
+
+// --- runCli --apply detection via the REAL process.argv path (CR-01 guard) ---
+
+// Build runCli deps that DO NOT inject `apply`, so runCli must fall through to
+// its real process.argv-based flag detection. We capture whether the mutate
+// seam was attempted to prove the guard boundary (mutation reachable ONLY when
+// the user actually typed --apply as a discrete token).
+function argvCliDeps(over = {}) {
+  const deps = baseDeps(over);
+  delete deps.apply; // force runCli to read process.argv, not an injected flag
+  deps.write = () => {};
+  deps.writeErr = () => {};
+  return deps;
+}
+
+// Run runCli with a controlled process.argv, restoring it afterward (hermetic —
+// no real gh/network/LIVE-script calls; every seam is injected via baseDeps).
+function withArgv(extraArgv, fn) {
+  const saved = process.argv;
+  process.argv = ['node', 'triage-assist.cjs'].concat(extraArgv);
+  try {
+    return fn();
+  } finally {
+    process.argv = saved;
+  }
+}
+
+test('(CR-01) a positional argument whose text contains "--apply" does NOT trigger mutation', () => {
+  const deps = argvCliDeps();
+  // A single quoted positional argument that merely contains the text --apply.
+  const r = withArgv(['fix the --apply bug'], () => {
+    const code = runCli(deps);
+    assert.equal(code, 0);
+    return code;
+  });
+  assert.equal(r, 0);
+  assert.equal(deps._mutateCalls(), 0, 'a positional containing "--apply" must NOT fire the mutate seam');
+});
+
+test('(CR-01) an actual standalone --apply flag DOES trigger mutation', () => {
+  const deps = argvCliDeps();
+  withArgv(['--apply'], () => {
+    const code = runCli(deps);
+    assert.equal(code, 0);
+  });
+  assert.equal(deps._mutateCalls() > 0, true, 'a real --apply flag must fire the mutate seam exactly through the argv path');
+});
+
+test('(CR-01) no flag at all leaves the run advisory (no mutation)', () => {
+  const deps = argvCliDeps();
+  withArgv([], () => {
+    const code = runCli(deps);
+    assert.equal(code, 0);
+  });
+  assert.equal(deps._mutateCalls(), 0, 'a bare advisory run must never mutate');
+});
