@@ -52,12 +52,14 @@ Run in order. **Adversarial gate between every phase:** before advancing, state 
 - **Handle labels exactly like the lead maintainer** — see **[labels.md](labels.md)**: remove `needs-triage` on any state transition; `confirmed-bug`(+`ready-for-agent`) is the bug fix-gate, `approved-enhancement`/`approved-feature` the code-gate; use `needs-reproduction` not generic needs-info; never hand-edit bot-managed labels (`possible-duplicate`, `needs-version`, `version-exempt`); apply the missing-label-on-PR maintainer one-click action; re-fetch labels before editing.
 - **Don't clear over a lead's *unresolved* change-request.** Never merge while another maintainer has an *unresolved* `CHANGES_REQUESTED`. But if your re-review *verifiably confirms* the contributor resolved exactly what they requested, **dismiss** that stale CR (re-review.md 12a) with an evidence-cited message — fulfilling their conditions, not overriding them — rather than leaving the PR stuck awaiting a manual re-flip.
 - **Delegate issue-side advancement to `/triage`.** This sweep ranks and relabels issues; for issues that need reproduction, grilling/design (`/grilling` + `/domain-modeling`), an `.out-of-scope/` prior-rejection check, or the needs-info loop, hand off to the `/triage` skill rather than reimplementing its state machine. The sweep identifies and routes; `/triage` advances.
+- **Initial-triage assist for an incoming issue.** For a fast, LIVE-script-backed first call on a single freshly-opened issue (duplicate signal + version-gate finding + suggested canonical role + the `needs-triage` strip), use **[triage-assist.md](triage-assist.md)** (doer: `bin/triage-assist.cjs`). It **complements** this sweep — advisory and surface-only, it mutates nothing without explicit `--apply`, and the suggested role comes ONLY from LIVE `docs/agents/triage-labels.md`. It does not replace the sweep's ranking or the re-review path.
 
 ## Quick reference
 
 | Want | Do |
 |---|---|
 | "Triage the repo" | Phases 0–8 (rank → present → you pick) |
+| "Initial-triage an incoming issue #N" | [triage-assist.md](triage-assist.md) + `bin/triage-assist.cjs` (advisory: LIVE dedupe + version-gate + role, surface-only) |
 | "Re-review #N" | Phase 0 + [re-review.md](re-review.md) on #N |
 | "Clear #N to merge" | re-review.md; stop at merge-readiness unless `merge=#N` given |
 | Ball-in-court of a PR | Phase 6 logic (anchor to latest CHANGES_REQUESTED) |
