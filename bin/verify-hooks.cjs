@@ -101,6 +101,12 @@ const PROOF_TABLE = [
   { name: 'lint-ci-marker', kind: 'deny', needsLive: true,
     bad: bash('git push origin HEAD'),
     clean: bash('git status') },
+  // ENF-16 (07-01): a malformed conventional-commit prefix DENIES; a clean read ALLOWS.
+  // needsLive=true — the gate resolves the gsd-core root from cwd and short-circuits to ALLOW
+  // outside a gsd-core checkout, so the bad-prefix deny is only CONCLUSIVE when run there.
+  { name: 'git-commit-convention', kind: 'deny', needsLive: true,
+    bad: bash('git commit -m "docs fix thing"'),
+    clean: bash('git status') },
   { name: 'policy-invariants', kind: 'deny', needsLive: true,
     bad: bash('git commit -m wip'),
     clean: bash('git status') },

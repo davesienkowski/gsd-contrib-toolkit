@@ -196,6 +196,15 @@ const DENY_GATES = [
     needsLive: true,
   },
   {
+    name: 'git-commit-convention',
+    // src: git-commit-convention.test.cjs (07-01, ENF-16) — a malformed conventional-commit
+    // prefix (`docs ` not followed by (scope)/!/:) → deny. needsLive because the gate resolves
+    // the gsd-core root from cwd and ALLOWS outside a checkout, so the deny is only conclusive there.
+    bad: bash('git commit -m "docs fix thing"'),
+    clean: bash('git status'),
+    needsLive: true,
+  },
+  {
     name: 'policy-invariants',
     // src: policy-invariants.test.cjs — git commit runs the LIVE mechanizable policy invariants.
     bad: bash('git commit -m wip'),
