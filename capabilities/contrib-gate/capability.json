@@ -29,6 +29,20 @@
     }
   },
   "steps": [],
-  "contributions": [],
+  "contributions": [
+    {
+      "point": "plan:pre",
+      "into": "planner",
+      "fragment": {
+        "path": "fragments/plan-pre.md"
+      },
+      "produces": [],
+      "consumes": [
+        "CONTEXT.md"
+      ],
+      "when": "workflow.gsd_contrib_enforcement",
+      "onError": "skip"
+    }
+  ],
   "gates": []
 }
