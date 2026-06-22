@@ -1,0 +1,17 @@
+{
+  "hook": "git-commit-convention-bypass-envprefix",
+  "case": "deny",
+  "fixture": "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"GIT_DIR=/x git commit -m \\\"docs fix thing\\\"\"}}",
+  "expected": "deny",
+  "verdict": "pass",
+  "decision": "deny",
+  "exitCode": 0,
+  "reason": "parsed permissionDecision:deny",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "permissionDecisionReason": "Commit subject `docs fix thing` has an OBVIOUSLY-malformed conventional-commit prefix: it must begin with a recognized type (feat|fix|docs|chore|ci|refactor|test|build|perf|style|revert) immediately followed by an optional `(scope)`, optional `!`, then `:` — e.g. `fix(core): …`, `feat!: …`, `docs: …`. This is the toolkit’s own conventional-commit PREFIX check (ENF-16) — a replica of gsd-core’s release / cherry-pick prefix policy, NOT a callable repo script: gsd-core exposes no shared conventional-commit matcher yet (#1549). It MUST be repointed at the LIVE shared matcher (via requireLiveScript + a doctor shape-check) once gsd-core extracts one (#1549). It judges PREFIX SHAPE only — choosing the semantically-correct type for the diff is out of scope."
+    }
+  }
+}

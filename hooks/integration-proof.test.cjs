@@ -238,6 +238,46 @@ const DENY_GATES = [
     clean: bash('git status'),
     needsLive: true,
   },
+  // ── WR-01 (07-05): bypass-form deny fixtures (CR-01..CR-04) ──────────────────────────────
+  // Each spawns an EXISTING wired gate (via `hook`) with a BYPASS-form bad fixture that, once
+  // the shared classifier was hardened, now classifies to the gated action and DENIES under a
+  // live checkout. The distinct `name` keeps test titles unique. Mirrors bin/verify-hooks.cjs
+  // PROOF_TABLE (this file is the sync SOURCE). `hook` = the real gate file to spawn.
+  {
+    name: 'git-commit-convention-bypass-globalopt', hook: 'git-commit-convention',
+    // CR-01: `git -C <path> commit -m "docs fix thing"` now classifies as commit → ENF-16 denies.
+    bad: bash('git -C /tmp commit -m "docs fix thing"'),
+    clean: bash('git status'),
+    needsLive: true,
+  },
+  {
+    name: 'git-commit-convention-bypass-envprefix', hook: 'git-commit-convention',
+    // CR-02: `GIT_DIR=/x git commit -m "docs fix thing"` now classifies as commit → ENF-16 denies.
+    bad: bash('GIT_DIR=/x git commit -m "docs fix thing"'),
+    clean: bash('git status'),
+    needsLive: true,
+  },
+  {
+    name: 'git-commit-convention-bypass-abspath', hook: 'git-commit-convention',
+    // CR-03: `/usr/bin/git commit -m "docs fix thing"` now classifies as commit → ENF-16 denies.
+    bad: bash('/usr/bin/git commit -m "docs fix thing"'),
+    clean: bash('git status'),
+    needsLive: true,
+  },
+  {
+    name: 'gh-pr-create-bypass-rawfield', hook: 'gh-pr-create',
+    // CR-04: `gh api …/pulls --raw-field …` now classifies as pr-create → ENF-18 CI gate denies.
+    bad: bash('gh api repos/o/r/pulls --raw-field body=x --raw-field base=main'),
+    clean: bash('gh repo view o/r'),
+    needsLive: true,
+  },
+  {
+    name: 'gh-pr-create-bypass-databinary', hook: 'gh-pr-create',
+    // CR-04: `curl …/pulls --data-binary {}` now classifies as pr-create → ENF-18 CI gate denies.
+    bad: bash('curl https://api.github.com/repos/o/r/pulls --data-binary {}'),
+    clean: bash('gh repo view o/r'),
+    needsLive: true,
+  },
 ];
 
 for (const g of DENY_GATES) {
@@ -248,13 +288,13 @@ for (const g of DENY_GATES) {
       : false;
 
   test(`PROOF deny-on-bad: ${g.name} real entrypoint emits a captured permissionDecision:deny`, { skip }, () => {
-    const r = spawnHook(abs(g.name), { stdin: g.bad, cwd });
+    const r = spawnHook(abs(g.hook || g.name), { stdin: g.bad, cwd });
     assert.equal(r.conclusive, true, `inconclusive (crash/empty?) for ${g.name}: ${r.reason}\nstderr: ${r.rawStderr}`);
     assert.equal(r.decision, 'deny', `${g.name} bad fixture should DENY but got ${r.decision}\nstdout: ${r.rawStdout}`);
   });
 
   test(`PROOF allow-on-clean: ${g.name} real entrypoint emits a captured permissionDecision:allow`, { skip }, () => {
-    const r = spawnHook(abs(g.name), { stdin: g.clean, cwd });
+    const r = spawnHook(abs(g.hook || g.name), { stdin: g.clean, cwd });
     assert.equal(r.conclusive, true, `inconclusive for ${g.name} clean: ${r.reason}\nstderr: ${r.rawStderr}`);
     assert.equal(r.decision, 'allow', `${g.name} clean fixture should ALLOW but got ${r.decision}\nstdout: ${r.rawStdout}`);
   });

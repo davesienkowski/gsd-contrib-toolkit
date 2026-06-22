@@ -1,0 +1,17 @@
+{
+  "hook": "gh-pr-create-bypass-rawfield",
+  "case": "deny",
+  "fixture": "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gh api repos/o/r/pulls --raw-field body=x --raw-field base=main\"}}",
+  "expected": "deny",
+  "verdict": "pass",
+  "decision": "deny",
+  "exitCode": 0,
+  "reason": "parsed permissionDecision:deny",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "permissionDecisionReason": "PR blocked by the LIVE pr-template-policy (ENF-02): PR body does not match the fix, enhancement, or feature template.. Use a fix / enhancement / feature template."
+    }
+  }
+}

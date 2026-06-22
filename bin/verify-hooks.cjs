@@ -76,10 +76,15 @@ function resolveGsdCoreCwd() {
  * module, not an exporting lib; this runner and that test MUST stay in sync — any fixture change
  * belongs in BOTH (the test asserts the same captures the runner records).
  *
- * Entry shape: { name, kind, bad/clean (deny gates) | inject/none (advisory), needsLive }.
+ * Entry shape: { name, kind, bad/clean (deny gates) | inject/none (advisory), needsLive, hook? }.
  *   - kind:'deny'     → BAD must emit deny, CLEAN must emit allow.
  *   - kind:'advisory' → INJECT-case must surface additionalContext (or any advisory surface) and
  *                        the NONE-case stays quiet; BOTH must carry NO permissionDecision.
+ *   - hook (optional) → the hook FILE to spawn (hooks/<hook>.cjs). Defaults to `name`. The
+ *                        WR-01 bypass fixtures set a DISTINCT `name` (so each writes its own
+ *                        proofs/<name>-<case>.json artifact) but point `hook` at the SAME real
+ *                        gate file (git-commit-convention / gh-pr-create) — proving the EXISTING
+ *                        gate now denies the bypass FORM once the shared classifier is hardened.
  */
 const PROOF_TABLE = [
   // ── deny gates (command-trips-the-gate fixtures; needsLive resolves LIVE scripts) ──
@@ -119,6 +124,27 @@ const PROOF_TABLE = [
   { name: 'scan-gate', kind: 'deny', needsLive: true,
     bad: bash('git push "unterminated'),
     clean: bash('git status') },
+  // ── WR-01: bypass-form deny fixtures ─────────────────────────────────────────────
+  // Each spawns an EXISTING wired gate (via `hook`) with a BYPASS-form bad fixture that, once
+  // 07-05 hardened the shared classifier (CR-01..CR-04), now classifies to the gated action and
+  // DENIES under a live gsd-core checkout (SKIP-with-note when none is reachable). The distinct
+  // `name` gives each its own byte-stable proofs/<name>-<case>.json artifact. Mirrored in
+  // hooks/integration-proof.test.cjs DENY_GATES (the sync source).
+  { name: 'git-commit-convention-bypass-globalopt', hook: 'git-commit-convention', kind: 'deny', needsLive: true,
+    bad: bash('git -C /tmp commit -m "docs fix thing"'),
+    clean: bash('git status') },
+  { name: 'git-commit-convention-bypass-envprefix', hook: 'git-commit-convention', kind: 'deny', needsLive: true,
+    bad: bash('GIT_DIR=/x git commit -m "docs fix thing"'),
+    clean: bash('git status') },
+  { name: 'git-commit-convention-bypass-abspath', hook: 'git-commit-convention', kind: 'deny', needsLive: true,
+    bad: bash('/usr/bin/git commit -m "docs fix thing"'),
+    clean: bash('git status') },
+  { name: 'gh-pr-create-bypass-rawfield', hook: 'gh-pr-create', kind: 'deny', needsLive: true,
+    bad: bash('gh api repos/o/r/pulls --raw-field body=x --raw-field base=main'),
+    clean: bash('gh repo view o/r') },
+  { name: 'gh-pr-create-bypass-databinary', hook: 'gh-pr-create', kind: 'deny', needsLive: true,
+    bad: bash('curl https://api.github.com/repos/o/r/pulls --data-binary {}'),
+    clean: bash('gh repo view o/r') },
   // ── binlib-edit (Write|Edit gate): command-only, no live resolution ──
   { name: 'binlib-edit', kind: 'deny', needsLive: false,
     bad: edit('/g/gsd-core/bin/lib/decisions.cjs'),
@@ -227,7 +253,10 @@ function runVerify(opts = {}) {
   const results = [];
 
   for (const entry of table) {
-    const hookPath = absHook(entry.name);
+    // The artifact prefix is `entry.name` (kept UNIQUE); the spawned hook FILE is
+    // `entry.hook || entry.name` so WR-01 bypass rows can share a real gate file
+    // while each writes its own proofs/<name>-<case>.json (distinct evidence).
+    const hookPath = absHook(entry.hook || entry.name);
 
     // A needsLive entry with no reachable checkout SKIPS (recorded, never dropped or coerced).
     if (entry.needsLive && !liveCwd) {
