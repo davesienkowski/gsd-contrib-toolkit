@@ -156,6 +156,27 @@ test('commandStartDir: missing baseCwd → defaults to process.cwd()', () => {
   assert.strictEqual(res.commandStartDir(parsed), process.cwd());
 });
 
+// --- resolveRootForCommand: root-or-null for a parsed command's effective cwd ---
+
+test('resolveRootForCommand: cd into a gsd-core checkout → returns that root', () => {
+  const root = makeFixtureRoot();
+  const got = res.resolveRootForCommand(`cd ${root} && git commit -m x`, '/some/other/base');
+  assert.strictEqual(fs.realpathSync(got), fs.realpathSync(root));
+});
+
+test('resolveRootForCommand: cd into a NON-gsd-core dir → returns null (not our concern)', () => {
+  const lonely = fs.mkdtempSync(path.join(os.tmpdir(), 'no-core-'));
+  assert.strictEqual(res.resolveRootForCommand(`cd ${lonely} && git commit -m x`, lonely), null);
+});
+
+test('resolveRootForCommand: no cd, baseCwd is a gsd-core checkout → returns the base root', () => {
+  const root = makeFixtureRoot();
+  assert.strictEqual(
+    fs.realpathSync(res.resolveRootForCommand('git status', root)),
+    fs.realpathSync(root)
+  );
+});
+
 // --- Integration against the REAL gsd-core checkout when present ---
 const REAL_GSD_CORE = '/home/dave/repos/gsd-core';
 const hasRealCore =

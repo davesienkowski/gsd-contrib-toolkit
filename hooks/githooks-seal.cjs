@@ -36,7 +36,7 @@ const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction } = require('./lib/classify.cjs');
 const { hasFlag } = require('./lib/flags.cjs');
 const { runGate, readHookInput, deny, allow, emit } = require('./lib/failclosed.cjs');
-const { resolveGsdCoreRoot } = require('./lib/resolve.cjs');
+const { resolveRootForCommand } = require('./lib/resolve.cjs');
 
 class FailClosed extends Error {}
 
@@ -111,7 +111,8 @@ function runGithooksGate(stdinString, deps = {}) {
   return runGate(() => {
     const resolved = Object.assign({}, deps);
     if (!resolved.readHooksPath) {
-      const root = resolved.worktreeRoot || resolveGsdCoreRoot(process.cwd());
+      const root = resolved.worktreeRoot || resolveRootForCommand(ctx.command, process.cwd());
+      if (!root) return allow();
       ctx.worktreeRoot = ctx.worktreeRoot || root;
       resolved.readHooksPath = () => readHooksPathLive(root);
     }

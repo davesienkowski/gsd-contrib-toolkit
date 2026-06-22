@@ -37,7 +37,7 @@
 const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit } = require('./lib/failclosed.cjs');
-const { resolveGsdCoreRoot, requireLiveScript } = require('./lib/resolve.cjs');
+const { resolveRootForCommand, requireLiveScript } = require('./lib/resolve.cjs');
 
 // A sentinel thrown to mean "I cannot confidently evaluate this — fail closed."
 class FailClosed extends Error {}
@@ -301,7 +301,8 @@ function runDedupeGate(stdinString, deps = {}) {
   return runGate(() => {
     const resolved = Object.assign({}, deps);
     if (!resolved.liveScorer) {
-      const root = resolveGsdCoreRoot(process.cwd());
+      const root = resolved.worktreeRoot || resolveRootForCommand(ctx.command, process.cwd());
+      if (!root) return allow();
       ctx.worktreeRoot = ctx.worktreeRoot || root;
       resolved.liveScorer = requireLiveScript(root, 'scripts/issue-dedupe.cjs');
     }

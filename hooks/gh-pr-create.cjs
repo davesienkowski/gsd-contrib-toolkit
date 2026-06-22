@@ -37,7 +37,7 @@ const path = require('node:path');
 const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit } = require('./lib/failclosed.cjs');
-const { resolveGsdCoreRoot, requireLiveScript } = require('./lib/resolve.cjs');
+const { resolveRootForCommand, requireLiveScript } = require('./lib/resolve.cjs');
 
 class FailClosed extends Error {}
 
@@ -329,11 +329,16 @@ function runPrGate(stdinString, deps = {}) {
 
   return runGate(() => {
     const resolved = Object.assign({}, deps);
-    let root;
-    if (!resolved.liveTemplate || !resolved.liveTarget) {
-      root = resolveGsdCoreRoot(process.cwd());
-      ctx.worktreeRoot = ctx.worktreeRoot || root;
+    // Resolve the root from the command's OWN cwd (it may `cd` into a worktree), not the
+    // session cwd. null = the command does not target a gsd-core checkout → allow. The
+    // head branch is read from that same root so a cross-repo session reads the worktree's
+    // branch, not the session repo's.
+    let root = resolved.worktreeRoot || null;
+    if (!root && (!resolved.liveTemplate || !resolved.liveTarget || !resolved.branch)) {
+      root = resolveRootForCommand(ctx.command, process.cwd());
+      if (!root) return allow();
     }
+    ctx.worktreeRoot = ctx.worktreeRoot || root;
     if (!resolved.liveTemplate) {
       resolved.liveTemplate = requireLiveScript(root, 'scripts/pr-template-policy.cjs');
     }
@@ -341,7 +346,7 @@ function runPrGate(stdinString, deps = {}) {
       resolved.liveTarget = requireLiveScript(root, 'scripts/pr-target-policy.cjs');
     }
     if (!resolved.branch) {
-      resolved.branch = currentBranch();
+      resolved.branch = currentBranch(root);
     }
     if (!resolved.readBodyFile) {
       const fs = require('node:fs');
@@ -362,11 +367,11 @@ function runPrGate(stdinString, deps = {}) {
  * because a PR gate that cannot determine the head branch cannot enforce ENF-10.
  * @returns {string}
  */
-function currentBranch() {
+function currentBranch(root) {
   const { execFileSync } = require('node:child_process');
-  const out = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
-    encoding: 'utf8',
-  });
+  const opts = { encoding: 'utf8' };
+  if (root) opts.cwd = root; // read the branch of the worktree the command targets
+  const out = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], opts);
   return out.trim();
 }
 

@@ -30,7 +30,7 @@
 const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit } = require('./lib/failclosed.cjs');
-const { resolveGsdCoreRoot } = require('./lib/resolve.cjs');
+const { resolveRootForCommand } = require('./lib/resolve.cjs');
 
 class FailClosed extends Error {}
 
@@ -166,7 +166,8 @@ function runScanGate(stdinString, deps = {}) {
   return runGate(() => {
     const resolved = Object.assign({}, deps);
     if (!resolved.gsdCoreRoot) {
-      resolved.gsdCoreRoot = resolveGsdCoreRoot(process.cwd());
+      resolved.gsdCoreRoot = resolveRootForCommand(ctx.command, process.cwd());
+      if (!resolved.gsdCoreRoot) return allow();
     }
     ctx.worktreeRoot = ctx.worktreeRoot || resolved.gsdCoreRoot;
     if (!resolved.runScans) {

@@ -27,6 +27,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { parseCommand } = require('./argv.cjs');
 
 /**
  * A typed error so runGate's catch fails closed and the doctor (03-06) can pattern-match
@@ -140,6 +141,28 @@ function commandStartDir(parsed, baseCwd) {
 }
 
 /**
+ * Resolve the gsd-core root a raw command will actually run in, or null if that cwd is
+ * not a gsd-core checkout.
+ *
+ * Combines the command's effective cwd (commandStartDir — follows `cd`) with the sentinel
+ * walk (resolveGsdCoreRoot). Returns null on a clean "no gsd-core here" miss
+ * (ScriptResolveError) so a gate can ALLOW commands that don't target gsd-core (a commit
+ * in another repo is not a gsd-core contribution). Any other error propagates.
+ *
+ * @param {string} command raw tool_input.command
+ * @param {string} [baseCwd] the hook's process.cwd()
+ * @returns {string|null} absolute gsd-core root, or null if the command's cwd is not one
+ */
+function resolveRootForCommand(command, baseCwd) {
+  try {
+    return resolveGsdCoreRoot(commandStartDir(parseCommand(command), baseCwd));
+  } catch (err) {
+    if (err instanceof ScriptResolveError) return null;
+    throw err;
+  }
+}
+
+/**
  * require() a LIVE gsd-core script by its path relative to the gsd-core root.
  *
  * NEVER falls back to a vendored copy: a missing or broken live script throws a typed
@@ -191,4 +214,5 @@ module.exports = {
   hasSentinel,
   commandStartDir,
   expandHome,
+  resolveRootForCommand,
 };

@@ -32,7 +32,7 @@ const path = require('node:path');
 const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit } = require('./lib/failclosed.cjs');
-const { resolveGsdCoreRoot, requireLiveScript } = require('./lib/resolve.cjs');
+const { resolveRootForCommand, requireLiveScript } = require('./lib/resolve.cjs');
 
 class FailClosed extends Error {}
 
@@ -280,9 +280,12 @@ function runEditGate(stdinString, deps = {}) {
 
   return runGate(() => {
     const resolved = Object.assign({}, deps);
-    let root;
-    if (!resolved.liveVersionGate || !resolved.liveTemplate) {
-      root = resolveGsdCoreRoot(process.cwd());
+    // Resolve from the command's own cwd (may `cd` into a worktree); null = not a
+    // gsd-core checkout → allow (not our concern).
+    let root = resolved.worktreeRoot || null;
+    if (!root && (!resolved.liveVersionGate || !resolved.liveTemplate)) {
+      root = resolveRootForCommand(ctx.command, process.cwd());
+      if (!root) return allow();
       ctx.worktreeRoot = ctx.worktreeRoot || root;
     }
     if (!resolved.liveVersionGate) {
