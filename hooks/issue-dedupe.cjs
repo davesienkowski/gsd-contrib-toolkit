@@ -35,29 +35,12 @@
  */
 
 const { parseCommand } = require('./lib/argv.cjs');
-const { classifyAction } = require('./lib/classify.cjs');
+const { classifyAction, findActionSegment } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand, requireLiveScript } = require('./lib/resolve.cjs');
 
 // FailClosed/safeCommand: shared IN-03 helpers from failclosed.cjs.
 
-/**
- * Find the structured segment classifyAction acted on (the first issue-create segment in a
- * chain) so title resolution reads the right segment's flags.
- *
- * @param {Object} parsed argv.parseCommand result (ok:true)
- * @returns {Object} the matching segment (or the first segment as a fallback)
- */
-function findActionSegment(parsed) {
-  const segs = Array.isArray(parsed.segments) && parsed.segments.length > 0
-    ? parsed.segments
-    : [parsed];
-  for (const seg of segs) {
-    const r = classifyAction({ ok: true, segments: [seg] });
-    if (r && r.action === 'issue-create') return seg;
-  }
-  return segs[0];
-}
 
 /**
  * Walk a segment's STRUCTURED token list pulling `-f key=value` / `-F key=value` /
@@ -199,7 +182,7 @@ function gate(stdinString, deps) {
     return allow(); // not our concern → no-op
   }
 
-  const seg = findActionSegment(parsed);
+  const seg = findActionSegment(parsed, 'issue-create');
   const route = action.route || 'native';
   const newTitle = resolveTitle(seg, route);
   if (!newTitle || !newTitle.trim()) {

@@ -54,7 +54,7 @@
 
 const path = require('node:path');
 const { parseCommand } = require('./lib/argv.cjs');
-const { classifyAction } = require('./lib/classify.cjs');
+const { classifyAction, findActionSegment } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveGsdCoreRoot, commandStartDir, ScriptResolveError } = require('./lib/resolve.cjs');
 
@@ -89,23 +89,6 @@ const OWNED_NOTE =
   'one (#1549). It judges PREFIX SHAPE only — choosing the semantically-correct type for the ' +
   'diff is out of scope.';
 
-/**
- * Find the structured segment that classifyAction acted on (the first commit segment in a
- * chain), so message resolution reads the right segment's flags/tokens.
- *
- * @param {Object} parsed argv.parseCommand result (ok:true)
- * @returns {Object} the matching segment (falls back to the first segment)
- */
-function findActionSegment(parsed) {
-  const segs = Array.isArray(parsed.segments) && parsed.segments.length > 0
-    ? parsed.segments
-    : [parsed];
-  for (const seg of segs) {
-    const r = classifyAction({ ok: true, segments: [seg] });
-    if (r && r.action === 'commit') return seg;
-  }
-  return segs[0];
-}
 
 /**
  * Resolve the commit SUBJECT line from a parsed segment (TOOLKIT-OWNED resolution). Reads,
@@ -259,7 +242,7 @@ function gate(stdinString, deps) {
     return allow(); // not a commit → not our concern → no-op
   }
 
-  const seg = findActionSegment(parsed);
+  const seg = findActionSegment(parsed, 'commit');
   const subject = resolveCommitMessage(seg, deps.readMessageFile); // may throw FailClosed
   if (subject == null) {
     // No asserted message (interactive editor commit) — nothing to judge → allow.

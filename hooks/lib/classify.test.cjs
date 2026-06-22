@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { parseCommand } = require('./argv.cjs');
-const { classifyAction } = require('./classify.cjs');
+const { classifyAction, findActionSegment } = require('./classify.cjs');
 
 const cls = (cmd) => classifyAction(parseCommand(cmd));
 
@@ -523,4 +523,48 @@ test('no-over-block: /usr/bin/git status stays other (path-qualified read-only)'
   const r = cls('/usr/bin/git status');
   assert.strictEqual(r.action, 'other');
   assert.notStrictEqual(r.failClosed, true);
+});
+
+// ---------------------------------------------------------------------------
+// IN-03: action-parameterized findActionSegment (hoisted from the 4 gates)
+// ---------------------------------------------------------------------------
+
+test('findActionSegment returns the pr-create segment in a chain (target pr-create)', () => {
+  const parsed = parseCommand('git status && gh pr create --title x --body y');
+  const seg = findActionSegment(parsed, 'pr-create');
+  assert.strictEqual(classifyAction({ ok: true, segments: [seg] }).action, 'pr-create');
+});
+
+test('findActionSegment returns the issue-create segment in a chain (target issue-create)', () => {
+  const parsed = parseCommand('echo hi && gh issue create --title x --body y');
+  const seg = findActionSegment(parsed, 'issue-create');
+  assert.strictEqual(classifyAction({ ok: true, segments: [seg] }).action, 'issue-create');
+});
+
+test('findActionSegment returns the commit segment in a chain (target commit)', () => {
+  const parsed = parseCommand('git add -A && git commit -m "feat: x"');
+  const seg = findActionSegment(parsed, 'commit');
+  assert.strictEqual(classifyAction({ ok: true, segments: [seg] }).action, 'commit');
+});
+
+test('findActionSegment is action-targeted: same chain selects different segments per target', () => {
+  const parsed = parseCommand('git commit -m "x" && gh issue create --title t');
+  const commitSeg = findActionSegment(parsed, 'commit');
+  const issueSeg = findActionSegment(parsed, 'issue-create');
+  assert.strictEqual(classifyAction({ ok: true, segments: [commitSeg] }).action, 'commit');
+  assert.strictEqual(classifyAction({ ok: true, segments: [issueSeg] }).action, 'issue-create');
+});
+
+test('findActionSegment falls back to segs[0] when no segment matches the target', () => {
+  const parsed = parseCommand('gh issue create --title t');
+  // target the wrong action → no match → first (only) segment returned
+  const seg = findActionSegment(parsed, 'pr-create');
+  assert.strictEqual(seg, parsed.segments && parsed.segments.length > 0 ? parsed.segments[0] : parsed);
+});
+
+test('findActionSegment on a single-segment parse returns that segment regardless of target', () => {
+  const parsed = parseCommand('git status');
+  const seg = findActionSegment(parsed, 'commit');
+  const expected = parsed.segments && parsed.segments.length > 0 ? parsed.segments[0] : parsed;
+  assert.strictEqual(seg, expected);
 });

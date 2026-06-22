@@ -47,7 +47,7 @@
 
 const path = require('node:path');
 const { parseCommand } = require('./lib/argv.cjs');
-const { classifyAction } = require('./lib/classify.cjs');
+const { classifyAction, findActionSegment } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand, requireLiveScript } = require('./lib/resolve.cjs');
 
@@ -121,21 +121,6 @@ function normalizeBody(s) {
   return s.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n').replace(/\\r/g, '\n');
 }
 
-/**
- * Find the segment classifyAction acted on (the first pr-create segment in a chain).
- * @param {Object} parsed
- * @returns {Object}
- */
-function findActionSegment(parsed) {
-  const segs = Array.isArray(parsed.segments) && parsed.segments.length > 0
-    ? parsed.segments
-    : [parsed];
-  for (const seg of segs) {
-    const r = classifyAction({ ok: true, segments: [seg] });
-    if (r && r.action === 'pr-create') return seg;
-  }
-  return segs[0];
-}
 
 /**
  * Walk a segment's structured tokens pulling gh-api `-f/-F/--field key=value` pairs.
@@ -313,7 +298,7 @@ function gate(stdinString, deps) {
   }
   if (action.action !== 'pr-create') return allow();
 
-  const seg = findActionSegment(parsed);
+  const seg = findActionSegment(parsed, 'pr-create');
   const route = action.route || 'native';
 
   // (0) WR-04 — un-observable body. `gh pr create --fill` / `--fill-first` auto-populates the

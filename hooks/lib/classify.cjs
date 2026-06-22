@@ -503,8 +503,32 @@ function classifyAction(parsed) {
   return { ...OTHER };
 }
 
+/**
+ * IN-03: the single shared, ACTION-PARAMETERIZED segment finder (hoisted from the 4
+ * gates that previously each hardcoded their own target action). Returns the first
+ * segment in a chain that classifyAction maps to `targetAction`, else segs[0] (the
+ * original fallback). The previously-divergent matched-action is now the `targetAction`
+ * parameter, so each caller passes its own ('pr-create' / 'issue-create' / 'commit')
+ * and selection stays byte-preserved.
+ *
+ * @param {Object} parsed argv.parseCommand result (ok:true)
+ * @param {string} targetAction the action the caller is gating ('pr-create' | 'issue-create' | 'commit' | …)
+ * @returns {Object} the matching segment, or segs[0] when none matches
+ */
+function findActionSegment(parsed, targetAction) {
+  const segs = Array.isArray(parsed.segments) && parsed.segments.length > 0
+    ? parsed.segments
+    : [parsed];
+  for (const seg of segs) {
+    const r = classifyAction({ ok: true, segments: [seg] });
+    if (r && r.action === targetAction) return seg;
+  }
+  return segs[0];
+}
+
 module.exports = {
   classifyAction,
+  findActionSegment,
   // exported for unit-level reuse / testing
   classifyGithubPath,
   hostOf,
