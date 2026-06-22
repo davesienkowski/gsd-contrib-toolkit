@@ -211,3 +211,60 @@ test('buildRemediation: surfaces the named LIVE remediation command strings', ()
   assert.match(joined, /sync-rulesets\.sh/);
   assert.match(joined, /setup-branch-protection\.sh/);
 });
+
+// --- runCli --apply detection via the REAL process.argv path (CR-01 guard) ---
+
+// Build runCli deps that DO NOT inject `apply`, so runCli must fall through to
+// its real process.argv-based flag detection. There MUST be drift present for
+// the apply seam to be reachable, so we inject a drifted live state. We capture
+// whether the LIVE remediation seam was attempted to prove the guard boundary
+// (remediation reachable ONLY when the user actually typed --apply as a token).
+function argvCliDeps() {
+  const applyCalls = [];
+  const live = liveInSync();
+  live[0].enforcement = 'disabled'; // force drift so remediation is reachable
+  const deps = {
+    gsdCoreRoot: ROOT,
+    readDeclared: () => declaredOk(),
+    fetchLive: () => live,
+    applyRemediation: (...a) => applyCalls.push(a),
+    write: () => {},
+    writeErr: () => {},
+  };
+  // NOTE: deliberately NO `apply` key — runCli must read process.argv.
+  deps._applyCalls = () => applyCalls;
+  return deps;
+}
+
+// Run runCli with a controlled process.argv, restoring it afterward (hermetic —
+// no real gh/network/shell; every seam is injected).
+function withArgv(extraArgv, fn) {
+  const saved = process.argv;
+  process.argv = ['node', 'ruleset-drift.cjs'].concat(extraArgv);
+  try {
+    return fn();
+  } finally {
+    process.argv = saved;
+  }
+}
+
+test('(CR-01) a positional argument whose text contains "--apply" does NOT trigger remediation', () => {
+  const deps = argvCliDeps();
+  const code = withArgv(['governance --apply later'], () => runCli(deps));
+  assert.equal(code, 0);
+  assert.deepEqual(deps._applyCalls(), [], 'a positional containing "--apply" must NOT fire the remediation seam');
+});
+
+test('(CR-01) an actual standalone --apply flag DOES trigger remediation', () => {
+  const deps = argvCliDeps();
+  const code = withArgv(['--apply'], () => runCli(deps));
+  assert.equal(code, 0);
+  assert.equal(deps._applyCalls().length, 1, 'a real --apply flag fires the remediation seam exactly once via the argv path');
+});
+
+test('(CR-01) no flag at all leaves the run advisory (no remediation)', () => {
+  const deps = argvCliDeps();
+  const code = withArgv([], () => runCli(deps));
+  assert.equal(code, 0);
+  assert.deepEqual(deps._applyCalls(), [], 'a bare advisory run must never remediate');
+});
