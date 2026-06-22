@@ -323,3 +323,204 @@ test('chained: all read-only segments → other (not failClosed) [F-02]', () => 
   assert.strictEqual(r.action, 'other');
   assert.notStrictEqual(r.failClosed, true);
 });
+
+// ---------------------------------------------------------------------------
+// CR-01: git/gh global options must not push the verb out of reach
+//
+// `git -C <path>`, `git --no-pager`, `git -c key=val`, `git --git-dir <d>` are all
+// legitimate, common forms of a commit/push. The classifier resolved the verb as
+// subcommands[0] only; with a leading global option the verb lands in positionals
+// (or is swallowed as a boolean global's "value") → action:'other' → silent allow.
+// ---------------------------------------------------------------------------
+
+test('CR-01: git -C /path commit → commit', () => {
+  assert.strictEqual(cls('git -C /some/path commit --no-verify -m x').action, 'commit');
+});
+
+test('CR-01: git --no-pager commit → commit', () => {
+  assert.strictEqual(cls('git --no-pager commit -m "docs fix thing"').action, 'commit');
+});
+
+test('CR-01: git -c key=val commit → commit', () => {
+  assert.strictEqual(cls('git -c user.name=x commit -m y').action, 'commit');
+});
+
+test('CR-01: git --git-dir <d> commit → commit', () => {
+  assert.strictEqual(cls('git --git-dir /tmp/x commit -m y').action, 'commit');
+});
+
+test('CR-01: git -C /p push → push', () => {
+  assert.strictEqual(cls('git -C /p push origin HEAD').action, 'push');
+});
+
+test('CR-01: git --paginate push → push', () => {
+  assert.strictEqual(cls('git --paginate push origin main').action, 'push');
+});
+
+test('CR-01: gh --repo o/r pr create → pr-create (verb past global option)', () => {
+  const r = cls('gh --repo o/r pr create --title x');
+  assert.strictEqual(r.action, 'pr-create');
+});
+
+// ---------------------------------------------------------------------------
+// CR-02 (end-to-end): env-prefixed mutation classifies to its gated action
+// ---------------------------------------------------------------------------
+
+test('CR-02: GIT_DIR=/x git commit → commit', () => {
+  assert.strictEqual(cls('GIT_DIR=/x git commit -m bad').action, 'commit');
+});
+
+test('CR-02: A=1 git push → push', () => {
+  assert.strictEqual(cls('A=1 git push origin main').action, 'push');
+});
+
+// ---------------------------------------------------------------------------
+// CR-03: path-qualified / wrapper-prefixed forms
+//
+// `/usr/bin/git`, `./git`, `command git`, `env git`, `/usr/bin/gh` are all the same
+// mutation; an exact-string `program === 'git'` match missed every one of them.
+// basename-normalize the program and advance past command/env/exec/sudo/nice.
+// An UNRECOGNIZED wrapper around a mutating git/gh verb fails CLOSED (conservative).
+// ---------------------------------------------------------------------------
+
+test('CR-03: /usr/bin/git commit → commit', () => {
+  assert.strictEqual(cls('/usr/bin/git commit -m bad').action, 'commit');
+});
+
+test('CR-03: ./git commit → commit', () => {
+  assert.strictEqual(cls('./git commit -m bad').action, 'commit');
+});
+
+test('CR-03: command git commit → commit', () => {
+  assert.strictEqual(cls('command git commit -m bad').action, 'commit');
+});
+
+test('CR-03: env git commit → commit', () => {
+  assert.strictEqual(cls('env git commit -m bad').action, 'commit');
+});
+
+test('CR-03: sudo git push → push', () => {
+  assert.strictEqual(cls('sudo git push origin main').action, 'push');
+});
+
+test('CR-03: /usr/bin/gh pr create → pr-create', () => {
+  assert.strictEqual(cls('/usr/bin/gh pr create --title x').action, 'pr-create');
+});
+
+test('CR-03: command gh issue create → issue-create', () => {
+  assert.strictEqual(cls('command gh issue create --title x').action, 'issue-create');
+});
+
+test('CR-03: a plain unrecognized program stays other (no git/gh underneath)', () => {
+  const r = cls('command ls -la');
+  assert.strictEqual(r.action, 'other');
+  assert.notStrictEqual(r.failClosed, true);
+});
+
+test('CR-03 fail-closed: path-qualified UNMAPPABLE github mutation → failClosed', () => {
+  const r = cls('/usr/bin/gh api -X POST repos/o/r/issues/weird');
+  assert.strictEqual(r.failClosed, true, JSON.stringify(r));
+  assert.strictEqual(r.action, 'unknown');
+});
+
+// ---------------------------------------------------------------------------
+// CR-04: gh api / curl body-flag synonyms imply POST → create
+//
+// `gh api … --raw-field body=x` and `curl … --data-raw/--data-binary/--data-urlencode`
+// are PR/issue-create synonyms. hasWriteBody only covered data/field/-d/-f/-F, so
+// these long-flag forms fell through to no-method → other → silent allow.
+// ---------------------------------------------------------------------------
+
+test('CR-04: gh api --raw-field pulls → pr-create', () => {
+  assert.deepStrictEqual(cls('gh api repos/o/r/pulls --raw-field body=x --raw-field base=next'), {
+    action: 'pr-create',
+    route: 'gh-api',
+  });
+});
+
+test('CR-04: gh api --raw-field issues → issue-create', () => {
+  assert.deepStrictEqual(cls('gh api repos/o/r/issues --raw-field title=x'), {
+    action: 'issue-create',
+    route: 'gh-api',
+  });
+});
+
+test('CR-04: gh api --field issues → issue-create', () => {
+  assert.deepStrictEqual(cls('gh api repos/o/r/issues --field title=x'), {
+    action: 'issue-create',
+    route: 'gh-api',
+  });
+});
+
+test('CR-04: curl --data-raw pulls → pr-create', () => {
+  assert.deepStrictEqual(cls('curl https://api.github.com/repos/o/r/pulls --data-raw {}'), {
+    action: 'pr-create',
+    route: 'curl',
+  });
+});
+
+test('CR-04: curl --data-binary pulls → pr-create', () => {
+  assert.deepStrictEqual(cls('curl https://api.github.com/repos/o/r/pulls --data-binary {}'), {
+    action: 'pr-create',
+    route: 'curl',
+  });
+});
+
+test('CR-04: curl --data-urlencode pulls → pr-create', () => {
+  assert.deepStrictEqual(cls('curl https://api.github.com/repos/o/r/pulls --data-urlencode k=v'), {
+    action: 'pr-create',
+    route: 'curl',
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NO OVER-BLOCK regression (these MUST stay action:'other', NOT fail-closed)
+// ---------------------------------------------------------------------------
+
+test('no-over-block: git status stays other', () => {
+  const r = cls('git status');
+  assert.strictEqual(r.action, 'other');
+  assert.notStrictEqual(r.failClosed, true);
+});
+
+test('no-over-block: git add . stays other (non-commit/push verb)', () => {
+  const r = cls('git add .');
+  assert.strictEqual(r.action, 'other');
+  assert.notStrictEqual(r.failClosed, true);
+});
+
+test('no-over-block: git -C /p status stays other (global option, read-only verb)', () => {
+  const r = cls('git -C /p status');
+  assert.strictEqual(r.action, 'other');
+  assert.notStrictEqual(r.failClosed, true);
+});
+
+test('no-over-block: gh repo view stays other', () => {
+  const r = cls('gh repo view o/r');
+  assert.strictEqual(r.action, 'other');
+  assert.notStrictEqual(r.failClosed, true);
+});
+
+test('no-over-block: gh api GET issues stays other', () => {
+  const r = cls('gh api repos/o/r/issues');
+  assert.strictEqual(r.action, 'other');
+  assert.notStrictEqual(r.failClosed, true);
+});
+
+test('no-over-block: curl GET to github stays other', () => {
+  const r = cls('curl https://api.github.com/repos/o/r/issues');
+  assert.strictEqual(r.action, 'other');
+  assert.notStrictEqual(r.failClosed, true);
+});
+
+test('no-over-block: curl POST to non-github host stays other', () => {
+  const r = cls('curl -X POST https://example.com/repos/o/r/issues --data-binary {}');
+  assert.strictEqual(r.action, 'other');
+  assert.notStrictEqual(r.failClosed, true);
+});
+
+test('no-over-block: /usr/bin/git status stays other (path-qualified read-only)', () => {
+  const r = cls('/usr/bin/git status');
+  assert.strictEqual(r.action, 'other');
+  assert.notStrictEqual(r.failClosed, true);
+});
