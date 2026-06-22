@@ -8,8 +8,9 @@
  * wires it into gsd-core's PROJECT-scoped .claude/settings.json. This test asserts:
  *
  *   1. the snippet is valid JSON in the harness `{hooks:{<event>:[{matcher,hooks:[...]}]}}` shape
- *   2. EVERY Phase-3 hook (the eight Bash gates + binlib-edit + protocol-reminder) appears
- *      exactly once, each command referencing its hooks/<name>.cjs by an ABSOLUTE path
+ *   2. EVERY wired hook (the Phase-3 eight Bash gates + the Phase-4 lint-ci-marker + scan-gate,
+ *      plus binlib-edit + protocol-reminder) appears exactly once, each command referencing
+ *      its hooks/<name>.cjs by an ABSOLUTE path
  *   3. matchers are correct: Bash gates under "Bash", binlib-edit under "Write|Edit",
  *      protocol-reminder under "UserPromptSubmit"
  *   4. NO command references ~/.claude (project-scoped blast radius — PROJECT settings-scope)
@@ -38,6 +39,8 @@ const BASH_GATES = [
   'freshness',
   'containment',
   'policy-invariants',
+  'lint-ci-marker',
+  'scan-gate',
 ];
 const WRITE_EDIT_GATES = ['binlib-edit'];
 const PROMPT_HOOKS = ['protocol-reminder'];
@@ -146,7 +149,7 @@ test('NO command references ~/.claude (project-scoped blast radius)', () => {
 
 // ---- Wiring proof: the SAME jq merge install.sh uses preserves a pre-existing hook (EP-6) ----
 
-test('install.sh merge wires all ten hooks WITHOUT clobbering a pre-existing hook', { skip: hasNoJq() }, () => {
+test('install.sh merge wires every hook WITHOUT clobbering a pre-existing hook', { skip: hasNoJq() }, () => {
   const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), 'snip-merge-'));
   const settings = path.join(tmpdir, 'settings.json');
   // Seed with a USER_EXISTING PreToolUse(Bash) hook that must survive the merge.
@@ -183,7 +186,7 @@ test('install.sh merge wires all ten hooks WITHOUT clobbering a pre-existing hoo
   const surviving = mergedCmds.some((c) => c.command.includes('/tmp/USER_EXISTING.sh'));
   assert.ok(surviving, 'pre-existing USER_EXISTING hook must survive the merge (EP-6)');
 
-  // All ten Phase-3 hooks are present after the merge.
+  // Every wired hook (Phase-3 + Phase-4 lint-ci-marker/scan-gate) is present after the merge.
   for (const name of ALL_HOOKS) {
     assert.ok(
       mergedCmds.some((c) => c.command.includes(`/hooks/${name}.cjs"`)),

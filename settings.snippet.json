@@ -43,6 +43,16 @@
             "type": "command",
             "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/policy-invariants.cjs\"",
             "timeout": 120
+          },
+          {
+            "type": "command",
+            "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/lint-ci-marker.cjs\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/scan-gate.cjs\"",
+            "timeout": 120
           }
         ]
       },
