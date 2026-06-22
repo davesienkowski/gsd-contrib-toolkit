@@ -34,8 +34,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { resolveGsdCoreRoot, requireLiveScript } = require('../hooks/lib/resolve.cjs');
-const { parseCommand } = require('../hooks/lib/argv.cjs');
-const { hasFlag } = require('../hooks/lib/flags.cjs');
 
 const DEDUPE_REL = 'scripts/issue-dedupe.cjs';
 const VERSION_GATE_REL = 'scripts/issue-version-gate.cjs';
@@ -278,7 +276,13 @@ function runTriageAssist(deps = {}) {
   // --- mutation: reachable ONLY with --apply, through the injectable seam ---
   let mutated = false;
   if (apply) {
-    mutate({ root, issueNumber: issue.number, applyLabel: suggestedRole });
+    try {
+      mutate({ root, issueNumber: issue.number, applyLabel: suggestedRole });
+    } catch (err) {
+      // A gh failure (auth/network/bad issue number) must surface as the clean
+      // LOUD error path, never a raw stack trace (WR-02).
+      return { error: '--apply mutation failed (gh error): ' + ((err && err.message) || String(err)) };
+    }
     mutated = true;
   }
 
@@ -309,12 +313,15 @@ function runCli(deps = {}) {
   const write = deps.write || ((s) => process.stdout.write(s));
   const writeErr = deps.writeErr || ((s) => process.stderr.write(s));
 
-  // Parse --apply from process.argv via the SHARED structured-argv flags helper
-  // (never a raw-string match) when not explicitly injected.
+  // Detect --apply from the ALREADY-tokenized process.argv when not explicitly
+  // injected. `process.argv` elements are discrete shell tokens, so `--apply`
+  // is present ONLY when the user actually typed it as a standalone flag — a
+  // positional argument whose text merely contains `--apply` does NOT re-tokenize
+  // into a real flag (the prior join-then-parseCommand idiom false-positived
+  // here, defeating the mutation guard — CR-01).
   let apply = deps.apply;
   if (apply === undefined) {
-    const parsed = parseCommand(['triage-assist'].concat(process.argv.slice(2)).join(' '));
-    apply = hasFlag(parsed, ['--apply']);
+    apply = process.argv.slice(2).includes('--apply');
   }
 
   const r = runTriageAssist(Object.assign({}, deps, { apply }));
@@ -340,7 +347,15 @@ function runCli(deps = {}) {
     write('  ✓ no open issue scored at/above the LIVE dedupe threshold.\n');
   }
 
-  write('  version-gate (LIVE issue-version-gate.cjs): ' + r.versionGate.action + ' — ' + r.versionGate.reason + '\n');
+  // Guard the LIVE version-gate result: if the LIVE script returned null/undefined
+  // or a shape without `action` (shape drift WITHOUT throwing), render a safe line
+  // rather than crashing with a raw TypeError (WR-01).
+  const vg = r.versionGate;
+  write(
+    '  version-gate (LIVE issue-version-gate.cjs): ' +
+      (vg ? (vg.action || '?') + ' — ' + (vg.reason || '(no reason)') : 'no result returned') +
+      '\n'
+  );
   write('  suggested role (from LIVE docs/agents/triage-labels.md): ' + r.suggestedRole + '\n\n');
 
   write('  remediation — run these to apply the role + strip ' + NEEDS_TRIAGE_LABEL + ' (NOT auto-run):\n');
