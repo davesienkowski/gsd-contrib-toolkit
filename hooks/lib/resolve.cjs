@@ -25,6 +25,7 @@
  */
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 /**
@@ -96,6 +97,49 @@ function resolveGsdCoreRoot(startDir) {
 }
 
 /**
+ * Expand a leading `~` / `~/...` to the user's home directory. The shell expands
+ * `~` before exec, but a parsed positional retains the literal `~`, so the resolver
+ * must expand it too.
+ * @param {string} p
+ * @returns {string}
+ */
+function expandHome(p) {
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/') || p.startsWith('~\\')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
+/**
+ * Derive the effective working directory a parsed command runs in, by walking its
+ * `cd <dir>` segments left-to-right from `baseCwd`.
+ *
+ * A PreToolUse hook's process.cwd() is the SESSION's cwd, not the worktree a
+ * `cd <worktree> && git ...` command actually targets. Resolving the gsd-core root
+ * from process.cwd() therefore inspects the wrong tree (e.g. lints the session repo
+ * instead of the worktree being committed). Following the command's own `cd` lands
+ * the resolver on the tree the git/gh/npm invocation will run in.
+ *
+ * @param {{ok?:boolean, segments?:Array}} parsed result of parseCommand(command)
+ * @param {string} [baseCwd] defaults to process.cwd()
+ * @returns {string} absolute effective cwd
+ */
+function commandStartDir(parsed, baseCwd) {
+  let cwd = path.resolve(baseCwd == null ? process.cwd() : String(baseCwd));
+  if (!parsed || parsed.ok !== true || !Array.isArray(parsed.segments)) return cwd;
+  for (const seg of parsed.segments) {
+    if (!seg || seg.program !== 'cd') continue;
+    // `cd <dir>` — take the first non-flag argument. Prefer the classified
+    // positional; fall back to the raw second token for robustness.
+    const target =
+      (Array.isArray(seg.positionals) && seg.positionals[0]) ||
+      (Array.isArray(seg.tokens) && seg.tokens[1]) ||
+      '';
+    if (target) cwd = path.resolve(cwd, expandHome(String(target)));
+  }
+  return cwd;
+}
+
+/**
  * require() a LIVE gsd-core script by its path relative to the gsd-core root.
  *
  * NEVER falls back to a vendored copy: a missing or broken live script throws a typed
@@ -145,4 +189,6 @@ module.exports = {
   resolveGsdCoreRoot,
   requireLiveScript,
   hasSentinel,
+  commandStartDir,
+  expandHome,
 };

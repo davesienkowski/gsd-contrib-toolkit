@@ -21,6 +21,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const { runPolicyGate, POLICY_CHECKS } = require('./policy-invariants.cjs');
 
@@ -174,6 +177,21 @@ test('POLICY_CHECKS is EXACTLY the four mechanizable scripts (H-D: no CONTEXT.md
   for (const c of POLICY_CHECKS) {
     assert.doesNotMatch(JSON.stringify(c), /CONTEXT\.md/i);
   }
+});
+
+test('git commit whose cwd is NOT a gsd-core checkout (cd to a tmp dir) → allow', () => {
+  // No gsdCoreRoot injected → the real resolver runs from the command's cd target.
+  // A `cd <non-core> && git commit` is not a gsd-core contribution, so the gate must
+  // allow it (this is what lets the toolkit repo — and any other repo — be committed
+  // to while these hooks are installed), NOT fail closed.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'not-core-'));
+  const d = runPolicyGate(input(`cd ${tmp} && git commit -m wip`), {
+    runChecks: () => {
+      throw new Error('checks must not run for a non-gsd-core commit');
+    },
+    overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
+  });
+  assert.strictEqual(d.permissionDecision, 'allow');
 });
 
 test('an unparseable command fails closed (deny)', () => {

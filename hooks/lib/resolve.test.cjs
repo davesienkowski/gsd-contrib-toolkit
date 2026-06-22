@@ -20,6 +20,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const res = require('./resolve.cjs');
+const { parseCommand } = require('./argv.cjs');
 
 /**
  * Build a fixture tree shaped like a gsd-core checkout:
@@ -99,6 +100,60 @@ test('requireLiveScript: a module that throws at require-time → ScriptResolveE
     "throw new Error('module init failed');\n"
   );
   assert.throws(() => res.requireLiveScript(root, 'scripts/boom.cjs'), res.ScriptResolveError);
+});
+
+// --- commandStartDir: derive the effective cwd from a `cd ... && git ...` command ---
+// The bug this fixes: a hook resolving the gsd-core root from process.cwd() lints the
+// SESSION's repo, not the worktree the git command actually targets. The git command
+// usually starts with `cd <worktree> && git commit`, so the effective cwd is the cd
+// target, not the hook's process.cwd().
+
+const BASE = '/home/dave/repos/gsd-core';
+
+test('commandStartDir: no cd → returns the base cwd', () => {
+  const parsed = parseCommand('git commit -m "x"');
+  assert.strictEqual(res.commandStartDir(parsed, BASE), BASE);
+});
+
+test('commandStartDir: leading `cd <abs> && git` → returns the cd target', () => {
+  const parsed = parseCommand('cd /home/dave/repos/gsd-core-1549-pr-title && git commit -m "x"');
+  assert.strictEqual(
+    res.commandStartDir(parsed, BASE),
+    '/home/dave/repos/gsd-core-1549-pr-title'
+  );
+});
+
+test('commandStartDir: relative cd resolves against the base cwd', () => {
+  const parsed = parseCommand('cd ../gsd-core-1549-pr-title && git commit -m "x"');
+  assert.strictEqual(
+    res.commandStartDir(parsed, BASE),
+    '/home/dave/repos/gsd-core-1549-pr-title'
+  );
+});
+
+test('commandStartDir: expands a leading ~ in the cd target', () => {
+  const parsed = parseCommand('cd ~/repos/gsd-core-1549-pr-title && git commit -m "x"');
+  assert.strictEqual(
+    res.commandStartDir(parsed, BASE),
+    path.join(os.homedir(), 'repos', 'gsd-core-1549-pr-title')
+  );
+});
+
+test('commandStartDir: multiple cd segments → the last one wins', () => {
+  const parsed = parseCommand('cd /tmp && cd /home/dave/repos/gsd-core-1549-pr-title && git commit');
+  assert.strictEqual(
+    res.commandStartDir(parsed, BASE),
+    '/home/dave/repos/gsd-core-1549-pr-title'
+  );
+});
+
+test('commandStartDir: an unparseable command → falls back to the base cwd', () => {
+  assert.strictEqual(res.commandStartDir({ ok: false, reason: 'x' }, BASE), BASE);
+});
+
+test('commandStartDir: missing baseCwd → defaults to process.cwd()', () => {
+  const parsed = parseCommand('git status');
+  assert.strictEqual(res.commandStartDir(parsed), process.cwd());
 });
 
 // --- Integration against the REAL gsd-core checkout when present ---

@@ -28,7 +28,7 @@
 const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit } = require('./lib/failclosed.cjs');
-const { resolveGsdCoreRoot } = require('./lib/resolve.cjs');
+const { resolveGsdCoreRoot, commandStartDir, ScriptResolveError } = require('./lib/resolve.cjs');
 
 class FailClosed extends Error {}
 
@@ -156,7 +156,16 @@ function runPolicyGate(stdinString, deps = {}) {
   return runGate(() => {
     const resolved = Object.assign({}, deps);
     if (!resolved.gsdCoreRoot) {
-      resolved.gsdCoreRoot = resolveGsdCoreRoot(process.cwd());
+      try {
+        resolved.gsdCoreRoot = resolveGsdCoreRoot(commandStartDir(parseCommand(ctx.command), process.cwd()));
+      } catch (err) {
+        // The command does not run in a gsd-core checkout (e.g. a commit in another
+        // repo). It is not a gsd-core contribution, so this gate has nothing to add —
+        // allow it. (A BROKEN gsd-core checkout still fails closed: the root resolves,
+        // then requireLiveScript/runChecks throws — preserved below.)
+        if (err instanceof ScriptResolveError) return allow();
+        throw err;
+      }
     }
     ctx.worktreeRoot = ctx.worktreeRoot || resolved.gsdCoreRoot;
     if (!resolved.runChecks) {

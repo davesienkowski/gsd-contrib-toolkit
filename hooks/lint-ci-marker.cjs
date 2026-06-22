@@ -37,7 +37,7 @@
 const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit } = require('./lib/failclosed.cjs');
-const { resolveGsdCoreRoot } = require('./lib/resolve.cjs');
+const { resolveGsdCoreRoot, commandStartDir, ScriptResolveError } = require('./lib/resolve.cjs');
 const {
   readTreeShaLive,
   readWorkingTreeStatusLive,
@@ -133,7 +133,14 @@ function runLintCiMarkerGate(stdinString, deps = {}) {
     const needsRoot =
       !resolved.readTreeSha || !resolved.readWorkingTreeStatus || !resolved.readMarkerExists;
     if (needsRoot && !resolved.worktreeRoot) {
-      resolved.worktreeRoot = resolveGsdCoreRoot(process.cwd());
+      try {
+        resolved.worktreeRoot = resolveGsdCoreRoot(commandStartDir(parseCommand(ctx.command), process.cwd()));
+      } catch (err) {
+        // Not a gsd-core checkout (e.g. a commit in another repo) → not this gate's
+        // concern; allow. A broken gsd-core checkout still fails closed downstream.
+        if (err instanceof ScriptResolveError) return allow();
+        throw err;
+      }
     }
     ctx.worktreeRoot = ctx.worktreeRoot || resolved.worktreeRoot;
 
