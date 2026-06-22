@@ -170,6 +170,71 @@ test('curl POST to api.github.com non-issues/pulls endpoint → other (out of TH
 });
 
 // ---------------------------------------------------------------------------
+// Member SUB-resource metadata (labels / assignees / reviewers) → other (G1)
+//
+// Governing applies to create (collection POST) + body/title edit (bare-member
+// PATCH/PUT) ONLY. A mutating call to a member SUB-resource (OWNER/REPO/issues/N/
+// labels, .../pulls/N/requested_reviewers, .../issues/N/assignees) is benign
+// metadata — it cannot create or change an issue/PR title/body — so it must pass
+// through as 'other', NEVER fail closed. The numeric member id distinguishes these
+// from the genuinely-unmappable paths (non-numeric member) that MUST stay failClosed.
+// ---------------------------------------------------------------------------
+
+test('gh api POST .../issues/N/labels → other (add labels, not governed) [G1]', () => {
+  const r = cls('gh api -X POST repos/o/r/issues/123/labels -f labels[]=bug');
+  assert.strictEqual(r.action, 'other', JSON.stringify(r));
+  assert.notStrictEqual(r.failClosed, true);
+});
+
+test('gh api PUT .../issues/N/labels → other (replace labels) [G1]', () => {
+  const r = cls('gh api -X PUT repos/o/r/issues/123/labels -f labels[]=bug');
+  assert.strictEqual(r.action, 'other', JSON.stringify(r));
+  assert.notStrictEqual(r.failClosed, true);
+});
+
+test('gh api POST .../pulls/N/requested_reviewers → other (request reviewers) [G1]', () => {
+  const r = cls('gh api -X POST repos/o/r/pulls/123/requested_reviewers -f reviewers[]=octocat');
+  assert.strictEqual(r.action, 'other', JSON.stringify(r));
+  assert.notStrictEqual(r.failClosed, true);
+});
+
+test('gh api POST .../issues/N/assignees → other (add assignees) [G1]', () => {
+  const r = cls('gh api -X POST repos/o/r/issues/123/assignees -f assignees[]=octocat');
+  assert.strictEqual(r.action, 'other', JSON.stringify(r));
+  assert.notStrictEqual(r.failClosed, true);
+});
+
+test('gh api POST without /repos prefix .../issues/N/labels → other [G1]', () => {
+  const r = cls('gh api -X POST /repos/o/r/issues/123/labels');
+  assert.strictEqual(r.action, 'other', JSON.stringify(r));
+  assert.notStrictEqual(r.failClosed, true);
+});
+
+test('curl POST to api.github.com .../pulls/N/requested_reviewers → other [G1]', () => {
+  const r = cls('curl -X POST https://api.github.com/repos/o/r/pulls/123/requested_reviewers -d {}');
+  assert.strictEqual(r.action, 'other', JSON.stringify(r));
+  assert.notStrictEqual(r.failClosed, true);
+});
+
+// Regression guard: the sub-resource relaxation must NOT weaken EP-1. A mutating
+// POST to a member that is NOT a clean numeric id (issues/weird/...) is still an
+// unmappable github mutation and MUST fail closed.
+test('gh api POST .../issues/<non-numeric>/... still failClosed [G1 guard]', () => {
+  const r = cls('gh api -X POST repos/o/r/issues/weird/labels');
+  assert.strictEqual(r.failClosed, true, JSON.stringify(r));
+  assert.strictEqual(r.action, 'unknown');
+});
+
+// Regression guard: a POST to a BARE member id (not a sub-resource) is a
+// mutating-but-mismatched call (you create at the collection, not the member) and
+// stays failClosed — the relaxation only covers member sub-resources.
+test('gh api POST .../issues/N (bare member, no sub) still failClosed [G1 guard]', () => {
+  const r = cls('gh api -X POST repos/o/r/issues/123');
+  assert.strictEqual(r.failClosed, true, JSON.stringify(r));
+  assert.strictEqual(r.action, 'unknown');
+});
+
+// ---------------------------------------------------------------------------
 // Read-only / unrelated → other (must ALLOW, not fail-closed)
 // ---------------------------------------------------------------------------
 

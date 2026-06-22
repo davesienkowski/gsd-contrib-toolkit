@@ -111,29 +111,40 @@ function classifyGithubPath(path) {
   let idx = 0;
   if (parts[idx] === 'repos') idx += 1;
 
-  // Expect OWNER / REPO / resource [ / N ]
+  // Expect OWNER / REPO / resource [ / N [ / <sub-resource…> ] ]
   // parts[idx] = owner, parts[idx+1] = repo, parts[idx+2] = resource
   const owner = parts[idx];
   const repo = parts[idx + 1];
   const resource = parts[idx + 2];
-  const member = parts[idx + 3];
-  const extra = parts[idx + 4];
+  const rest = parts.slice(idx + 3); // member id + any trailing sub-resource segments
 
   if (!owner || !repo || !resource) return null;
   if (resource !== 'issues' && resource !== 'pulls') return null;
 
-  // Collection endpoint: exactly OWNER/REPO/resource (no further segments).
-  if (member === undefined) {
+  // Collection endpoint: exactly OWNER/REPO/resource (no further segments) — the
+  // create surface (POST here = issue/PR create).
+  if (rest.length === 0) {
     return { resource, member: false };
   }
 
-  // Member endpoint: OWNER/REPO/resource/N where N is a numeric id, nothing after.
-  if (extra === undefined && /^\d+$/.test(member)) {
+  // Member endpoints require a NUMERIC id. A non-numeric "member" (issues/weird/…)
+  // is an unmappable path — return null so the mutating-github guard fails closed
+  // (EP-1: an unclassifiable mutating synonym MUST deny, never fall through).
+  if (!/^\d+$/.test(rest[0])) return null;
+
+  // Bare member: OWNER/REPO/resource/N — the governed body/title edit surface
+  // (PATCH/PUT here = issue/PR edit).
+  if (rest.length === 1) {
     return { resource, member: true };
   }
 
-  // Anything else (weird/extra path segments, non-numeric member) is unmappable.
-  return null;
+  // Member SUB-resource: OWNER/REPO/resource/N/<labels|assignees|requested_reviewers|…>.
+  // These are benign metadata mutations — NOT a create (collection POST) and NOT a
+  // body/title edit (bare-member PATCH). Governing covers create + body/title only,
+  // so a sub-resource mutation is out of this gate's scope and must pass through as
+  // 'other' rather than fail closed (G1). The numeric-member check above keeps
+  // genuinely-unmappable paths (non-numeric member) failing closed.
+  return { resource, member: true, sub: true };
 }
 
 /**
@@ -269,6 +280,11 @@ function classifyRestSegment(seg, route, isCurl) {
     }
     return null;
   }
+
+  // Member sub-resource (labels / assignees / requested_reviewers / …): benign
+  // metadata, out of this gate's scope (create + body/title edit only). Allow as
+  // 'other' — never fail closed (G1).
+  if (kind.sub) return null;
 
   const isPatchOrPut = method === 'PATCH' || method === 'PUT';
   if (kind.resource === 'issues') {
