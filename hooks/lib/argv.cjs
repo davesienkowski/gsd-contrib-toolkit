@@ -339,6 +339,17 @@ function splitSegments(str) {
  * @param {string[]} tokens
  * @returns {{program:string, subcommands:string[], flags:Object, shortFlags:Object, positionals:string[], tokens:string[]}}
  */
+// CR-02: a leading shell env-assignment prefix (`GIT_DIR=/x git commit …`,
+// `A=1 B=2 git push …`) must NOT be read as the program — otherwise the real verb
+// never surfaces and a gated mutation silently classifies as action:'other'. We
+// drop the LEADING run of `NAME=VALUE` tokens before reading the program. This is
+// the SINGLE source fix (no duplicate strip in classify.cjs) and it simultaneously
+// repairs commandStartDir's `cd` detection for `FOO=x cd …`. The shape is the POSIX
+// env-assignment NAME (`[A-Za-z_][A-Za-z0-9_]*`) followed by `=`. Toolkit-OWNED
+// robust-parse rule (no LIVE shared classifier to delegate to; repoint per #1549 if
+// gsd-core ever extracts one).
+const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
 function classifyTokens(tokens) {
   const flags = {};
   const shortFlags = {};
@@ -347,13 +358,15 @@ function classifyTokens(tokens) {
   let program = '';
   let sawFlag = false;
 
-  for (let i = 0; i < tokens.length; i++) {
-    const tok = tokens[i];
+  // Advance past every LEADING env-assignment token; the program is the first
+  // non-assignment token. seg.tokens stays the FULL raw argv (HARD-04 contract) —
+  // only the program/subcommand/flag derivation begins at `ti`.
+  let ti = 0;
+  while (ti < tokens.length && ENV_ASSIGNMENT.test(tokens[ti])) ti += 1;
+  program = ti < tokens.length ? tokens[ti] : '';
 
-    if (i === 0) {
-      program = tok;
-      continue;
-    }
+  for (let i = ti + 1; i < tokens.length; i++) {
+    const tok = tokens[i];
 
     const isLong = tok.startsWith('--') && tok.length > 2;
     const isShort = !isLong && tok.startsWith('-') && tok.length > 1 && tok !== '-';
