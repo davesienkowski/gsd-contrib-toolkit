@@ -326,6 +326,55 @@ test('ENF-18 unit: evaluateCiResult is green ONLY for testsRan + allRequiredGree
   assert.strictEqual(evaluateCiResult({}).green, false);
 });
 
+// ── WR-04: --fill / --fill-first / --web denied for un-observability (NOT template) ──
+// The body these forms produce is not observable to a PreToolUse hook, so the command STAYS
+// DENIED (fail-closed) — but with a precise un-observability reason, distinct from the ENF-02
+// template-content denial, telling the user to provide --body / --body-file.
+const FILL_RE = /fill|web|cannot observe|--body/i;
+
+test('WR-04: gh pr create --fill → DENY with un-observability reason (not template)', () => {
+  const d = runPrGate(input('gh pr create --fill --base next --head fix/123-x'), deps());
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, FILL_RE);
+  // It is NOT the ENF-02 template-policy denial (which cites ENF-02 / the LIVE policy);
+  // the un-observability reason names --fill/--web and the cannot-observe remedy instead.
+  assert.doesNotMatch(d.permissionDecisionReason, /ENF-02|LIVE pr-template-policy/i);
+  assert.match(d.permissionDecisionReason, /--fill|observe/i);
+});
+
+test('WR-04: gh pr create --fill-first → DENY with the same un-observability reason', () => {
+  const d = runPrGate(input('gh pr create --fill-first --base next --head fix/123-x'), deps());
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, FILL_RE);
+  assert.match(d.permissionDecisionReason, /observe/i);
+});
+
+test('WR-04: gh pr create --web → DENY with the un-observability reason', () => {
+  const d = runPrGate(input('gh pr create --web --base next --head fix/123-x'), deps());
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, FILL_RE);
+  assert.match(d.permissionDecisionReason, /observe/i);
+});
+
+test('WR-04 no-regression: a body-bearing command that fails the template STILL denies for template', () => {
+  const d = runPrGate(
+    input('gh pr create --base next --title x --body "just some prose, no template"'),
+    deps()
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /template/i);
+  // The new --fill branch did NOT steal a body-bearing command.
+  assert.doesNotMatch(d.permissionDecisionReason, /--fill|--web|cannot observe/i);
+});
+
+test('WR-04 no-regression: a fully-valid --body PR still ALLOWS', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps()
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
 // Helpers. A real `gh pr create --body "..."` command carries REAL newlines inside the
 // double-quoted token (the harness passes the literal command string). argv preserves
 // real newlines verbatim; only escapes a backslash. So the native double-quoted body
