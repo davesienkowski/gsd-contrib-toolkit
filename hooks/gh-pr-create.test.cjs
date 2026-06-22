@@ -189,12 +189,16 @@ test('a thrown live target WITH a logged override → allow (HARD-03)', () => {
   assert.strictEqual(d.permissionDecision, 'allow');
 });
 
-// Helpers: encode newlines so the body survives as a single double-quoted shell token.
-// argv keeps literal backslash-n; the gate normalizes \n → newline before policy eval.
+// Helpers. A real `gh pr create --body "..."` command carries REAL newlines inside the
+// double-quoted token (the harness passes the literal command string). argv preserves
+// real newlines verbatim; only escapes a backslash. So the native double-quoted body
+// uses real newlines (we just guard embedded double-quotes).
 function escapeNl(s) {
-  return s.replace(/\n/g, '\\n').replace(/"/g, '\\"');
+  return s.replace(/"/g, '\\"');
 }
+// The single-quoted gh-api `-f body='...'` route is exercised with the `\n` sentinel
+// form (argv keeps the literal backslash-n inside single quotes; the gate's
+// normalizeBody turns it back into real newlines) — covering BOTH body encodings.
 function escapeSingle(s) {
-  // inside single quotes we keep newlines as \n sentinels too (gate normalizes)
   return s.replace(/\n/g, '\\n').replace(/'/g, "'\\''");
 }
