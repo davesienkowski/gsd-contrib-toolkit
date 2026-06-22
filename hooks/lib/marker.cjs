@@ -25,6 +25,11 @@
  */
 
 const path = require('node:path');
+// IN-03: FailClosed is the single shared type from failclosed.cjs. marker is a contract
+// (not a gate) but its live readers throw FailClosed; we IMPORT and RE-EXPORT it so
+// lint-ci-marker.cjs's `require('./lib/marker.cjs').FailClosed` import is unchanged.
+// Acyclic: marker -> failclosed -> override; failclosed never requires marker.
+const { FailClosed } = require('./failclosed.cjs');
 
 /**
  * The frozen marker subdirectory (relative to the git dir). Shared by the writer and the
@@ -32,11 +37,6 @@ const path = require('node:path');
  * `<git-dir>/gsd-contrib/lint-ci-green/<tree-sha>`.
  */
 const MARKER_SUBDIR = 'gsd-contrib/lint-ci-green';
-
-/**
- * A typed error so a calling gate's runGate catch fails closed (HARD-01).
- */
-class FailClosed extends Error {}
 
 /**
  * The default LIVE git runner: a thin wrapper over execFileSync with the standard options

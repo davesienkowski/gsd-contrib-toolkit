@@ -48,10 +48,10 @@
 const path = require('node:path');
 const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction } = require('./lib/classify.cjs');
-const { runGate, readHookInput, deny, allow, emit } = require('./lib/failclosed.cjs');
+const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand, requireLiveScript } = require('./lib/resolve.cjs');
 
-class FailClosed extends Error {}
+// FailClosed/safeCommand: shared IN-03 helpers from failclosed.cjs.
 
 // Toolkit-OWNED policies (replicated from gsd-core CI workflows — H-A). Documented as
 // ours; the deny reasons name them as the toolkit's own.
@@ -657,18 +657,6 @@ function ownerRepoFromRemote(url) {
   return { owner, repo };
 }
 
-/**
- * @param {string} stdinString
- * @returns {string}
- */
-function safeCommand(stdinString) {
-  try {
-    const o = JSON.parse(stdinString);
-    return (o && o.tool_input && o.tool_input.command) || '';
-  } catch (_) {
-    return '';
-  }
-}
 
 function main() {
   let buf = '';

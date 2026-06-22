@@ -31,6 +31,33 @@
 const override = require('./override.cjs');
 
 /**
+ * IN-03: the single shared fail-closed error type. A typed Error so a gate's runGate
+ * catch turns any `throw new FailClosed(msg)` into a fail-closed DENY (HARD-01). Every
+ * gate imports THIS class instead of re-declaring its own — a future change propagates
+ * to all gates. There is no `instanceof FailClosed` dependency anywhere (gates throw it
+ * and runGate reads only err.message), so one shared identity is behavior-identical.
+ */
+class FailClosed extends Error {}
+
+/**
+ * IN-03: the single shared best-effort command extractor. Parses the PreToolUse stdin
+ * envelope and returns `tool_input.command`, or '' on ANY malformed input — it NEVER
+ * throws (a gate uses it for non-decision-bearing context like the command string in a
+ * receipt). Distinct from readHookInput, which throws so the gate fails closed.
+ *
+ * @param {string} stdinString raw JSON from the harness on stdin
+ * @returns {string} the command, or '' when absent/unparseable
+ */
+function safeCommand(stdinString) {
+  try {
+    const o = JSON.parse(stdinString);
+    return (o && o.tool_input && o.tool_input.command) || '';
+  } catch (_) {
+    return '';
+  }
+}
+
+/**
  * Parse the PreToolUse hook payload from a stdin string.
  *
  * @param {string} stdinString raw JSON from the harness on stdin
@@ -162,4 +189,6 @@ module.exports = {
   allow,
   emit,
   runGate,
+  FailClosed,
+  safeCommand,
 };

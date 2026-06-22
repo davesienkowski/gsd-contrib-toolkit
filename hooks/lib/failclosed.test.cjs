@@ -149,3 +149,40 @@ test('runGate falls back to the real override module when no overrideImpl inject
     else process.env.GSD_CONTRIB_OVERRIDE = saved;
   }
 });
+
+// ---- IN-03: shared FailClosed + safeCommand (hoisted from the gates) ----
+
+test('FailClosed is an Error subclass, throwable, and preserves its message', () => {
+  assert.strictEqual(typeof fc.FailClosed, 'function');
+  const e = new fc.FailClosed('boom');
+  assert.ok(e instanceof Error, 'FailClosed must be instanceof Error');
+  assert.ok(e instanceof fc.FailClosed);
+  assert.strictEqual(e.message, 'boom');
+  assert.throws(
+    () => {
+      throw new fc.FailClosed('thrown');
+    },
+    (err) => err instanceof Error && err.message === 'thrown'
+  );
+});
+
+test('safeCommand returns the parsed tool_input.command for valid stdin', () => {
+  const cmd = fc.safeCommand(
+    JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'gh pr create' } })
+  );
+  assert.strictEqual(cmd, 'gh pr create');
+});
+
+test('safeCommand returns empty string on malformed stdin (never throws)', () => {
+  assert.strictEqual(fc.safeCommand('}{ not json'), '');
+  assert.strictEqual(fc.safeCommand(''), '');
+  assert.strictEqual(fc.safeCommand(undefined), '');
+});
+
+test('safeCommand returns empty string when tool_input.command is absent', () => {
+  assert.strictEqual(fc.safeCommand(JSON.stringify({ tool_name: 'Bash' })), '');
+  assert.strictEqual(
+    fc.safeCommand(JSON.stringify({ tool_name: 'Bash', tool_input: {} })),
+    ''
+  );
+});

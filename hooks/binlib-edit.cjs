@@ -33,9 +33,10 @@
  */
 
 const path = require('node:path');
-const { runGate, readHookInput, deny, allow, emit } = require('./lib/failclosed.cjs');
+const { runGate, readHookInput, deny, allow, emit, FailClosed } = require('./lib/failclosed.cjs');
 
-class FailClosed extends Error {}
+// FailClosed: shared IN-03 helper from failclosed.cjs (binlib-edit has no safeCommand —
+// it uses safeFilePath; Write/Edit gates read file_path, not command).
 
 /**
  * Split a path into its segments, tolerant of either separator (the harness may hand us a

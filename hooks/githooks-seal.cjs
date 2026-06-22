@@ -35,10 +35,10 @@
 const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction } = require('./lib/classify.cjs');
 const { hasFlag } = require('./lib/flags.cjs');
-const { runGate, readHookInput, deny, allow, emit } = require('./lib/failclosed.cjs');
+const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand } = require('./lib/resolve.cjs');
 
-class FailClosed extends Error {}
+// FailClosed/safeCommand: shared IN-03 helpers from failclosed.cjs.
 
 const SEALED_ACTIONS = new Set(['commit', 'push']);
 const REQUIRED_HOOKS_PATH = '.githooks';
@@ -147,18 +147,6 @@ function readHooksPathLive(root) {
   return out.length > 0 ? out : null;
 }
 
-/**
- * @param {string} stdinString
- * @returns {string}
- */
-function safeCommand(stdinString) {
-  try {
-    const o = JSON.parse(stdinString);
-    return (o && o.tool_input && o.tool_input.command) || '';
-  } catch (_) {
-    return '';
-  }
-}
 
 function main() {
   let buf = '';

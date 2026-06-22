@@ -39,12 +39,10 @@
 const path = require('node:path');
 const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction } = require('./lib/classify.cjs');
-const { runGate, readHookInput, deny, allow, emit } = require('./lib/failclosed.cjs');
+const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand, requireLiveScript } = require('./lib/resolve.cjs');
 
-// A sentinel thrown to mean "I cannot confidently evaluate this — fail closed."
-// runGate's catch turns any throw into a DENY (unless a logged override is present).
-class FailClosed extends Error {}
+// FailClosed/safeCommand: shared IN-03 helpers from failclosed.cjs.
 
 /**
  * Find the structured segment that classifyAction acted on (the first actionable
@@ -383,19 +381,6 @@ function runIssueGate(stdinString, deps = {}) {
   }, ctx);
 }
 
-/**
- * Best-effort extract the command for the override receipt without throwing.
- * @param {string} stdinString
- * @returns {string}
- */
-function safeCommand(stdinString) {
-  try {
-    const o = JSON.parse(stdinString);
-    return (o && o.tool_input && o.tool_input.command) || '';
-  } catch (_) {
-    return '';
-  }
-}
 
 // CLI entry: read stdin, run the gate, emit the PreToolUse decision envelope.
 function main() {
