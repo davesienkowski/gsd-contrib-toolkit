@@ -231,14 +231,46 @@ function currentBranchLive(root) {
 }
 
 /**
- * The remote a `git push` targets: the first non-flag arg after `push`, else `origin`.
+ * git push options that consume a SEPARATE following token as their value. We must
+ * skip that value when locating the <repository> positional. Everything else —
+ * crucially `-u` / `--set-upstream`, plus `-f`/`--force`, `--tags`, `--all`,
+ * `--delete`/`-d`, `--force-with-lease` (boolean or `=`-attached) — is boolean here.
+ */
+const PUSH_VALUE_FLAGS = Object.freeze(
+  new Set(['--repo', '-o', '--push-option', '--receive-pack', '--exec'])
+);
+
+/**
+ * The remote a `git push` targets: the first positional (the <repository>) after
+ * `push`, else `origin`.
  *
- * @param {string[]} args subcommand tail after `push`
+ * Reads the RAW segment tokens, NOT the generic argv classification: argv treats a
+ * lone short flag like `-u` as taking the next token as its value, so `git push -u
+ * origin main` would swallow `origin` as `-u`'s "value" and leave the remote absent
+ * from the subcommand tail — causing a fork push to be mis-checked against `origin`
+ * (ENF-07 false deny). git push's `-u`/`--set-upstream` is boolean, so we scan the
+ * push tail ourselves, skipping only the small set of options that truly take a
+ * separate-token value (G2).
+ *
+ * @param {Object} seg argv segment for the `git push …` command (must expose tokens)
  * @returns {string}
  */
-function pushRemote(args) {
-  for (const a of args || []) {
-    if (typeof a === 'string' && a.length > 0 && !a.startsWith('-')) return a;
+function pushRemote(seg) {
+  const tokens = seg && Array.isArray(seg.tokens) ? seg.tokens : [];
+  const pushIdx = tokens.indexOf('push');
+  if (pushIdx === -1) return 'origin';
+
+  for (let i = pushIdx + 1; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (typeof t !== 'string' || t.length === 0) continue;
+    if (t.startsWith('-') && t !== '-') {
+      // `--flag=value` carries its own value; a bare value-flag consumes the next
+      // token. Either way the value is NOT the remote, so skip accordingly.
+      const base = t.split('=')[0];
+      if (!t.includes('=') && PUSH_VALUE_FLAGS.has(base)) i += 1;
+      continue;
+    }
+    return t; // first non-flag token after `push` = <repository>
   }
   return 'origin';
 }
@@ -290,7 +322,7 @@ function gate(stdinString, deps) {
   }
 
   // ---- Containment B: git push ----
-  const remote = pushRemote(git.args);
+  const remote = pushRemote(git.seg);
   const url = deps.remoteUrl(deps.gsdCoreRoot, remote); // may throw → fail closed
   if (!isUpstreamRemote(url)) {
     return allow(); // pushing to a fork / non-upstream remote is fine

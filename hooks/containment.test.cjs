@@ -120,6 +120,35 @@ test('git push fork fix/12-x (fork remote, contribution branch) → allow', () =
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
 });
 
+// G2: `-u` / `--set-upstream` must not swallow the remote. The generic argv parser
+// treats a lone short flag as value-taking, so `git push -u fork x` previously lost
+// `fork` and pushRemote fell back to 'origin' — mis-checking a fork push against the
+// upstream origin and falsely DENYING it.
+
+test('git push -u fork fix/12-x (fork remote, contribution branch) → allow [G2]', () => {
+  const d = runContainmentGate(
+    input('git push -u fork fix/12-x'),
+    deps({ remoteUrl: (root, r) => (r === 'fork' ? FORK : UPSTREAM), currentBranch: () => 'fix/12-x' })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('git push --set-upstream fork fix/12-x → allow (long-form, remote not swallowed) [G2]', () => {
+  const d = runContainmentGate(
+    input('git push --set-upstream fork fix/12-x'),
+    deps({ remoteUrl: (root, r) => (r === 'fork' ? FORK : UPSTREAM), currentBranch: () => 'fix/12-x' })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('git push -u origin main where origin=upstream from main → DENY (still gated) [G2]', () => {
+  const d = runContainmentGate(
+    input('git push -u origin main'),
+    deps({ remoteUrl: (root, r) => (r === 'origin' ? UPSTREAM : FORK), currentBranch: () => 'main' })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+});
+
 test('git push (no remote arg) resolving to upstream from main → DENY', () => {
   const d = runContainmentGate(
     input('git push'),
