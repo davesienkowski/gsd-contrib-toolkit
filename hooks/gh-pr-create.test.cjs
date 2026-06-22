@@ -12,7 +12,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { runPrGate } = require('./gh-pr-create.cjs');
+const { runPrGate, evaluateCiResult } = require('./gh-pr-create.cjs');
 
 const liveTemplate = require('/home/dave/repos/gsd-core/scripts/pr-template-policy.cjs');
 const liveTarget = require('/home/dave/repos/gsd-core/scripts/pr-target-policy.cjs');
@@ -53,6 +53,17 @@ function deps(over = {}) {
       changedFiles: ['src/index.cts'], // non-tooling so template IS enforced
       authorAssociation: 'OWNER',
       worktreeRoot: '/tmp/wt',
+      // ENF-18 Tier-2: inject the head SHA + a GREEN check-runs read so all the
+      // pre-existing template/base/link/branch tests stay green (they are not perturbed
+      // by the additional CI-result condition). Individual tests override readCheckRuns
+      // to exercise the not-green / tests-did-not-run / throwing cases.
+      headSha: 'abc1234',
+      readCheckRuns: () => ({
+        headSha: 'abc1234',
+        testsRan: true,
+        allRequiredGreen: true,
+        conclusions: [{ name: 'Tests', status: 'completed', conclusion: 'success' }],
+      }),
       overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
     },
     over
@@ -187,6 +198,132 @@ test('a thrown live target WITH a logged override → allow (HARD-03)', () => {
     })
   );
   assert.strictEqual(d.permissionDecision, 'allow');
+});
+
+// ---- ENF-18 Tier-2: CI-check-run-green condition ----------------------------------
+
+// A green / not-green readCheckRuns stub factory.
+function ci(over = {}) {
+  return Object.assign(
+    {
+      headSha: 'abc1234',
+      testsRan: true,
+      allRequiredGreen: true,
+      conclusions: [{ name: 'Tests', status: 'completed', conclusion: 'success' }],
+    },
+    over
+  );
+}
+
+test('ENF-18: green check-runs (Tests ran + all success) → allow', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({ readCheckRuns: () => ci() })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('ENF-18: a not-green conclusion (failure) → DENY naming the CI check-run + head SHA', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({
+      readCheckRuns: () =>
+        ci({
+          allRequiredGreen: false,
+          conclusions: [{ name: 'Tests', status: 'completed', conclusion: 'failure' }],
+        }),
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /check.?run|CI|head/i);
+});
+
+test('ENF-18: Tests did NOT run on the head SHA (changeset-only, #1532) → DENY', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({
+      readCheckRuns: () => ci({ testsRan: false, allRequiredGreen: false, conclusions: [] }),
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /head|Tests|check.?run/i);
+});
+
+test('ENF-18: a throwing readCheckRuns (gh unauth / unparseable) → FAIL CLOSED deny (HARD-01)', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({
+      readCheckRuns: () => {
+        throw new Error('gh: not authenticated');
+      },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
+});
+
+test('ENF-18: the four existing checks gate FIRST — bad template denies before the CI read runs', () => {
+  let ciCalled = false;
+  const d = runPrGate(input('gh pr create --base next --title x --body ""'), deps({
+    readCheckRuns: () => {
+      ciCalled = true;
+      return ci();
+    },
+  }));
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /template/i);
+  assert.strictEqual(ciCalled, false, 'CI read must not run until the four checks pass');
+});
+
+test('ENF-18 synonym: gh api POST pulls, green CI → allow', () => {
+  const cmd = `gh api -X POST repos/o/r/pulls -f title=x -f base=next -f body='${escapeSingle(GOOD_PR_BODY)}'`;
+  const d = runPrGate(input(cmd), deps({ readCheckRuns: () => ci() }));
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('ENF-18 synonym: gh api POST pulls, not-green CI → DENY', () => {
+  const cmd = `gh api -X POST repos/o/r/pulls -f title=x -f base=next -f body='${escapeSingle(GOOD_PR_BODY)}'`;
+  const d = runPrGate(
+    input(cmd),
+    deps({
+      readCheckRuns: () =>
+        ci({ allRequiredGreen: false, conclusions: [{ name: 'Tests', status: 'completed', conclusion: 'failure' }] }),
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /check.?run|CI|head/i);
+});
+
+test('ENF-18 synonym: curl POST pulls, green CI → allow', () => {
+  const payload = JSON.stringify({ title: 'x', base: 'next', body: GOOD_PR_BODY });
+  const cmd = `curl -X POST https://api.github.com/repos/o/r/pulls -d '${payload.replace(/'/g, "'\\''")}'`;
+  const d = runPrGate(input(cmd), deps({ readCheckRuns: () => ci() }));
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('ENF-18 synonym: curl POST pulls, not-green CI → DENY', () => {
+  const payload = JSON.stringify({ title: 'x', base: 'next', body: GOOD_PR_BODY });
+  const cmd = `curl -X POST https://api.github.com/repos/o/r/pulls -d '${payload.replace(/'/g, "'\\''")}'`;
+  const d = runPrGate(
+    input(cmd),
+    deps({
+      readCheckRuns: () =>
+        ci({ allRequiredGreen: false, conclusions: [{ name: 'Tests', status: 'completed', conclusion: 'failure' }] }),
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /check.?run|CI|head/i);
+});
+
+test('ENF-18 unit: evaluateCiResult is green ONLY for testsRan + allRequiredGreen', () => {
+  assert.strictEqual(evaluateCiResult(ci()).green, true);
+  // not-green variants
+  assert.strictEqual(evaluateCiResult(ci({ testsRan: false })).green, false);
+  assert.strictEqual(evaluateCiResult(ci({ allRequiredGreen: false })).green, false);
+  assert.strictEqual(evaluateCiResult(ci({ testsRan: false, allRequiredGreen: false })).green, false);
+  // absent / malformed inputs are NOT green (fail-closed shape)
+  assert.strictEqual(evaluateCiResult(null).green, false);
+  assert.strictEqual(evaluateCiResult(undefined).green, false);
+  assert.strictEqual(evaluateCiResult({}).green, false);
 });
 
 // Helpers. A real `gh pr create --body "..."` command carries REAL newlines inside the
