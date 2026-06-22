@@ -11,7 +11,7 @@
     "hookSpecificOutput": {
       "hookEventName": "PreToolUse",
       "permissionDecision": "deny",
-      "permissionDecisionReason": "Working tree is DIRTY — the lint-green marker is keyed to the STAGED tree (`git write-tree`), but unstaged/untracked changes mean the pushed content will differ from what was proven green. Stage all changes and re-stamp: `lint-ci-stamp`. (ENF-05 EP-4)"
+      "permissionDecisionReason": "Working tree is DIRTY — the Tier-1-green marker is keyed to the STAGED tree (`git write-tree`), but unstaged/untracked changes mean the pushed content will differ from what was proven green. Stage all changes and re-stamp: `lint-ci-stamp`. (ENF-05/ENF-17 EP-4)"
     }
   }
 }
