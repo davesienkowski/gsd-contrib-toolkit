@@ -238,3 +238,13 @@ test('chained synonym: echo hi && gh api -X POST repos/o/r/pulls → pr-create',
   assert.strictEqual(r.action, 'pr-create');
   assert.strictEqual(r.route, 'gh-api');
 });
+
+// Locks F-02: a chain whose segments are ALL non-actionable falls through to
+// other (allow), never failClosed. This is the no-actionable-segment branch the
+// removed dead ternary (`sawOther ? OTHER : OTHER`) covered — both arms returned
+// OTHER, so collapsing to a single OTHER must preserve exactly this behavior.
+test('chained: all read-only segments → other (not failClosed) [F-02]', () => {
+  const r = cls('git status && gh repo view o/r ; echo done');
+  assert.strictEqual(r.action, 'other');
+  assert.notStrictEqual(r.failClosed, true);
+});

@@ -347,11 +347,10 @@ function classifyAction(parsed) {
     ? parsed.segments
     : [parsed];
 
-  let sawOther = false;
   for (const seg of segments) {
     const res = classifySegment(seg);
     if (res === null) {
-      sawOther = true;
+      // A non-actionable segment (read-only / unrelated) — keep scanning the chain.
       continue;
     }
     // Any actionable (or fail-closed) segment classifies the whole command — a
@@ -359,7 +358,8 @@ function classifyAction(parsed) {
     return { ...res };
   }
 
-  return sawOther ? { ...OTHER } : { ...OTHER };
+  // No segment classified as actionable ⇒ read-only / unrelated ⇒ other (allow).
+  return { ...OTHER };
 }
 
 module.exports = {
