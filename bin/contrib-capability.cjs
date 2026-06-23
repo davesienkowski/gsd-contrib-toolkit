@@ -700,7 +700,9 @@ function countStripped(result) {
     if (typeof r === 'number') { total += r; continue; }
     if (r && typeof r.stripped === 'number') { total += r.stripped; continue; }
     if (r && Array.isArray(r.removed)) { total += r.removed.length; continue; }
-    if (r && typeof r === 'object') total += 1;
+    // WR-03: do NOT count opaque objects. An element lacking a `stripped` number or a `removed` array
+    // carries no strip count (it may be metadata or a no-op record) — an unrecognized shape counts as
+    // 0, not 1, so the log line never overcounts a no-op as a stripped entry.
   }
   return total;
 }
