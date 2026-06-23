@@ -273,14 +273,14 @@ node bin/contrib-capability.cjs remove --reason <w> # remove from ledger + conse
 ### 2. Install From the Published Capability (Remote Git)
 
 The toolkit is also published as a **public, git-installable GSD capability** at
-`github.com/davesienkowski/gsd-contribution-toolkit` (tagged `#v2.0.0`). This is the
+`github.com/davesienkowski/gsd-contribution-toolkit` (tagged `#v2.1.0`). This is the
 distribution path for anyone other than the owner restoring local symlinks — it
 delivers the **self-contained bundle** (the 13 hooks + 2 skills + 5 commands), **not**
 a hooks-only artifact. Install it through gsd-core's git capability adapter:
 
 ```bash
 node <gsd-core>/bin/gsd-tools.cjs capability install \
-  https://github.com/davesienkowski/gsd-contribution-toolkit.git#v2.0.0 \
+  https://github.com/davesienkowski/gsd-contribution-toolkit.git#v2.1.0 \
   --scope project --yes --shared-file .claude/settings.json
 ```
 
