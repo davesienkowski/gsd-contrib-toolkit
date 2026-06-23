@@ -11,7 +11,7 @@
     "hookSpecificOutput": {
       "hookEventName": "PreToolUse",
       "permissionDecision": "deny",
-      "permissionDecisionReason": "No fresh Tier-1-green marker exists for the current tree (`git write-tree` = 6bb99e8e2443daa27a8f7b83daf7f44e4d9df0ef). A push/PR cannot proceed on a tree whose Tier-1 LOCAL contract (lint suite + structural linters + `test:affected`) has not been proven green. Run `lint-ci-stamp` (it proves Tier-1 and, on green, stamps the marker for this exact tree), then retry. An amend/rebase that changes content yields a new tree SHA and requires a fresh stamp. (ENF-05/ENF-17)"
+      "permissionDecisionReason": "No fresh Tier-1-green marker exists for the current tree (`git write-tree` = 28ab98ccb89b69f98c2d06ac6cad822d2d402858). A push/PR cannot proceed on a tree whose Tier-1 LOCAL contract (lint suite + structural linters + `test:affected`) has not been proven green. Run `lint-ci-stamp` (it proves Tier-1 and, on green, stamps the marker for this exact tree), then retry. An amend/rebase that changes content yields a new tree SHA and requires a fresh stamp. (ENF-05/ENF-17)"
     }
   }
 }
