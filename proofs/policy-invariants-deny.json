@@ -1,7 +1,7 @@
 {
   "hook": "policy-invariants",
   "case": "deny",
-  "fixture": "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git commit -m wip\"}}",
+  "fixture": "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git commit -m \\\"wip\"}}",
   "expected": "deny",
   "verdict": "pass",
   "decision": "deny",
@@ -11,7 +11,7 @@
     "hookSpecificOutput": {
       "hookEventName": "PreToolUse",
       "permissionDecision": "deny",
-      "permissionDecisionReason": "Blocked by the LIVE gsd-core mechanizable policy invariants (POLICY-02). The following check(s) failed — fix them before filing:\n\n`lint:ci` (exit 1):\n…ition for rule '@typescript-eslint/no-require-imports' was not found  @typescript-eslint/no-require-imports\n  38:1  error  Definition for rule '@typescript-eslint/no-require-imports' was not found  @typescript-eslint/no-require-imports\n  44:1  error  Definition for rule '@typescript-eslint/no-require-imports' was not found  @typescript-eslint/no-require-imports\n  48:1  error  Definition for rule '@typescript-eslint/no-require-imports' was not found  @typescript-eslint/no-require-imports\n\n✖ 11 problems (11 errors, 0 warnings)\n  1 error and 0 warnings potentially fixable with the `--fix` option."
+      "permissionDecisionReason": "unparseable command: unbalanced quote"
     }
   }
 }
