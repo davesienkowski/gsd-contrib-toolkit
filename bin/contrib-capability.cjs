@@ -304,8 +304,9 @@ function deliverBundledCommands(args = {}) {
       // Exists and is NOT a symlink: a REAL file/dir. Fail-safe — never clobber (T-17-02-CLOBBER,
       // mirrors install.sh L73 `die "refusing to overwrite real file"`).
       throw new DriverError(
-        'refusing to overwrite real file at ' + target + ' (not a symlink into our bundle) — command ' +
-          'delivery NEVER clobbers a real file; move it aside and re-run (mirrors install.sh L73 fail-safe)'
+        'refusing to overwrite existing entry at ' + target + ' (not a symlink into our bundle — ' +
+          'found a real file or directory) — command delivery NEVER clobbers existing user content; ' +
+          'move it aside and re-run `install` (mirrors install.sh L73 fail-safe)'
       );
     }
     // Missing — create the symlink with an absolute target.
@@ -335,10 +336,19 @@ function removeBundledCommands(args = {}) {
   let names;
   try {
     names = bundledCommandNames(bundleDir);
-  } catch (_) {
-    // A missing bundle commands/ dir at remove time means there is nothing we own to reclaim — a
-    // remove must never throw on a vanished bundle (the links it owns, if any, dangle harmlessly).
-    return { removed: 0, names: [] };
+  } catch (err) {
+    // ENOENT: a vanished bundle commands/ dir means there is nothing we own to reclaim — a remove must
+    // never throw on a missing bundle (the links it owns, if any, dangle harmlessly). For all other
+    // errors (EACCES, corrupt dirent, etc.) surface a warning rather than silently leaving delivered
+    // links in place (LOUD-on-miss discipline applied to non-trivial failures).
+    if (err && err.code === 'ENOENT') {
+      return { removed: 0, names: [] };
+    }
+    throw new DriverError(
+      'could not read the bundle commands dir to reclaim delivered links (' +
+        (err && err.message) + ') — delivered command links (if any) were NOT reclaimed; ' +
+        'resolve the error and re-run `remove` to complete reclaim'
+    );
   }
   let removed = 0;
   for (const name of names) {
@@ -659,8 +669,27 @@ function runInstall(opts = {}) {
   // reclaimed by remove), NOT enforcement: this is purely additive after the existing install steps
   // and does not touch the manifest, the gates, the consent/ledger flow, or the on/off flag. SOURCED
   // FROM THE BUNDLE (T-17-02-REPOSOURCE), with install.sh's never-clobber-a-real-file fail-safe.
+  //
+  // PARTIAL-INSTALL NOTE (WR-01): steps 1-4 above (reconcile, consent, ledger, shared-edits) have
+  // already completed. If deliverBundledCommands throws (real file/dir at a command target), the
+  // enforcement hooks ARE already installed and wired. Annotate any delivery error with this context
+  // so the user knows: (a) the hooks are applied, (b) resolve the conflicting path, then (c) re-run
+  // `install` (NOT `remove`) — install is idempotent on the hooks side and will retry delivery.
   const commandsDir = claudeCommandsDir(opts);
-  const delivered = deliverBundledCommands({ bundleDir, commandsDir });
+  let delivered;
+  try {
+    delivered = deliverBundledCommands({ bundleDir, commandsDir });
+  } catch (err) {
+    const isDriver = err instanceof DriverError || (err && err.name === 'DriverError');
+    const base = isDriver ? err.message : '(' + (err && err.name) + ') ' + (err && err.message);
+    throw new DriverError(
+      base + '\n' +
+      'NOTE: the enforcement hooks (steps 1-4) ARE already installed and wired in settings.json — ' +
+      'the gates will fire. To finish command delivery: resolve the conflicting path above, then ' +
+      're-run `install` (NOT `remove`) — install is idempotent on hooks/consent/ledger and will ' +
+      'retry only the command delivery step.'
+    );
+  }
   lines.push('[install] delivered ' + delivered.names.length + ' slash-command(s) to ' + commandsDir +
     ' (' + delivered.linked + ' linked, ' + delivered.already + ' already correct)');
 
@@ -1225,6 +1254,4 @@ module.exports = {
   runRemove,
   runStatus,
   runCli,
-  liveRequireLiveScript,
-  ScriptResolveError,
 };
