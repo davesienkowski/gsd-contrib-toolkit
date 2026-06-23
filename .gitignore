@@ -5,6 +5,9 @@ Thumbs.db
 *.swo
 *~
 
+# Session scratchpad (ephemeral; never part of a commit)
+scratchpad/
+
 # Editor / IDE directories
 .idea/
 .vscode/
