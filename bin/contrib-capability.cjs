@@ -751,11 +751,18 @@ function runRemove(opts = {}) {
     scope: 'project',
   });
   const status = (result && result.status) || 'unknown';
-  if (status === 'blocked') {
+  // WR-01: fail on ANY non-success status, not only 'blocked'. The LIVE removeCapability success
+  // statuses are 'removed' (capability-lifecycle.cjs ~L1140) and 'not_installed' (~L1067, already
+  // clean). 'blocked'/'aborted'/'unknown' (the 'unknown' fallback when result is null/has no status)
+  // or any unexpected value means the remove did NOT fully complete — never report it as success
+  // (LOUD-on-miss: an op that did not run to completion is never reported as success).
+  const REMOVE_SUCCESS = new Set(['removed', 'not_installed']);
+  if (!REMOVE_SUCCESS.has(status)) {
     throw new DriverError(
-      'LIVE removeCapability blocked: ' +
-        ((result.blockReasons || []).join('; ') || 'unknown reason') +
-        ' — remove did not complete (an op that could not run is never reported as success)'
+      'LIVE removeCapability returned non-success status "' + status + '": ' +
+        (((result && result.blockReasons) || []).join('; ') || 'no reason given') +
+        ' — remove did not fully complete; fix and retry (an op that could not run is never reported ' +
+        'as success — LOUD-on-miss)'
     );
   }
   const strippedEdits = Array.isArray(result && result.strippedEdits)
