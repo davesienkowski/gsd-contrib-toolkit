@@ -206,8 +206,12 @@ const DENY_GATES = [
   },
   {
     name: 'policy-invariants',
-    // src: policy-invariants.test.cjs — git commit runs the LIVE mechanizable policy invariants.
-    bad: bash('git commit -m wip'),
+    // policy-invariants' POLICY-02 content-deny needs a LIVE mechanizable check (lint:ci/…) to fail
+    // (uncontrollable here — historically it rode a transient gsd-core ESLint-config failure, which
+    // gsd-core has since fixed, so a plain commit now ALLOWS). The BAD fixture instead proves the
+    // gate's deterministic FAIL-CLOSED wiring (HARD-04): an unparseable commit → captured deny,
+    // independent of gsd-core's lint state. src: policy-invariants.test.cjs.
+    bad: bash('git commit -m "wip'),
     clean: bash('git status'),
     needsLive: true,
   },

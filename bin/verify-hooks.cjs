@@ -112,8 +112,14 @@ const PROOF_TABLE = [
   { name: 'git-commit-convention', kind: 'deny', needsLive: true,
     bad: bash('git commit -m "docs fix thing"'),
     clean: bash('git status') },
+  // policy-invariants' POLICY-02 content-deny needs a LIVE mechanizable check (lint:ci/…) to fail
+  // (uncontrollable here — historically it rode a transient gsd-core ESLint-config failure, which
+  // gsd-core has since fixed, so a plain commit now ALLOWS). The BAD fixture instead proves the
+  // gate's deterministic FAIL-CLOSED wiring (HARD-04): an unparseable commit (unbalanced quote) →
+  // captured deny, independent of gsd-core's lint state — the same convention freshness/scan-gate/
+  // issue-dedupe use. Mirrored in hooks/integration-proof.test.cjs DENY_GATES (the sync source).
   { name: 'policy-invariants', kind: 'deny', needsLive: true,
-    bad: bash('git commit -m wip'),
+    bad: bash('git commit -m "wip'),
     clean: bash('git status') },
   { name: 'issue-dedupe', kind: 'deny', needsLive: true,
     bad: bash('gh issue create --title "x'),
