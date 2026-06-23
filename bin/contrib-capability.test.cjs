@@ -214,6 +214,19 @@ function ledgerHasCap(sb) {
   return !!(store && store.entries && Object.prototype.hasOwnProperty.call(store.entries, CAP_ID));
 }
 
+/**
+ * Read the enforcement flag the on/off toggle flips, from the sandbox .planning/config.json. The LIVE
+ * config.setConfigValue stores dot-notation keys NESTED (capability-source: gsd-core config.cjs
+ * _setNestedValue splits on '.'), so `workflow.gsd_contrib_enforcement` lands at
+ * config.workflow.gsd_contrib_enforcement — NOT a flat string key. Returns the leaf value (undefined
+ * when absent). WR-02: this proves the on/off flag flip actually happened (a silent setConfigValue
+ * failure, or a namespace drift, would surface here).
+ */
+function readEnforcementFlag(sb) {
+  const cfg = JSON.parse(fs.readFileSync(path.join(sb.root, '.planning', 'config.json'), 'utf8'));
+  return cfg && cfg.workflow ? cfg.workflow.gsd_contrib_enforcement : undefined;
+}
+
 /** Read the sandboxed consent store; true iff a contrib-gate record exists. */
 function consentHasCap(sb) {
   const cs = requireLiveScript(sb.root, 'gsd-core/bin/lib/capability-consent.cjs');
@@ -276,6 +289,12 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 13 tagged,
       true,
       'off MUST be marker-scoped: the pre-seeded untagged user hook must SURVIVE the strip (not a blanket wipe)'
     );
+    // WR-02: off must flip workflow.gsd_contrib_enforcement OFF in config.json (read it back).
+    assert.strictEqual(
+      readEnforcementFlag(sb),
+      false,
+      'runOff must set workflow.gsd_contrib_enforcement=false in config.json'
+    );
 
     // ── on: the 13 tagged entries are restored (and the untagged user hook is still there) ──
     drv.runOn(opts);
@@ -284,6 +303,12 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 13 tagged,
     assert.strictEqual(tagged.byEvent.PreToolUse, 12, 'on restores 12 PreToolUse gates');
     assert.strictEqual(tagged.byEvent.UserPromptSubmit, 1, 'on restores 1 UserPromptSubmit advisory');
     assert.strictEqual(userHookSurvives(sb.settingsPath), true, 'the untagged user hook must still survive after on');
+    // WR-02: on must flip workflow.gsd_contrib_enforcement ON in config.json (read it back).
+    assert.strictEqual(
+      readEnforcementFlag(sb),
+      true,
+      'runOn must set workflow.gsd_contrib_enforcement=true in config.json'
+    );
 
     // ── remove: no ledger entry + no consent record for contrib-gate remain in the sandbox store ──
     drv.runRemove(Object.assign({}, opts, { reason: 'CAP-07 hermetic lifecycle proof: remove' }));
@@ -301,6 +326,34 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 13 tagged,
   }
 
   // ── hermeticity: the REAL gsd-core settings + real ledger + real consent are UNCHANGED ──
+  assertRealStateUnchanged(before);
+});
+
+test('double-install is idempotent: a second install keeps the tagged set at 13 (no growth)', { skip: SKIP }, () => {
+  // WR-02: the driver claims re-run idempotency (LIVE apply strips its own marker first). Prove it
+  // empirically — a second install that grew the tagged set from 13 to 26 must be caught here.
+  const before = snapshotRealState(SOURCE_ROOT);
+  const sb = makeCapSandbox(SOURCE_ROOT);
+  try {
+    const opts = sandboxOpts(sb);
+
+    drv.runInstall(opts);
+    let tagged = countTagged(sb.settingsPath);
+    assert.strictEqual(tagged.total, 13, 'first install must tag EXACTLY 13 entries, got ' + tagged.total);
+
+    drv.runInstall(opts); // second call — must NOT append a second tagged set.
+    tagged = countTagged(sb.settingsPath);
+    assert.strictEqual(tagged.total, 13, 'double-install must NOT grow the tagged set (idempotent), got ' + tagged.total);
+    assert.strictEqual(tagged.byEvent.PreToolUse, 12, 'still exactly 12 PreToolUse gates after re-install');
+    assert.strictEqual(tagged.byEvent.UserPromptSubmit, 1, 'still exactly 1 UserPromptSubmit advisory after re-install');
+    assert.strictEqual(
+      userHookSurvives(sb.settingsPath),
+      true,
+      'the pre-seeded untagged user hook must survive a double-install'
+    );
+  } finally {
+    sb.dispose();
+  }
   assertRealStateUnchanged(before);
 });
 
