@@ -131,6 +131,13 @@ const ENFORCEMENT_FLAG = 'workflow.gsd_contrib_enforcement';
 // confinedSharedFile() resolves this against runtimeDir and rejects any escape (T-12-01-PATH).
 const SHARED_SETTINGS_REL = path.join('.claude', 'settings.json');
 
+// The agent-facing slash-command set the install DELIVERS into the runtime commands dir. The set is
+// DATA-DRIVEN from the BUNDLE's commands/ dir on disk via the SAME /^gsd-.*\.md$/ filter
+// build-capability.cjs readDisclosedCommandSet + verify-capability.cjs readShippedCommands use — so
+// the delivered set provably equals the shipped/disclosed set (T-17-02-REPOSOURCE: source from the
+// BUNDLE, never the repo working tree, so a remote-installed bundle is self-sufficient).
+const COMMAND_NAME_RE = /^gsd-.*\.md$/;
+
 /**
  * Resolve a gsd-core checkout carrying the sentinel layout (scripts/ + gsd-core/bin/lib/). Mirrors
  * bin/verify-capability.cjs resolveGsdCoreCwd: GSD_CORE_ROOT, then ~/repos/gsd-core, then ~/gsd-core.
@@ -169,6 +176,196 @@ function resolveGsdCoreCwd() {
  */
 function consentStoreHome() {
   return process.env.GSD_HOME || os.homedir();
+}
+
+// ---------------------------------------------------------------------------
+// command delivery (deliver-on-install / reclaim-on-remove) — mirrors install.sh
+// ---------------------------------------------------------------------------
+//
+// DELIVERY FORM DECISION (justified — recorded here + in 17-02-SUMMARY):
+//   The install DELIVERS the 5 bundled slash-command .md's as ABSOLUTE SYMLINKS into the runtime
+//   commands dir (`${CLAUDE_DIR:-~/.claude}/commands/<name>.md` -> the bundle's commands/<name>.md),
+//   exactly mirroring install.sh's `ln -sfn "${abs_src}" "${tgt}"` (install.sh L66/L77). A symlink is
+//   the closest LOCAL-PARITY analog to install.sh AND is correct for a promoted
+//   `.gsd/capabilities/<id>/commands/` bundle: the bundle dir is stable + co-located with the rest of
+//   the install, so a symlink keeps a single source of truth — regenerating the bundle (re-running
+//   build-capability) is reflected at the link target without re-delivering. (If a future remote
+//   adapter makes the bundle path ephemeral, switch to a copy — but for the local + promoted-bundle
+//   install paths in scope here, a symlink is the parity-correct form.)
+//
+// FAIL-SAFE (T-17-02-CLOBBER): a real non-symlink file/dir at a command target is NEVER clobbered —
+//   deliverBundledCommands throws a DriverError (install FAILS rather than overwrite a real file),
+//   mirroring install.sh's `die "refusing to overwrite real file"` (install.sh L73).
+//
+// LIFECYCLE TIE DECISION (justified — per CONTEXT.md discretion): command delivery is tied to the
+//   install/remove lifecycle (delivered by `install`, reclaimed by `remove`), NOT the on/off
+//   enforcement toggle. Commands are AVAILABILITY, not enforcement — the on/off flag governs the gate
+//   enforcement flag + the marker-tagged gates, NOT command availability. So `off` leaves the command
+//   links in place (an operator turning enforcement off still has the slash-commands available); only
+//   `remove` (and an uninstall) reclaims them.
+
+/**
+ * Resolve the runtime commands dir Claude Code reads slash-commands from: `${CLAUDE_DIR:-~/.claude}/commands`.
+ * Honors the CLAUDE_DIR env override (so the hermetic lifecycle test can point delivery at a sandbox),
+ * mirroring install.sh's `CLAUDE_DIR="${HOME}/.claude"`. Injectable via opts.commandsDir for the test.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.commandsDir] explicit override (the test injects a sandbox dir); wins outright.
+ * @param {string} [opts.claudeDir]   explicit ${CLAUDE_DIR} root override; commands dir = <claudeDir>/commands.
+ * @returns {string} absolute path to the runtime commands dir.
+ */
+function claudeCommandsDir(opts = {}) {
+  if (opts && typeof opts.commandsDir === 'string' && opts.commandsDir.length > 0) {
+    return opts.commandsDir;
+  }
+  const claudeDir =
+    (opts && typeof opts.claudeDir === 'string' && opts.claudeDir.length > 0 && opts.claudeDir) ||
+    process.env.CLAUDE_DIR ||
+    path.join(os.homedir(), '.claude');
+  return path.join(claudeDir, 'commands');
+}
+
+/**
+ * Enumerate the bundled command .md basenames from the BUNDLE's commands/ dir on disk (the SAME
+ * /^gsd-.*\.md$/ filter the bundler + verifier use). Sourcing from the BUNDLE (never the repo working
+ * tree) makes a remote-installed bundle self-sufficient (T-17-02-REPOSOURCE). Returns sorted names.
+ *
+ * @param {string} bundleDir bundle root (BUNDLE_CAP_DIR or an injected sandbox bundle).
+ * @returns {string[]} the `gsd-*.md` basenames present in <bundleDir>/commands.
+ */
+function bundledCommandNames(bundleDir) {
+  const dir = path.join(bundleDir, 'commands');
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    throw new DriverError(
+      'cannot read the bundle commands dir ' + dir + ' (' + (err && err.message) + ') — the bundle ' +
+        'must ship its commands/ (run `node bin/build-capability.cjs` to regenerate); an install that ' +
+        'cannot source its commands FAILS LOUD rather than deliver nothing'
+    );
+  }
+  return entries
+    .filter((e) => e.isFile() && COMMAND_NAME_RE.test(e.name))
+    .map((e) => e.name)
+    .sort();
+}
+
+/**
+ * DELIVER the bundled slash-command .md's into the runtime commands dir, mirroring install.sh
+ * exactly: target `<commandsDir>/<name>.md`; `mkdir -p` the parent; if the target is already a symlink
+ * resolving to the correct bundle source leave it (idempotent — count "already"); if it is a symlink
+ * pointing elsewhere re-point it (count "linked"); if it is a REAL non-symlink file/dir DIE (throw a
+ * DriverError — NEVER clobber, mirrors install.sh L73); otherwise create an absolute symlink → the
+ * bundle source (count "linked"). The command sources are read from the BUNDLE (T-17-02-REPOSOURCE).
+ *
+ * @param {object} args
+ * @param {string} args.bundleDir   the bundle root whose commands/ dir is the source of truth.
+ * @param {string} args.commandsDir the runtime commands dir (claudeCommandsDir()).
+ * @returns {{linked:number, already:number, names:string[]}}
+ */
+function deliverBundledCommands(args = {}) {
+  const { bundleDir, commandsDir } = args;
+  if (typeof bundleDir !== 'string' || typeof commandsDir !== 'string') {
+    throw new DriverError('deliverBundledCommands requires { bundleDir, commandsDir } string paths');
+  }
+  const names = bundledCommandNames(bundleDir);
+  fs.mkdirSync(commandsDir, { recursive: true });
+  let linked = 0;
+  let already = 0;
+  for (const name of names) {
+    const absSource = path.join(bundleDir, 'commands', name);
+    const target = path.join(commandsDir, name);
+    let st = null;
+    try {
+      st = fs.lstatSync(target);
+    } catch (_) {
+      st = null; // absent
+    }
+    if (st && st.isSymbolicLink()) {
+      // Already a symlink. Leave it iff it resolves to the correct bundle source (idempotent).
+      let current = '';
+      try {
+        current = fs.readlinkSync(target);
+      } catch (_) {
+        current = '';
+      }
+      if (current === absSource) {
+        already += 1;
+        continue;
+      }
+      // Symlink points elsewhere — re-point it (safe: replacing a symlink, not real data).
+      fs.rmSync(target, { force: true });
+      fs.symlinkSync(absSource, target);
+      linked += 1;
+      continue;
+    }
+    if (st) {
+      // Exists and is NOT a symlink: a REAL file/dir. Fail-safe — never clobber (T-17-02-CLOBBER,
+      // mirrors install.sh L73 `die "refusing to overwrite real file"`).
+      throw new DriverError(
+        'refusing to overwrite real file at ' + target + ' (not a symlink into our bundle) — command ' +
+          'delivery NEVER clobbers a real file; move it aside and re-run (mirrors install.sh L73 fail-safe)'
+      );
+    }
+    // Missing — create the symlink with an absolute target.
+    fs.symlinkSync(absSource, target);
+    linked += 1;
+  }
+  return { linked, already, names };
+}
+
+/**
+ * RECLAIM exactly the delivered command links: for each bundled command name, if the target is a
+ * SYMLINK whose resolved target is the bundle source (points INTO our bundle commands/ dir), unlink it
+ * (count "removed"); if absent, no-op; if it is a REAL non-symlink file OR a symlink pointing ELSEWHERE
+ * (not into our bundle), LEAVE it untouched (T-17-02-OVERREMOVE: only reclaim links into our bundle —
+ * never touch an unrelated file or a foreign symlink). Used by remove (accountable via the receipt).
+ *
+ * @param {object} args
+ * @param {string} args.bundleDir   the bundle root (its commands/ dir is the ownership boundary).
+ * @param {string} args.commandsDir the runtime commands dir.
+ * @returns {{removed:number, names:string[]}}
+ */
+function removeBundledCommands(args = {}) {
+  const { bundleDir, commandsDir } = args;
+  if (typeof bundleDir !== 'string' || typeof commandsDir !== 'string') {
+    throw new DriverError('removeBundledCommands requires { bundleDir, commandsDir } string paths');
+  }
+  let names;
+  try {
+    names = bundledCommandNames(bundleDir);
+  } catch (_) {
+    // A missing bundle commands/ dir at remove time means there is nothing we own to reclaim — a
+    // remove must never throw on a vanished bundle (the links it owns, if any, dangle harmlessly).
+    return { removed: 0, names: [] };
+  }
+  let removed = 0;
+  for (const name of names) {
+    const absSource = path.join(bundleDir, 'commands', name);
+    const target = path.join(commandsDir, name);
+    let st = null;
+    try {
+      st = fs.lstatSync(target);
+    } catch (_) {
+      continue; // absent — nothing to reclaim
+    }
+    if (!st.isSymbolicLink()) {
+      continue; // a REAL file — never remove an unrelated file (T-17-02-OVERREMOVE)
+    }
+    let current = '';
+    try {
+      current = fs.readlinkSync(target);
+    } catch (_) {
+      current = '';
+    }
+    if (current !== absSource) {
+      continue; // a FOREIGN symlink (not into our bundle) — leave it untouched (T-17-02-OVERREMOVE)
+    }
+    fs.rmSync(target, { force: true });
+    removed += 1;
+  }
+  return { removed, names };
 }
 
 // ---------------------------------------------------------------------------
@@ -457,10 +654,20 @@ function runInstall(opts = {}) {
   const applied = Array.isArray(sharedEdits) ? sharedEdits.length : 0;
   lines.push('[install] applied + ledger-recorded marker-tagged shared edits across ' + applied + ' file(s)');
 
+  // (5) DELIVER the bundled slash-commands into the runtime commands dir (mirrors install.sh) — AFTER
+  // the LIVE consent/ledger/shared-edit install. Commands are AVAILABILITY (delivered by install,
+  // reclaimed by remove), NOT enforcement: this is purely additive after the existing install steps
+  // and does not touch the manifest, the gates, the consent/ledger flow, or the on/off flag. SOURCED
+  // FROM THE BUNDLE (T-17-02-REPOSOURCE), with install.sh's never-clobber-a-real-file fail-safe.
+  const commandsDir = claudeCommandsDir(opts);
+  const delivered = deliverBundledCommands({ bundleDir, commandsDir });
+  lines.push('[install] delivered ' + delivered.names.length + ' slash-command(s) to ' + commandsDir +
+    ' (' + delivered.linked + ' linked, ' + delivered.already + ' already correct)');
+
   // The on/off flip of workflow.gsd_contrib_enforcement is OWNED by Plan 12-02; install leaves the
   // config default (OFF) so the advisory surface is the explicit opt-in 12-02 toggles.
   lines.push('[install] done — re-run is idempotent (LIVE apply strips its own marker first)');
-  return { lines, applied, reconciled };
+  return { lines, applied, reconciled, delivered };
 }
 
 // ---------------------------------------------------------------------------
@@ -987,6 +1194,10 @@ module.exports = {
   DriverError,
   resolveGsdCoreCwd,
   consentStoreHome,
+  claudeCommandsDir,
+  bundledCommandNames,
+  deliverBundledCommands,
+  removeBundledCommands,
   loadLiveEngine,
   readManifest,
   manifestHookBasenames,
