@@ -652,3 +652,49 @@ test('11-03 hermetic: the real capabilities/contribution-toolkit bundle + manife
   assert.match(src, /bundleHooksDir: bundle\.bundleHooksDir/, 'cases inject a tmp bundleHooksDir');
   assert.match(src, /checkBundleFresh: \(\) =>/, 'cases inject checkBundleFresh');
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Plan 18-01 (CAP-11): unified BUNDLE-sourced tri-surface declared==shipped check.
+// Task 1 RED: the three new bundle surface readers exist and are LOUD-on-miss.
+// ─────────────────────────────────────────────────────────────────────────────
+test('18-01 unit: readBundleSkills/readBundleCommands/readBundleHooks are exported LOUD-on-miss readers', () => {
+  const m = require('./verify-capability.cjs');
+  assert.equal(typeof m.readBundleSkills, 'function', 'readBundleSkills exported');
+  assert.equal(typeof m.readBundleCommands, 'function', 'readBundleCommands exported');
+  assert.equal(typeof m.readBundleHooks, 'function', 'readBundleHooks exported');
+
+  // LOUD-on-miss: an unreadable/missing dir yields {ok:false, error}, never a forged empty-set green.
+  const missing = path.join(os.tmpdir(), 'gsd-no-such-bundle-' + Date.now());
+  assert.equal(m.readBundleSkills(missing).ok, false, 'missing skills dir => ok:false');
+  assert.equal(m.readBundleCommands(missing).ok, false, 'missing commands dir => ok:false');
+  assert.equal(m.readBundleHooks(missing).ok, false, 'missing hooks dir => ok:false');
+
+  // Readable dir: returns the sorted shipped set.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-bundle-read-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'skills', 'beta'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'skills', 'beta', 'SKILL.md'), '# beta\n');
+    fs.mkdirSync(path.join(dir, 'skills', 'alpha'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'skills', 'alpha', 'SKILL.md'), '# alpha\n');
+    // A subdir WITHOUT SKILL.md is not a skill surface entry.
+    fs.mkdirSync(path.join(dir, 'skills', 'not-a-skill'), { recursive: true });
+    const sk = m.readBundleSkills(path.join(dir, 'skills'));
+    assert.deepEqual(sk, { ok: true, skills: ['alpha', 'beta'] }, 'sorted SKILL.md-bearing subdirs');
+
+    fs.mkdirSync(path.join(dir, 'commands'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'commands', 'gsd-two.md'), '# two\n');
+    fs.writeFileSync(path.join(dir, 'commands', 'gsd-one.md'), '# one\n');
+    fs.writeFileSync(path.join(dir, 'commands', 'README.md'), '# not a gsd command\n');
+    const cm = m.readBundleCommands(path.join(dir, 'commands'));
+    assert.deepEqual(cm, { ok: true, commands: ['gsd-one', 'gsd-two'] }, 'sorted gsd-*.md stems');
+
+    fs.mkdirSync(path.join(dir, 'hooks', 'lib'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'hooks', 'b.cjs'), '// b\n');
+    fs.writeFileSync(path.join(dir, 'hooks', 'a.cjs'), '// a\n');
+    fs.writeFileSync(path.join(dir, 'hooks', 'lib', 'resolve.cjs'), '// resolver, not a hook\n');
+    const hk = m.readBundleHooks(path.join(dir, 'hooks'));
+    assert.deepEqual(hk, { ok: true, hooks: ['a.cjs', 'b.cjs'] }, 'top-level *.cjs only, excludes lib/');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
