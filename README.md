@@ -128,12 +128,24 @@ surfaces as a fail-closed DENY plus a diagnosable report — not a silent miss.
 
 - **Install / restore** the toolkit (idempotent): `bash install.sh` — see
   *Install / restore* below.
-- The **12 contributor gates** fire automatically inside the gsd-core repo once
-  the contribution-toolkit capability is installed (`node bin/contrib-capability.cjs install`).
+- The **12 PreToolUse gates** (the 13-hook bundle's 12 fail-closed gates plus the
+  1 advisory reminder) fire automatically inside the gsd-core repo once the
+  contribution-toolkit capability is installed (`node bin/contrib-capability.cjs install`).
 - Drive a contribution with the **`gsd-submit`** command (file → push → PR through
   the gates) and the **`gsd-core-contribution`** skill (the contribution knowledge,
   including the stamp → marker → gate → scan loop).
 - Run a maintainer-style sweep with **`gsd-review-sweep`**.
+
+**Recovery offramp (FLOW-01).** When a contribution gate **denies** an action — or
+the `gsd-core-contribution` skill surfaces a real blocking issue mid-run — you are
+offered a GSD-native recovery choice rather than a dead-stop: **fix inline with
+`/gsd-quick`** for a trivial correction, or **route the issue through the GSD
+pipeline** (`/gsd-debug`, or `/gsd-discuss-phase`→`/gsd-plan-phase`→`/gsd-execute-phase`)
+as a tracked, resumable work item — then return to the submission once it is green.
+This offramp is **advisory only**: the deny stays **fail-closed and unbypassable**,
+it NEVER suggests bypassing the gate or abusing `GSD_CONTRIB_OVERRIDE` to dodge a
+real failure, and no gate is weakened. (Surfaced from the contribution skill +
+`gsd-submit`/`gsd-review-sweep` commands.)
 
 ### Owner / maintainer pillar
 
@@ -155,9 +167,17 @@ The **`maintainer-review-sweep`** skill backs these assists.
 
 `capabilities/contribution-toolkit/capability.json` packages the contribution +
 maintainer-review knowledge as an installable, **opt-in** GSD capability (ADR-1244
-`role:feature` manifest): both skills, all five commands, one advisory `plan:pre`
-contribution, and a default-off `workflow.gsd_contrib_enforcement` consent flag.
-Its `gates[]` is **empty** and it is **advisory-only** (see *What it does NOT do*).
+`role:feature` manifest). The bundle is **self-contained**: it ships the
+**13 hooks** (the 12 fail-closed `PreToolUse` gates + 1 advisory `UserPromptSubmit`
+reminder), **both skills** (`gsd-core-contribution`, `maintainer-review-sweep`), and
+**all five commands** (`gsd-submit`, `gsd-review-sweep`, `gsd-triage-assist`,
+`gsd-release-preflight`, `gsd-ruleset-drift`) under
+`capabilities/contribution-toolkit/{hooks,skills,commands,fragments}/` — it is **not**
+a hooks-only or prose-only-commands artifact. It also carries one advisory `plan:pre`
+contribution and a default-off `workflow.gsd_contrib_enforcement` consent flag. Its
+`gates[]` is **empty** and the capability is **advisory-only** (see
+*What it does NOT do*) — the hooks it bundles fire as the **personal PreToolUse
+hooks** layer once installed, a property of those hooks and not of the capability.
 
 ### Verify / prove
 
@@ -196,7 +216,7 @@ This section is load-bearing — the project's core value is honesty, not overse
 | `bin/`                  | Runnable tools: `verify-hooks`, `self-test`, `lint-ci-stamp`, `triage-assist`, `release-preflight`, `ruleset-drift`, `verify-capability`. |
 | `commands/`             | Vendored slash commands: `gsd-submit`, `gsd-review-sweep`, `gsd-triage-assist`, `gsd-release-preflight`, `gsd-ruleset-drift`; symlinked into `~/.claude`. |
 | `skills/`               | Vendored Claude skills: `gsd-core-contribution`, `maintainer-review-sweep`; symlinked into `~/.claude`. |
-| `capabilities/`         | The share-form GSD capability manifest (`contribution-toolkit/capability.json`) + its fragments. |
+| `capabilities/`         | The share-form GSD capability: the **self-contained** `contribution-toolkit/` bundle — `capability.json` + `fragments/` + the bundled `hooks/` (13), `skills/` (2), and `commands/` (5) a remote install delivers (NOT hooks-only). |
 | `settings.snippet.json` | The canonical hooks settings block — the wired-set source `build-capability.cjs` reads to generate the capability bundle (NOT merged by `install.sh`).         |
 | `install.sh`            | Idempotent `~/.claude` symlink restorer (commands + skills) — symlink restore only; never writes any `settings.json`.                       |
 
@@ -258,6 +278,31 @@ node bin/contrib-capability.cjs remove --reason <w> # remove from ledger + conse
   set.
 - **`remove`** — strips the gates, deletes the ledger-owned files + drops the
   ledger entry, revokes project consent, and writes a receipt.
+
+### 3. Install from the published capability (remote git)
+
+The toolkit is also published as a **public, git-installable GSD capability** at
+`github.com/davesienkowski/gsd-contribution-toolkit` (tagged `#v2.0.0`). This is the
+distribution path for anyone other than the owner restoring local symlinks — it
+delivers the **self-contained bundle** (the 13 hooks + 2 skills + 5 commands), **not**
+a hooks-only artifact. Install it through gsd-core's git capability adapter:
+
+```bash
+node <gsd-core>/bin/gsd-tools.cjs capability install \
+  https://github.com/davesienkowski/gsd-contribution-toolkit.git#v2.0.0 \
+  --scope project --yes --shared-file .claude/settings.json
+```
+
+- `--scope project` keeps the enforcement project-scoped to the gsd-core checkout
+  (never `~/.claude`), the same blast radius as the local install.
+- `--shared-file .claude/settings.json` is **required**: it is where the adapter
+  wires the bundled hooks so the gates fire inside the project.
+- The toolkit install engine lays the command `.md`s into the runtime commands
+  directory (the honest delivery mechanism — mirroring `install.sh`'s symlink
+  semantics, just copied from the published tree rather than symlinked from this repo).
+- The public repo was renamed to `gsd-contribution-toolkit` from its earlier
+  `…-gate` name; GitHub redirects the old URL, so an existing `#v1.0.0` install
+  does not hard-break.
 
 ### Toggle-off genuinely removes the enforcement
 
