@@ -40,7 +40,7 @@ const { ScriptResolveError } = require('../hooks/lib/resolve.cjs');
 function baseManifest(over = {}) {
   return Object.assign(
     {
-      id: 'contribution-gate',
+      id: 'contribution-toolkit',
       role: 'feature',
       version: '1.0.0',
       title: 'Fake',
@@ -645,7 +645,7 @@ test('11-03 runtime miss: liveRoot:null (no reachable checkout) => runtime-live-
 });
 
 // ── (o) hermetic guarantee: the real bundle/manifest are never mutated by these cases ──
-test('11-03 hermetic: the real capabilities/contribution-gate bundle + manifest are untouched by the suite', () => {
+test('11-03 hermetic: the real capabilities/contribution-toolkit bundle + manifest are untouched by the suite', () => {
   // A trivial structural assertion that the new cases inject seams (bundleHooksDir / checkBundleFresh)
   // rather than the defaults — proven by the fact every 11-03 case above passes os.mkdtemp paths.
   const src = fs.readFileSync(path.join(__dirname, 'verify-capability.test.cjs'), 'utf8');

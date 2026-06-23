@@ -5,7 +5,7 @@
  * bin/build-capability.cjs — the bundle GENERATOR + `--check` staleness gate (CAP-02, design §4).
  *
  * The top-level `hooks/` tree is the single DEV SOURCE OF TRUTH. The capability bundle
- * (`capabilities/contribution-gate/hooks/`) is a GENERATED ARTIFACT — never a hand-maintained second
+ * (`capabilities/contribution-toolkit/hooks/`) is a GENERATED ARTIFACT — never a hand-maintained second
  * copy. This command assembles that bundle byte-for-byte from canonical `hooks/`, stamps the
  * manifest `version`, and provides a read-only `--check` drift gate:
  *
@@ -21,7 +21,7 @@
  *
  * THE LOAD-BEARING INVARIANTS:
  *   - Build COPIES canonical hooks; it NEVER reimplements or vendors gsd-core policy/gate logic.
- *   - Every generated write is CONFINED under capabilities/contribution-gate/hooks/ — any resolved
+ *   - Every generated write is CONFINED under capabilities/contribution-toolkit/hooks/ — any resolved
  *     target escaping that root is rejected before writing (T-11-01-01 path-traversal guard).
  *   - The version stamp is a parse→set→write of the EXISTING manifest: only `version` changes,
  *     the rest of the manifest is preserved verbatim (T-11-01-02).
@@ -42,7 +42,7 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const CANONICAL_HOOKS_DIR = path.join(REPO_ROOT, 'hooks');
 const CANONICAL_LIB_DIR = path.join(CANONICAL_HOOKS_DIR, 'lib');
 const SNIPPET_PATH = path.join(REPO_ROOT, 'settings.snippet.json');
-const BUNDLE_DIR = path.join(REPO_ROOT, 'capabilities', 'contribution-gate');
+const BUNDLE_DIR = path.join(REPO_ROOT, 'capabilities', 'contribution-toolkit');
 const BUNDLE_HOOKS_DIR = path.join(BUNDLE_DIR, 'hooks');
 const MANIFEST_PATH = path.join(BUNDLE_DIR, 'capability.json');
 

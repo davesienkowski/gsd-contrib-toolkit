@@ -21,19 +21,58 @@
   ],
   "agents": [],
   "hooks": [
-    { "event": "PreToolUse", "script": "hooks/gh-issue-create.cjs" },
-    { "event": "PreToolUse", "script": "hooks/gh-pr-create.cjs" },
-    { "event": "PreToolUse", "script": "hooks/gh-edit.cjs" },
-    { "event": "PreToolUse", "script": "hooks/githooks-seal.cjs" },
-    { "event": "PreToolUse", "script": "hooks/issue-dedupe.cjs" },
-    { "event": "PreToolUse", "script": "hooks/freshness.cjs" },
-    { "event": "PreToolUse", "script": "hooks/containment.cjs" },
-    { "event": "PreToolUse", "script": "hooks/policy-invariants.cjs" },
-    { "event": "PreToolUse", "script": "hooks/lint-ci-marker.cjs" },
-    { "event": "PreToolUse", "script": "hooks/git-commit-convention.cjs" },
-    { "event": "PreToolUse", "script": "hooks/scan-gate.cjs" },
-    { "event": "PreToolUse", "script": "hooks/binlib-edit.cjs" },
-    { "event": "UserPromptSubmit", "script": "hooks/protocol-reminder.cjs" }
+    {
+      "event": "PreToolUse",
+      "script": "hooks/gh-issue-create.cjs"
+    },
+    {
+      "event": "PreToolUse",
+      "script": "hooks/gh-pr-create.cjs"
+    },
+    {
+      "event": "PreToolUse",
+      "script": "hooks/gh-edit.cjs"
+    },
+    {
+      "event": "PreToolUse",
+      "script": "hooks/githooks-seal.cjs"
+    },
+    {
+      "event": "PreToolUse",
+      "script": "hooks/issue-dedupe.cjs"
+    },
+    {
+      "event": "PreToolUse",
+      "script": "hooks/freshness.cjs"
+    },
+    {
+      "event": "PreToolUse",
+      "script": "hooks/containment.cjs"
+    },
+    {
+      "event": "PreToolUse",
+      "script": "hooks/policy-invariants.cjs"
+    },
+    {
+      "event": "PreToolUse",
+      "script": "hooks/lint-ci-marker.cjs"
+    },
+    {
+      "event": "PreToolUse",
+      "script": "hooks/git-commit-convention.cjs"
+    },
+    {
+      "event": "PreToolUse",
+      "script": "hooks/scan-gate.cjs"
+    },
+    {
+      "event": "PreToolUse",
+      "script": "hooks/binlib-edit.cjs"
+    },
+    {
+      "event": "UserPromptSubmit",
+      "script": "hooks/protocol-reminder.cjs"
+    }
   ],
   "config": {
     "workflow.gsd_contrib_enforcement": {

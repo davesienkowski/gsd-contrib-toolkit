@@ -129,7 +129,7 @@ surfaces as a fail-closed DENY plus a diagnosable report — not a silent miss.
 - **Install / restore** the toolkit (idempotent): `bash install.sh` — see
   *Install / restore* below.
 - The **12 contributor gates** fire automatically inside the gsd-core repo once
-  the contribution-gate capability is installed (`node bin/contrib-capability.cjs install`).
+  the contribution-toolkit capability is installed (`node bin/contrib-capability.cjs install`).
 - Drive a contribution with the **`gsd-submit`** command (file → push → PR through
   the gates) and the **`gsd-core-contribution`** skill (the contribution knowledge,
   including the stamp → marker → gate → scan loop).
@@ -153,7 +153,7 @@ The **`maintainer-review-sweep`** skill backs these assists.
 
 ### Share-form capability
 
-`capabilities/contribution-gate/capability.json` packages the contribution +
+`capabilities/contribution-toolkit/capability.json` packages the contribution +
 maintainer-review knowledge as an installable, **opt-in** GSD capability (ADR-1244
 `role:feature` manifest): both skills, all five commands, one advisory `plan:pre`
 contribution, and a default-off `workflow.gsd_contrib_enforcement` consent flag.
@@ -196,7 +196,7 @@ This section is load-bearing — the project's core value is honesty, not overse
 | `bin/`                  | Runnable tools: `verify-hooks`, `self-test`, `lint-ci-stamp`, `triage-assist`, `release-preflight`, `ruleset-drift`, `verify-capability`. |
 | `commands/`             | Vendored slash commands: `gsd-submit`, `gsd-review-sweep`, `gsd-triage-assist`, `gsd-release-preflight`, `gsd-ruleset-drift`; symlinked into `~/.claude`. |
 | `skills/`               | Vendored Claude skills: `gsd-core-contribution`, `maintainer-review-sweep`; symlinked into `~/.claude`. |
-| `capabilities/`         | The share-form GSD capability manifest (`contribution-gate/capability.json`) + its fragments. |
+| `capabilities/`         | The share-form GSD capability manifest (`contribution-toolkit/capability.json`) + its fragments. |
 | `settings.snippet.json` | The canonical hooks settings block — the wired-set source `build-capability.cjs` reads to generate the capability bundle (NOT merged by `install.sh`).         |
 | `install.sh`            | Idempotent `~/.claude` symlink restorer (commands + skills) — symlink restore only; never writes any `settings.json`.                       |
 
