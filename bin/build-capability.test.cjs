@@ -127,6 +127,50 @@ test('mutated-bundle: corrupting one bundled file makes checkBundleFresh() not-f
   assert.match(named.reason, /differs/);
 });
 
+test('WR-04 extra-file: a file planted in the bundle dir (not in the planned set) makes it not-fresh', () => {
+  const fx = makeFixture();
+  buildCapability({
+    sourceHooksDir: fx.sourceHooksDir,
+    bundleHooksDir: fx.bundleHooksDir,
+    manifestPath: fx.manifestPath,
+    snippetPath: fx.snippetPath,
+  });
+
+  // Plant an UNDECLARED file in the bundle dir (e.g. a malicious extra hook script). The old
+  // one-sided check (planned-set present+identical only) was blind to this; WR-04 must flag it.
+  fs.writeFileSync(path.join(fx.bundleHooksDir, 'evil-extra.cjs'), '// planted, not in planned set\n');
+  fs.writeFileSync(path.join(fx.bundleHooksDir, 'lib', 'evil-nested.cjs'), '// planted in lib/\n');
+
+  const check = checkBundleFresh({
+    sourceHooksDir: fx.sourceHooksDir,
+    bundleHooksDir: fx.bundleHooksDir,
+    snippetPath: fx.snippetPath,
+  });
+  assert.equal(check.fresh, false, 'an augmented bundle is NEVER reported fresh (WR-04)');
+  const topExtra = check.staleFiles.find((s) => s.path === 'evil-extra.cjs');
+  const libExtra = check.staleFiles.find((s) => s.path === 'lib/evil-nested.cjs');
+  assert.ok(topExtra, 'the top-level extra file is named in staleFiles');
+  assert.ok(libExtra, 'the nested extra file is named in staleFiles');
+  assert.match(topExtra.reason, /extra file in bundle/);
+});
+
+test('WR-04 no-regression: a bundle containing EXACTLY the planned set is still fresh', () => {
+  const fx = makeFixture();
+  buildCapability({
+    sourceHooksDir: fx.sourceHooksDir,
+    bundleHooksDir: fx.bundleHooksDir,
+    manifestPath: fx.manifestPath,
+    snippetPath: fx.snippetPath,
+  });
+  const check = checkBundleFresh({
+    sourceHooksDir: fx.sourceHooksDir,
+    bundleHooksDir: fx.bundleHooksDir,
+    snippetPath: fx.snippetPath,
+  });
+  assert.equal(check.fresh, true, 'a bundle with no extra files stays fresh — the extra-file check is symmetric, not paranoid');
+  assert.deepEqual(check.staleFiles, []);
+});
+
 test('missing-bundle: with no bundle present, checkBundleFresh() reports not-fresh (all stale)', () => {
   const fx = makeFixture();
   // Never build — the bundle dir does not exist.

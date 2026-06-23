@@ -207,9 +207,17 @@ function buildCapability(deps = {}) {
 }
 
 /**
- * checkBundleFresh — READ-ONLY drift comparison. The bundle is FRESH iff every planned file exists
- * in the bundle hooks/ dir AND is byte-identical to its canonical source. Any missing or differing
- * file makes the bundle STALE (named in staleFiles). Never writes anything (T-11-01-03).
+ * checkBundleFresh — READ-ONLY drift comparison. The bundle is FRESH iff (1) every planned file
+ * exists in the bundle hooks/ dir AND is byte-identical to its canonical source, AND (2) the bundle
+ * dir contains NO file absent from the planned set. Any missing, differing, OR EXTRA file makes the
+ * bundle STALE (named in staleFiles). Never writes anything (T-11-01-03).
+ *
+ * WR-04: the extra-file half makes the integrity guarantee SYMMETRIC — previously `--check` was blind
+ * to a file planted in the bundle dir (e.g. a malicious extra hook script), since it only verified the
+ * planned set was present+identical and never enumerated what was ACTUALLY there. This closes the
+ * "never an augmented bundle" gap on the check path to mirror the "never a partial bundle" build
+ * invariant. verify-capability's bundle-parity check REUSES this single function, so both gates share
+ * the SAME staleness truth (design §4) — including extra-file rejection.
  *
  * @param {object} [deps] injectable seams.
  * @param {string} [deps.sourceHooksDir] canonical hooks/ dir.
@@ -241,6 +249,18 @@ function checkBundleFresh(deps = {}) {
     const bundledBytes = fs.readFileSync(bundled);
     if (!srcBytes.equals(bundledBytes)) {
       staleFiles.push({ path: rel, reason: 'differs from canonical source' });
+    }
+  }
+
+  // WR-04: enumerate the ACTUAL bundle dir and reject any file NOT in the planned set. This is the
+  // symmetric "never an augmented bundle" half of the integrity guarantee. (If the bundle dir does
+  // not exist yet, every planned file already reported 'missing from bundle' above — nothing extra.)
+  if (fs.existsSync(bundleHooksDir)) {
+    const plannedSet = new Set(planned);
+    for (const bundled of listFilesRel(bundleHooksDir)) {
+      if (!plannedSet.has(bundled)) {
+        staleFiles.push({ path: bundled, reason: 'extra file in bundle (not in planned set)' });
+      }
     }
   }
 
