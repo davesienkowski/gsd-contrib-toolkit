@@ -122,6 +122,15 @@ function cleanup(fx) {
   fs.rmSync(fx.dir, { recursive: true, force: true });
 }
 
+/**
+ * Build a minimal empty bundle hooks dir (no hook *.cjs files) + lib/resolve.cjs so
+ * surface-hooks and runtime-live-resolution checks are hermetic for tests using baseManifest()
+ * (which declares no hooks). Returns {dir, bundleHooksDir}; caller must cleanup dir.
+ */
+function makeEmptyHooksBundle() {
+  return conformantBundle([]); // ships no hooks files, only lib/resolve.cjs
+}
+
 const SKILLS = ['skill-a', 'skill-b'];
 const COMMANDS = ['gsd-fake-one', 'gsd-fake-two'];
 
@@ -214,6 +223,7 @@ test('LOUD-on-miss: validateCapability not a function (renamed/missing) => ok:fa
 // ── (e) a nonconformant manifest (validator returns errors) => ok:false ───────
 test('a stub validateCapability returning a nonempty error array => ok:false (nonconformant)', () => {
   const fx = makeFixture(baseManifest(), SKILLS, COMMANDS);
+  const hooksBundle = makeEmptyHooksBundle(); // WR-03: hermetic hooks seam
   try {
     const r = runVerifyCapability({
       liveRoot: '/fake/gsd-core',
@@ -221,6 +231,11 @@ test('a stub validateCapability returning a nonempty error array => ok:false (no
       manifestPath: fx.manifestPath,
       skillsDir: fx.skillsDir,
       commandsDir: fx.commandsDir,
+      // WR-03: inject bundle seams so surface-skills/commands/hooks/bundle-parity checks are hermetic.
+      bundleSkillsDir: fx.bundleSkillsDir,
+      bundleCommandsDir: fx.bundleCommandsDir,
+      bundleHooksDir: hooksBundle.bundleHooksDir,
+      checkBundleFresh: () => ({ fresh: true, staleFiles: [], checked: 0 }),
     });
     assert.equal(r.ok, false, 'a nonempty LIVE error array fails the check');
     const vc = r.results.find((x) => x.name === 'validateCapability');
@@ -228,6 +243,7 @@ test('a stub validateCapability returning a nonempty error array => ok:false (no
     assert.match(vc.detail, /id must equal folder name/, 'surfaces the LIVE validator error verbatim');
   } finally {
     cleanup(fx);
+    fs.rmSync(hooksBundle.dir, { recursive: true, force: true });
   }
 });
 
@@ -282,6 +298,7 @@ test('honesty: a description binding THIS capability to unbypassable => ok:false
       'PreToolUse on every tool call.',
   });
   const fx = makeFixture(oversold, SKILLS, COMMANDS);
+  const hooksBundle = makeEmptyHooksBundle(); // WR-03: hermetic hooks seam
   try {
     const r = runVerifyCapability({
       liveRoot: '/fake/gsd-core',
@@ -289,6 +306,11 @@ test('honesty: a description binding THIS capability to unbypassable => ok:false
       manifestPath: fx.manifestPath,
       skillsDir: fx.skillsDir,
       commandsDir: fx.commandsDir,
+      // WR-03: inject bundle seams so surface-skills/commands/hooks/bundle-parity checks are hermetic.
+      bundleSkillsDir: fx.bundleSkillsDir,
+      bundleCommandsDir: fx.bundleCommandsDir,
+      bundleHooksDir: hooksBundle.bundleHooksDir,
+      checkBundleFresh: () => ({ fresh: true, staleFiles: [], checked: 0 }),
     });
     assert.equal(r.ok, false, 'an oversold capability-self claim fails the honesty check');
     const h = r.results.find((x) => x.name === 'honesty');
@@ -296,6 +318,7 @@ test('honesty: a description binding THIS capability to unbypassable => ok:false
     assert.match(h.detail, /T-09-02-OVERSELL/, 'cites the anti-oversell threat');
   } finally {
     cleanup(fx);
+    fs.rmSync(hooksBundle.dir, { recursive: true, force: true });
   }
 });
 
@@ -304,6 +327,7 @@ test('honesty no-regression: the honest disclaimer (PreToolUse only re the perso
   // baseManifest()'s description mentions "unbypassable"/"PreToolUse" ONLY about the SEPARATE personal
   // hooks — the anchored regex must NOT trip on it.
   const fx = makeFixture(baseManifest(), SKILLS, COMMANDS);
+  const hooksBundle = makeEmptyHooksBundle(); // WR-03: hermetic hooks seam
   try {
     const r = runVerifyCapability({
       liveRoot: '/fake/gsd-core',
@@ -311,11 +335,17 @@ test('honesty no-regression: the honest disclaimer (PreToolUse only re the perso
       manifestPath: fx.manifestPath,
       skillsDir: fx.skillsDir,
       commandsDir: fx.commandsDir,
+      // WR-03: inject bundle seams so surface-skills/commands/hooks/bundle-parity checks are hermetic.
+      bundleSkillsDir: fx.bundleSkillsDir,
+      bundleCommandsDir: fx.bundleCommandsDir,
+      bundleHooksDir: hooksBundle.bundleHooksDir,
+      checkBundleFresh: () => ({ fresh: true, staleFiles: [], checked: 0 }),
     });
     const h = r.results.find((x) => x.name === 'honesty');
     assert.ok(h && h.verdict === 'pass', 'the honest disclaimer is not a false oversell');
   } finally {
     cleanup(fx);
+    fs.rmSync(hooksBundle.dir, { recursive: true, force: true });
   }
 });
 
@@ -393,6 +423,7 @@ test('WR-01: honest in-sentence disclaimer ("adds no PreToolUse hooks") => hones
       'explicitly avoids unbypassable enforcement; it is advisory-only.',
   });
   const fx = makeFixture(honest, SKILLS, COMMANDS);
+  const hooksBundle = makeEmptyHooksBundle(); // WR-03: hermetic hooks seam
   try {
     const r = runVerifyCapability({
       liveRoot: '/fake/gsd-core',
@@ -400,11 +431,17 @@ test('WR-01: honest in-sentence disclaimer ("adds no PreToolUse hooks") => hones
       manifestPath: fx.manifestPath,
       skillsDir: fx.skillsDir,
       commandsDir: fx.commandsDir,
+      // WR-03: inject bundle seams so surface-skills/commands/hooks/bundle-parity checks are hermetic.
+      bundleSkillsDir: fx.bundleSkillsDir,
+      bundleCommandsDir: fx.bundleCommandsDir,
+      bundleHooksDir: hooksBundle.bundleHooksDir,
+      checkBundleFresh: () => ({ fresh: true, staleFiles: [], checked: 0 }),
     });
     const h = r.results.find((x) => x.name === 'honesty');
     assert.ok(h && h.verdict === 'pass', 'an honest in-sentence disclaimer is not a false oversell');
   } finally {
     cleanup(fx);
+    fs.rmSync(hooksBundle.dir, { recursive: true, force: true });
   }
 });
 
@@ -415,6 +452,7 @@ test('WR-01: a genuine in-sentence oversell ("this capability is unbypassable") 
       'the PreToolUse boundary on every tool call.',
   });
   const fx = makeFixture(oversold, SKILLS, COMMANDS);
+  const hooksBundle = makeEmptyHooksBundle(); // WR-03: hermetic hooks seam
   try {
     const r = runVerifyCapability({
       liveRoot: '/fake/gsd-core',
@@ -422,12 +460,18 @@ test('WR-01: a genuine in-sentence oversell ("this capability is unbypassable") 
       manifestPath: fx.manifestPath,
       skillsDir: fx.skillsDir,
       commandsDir: fx.commandsDir,
+      // WR-03: inject bundle seams so surface-skills/commands/hooks/bundle-parity checks are hermetic.
+      bundleSkillsDir: fx.bundleSkillsDir,
+      bundleCommandsDir: fx.bundleCommandsDir,
+      bundleHooksDir: hooksBundle.bundleHooksDir,
+      checkBundleFresh: () => ({ fresh: true, staleFiles: [], checked: 0 }),
     });
     assert.equal(r.ok, false, 'a genuine oversell still FAILs');
     const h = r.results.find((x) => x.name === 'honesty');
     assert.ok(h && h.verdict === 'fail', 'the positively-asserted unbypassable claim is caught');
   } finally {
     cleanup(fx);
+    fs.rmSync(hooksBundle.dir, { recursive: true, force: true });
   }
 });
 
@@ -515,6 +559,7 @@ test('WR-01 denylist integration: description with "gsd-core commands" prose doe
       'and are unbypassable; that property belongs to those hooks, not to this capability.',
   });
   const fx = makeFixture(descWithCoreProse, SKILLS, COMMANDS);
+  const hooksBundle = makeEmptyHooksBundle(); // WR-03: hermetic hooks seam
   try {
     const r = runVerifyCapability({
       liveRoot: '/fake/gsd-core',
@@ -522,6 +567,7 @@ test('WR-01 denylist integration: description with "gsd-core commands" prose doe
       manifestPath: fx.manifestPath,
       bundleSkillsDir: fx.bundleSkillsDir,
       bundleCommandsDir: fx.bundleCommandsDir,
+      bundleHooksDir: hooksBundle.bundleHooksDir,
       checkBundleFresh: () => ({ fresh: true, staleFiles: [], checked: 0 }),
     });
     const surf = r.results.find((x) => x.name === 'surface-commands');
@@ -529,6 +575,7 @@ test('WR-01 denylist integration: description with "gsd-core commands" prose doe
       '"gsd-core commands" in prose must NOT produce a false-FAIL surface-commands: ' + (surf && surf.detail));
   } finally {
     cleanup(fx);
+    fs.rmSync(hooksBundle.dir, { recursive: true, force: true });
   }
 });
 
@@ -541,6 +588,7 @@ test('WR-01 denylist integration: description with "gsd-core commands" prose AND
   });
   // The bundle ships only gsd-fake-one + gsd-fake-two; gsd-phantom is declared but not shipped.
   const fx = makeFixture(descWithPhantom, SKILLS, COMMANDS);
+  const hooksBundle = makeEmptyHooksBundle(); // WR-03: hermetic hooks seam
   try {
     const r = runVerifyCapability({
       liveRoot: '/fake/gsd-core',
@@ -548,6 +596,7 @@ test('WR-01 denylist integration: description with "gsd-core commands" prose AND
       manifestPath: fx.manifestPath,
       bundleSkillsDir: fx.bundleSkillsDir,
       bundleCommandsDir: fx.bundleCommandsDir,
+      bundleHooksDir: hooksBundle.bundleHooksDir,
       checkBundleFresh: () => ({ fresh: true, staleFiles: [], checked: 0 }),
     });
     assert.equal(r.ok, false, 'a real phantom command must still cause a FAIL');
@@ -557,12 +606,14 @@ test('WR-01 denylist integration: description with "gsd-core commands" prose AND
     assert.doesNotMatch(surf.detail, /gsd-core/, 'gsd-core must NOT appear as a false declared phantom');
   } finally {
     cleanup(fx);
+    fs.rmSync(hooksBundle.dir, { recursive: true, force: true });
   }
 });
 
 // ── (j) WR-02: a LIVE validator that THROWS yields a clean [FAIL] + ok:false (no uncaught exception) ──
 test('WR-02: a throwing LIVE validator => clean [FAIL] for that validator, ok:false, no uncaught throw', () => {
   const fx = makeFixture(baseManifest(), SKILLS, COMMANDS);
+  const hooksBundle = makeEmptyHooksBundle(); // WR-03: hermetic hooks seam
   try {
     // runVerifyCapability must NOT propagate the throw — it returns {ok:false} with a [FAIL] line.
     const r = runVerifyCapability({
@@ -576,6 +627,11 @@ test('WR-02: a throwing LIVE validator => clean [FAIL] for that validator, ok:fa
       manifestPath: fx.manifestPath,
       skillsDir: fx.skillsDir,
       commandsDir: fx.commandsDir,
+      // WR-03: inject bundle seams so surface-skills/commands/hooks/bundle-parity checks are hermetic.
+      bundleSkillsDir: fx.bundleSkillsDir,
+      bundleCommandsDir: fx.bundleCommandsDir,
+      bundleHooksDir: hooksBundle.bundleHooksDir,
+      checkBundleFresh: () => ({ fresh: true, staleFiles: [], checked: 0 }),
     });
     assert.equal(r.ok, false, 'a thrown validator FAILs LOUD, never ok:true');
     const vc = r.results.find((x) => x.name === 'validateRuntimeCompat');
@@ -583,6 +639,7 @@ test('WR-02: a throwing LIVE validator => clean [FAIL] for that validator, ok:fa
     assert.match(vc.detail, /THREW|boom: validator API drift/, 'the failure names the throw');
   } finally {
     cleanup(fx);
+    fs.rmSync(hooksBundle.dir, { recursive: true, force: true });
   }
 });
 
@@ -707,6 +764,9 @@ test('11-03 parity miss: an injected stale checkBundleFresh (staleFiles entry) =
       manifestPath: fx.manifestPath,
       skillsDir: fx.skillsDir,
       commandsDir: fx.commandsDir,
+      // WR-03: inject bundle seams so surface-skills/commands checks are hermetic.
+      bundleSkillsDir: fx.bundleSkillsDir,
+      bundleCommandsDir: fx.bundleCommandsDir,
       bundleHooksDir: bundle.bundleHooksDir,
       checkBundleFresh: () => ({
         fresh: false,
@@ -740,6 +800,9 @@ test('11-03 runtime miss: an absent bundled resolve.cjs => runtime-live-resoluti
       manifestPath: fx.manifestPath,
       skillsDir: fx.skillsDir,
       commandsDir: fx.commandsDir,
+      // WR-03: inject bundle seams so surface-skills/commands checks are hermetic.
+      bundleSkillsDir: fx.bundleSkillsDir,
+      bundleCommandsDir: fx.bundleCommandsDir,
       bundleHooksDir: bundle.bundleHooksDir,
       checkBundleFresh: () => ({ fresh: true, staleFiles: [], checked: 2 }),
     });
