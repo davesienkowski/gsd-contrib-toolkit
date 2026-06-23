@@ -540,7 +540,15 @@ function runCli() {
 }
 
 if (require.main === module) {
-  process.exit(runCli());
+  try {
+    process.exit(runCli());
+  } catch (err) {
+    process.stderr.write(
+      '[FAIL] verify-capability — unexpected error: ' +
+        (err && err.message ? err.message : String(err)) + '\n'
+    );
+    process.exit(1);
+  }
 }
 
 module.exports = { runVerifyCapability, runCli, resolveGsdCoreCwd, readShippedSkills, readShippedCommands, HONESTY_RE, isOversold };
