@@ -1,7 +1,7 @@
 {
   "id": "contribution-toolkit",
   "role": "feature",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "title": "GSD Contribution Toolkit",
   "description": "Bundles the gsd-core contribution + maintainer review knowledge as an installable, opt-in GSD capability. Ships two skills (gsd-core-contribution, maintainer-review-sweep) and five commands (gsd-submit, gsd-review-sweep, gsd-triage-assist, gsd-release-preflight, gsd-ruleset-drift), plus one advisory plan:pre contribution that reminds the planner to reuse the LIVE gsd-core scripts when filing or reviewing a contribution. Enforcement honesty: this capability is advisory-only — its gates[] is EMPTY, and a capability gate (when one exists) blocks only at the closed set of GSD-loop extension points reached inside a GSD command, never at an arbitrary tool call. It does NOT and cannot reach the harness tool-call boundary; a direct issue/PR/push typed outside a GSD command never crosses a loop point, so this capability never sees it. The separate, personal Claude Code PreToolUse hooks remain the harness-wide enforcement layer that fires on every tool call (even under skip-permissions) — that property belongs to those hooks, not to this capability, and an adopter must not read this capability as such. Runtime accountability for any deliberate bypass rides on the EXISTING per-worktree, append-only GSD_CONTRIB_OVERRIDE receipt (hooks/lib/override.cjs, a logged reason-string, never a silent default); this capability introduces no new receipt mechanism.",
   "tier": "full",

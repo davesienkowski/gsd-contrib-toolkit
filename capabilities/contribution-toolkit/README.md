@@ -11,7 +11,7 @@ gsd-core's own LIVE gate scripts at runtime. It installs, toggles, and removes t
 native capability system, tracked by gsd-core's ledger + consent.
 
 - **Repo:** `github.com/davesienkowski/gsd-contribution-toolkit`
-- **Latest release:** `#v2.1.1`
+- **Latest release:** `#v2.1.2`
 - **Install:** [§ Install](#install) · **Architecture:** [docs/cross-runtime-delivery-model.md](docs/cross-runtime-delivery-model.md)
 - **Reviewers (gsd-core maintainers):** start at [§ For reviewers](#for-reviewers).
 
@@ -79,7 +79,7 @@ Install through gsd-core's git capability adapter (ADR-1244 D3):
 
 ```bash
 node <gsd-core>/bin/gsd-tools.cjs capability install \
-  https://github.com/davesienkowski/gsd-contribution-toolkit.git#v2.1.1 \
+  https://github.com/davesienkowski/gsd-contribution-toolkit.git#v2.1.2 \
   --scope project --yes --shared-file .claude/settings.json
 ```
 
@@ -90,7 +90,7 @@ node <gsd-core>/bin/gsd-tools.cjs capability install \
   discloses them and aborts without consent.
 - `--shared-file .claude/settings.json` is **required to actually wire the hooks** into
   `settings.json`; without it the install records the ledger + overlay but applies no gates.
-- Pin a release with `#v2.1.1` (a tag) or `#sha:<40-hex>` (an exact commit). The earlier `…-gate`
+- Pin a release with `#v2.1.2` (a tag) or `#sha:<40-hex>` (an exact commit). The earlier `…-gate`
   repo name GitHub-redirects, so an existing `#v1.0.0` install does not hard-break.
 
 ## Manage (on / off / status / remove)
@@ -179,6 +179,10 @@ Please read this as written — don't over-read it:
 
 ## Documentation
 
+- [docs/adr/](docs/adr/) — **Architecture Decision Records** (`CTK-ADR-*`, Nygard format): the
+  load-bearing decisions (harness-boundary enforcement; capability-native distribution via `hooks[]`;
+  the v2.3 full-surface/cross-runtime model), each independently challengeable. Accepted but open to
+  maintainer revision.
 - [docs/foundations.md](docs/foundations.md) — **what the toolkit is built on** and how it was
   designed: trek-e's methodology, the skills-artificer law-lenses, the LIVE gsd-core machinery it
   reuses, the lineage of every command/skill, and how the design serves gsd-core's contribution goals.
@@ -198,6 +202,9 @@ If you maintain gsd-core and are reviewing this toolkit:
 - Start with [docs/foundations.md](docs/foundations.md) — it lays out what the toolkit is assembled
   from (your methodology, the artificer lenses, the LIVE gsd-core machinery), the lineage of every
   command/skill, how it was designed, and how its design maps to what gsd-core is driving for.
+- Then [docs/adr/](docs/adr/) — the three decisions are stated as challengeable ADRs (Accepted, but
+  open to revision via a superseding ADR). Their gsd-core factual claims were re-verified against the
+  live `capability-validator.cjs` / `capability-lifecycle.cjs` / `capability-registry.cjs`.
 - The bundle conforms to the LIVE capability validators (tri-surface `declared == shipped` parity
   across hooks + skills + commands) — see the manifest `capability.json`.
 - The two things that would let this capability go *fully native* and *cross-runtime* are written up
@@ -208,8 +215,9 @@ If you maintain gsd-core and are reviewing this toolkit:
 
 ## Provenance & versioning
 
-- **Version:** 2.1.1 (semver; the bundle is generated from canonical `hooks/`/`skills/`/`commands/`
+- **Version:** 2.1.2 (semver; the bundle is generated from canonical `hooks/`/`skills/`/`commands/`
   with a `--check` drift gate and validated against the LIVE gsd-core capability validators before
-  publish). v2.1.1 is a **docs/README release** — the bundle logic is byte-identical to v2.1.0.
+  publish). The v2.1.x line is **docs releases** (v2.1.1 README; v2.1.2 foundations guide + ADRs) —
+  the bundle logic is byte-identical to v2.1.0.
 - **Source toolkit:** `gsd-contrib-toolkit` (private), through the v2.3 milestone.
 - See [CHANGELOG.md](CHANGELOG.md) for the release history.
