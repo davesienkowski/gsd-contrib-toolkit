@@ -187,11 +187,14 @@ function makeSandbox(sourceRoot) {
   const gsdHome = path.join(root, '.gsdhome');
   fs.mkdirSync(gsdHome, { recursive: true });
   const commandsDir = path.join(root, '.claude-runtime', 'commands');
+  // 21-02: a sandbox skills dir too — runInstall/runRemove now deliver/reclaim skills, so inject
+  // skillsDir to keep the e2e hermetic (never touch the real ~/.claude/skills; T-17-03-NONHERMETIC).
+  const skillsDir = path.join(root, '.claude-runtime', 'skills');
 
   function dispose() {
     fs.rmSync(root, { recursive: true, force: true });
   }
-  return { root, gsdHome, commandsDir, dispose };
+  return { root, gsdHome, commandsDir, skillsDir, dispose };
 }
 
 test(
@@ -203,7 +206,7 @@ test(
       // Sanity: the sandbox resolves to ITSELF (never walks up to the real checkout) — TOCTOU guard.
       assert.strictEqual(resolveGsdCoreRoot(sb.root), sb.root, 'sandbox must resolve to itself as a gsd-core root');
 
-      const opts = { liveRoot: sb.root, consentHome: sb.gsdHome, commandsDir: sb.commandsDir };
+      const opts = { liveRoot: sb.root, consentHome: sb.gsdHome, commandsDir: sb.commandsDir, skillsDir: sb.skillsDir };
 
       // runInstall composes the LIVE consent/ledger/shared-edit install THEN delivers the commands.
       const installed = drv.runInstall(opts);

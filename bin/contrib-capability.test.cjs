@@ -163,6 +163,9 @@ function makeCapSandbox(sourceRoot) {
   // A sandboxed runtime commands dir for the slash-command delivery/reclaim (Plan 17-02). Injected via
   // sandboxOpts.commandsDir so the driver NEVER writes to the real ~/.claude/commands (T-17-02-REALCHECKOUT).
   const commandsDir = path.join(root, '.claude-runtime', 'commands');
+  // A sandboxed runtime skills dir for the skill delivery/reclaim (Plan 21-02). Injected via
+  // sandboxOpts.skillsDir so the driver NEVER writes to the real ~/.claude/skills (hermeticity).
+  const skillsDir = path.join(root, '.claude-runtime', 'skills');
 
   let disposed = false;
   function dispose() {
@@ -171,7 +174,7 @@ function makeCapSandbox(sourceRoot) {
     fs.rmSync(root, { recursive: true, force: true });
   }
 
-  return { root, gsdHome, settingsPath, commandsDir, dispose };
+  return { root, gsdHome, settingsPath, commandsDir, skillsDir, dispose };
 }
 
 /**
@@ -180,7 +183,7 @@ function makeCapSandbox(sourceRoot) {
  * commandsDir means the command delivery/reclaim NEVER touches the real ~/.claude/commands.
  */
 function sandboxOpts(sb) {
-  return { liveRoot: sb.root, consentHome: sb.gsdHome, commandsDir: sb.commandsDir };
+  return { liveRoot: sb.root, consentHome: sb.gsdHome, commandsDir: sb.commandsDir, skillsDir: sb.skillsDir };
 }
 
 /** The 5 bundled slash-command basenames the install delivers (data-driven from the REAL bundle). */
@@ -206,6 +209,40 @@ function countDeliveredCommands(sb) {
     }
     if (!st.isSymbolicLink()) continue;
     const want = path.join(drv.BUNDLE_CAP_DIR, 'commands', name);
+    let cur = '';
+    try {
+      cur = fs.readlinkSync(target);
+    } catch (_) {
+      cur = '';
+    }
+    if (cur === want) delivered += 1;
+  }
+  return { delivered, names };
+}
+
+/** The bundled skill stems the install/on delivers (data-driven from the REAL bundle). */
+function bundledSkillNames() {
+  return drv.bundledSkillNames(drv.BUNDLE_CAP_DIR);
+}
+
+/**
+ * Count the delivered skill DIRECTORY symlinks in the sandbox skills dir that resolve to the bundle
+ * source. Returns { delivered, names } — delivered = how many bundled skills are present as a symlink
+ * pointing at <BUNDLE>/skills/<stem> (proves the local-parity dir-symlink form, not a stray copy).
+ */
+function countDeliveredSkills(sb) {
+  const names = bundledSkillNames();
+  let delivered = 0;
+  for (const stem of names) {
+    const target = path.join(sb.skillsDir, stem);
+    let st = null;
+    try {
+      st = fs.lstatSync(target);
+    } catch (_) {
+      continue;
+    }
+    if (!st.isSymbolicLink()) continue;
+    const want = path.join(drv.BUNDLE_CAP_DIR, 'skills', stem);
     let cur = '';
     try {
       cur = fs.readlinkSync(target);
@@ -326,6 +363,17 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 13 tagged,
     let cmds = countDeliveredCommands(sb);
     assert.strictEqual(cmds.names.length, 5, 'the bundle must ship exactly 5 slash-commands');
     assert.strictEqual(cmds.delivered, 5, 'install must deliver all 5 command symlinks → the bundle, got ' + cmds.delivered);
+    // 21-02: install ALSO delivers the 2 bundled skills as dir-symlinks → the bundle, into the SANDBOX
+    // skills dir (never the real ~/.claude/skills — confined via sandboxOpts.skillsDir).
+    let skl = countDeliveredSkills(sb);
+    assert.strictEqual(skl.names.length, 2, 'the bundle must ship exactly 2 skills');
+    assert.strictEqual(skl.delivered, 2, 'install must deliver all 2 skill symlinks → the bundle, got ' + skl.delivered);
+    // 21-02: install lands FULLY ON — the enforcement flag is true after install.
+    assert.strictEqual(
+      readEnforcementFlag(sb),
+      true,
+      'install must set workflow.gsd_contrib_enforcement=true (install lands fully ON)'
+    );
 
     // ── off: EXACTLY the 13 tagged entries stripped; the UNTAGGED user hook SURVIVES ──
     drv.runOff(Object.assign({}, opts, { reason: 'CAP-07 hermetic lifecycle proof: off' }));
@@ -342,10 +390,12 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 13 tagged,
       false,
       'runOff must set workflow.gsd_contrib_enforcement=false in config.json'
     );
-    // 17-02: off governs enforcement, NOT command availability — the 5 command links SURVIVE an off
-    // (commands are tied to install/remove, not the on/off toggle).
+    // 21-02 (REVERSES 17-02): off OWNS the full surface — it reclaims BOTH the 5 command links AND the
+    // 2 skill links (commands/skills are enforcement-coupled availability now, governed by on/off).
     cmds = countDeliveredCommands(sb);
-    assert.strictEqual(cmds.delivered, 5, 'off must NOT remove the command links (commands are availability, not enforcement), got ' + cmds.delivered);
+    assert.strictEqual(cmds.delivered, 0, 'off must reclaim all 5 command links (full-surface toggle), leftover=' + cmds.delivered);
+    skl = countDeliveredSkills(sb);
+    assert.strictEqual(skl.delivered, 0, 'off must reclaim all 2 skill links (full-surface toggle), leftover=' + skl.delivered);
 
     // ── on: the 13 tagged entries are restored (and the untagged user hook is still there) ──
     drv.runOn(opts);
@@ -360,6 +410,12 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 13 tagged,
       true,
       'runOn must set workflow.gsd_contrib_enforcement=true in config.json'
     );
+    // 21-02: off→on round-trips the FULL surface — on restores the 5 command links + 2 skill links
+    // that off reclaimed (ledger/consent/bundle preserved by off make this restoration possible).
+    cmds = countDeliveredCommands(sb);
+    assert.strictEqual(cmds.delivered, 5, 'on must restore all 5 command links (off→on round-trip), got ' + cmds.delivered);
+    skl = countDeliveredSkills(sb);
+    assert.strictEqual(skl.delivered, 2, 'on must restore all 2 skill links (off→on round-trip), got ' + skl.delivered);
 
     // ── remove: no ledger entry + no consent record for contribution-toolkit remain in the sandbox store ──
     drv.runRemove(Object.assign({}, opts, { reason: 'CAP-07 hermetic lifecycle proof: remove' }));
@@ -375,6 +431,9 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 13 tagged,
     // 17-02: remove reclaims EXACTLY the 5 delivered command links — none remain after the cycle.
     cmds = countDeliveredCommands(sb);
     assert.strictEqual(cmds.delivered, 0, 'remove must reclaim all 5 delivered command links, leftover=' + cmds.delivered);
+    // 21-02: remove reclaims the 2 delivered skill links too (permanent teardown of BOTH surfaces).
+    skl = countDeliveredSkills(sb);
+    assert.strictEqual(skl.delivered, 0, 'remove must reclaim all 2 delivered skill links, leftover=' + skl.delivered);
   } finally {
     sb.dispose();
   }

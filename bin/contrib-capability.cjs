@@ -4,11 +4,11 @@
 /**
  * bin/contrib-capability.cjs — the CAP-03 thin driver for the contribution-toolkit capability.
  *
- *   node bin/contrib-capability.cjs install            # stage + consent + ledger + marker-tag the 13 hooks
- *   node bin/contrib-capability.cjs on                 # (re)apply the tagged gates + enforcement flag on
- *   node bin/contrib-capability.cjs off  --reason <w>  # strip the tagged gates + flag off + logged receipt
+ *   node bin/contrib-capability.cjs install            # first-setup fully ON: consent+ledger+13 gates+commands+skills+flag on
+ *   node bin/contrib-capability.cjs on                 # full surface ON: (re)apply gates + deliver commands + skills + flag on
+ *   node bin/contrib-capability.cjs off  --reason <w>  # full surface OFF: strip gates + reclaim commands + skills + flag off + receipt
  *   node bin/contrib-capability.cjs status             # report ledger entry + consent record + live gate set
- *   node bin/contrib-capability.cjs remove --reason <w> # remove from ledger + consent + logged receipt
+ *   node bin/contrib-capability.cjs remove --reason <w> # permanent teardown: drop ledger + consent + reclaim commands + skills + receipt
  *   # (the disposable-sandbox integration test is Plan 12-03)
  *
  * This is a THIN DRIVER. It NEVER reimplements the gsd-core capability engine
@@ -205,12 +205,27 @@ function consentStoreHome() {
 //   reclaim only links into our bundle). These are PRIMITIVES only in 21-01 — not yet wired into the
 //   install/remove lifecycle (that is Plan 21-02).
 //
-// LIFECYCLE TIE DECISION (justified — per CONTEXT.md discretion): command delivery is tied to the
-//   install/remove lifecycle (delivered by `install`, reclaimed by `remove`), NOT the on/off
-//   enforcement toggle. Commands are AVAILABILITY, not enforcement — the on/off flag governs the gate
-//   enforcement flag + the marker-tagged gates, NOT command availability. So `off` leaves the command
-//   links in place (an operator turning enforcement off still has the slash-commands available); only
-//   `remove` (and an uninstall) reclaims them.
+// LIFECYCLE TIE DECISION (21-02 — DELIBERATELY REVERSES the prior decision; per CONTEXT.md):
+//   on/off OWN THE FULL SURFACE — hooks (the marker-tagged gates) + the 5 commands + the 2 skills.
+//   Commands + skills are now ENFORCEMENT-COUPLED AVAILABILITY (governed by on/off), NOT install/remove.
+//   The four lifecycle verbs:
+//     • install = FIRST-SETUP, FULLY ON. Records consent/ledger, reconciles legacy untagged entries,
+//       lays down the 13 marker-tagged gates, DELIVERS the commands + skills, and flips the
+//       enforcement flag TRUE. Install lands the capability fully active in one shot.
+//     • on  = (re)apply the gates + DELIVER the commands + skills + flag TRUE — the full surface ON.
+//     • off = DEACTIVATE-BUT-RE-ACTIVATABLE. Probes the receipt FIRST, then strips the gates, reclaims
+//       the commands + skills, flips the flag FALSE, and writes the append-only accountability receipt.
+//       off touches ONLY gates/commands/skills/flag — it PRESERVES the ledger + consent + bundle, so a
+//       subsequent `on` restores the entire surface (off→on round-trips). A disable that cannot be
+//       LOGGED mutates NOTHING (the probe is first; T-12-02-SKIPRECEIPT / T-21-05).
+//     • remove = PERMANENT TEARDOWN. Drops the ledger entry + revokes consent (LIVE removeCapability)
+//       AND reclaims BOTH commands + skills, under the same logged remove receipt.
+//   WHY THE REVERSAL: the prior model tied command availability to install/remove and LEFT commands in
+//   place on `off` (skills were not handled at all). The resolved model makes the toggle own the
+//   ENTIRE operator-facing surface so `off` is a true deactivation (nothing left dangling) that stays
+//   one `on` away from full restoration — install = setup, remove = teardown, on/off = the toggle.
+//   HONESTY (HARD, unchanged): never label the capability itself "unbypassable" — `off` GENUINELY
+//   removes the gates from settings.json (the gates ARE the enforcement); the loop advisory is opt-in.
 
 /**
  * Resolve the runtime commands dir Claude Code reads slash-commands from: `${CLAUDE_DIR:-~/.claude}/commands`.
@@ -809,7 +824,7 @@ function reconcileLegacyEntries(args) {
  */
 function runInstall(opts = {}) {
   const engine = loadLiveEngine(opts);
-  const { liveRoot, lifecycle, consent, ledger, trust, CAP_MARKER } = engine;
+  const { liveRoot, lifecycle, consent, ledger, trust, config, CAP_MARKER } = engine;
   const consentHome = opts.consentHome || consentStoreHome();
   const bundleDir = opts.bundleDir || BUNDLE_CAP_DIR;
   const manifestPath = opts.manifestPath || path.join(bundleDir, 'capability.json');
@@ -906,10 +921,45 @@ function runInstall(opts = {}) {
   lines.push('[install] delivered ' + delivered.names.length + ' slash-command(s) to ' + commandsDir +
     ' (' + delivered.linked + ' linked, ' + delivered.already + ' already correct)');
 
-  // The on/off flip of workflow.gsd_contrib_enforcement is OWNED by Plan 12-02; install leaves the
-  // config default (OFF) so the advisory surface is the explicit opt-in 12-02 toggles.
-  lines.push('[install] done — re-run is idempotent (LIVE apply strips its own marker first)');
-  return { lines, applied, reconciled, delivered };
+  // (6) DELIVER the bundled skills into the runtime skills dir — a directory-symlink mirror of the
+  // command delivery above (21-02). Per the NEW LIFECYCLE TIE model (see the comment block at the top
+  // of this file), the FULL surface (hooks + commands + skills) is delivered by install (which lands
+  // fully ON) and owned by the on/off toggle. SOURCED FROM THE BUNDLE (T-17-02-REPOSOURCE), with the
+  // same never-clobber-a-real-dir fail-safe.
+  //
+  // PARTIAL-INSTALL NOTE (WR-01, mirrors the command path): steps 1-5 above (reconcile, consent,
+  // ledger, shared-edits, command delivery) have already completed. If deliverBundledSkills throws (a
+  // real file/dir at a skill target), the enforcement hooks + commands ARE already installed/wired.
+  // Annotate the error with that context so the user knows to resolve the conflicting path and re-run
+  // `install` (NOT `remove`) — install is idempotent on the prior steps and retries only delivery.
+  const skillsDir = claudeSkillsDir(opts);
+  let deliveredSkills;
+  try {
+    deliveredSkills = deliverBundledSkills({ bundleDir, skillsDir });
+  } catch (err) {
+    const isDriver = err instanceof DriverError || (err && err.name === 'DriverError');
+    const base = isDriver ? err.message : '(' + (err && err.name) + ') ' + (err && err.message);
+    throw new DriverError(
+      base + '\n' +
+      'NOTE: the enforcement hooks + slash-commands (steps 1-5) ARE already installed and wired — ' +
+      'the gates will fire and the commands are available. To finish skill delivery: resolve the ' +
+      'conflicting path above, then re-run `install` (NOT `remove`) — install is idempotent on ' +
+      'hooks/consent/ledger/commands and will retry only the skill delivery step.'
+    );
+  }
+  lines.push('[install] delivered ' + deliveredSkills.names.length + ' skill(s) to ' + skillsDir +
+    ' (' + deliveredSkills.linked + ' linked, ' + deliveredSkills.already + ' already correct)');
+
+  // (7) Install lands FULLY ON: flip the advisory `workflow.gsd_contrib_enforcement` flag to TRUE via
+  // the LIVE config setter (writes <liveRoot>/.planning/config.json). This is the RESOLVED decision
+  // (21-02) — it OVERRIDES the old "install leaves the config default (OFF)": install is now
+  // first-setup fully-ON (full surface delivered + enforcement enabled). on/off own the toggle from here.
+  config.setConfigValue(liveRoot, ENFORCEMENT_FLAG, true);
+  lines.push('[install] set ' + ENFORCEMENT_FLAG + '=true (fully ON)');
+
+  lines.push('[install] done — fully ON + full surface delivered (hooks + commands + skills); ' +
+    're-run is idempotent (LIVE apply strips its own marker first)');
+  return { lines, applied, reconciled, delivered, deliveredSkills };
 }
 
 // ---------------------------------------------------------------------------
@@ -1081,11 +1131,24 @@ function runOn(opts = {}) {
   const applied = Array.isArray(sharedEdits) ? sharedEdits.length : 0;
   lines.push('[on] applied the CAP_MARKER (' + CAP_MARKER + ')-tagged contrib gates across ' + applied + ' file(s)');
 
+  // (21-02) on OWNS the full surface: after re-applying the gates, DELIVER the commands + skills so an
+  // off→on round-trip restores everything off reclaimed. Commands/skills are ENFORCEMENT-coupled
+  // availability now (governed by on/off, not install/remove) — see the LIFECYCLE TIE DECISION comment.
+  const commandsDir = claudeCommandsDir(opts);
+  const delivered = deliverBundledCommands({ bundleDir, commandsDir });
+  lines.push('[on] delivered ' + delivered.names.length + ' slash-command(s) to ' + commandsDir +
+    ' (' + delivered.linked + ' linked, ' + delivered.already + ' already correct)');
+  const skillsDir = claudeSkillsDir(opts);
+  const deliveredSkills = deliverBundledSkills({ bundleDir, skillsDir });
+  lines.push('[on] delivered ' + deliveredSkills.names.length + ' skill(s) to ' + skillsDir +
+    ' (' + deliveredSkills.linked + ' linked, ' + deliveredSkills.already + ' already correct)');
+
   // Flip the advisory surface ON via the LIVE config setter (writes <liveRoot>/.planning/config.json).
   config.setConfigValue(liveRoot, ENFORCEMENT_FLAG, true);
   lines.push('[on] set ' + ENFORCEMENT_FLAG + '=true (advisory contribution enabled)');
-  lines.push('[on] done — the installed PreToolUse gates are now live; the loop advisory is enabled');
-  return { lines, applied, enforcement: true };
+  lines.push('[on] done — the installed PreToolUse gates are now live; commands + skills delivered; ' +
+    'the loop advisory is enabled');
+  return { lines, applied, delivered, deliveredSkills, enforcement: true };
 }
 
 /**
@@ -1124,6 +1187,23 @@ function runOff(opts = {}) {
   lines.push('[off] stripped the CAP_MARKER (' + CAP_MARKER + ')-tagged contrib gates: ' + stripped +
     ' entr' + (stripped === 1 ? 'y' : 'ies') + ' (untagged hooks survive)');
 
+  // (21-02) off OWNS the full surface — RECLAIM the delivered commands + skills here, AFTER the strip
+  // and AFTER the probe proved the receipt is writable (so the whole disable is covered by the SAME
+  // logged receipt), and BEFORE the flag flip. The accountability invariant is preserved EXACTLY: the
+  // probe is still FIRST, so a disable that cannot be logged mutates NOTHING (T-12-02-SKIPRECEIPT /
+  // T-21-05). off does NOT touch the ledger/consent/bundle — only gates/commands/skills/flag — so a
+  // subsequent on restores the full surface (off→on round-trip; T-21-06). Reclaim touches ONLY links
+  // into our bundle (real files + foreign symlinks left untouched; T-17-02-OVERREMOVE).
+  const bundleDir = opts.bundleDir || BUNDLE_CAP_DIR;
+  const commandsDir = claudeCommandsDir(opts);
+  const reclaimed = removeBundledCommands({ bundleDir, commandsDir });
+  lines.push('[off] reclaimed ' + reclaimed.removed + ' command link(s) from ' + commandsDir +
+    ' (only links into our bundle; real files + foreign symlinks left untouched)');
+  const skillsDir = claudeSkillsDir(opts);
+  const reclaimedSkills = removeBundledSkills({ bundleDir, skillsDir });
+  lines.push('[off] reclaimed ' + reclaimedSkills.removed + ' skill link(s) from ' + skillsDir +
+    ' (only links into our bundle; real dirs + foreign symlinks left untouched)');
+
   // Flip the advisory surface OFF via the LIVE config setter — off genuinely removes the enforcement.
   config.setConfigValue(liveRoot, ENFORCEMENT_FLAG, false);
   lines.push('[off] set ' + ENFORCEMENT_FLAG + '=false (advisory contribution disabled)');
@@ -1131,8 +1211,9 @@ function runOff(opts = {}) {
   // Accountability receipt (append-only, per-project-root) — an un-writable receipt FAILS off.
   const receiptPath = writeAccountabilityReceipt({ liveRoot, action: 'off', reason });
   lines.push('[off] logged accountability receipt: ' + receiptPath);
-  lines.push('[off] done — toggle-off removed the contrib gates from settings.json');
-  return { lines, stripped, enforcement: false, receiptPath };
+  lines.push('[off] done — toggle-off removed the contrib gates from settings.json + reclaimed the ' +
+    'commands + skills (ledger/consent/bundle preserved; re-activatable by on)');
+  return { lines, stripped, reclaimed, reclaimedSkills, enforcement: false, receiptPath };
 }
 
 /**
@@ -1255,11 +1336,21 @@ function runRemove(opts = {}) {
   lines.push('[remove] reclaimed ' + reclaimed.removed + ' delivered slash-command link(s) from ' +
     commandsDir + ' (only links into our bundle; real files + foreign symlinks left untouched)');
 
+  // (3b) RECLAIM the delivered skill links too — a directory-symlink mirror of the command reclaim
+  // above (21-02). remove is the PERMANENT teardown: it reclaims BOTH surfaces (commands + skills).
+  // Runs BEFORE the final receipt write so the reclaim is covered by the SAME logged action='remove'
+  // receipt. Touches ONLY links into our bundle (real dirs + foreign symlinks left untouched;
+  // T-17-02-OVERREMOVE).
+  const skillsDir = claudeSkillsDir(opts);
+  const reclaimedSkills = removeBundledSkills({ bundleDir, skillsDir });
+  lines.push('[remove] reclaimed ' + reclaimedSkills.removed + ' delivered skill link(s) from ' +
+    skillsDir + ' (only links into our bundle; real dirs + foreign symlinks left untouched)');
+
   // (4) Accountability receipt (append-only, per-project-root) — an un-writable receipt FAILS remove.
   const receiptPath = writeAccountabilityReceipt({ liveRoot, action: 'remove', reason });
   lines.push('[remove] logged accountability receipt: ' + receiptPath);
   lines.push('[remove] done — contribution-toolkit removed from the ledger; the gates left settings.json');
-  return { lines, status, strippedEdits, consentRevoked, reclaimed, receiptPath };
+  return { lines, status, strippedEdits, consentRevoked, reclaimed, reclaimedSkills, receiptPath };
 }
 
 // ---------------------------------------------------------------------------
@@ -1357,11 +1448,11 @@ function usage() {
   return [
     'contrib-capability — thin driver for the contribution-toolkit capability (drives the LIVE gsd-core engine)',
     '',
-    '  node bin/contrib-capability.cjs install            stage + consent + ledger + marker-tag the 13 hooks',
-    '  node bin/contrib-capability.cjs on                 (re)apply the tagged gates + enforcement flag on',
-    '  node bin/contrib-capability.cjs off  --reason <w>  strip the tagged gates + flag off (+ logged receipt)',
+    '  node bin/contrib-capability.cjs install            first-setup fully ON: consent + ledger + 13 gates + commands + skills + flag on',
+    '  node bin/contrib-capability.cjs on                 full surface ON: (re)apply gates + deliver commands + skills + flag on',
+    '  node bin/contrib-capability.cjs off  --reason <w>  full surface OFF: strip gates + reclaim commands + skills + flag off (+ receipt)',
     '  node bin/contrib-capability.cjs status             report ledger + consent + live gate set',
-    '  node bin/contrib-capability.cjs remove --reason <w> remove from ledger + consent (+ logged receipt)',
+    '  node bin/contrib-capability.cjs remove --reason <w> permanent teardown: drop ledger + consent + reclaim commands + skills (+ receipt)',
     '',
     'off/remove require --reason "<why>": disabling the contrib guard is a deliberate, accountable act',
     'recorded in an append-only per-project-root receipt (.gsd-contrib/override-receipts.log).',
