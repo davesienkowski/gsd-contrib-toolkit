@@ -212,7 +212,7 @@ function readShippedCommands(commandsDir) {
   const out = [];
   for (const ent of entries) {
     if (!ent.isFile()) continue;
-    if (/^gsd-.*\.md$/.test(ent.name)) out.push(ent.name.replace(/\.md$/, ''));
+    if (COMMAND_NAME_RE.test(ent.name)) out.push(ent.name.replace(/\.md$/, ''));
   }
   out.sort();
   return { ok: true, commands: out };
