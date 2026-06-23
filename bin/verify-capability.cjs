@@ -94,7 +94,7 @@ const REQUIRED_VALIDATORS = [
  * fires at PreToolUse") is still caught; only honest in-sentence disclaimers are released.
  */
 const HONESTY_OVERSELL_RE = [
-  /this capability\b[^.]*\b(?:is|are|acts? as|provides?|reaches?|enforces?|fires? at|guarantees?)\b[^.]*\b(unbypassable|pretooluse)/i,
+  /this capability\b[^.]*\b(?:is|are|acts? as|provides?|reaches?|reaching|enforces?|fires? at|guarantees?)\b[^.]*\b(unbypassable|pretooluse)/i,
   /\bcapability is unbypassable\b/i,
 ];
 // A negator that ACTUALLY NEGATES the enforcement predicate means the sentence is an honest

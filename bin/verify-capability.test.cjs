@@ -443,6 +443,9 @@ test('WR-01 unit: isOversold releases honest negations and catches positive asse
   assert.equal(isOversold('This capability is unbypassable.'), true);
   assert.equal(isOversold('This capability enforces at the PreToolUse boundary.'), true);
   assert.equal(isOversold('This capability reaches PreToolUse.'), true);
+  // WR-04: gerund form "reaching" must also be caught as an oversell.
+  assert.equal(isOversold('This capability cannot avoid reaching PreToolUse.'), true,
+    '"cannot avoid reaching PreToolUse" is a genuine oversell — gerund form must be caught');
 });
 
 // ── (i3) WR-02: a negator on an UNRELATED predicate must NOT release a genuine oversell ──
@@ -453,6 +456,27 @@ test('WR-02: a negator negating an unrelated predicate does not evade the overse
   // tightened negator must only release when it actually negates the enforcement predicate.
   assert.equal(isOversold('This capability is not advisory, and is unbypassable.'), true);
   assert.equal(isOversold('This capability does not help you, but it is unbypassable.'), true);
+});
+
+// ── (i4) WR-04: gerund form "reaching" is caught by the oversell check ──
+test('WR-04: gerund form "reaching" is caught by the oversell check', () => {
+  const { isOversold } = require('./verify-capability.cjs');
+  // The OLD oversell pattern used reaches? (matching reach/reaches) but missed the gerund form.
+  // "This capability cannot avoid reaching PreToolUse" is semantically an oversell (it DOES reach
+  // PreToolUse — "cannot avoid X" = does X). The updated OVERSELL_RE includes "reaching" so this
+  // is caught. Note: "cannot avoid reaching" fires the oversell pattern; "avoid" + "reaching" do NOT
+  // match as a negation pair in NEGATOR_RE (negators require a conjugated verb form like reach/reaches,
+  // not the gerund), so the oversell is correctly preserved.
+  assert.equal(isOversold('This capability cannot avoid reaching PreToolUse.'), true,
+    '"cannot avoid reaching PreToolUse" is a genuine oversell');
+  assert.equal(isOversold('This capability is currently reaching the PreToolUse boundary.'), true,
+    '"reaching the PreToolUse boundary" is a genuine oversell');
+  // Confirm the pre-existing non-gerund forms still work correctly.
+  assert.equal(isOversold('This capability reaches PreToolUse.'), true, 'reaches still caught');
+  assert.equal(isOversold('This capability does not reach PreToolUse.'), false, 'negated reach still released');
+  // Honest phrasing using gerund context (avoids explicitly named): not caught.
+  assert.equal(isOversold('This capability explicitly avoids unbypassable enforcement.'), false,
+    '"avoids unbypassable enforcement" is an honest disclaimer');
 });
 
 // ── (j) WR-02: a LIVE validator that THROWS yields a clean [FAIL] + ok:false (no uncaught exception) ──
