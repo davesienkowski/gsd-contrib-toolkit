@@ -13,7 +13,7 @@ is the **sole** entrypoint that restores the full surface — hooks + commands +
 idempotently: re-run it after any GSD update or `gsd-ver` toggle to repair the toolkit
 without losing work, so a reinstall can never lose the toolkit.
 
-## What it does
+## What It Does
 
 It enforces the **outcomes** that matter at the harness boundary — no broken
 issue/PR/push, no generated-file edit — using Claude Code `PreToolUse` hooks that
@@ -40,7 +40,7 @@ contribution gets bounced (or merged red) for:
 - **bypassing the seal** — `--no-verify`, a swapped `core.hooksPath`, or a
   leak of private files up to upstream gsd-core.
 
-### Gate reference
+### Gate Reference
 
 Each gate DENIES at the `PreToolUse` boundary; most resolve and call a **LIVE
 gsd-core script** rather than reimplementing its policy (see *What it uses*).
@@ -61,7 +61,7 @@ gsd-core script** rather than reimplementing its policy (see *What it uses*).
 | `binlib-edit.cjs` | Write/Edit | editing a generated `bin/lib/*.cjs` instead of `src/*.ts` | (generated-path check — no LIVE script) |
 | `protocol-reminder.cjs` | UserPromptSubmit | *(advisory only — reminds, never denies)* | — |
 
-## How it works
+## How It Works
 
 **Harness-boundary enforcement.** A `PreToolUse` hook is run by the Claude Code
 harness *before* the tool call's permission check. That makes the **personal
@@ -95,7 +95,7 @@ non-empty **reason string** (never a boolean flag, and distinct from the denied
 receipt under `.gsd-contrib/override-receipts.log`. It is a deliberate, logged
 escape, never a silent default.
 
-## What it uses
+## What It Uses
 
 The reuse model is the point: **policy logic lives in gsd-core; this toolkit
 resolves and invokes it**, so it stays aligned as gsd-core evolves. The gates and
@@ -122,9 +122,9 @@ A self-test (`hooks/lib/doctor.cjs`) asserts the LIVE scripts still export the
 shapes the gates expect, so a gsd-core refactor that changes a script's shape
 surfaces as a fail-closed DENY plus a diagnosable report — not a silent miss.
 
-## What you can do
+## What You Can Do
 
-### Contributor workflow
+### Contributor Workflow
 
 - **Install / restore** the toolkit (idempotent):
   `node bin/contrib-capability.cjs install` — see *Install / restore* below.
@@ -147,7 +147,7 @@ it NEVER suggests bypassing the gate or abusing `GSD_CONTRIB_OVERRIDE` to dodge 
 real failure, and no gate is weakened. (Surfaced from the contribution skill +
 `gsd-submit`/`gsd-review-sweep` commands.)
 
-### Owner / maintainer pillar
+### Owner / Maintainer Pillar
 
 These are **advisory** assists (read-only by default — NOT deny-gates), each
 reusing LIVE gsd-core scripts and surfaced through a `/gsd-*` command:
@@ -163,7 +163,7 @@ reusing LIVE gsd-core scripts and surfaced through a `/gsd-*` command:
 
 The **`maintainer-review-sweep`** skill backs these assists.
 
-### Share-form capability
+### Share-Form Capability
 
 `capabilities/contribution-toolkit/capability.json` packages the contribution +
 maintainer-review knowledge as an installable, **opt-in** GSD capability (ADR-1244
@@ -179,7 +179,7 @@ contribution and a default-off `workflow.gsd_contrib_enforcement` consent flag. 
 *What it does NOT do*) — the hooks it bundles fire as the **personal PreToolUse
 hooks** layer once installed, a property of those hooks and not of the capability.
 
-### Verify / prove
+### Verify / Prove
 
 - `node bin/verify-hooks.cjs` — captures byte-stable deny/allow proof artifacts for
   the gates.
@@ -187,7 +187,7 @@ hooks** layer once installed, a property of those hooks and not of the capabilit
 - `node bin/verify-capability.cjs` — validates the share-form manifest by reusing
   the LIVE capability-registry validators (no schema reimplementation).
 
-## What it does NOT do
+## What It Does NOT Do
 
 This section is load-bearing — the project's core value is honesty, not overselling.
 
@@ -208,7 +208,7 @@ This section is load-bearing — the project's core value is honesty, not overse
 - **Not yet battle-tested on a real contribution.** The toolkit is built and
   self-proven; proving it on a live gsd-core contribution remains.
 
-## Directory layout
+## Directory Layout
 
 | Path                    | Purpose                                                                                  |
 | ----------------------- | ---------------------------------------------------------------------------------------- |
@@ -219,7 +219,7 @@ This section is load-bearing — the project's core value is honesty, not overse
 | `capabilities/`         | The share-form GSD capability: the **self-contained** `contribution-toolkit/` bundle — `capability.json` + `fragments/` + the bundled `hooks/` (13), `skills/` (2), and `commands/` (5) a remote install delivers (NOT hooks-only). |
 | `settings.snippet.json` | The canonical hooks settings block — the wired-set source `build-capability.cjs` reads to generate the capability bundle.         |
 
-## Source of truth and symlinks
+## Source of Truth and Symlinks
 
 The vendored assets under `skills/` and `commands/` are the **source of truth**.
 The copies under `~/.claude` are *symlinks* back into this repository — so editing
@@ -227,14 +227,14 @@ the file in `~/.claude` edits the tracked file here, and a GSD reinstall that
 clobbers `~/.claude` is repaired by re-running the installer rather than by
 recovering lost work.
 
-## Install / restore
+## Install / Restore
 
 There is **one local entrypoint** — the capability driver
 `node bin/contrib-capability.cjs install` — which restores the `~/.claude` symlinks
 AND installs/toggles the enforcement; plus a separate published-capability remote
 route for anyone other than the owner (see step 2 below).
 
-### 1. Install / restore the full surface (the capability CLI)
+### 1. Install / Restore the Full Surface (the Capability CLI)
 
 `node bin/contrib-capability.cjs install` is the **single, idempotent, re-runnable**
 entrypoint. It delivers the vendored commands + skills (as `~/.claude` symlinks back
@@ -270,7 +270,7 @@ node bin/contrib-capability.cjs remove --reason <w> # remove from ledger + conse
 - **`remove`** — strips the gates, deletes the ledger-owned files + drops the
   ledger entry, revokes project consent, and writes a receipt.
 
-### 2. Install from the published capability (remote git)
+### 2. Install From the Published Capability (Remote Git)
 
 The toolkit is also published as a **public, git-installable GSD capability** at
 `github.com/davesienkowski/gsd-contribution-toolkit` (tagged `#v2.0.0`). This is the
@@ -295,7 +295,7 @@ node <gsd-core>/bin/gsd-tools.cjs capability install \
   `…-gate` name; GitHub redirects the old URL, so an existing `#v1.0.0` install
   does not hard-break.
 
-### Toggle-off genuinely removes the enforcement
+### Toggle-Off Genuinely Removes the Enforcement
 
 This is honest by design: **toggling `off` (or `remove`) GENUINELY removes the
 enforcement** — the gates leave gsd-core's `settings.json` (the gates *are* the
@@ -311,7 +311,7 @@ The enforcement is **not** "unbypassable" *as a capability* — only the install
 (see *What it does NOT do*). The capability is a deliberate, consent + ledger
 tracked, reversible install.
 
-## Settings scope
+## Settings Scope
 
 The capability install/toggle target is gsd-core's **project**
 `.claude/settings.json` — **never** the global `~/.claude/settings.json`. The
