@@ -54,6 +54,7 @@ const SHELLCHECK_SKIP_NOTE = 'shellcheck not installed — skipped (env limitati
 const COVERED_TESTS = Object.freeze([
   { path: 'bin/contrib-capability.test.cjs', covers: 'capability install/off/on/remove lifecycle (CAP-07, disposable sandbox)' },
   { path: 'bin/install-delivers-skills.test.cjs', covers: 'CAP-09 LOCAL install delivers both skills to the install root, overlay-expected form' },
+  { path: 'bin/install-delivers-commands.test.cjs', covers: 'CAP-10 LOCAL install delivers the 5 commands to the runtime commands dir + remove reclaims them; manifest has no commands[] array' },
   { path: 'bin/self-test.test.cjs', covers: 'the self-test runner itself (hermetic verdict math)' },
   { path: 'hooks/fault-injection.test.cjs', covers: 'HARD-01/HARD-02 fault injection (fail-closed deny + shape drift)' },
 ]);
