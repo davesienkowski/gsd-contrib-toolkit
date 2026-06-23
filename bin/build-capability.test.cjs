@@ -33,6 +33,8 @@ const {
   confineUnder,
   readDeclaredSkillSet,
   plannedSkillFiles,
+  readDisclosedCommandSet,
+  plannedCommandFiles,
   SEMVER_RE,
 } = require('./build-capability.cjs');
 
@@ -85,6 +87,25 @@ function makeFixture(over = {}) {
     fs.writeFileSync(path.join(stemDir, 'support.md'), `support doc for ${stem}\n`);
   }
 
+  // A canonical commands/ source tree — FLAT `gsd-*.md` files (one per disclosed command), UNLIKE
+  // skills' per-stem directory subtree. The set is DATA-DRIVEN from DISK: readDisclosedCommandSet
+  // reads commands/gsd-*.md, so adding/renaming a fixture command changes the bundled set. A caller can
+  // declare a command STEM with NO source file (over.skipCommandSourceFor) to drive the missing-source
+  // LOUD-throw case — that stem is exposed via `commandStems`/`commandSet` so a test can inject it
+  // through the buildCapability/checkBundleFresh `commandSet` seam (the disk-derived set would not
+  // include a file that was never written).
+  const commandStems = over.commandStems || ['gsd-one', 'gsd-two'];
+  const sourceCommandsDir = path.join(dir, 'commands');
+  fs.mkdirSync(sourceCommandsDir, { recursive: true });
+  const skipCommandSource = new Set(over.skipCommandSourceFor || []);
+  for (const stem of commandStems) {
+    if (skipCommandSource.has(stem)) continue; // declared but source .md intentionally absent
+    fs.writeFileSync(path.join(sourceCommandsDir, stem + '.md'), `# canonical ${stem}\nbody for ${stem}\n`);
+  }
+  // Plant a non-matching file to prove the /^gsd-.*\.md$/ filter excludes it from the disclosed set.
+  fs.writeFileSync(path.join(sourceCommandsDir, '.gitkeep'), '');
+  fs.writeFileSync(path.join(sourceCommandsDir, 'README.md'), '# not a gsd command\n');
+
   // A manifest to stamp — skills[] declares the fixture stems (data-driven source for the bundle).
   const manifestPath = path.join(dir, 'capability.json');
   const manifest = Object.assign(
@@ -95,17 +116,34 @@ function makeFixture(over = {}) {
 
   const bundleHooksDir = path.join(dir, 'bundle', 'hooks');
   const bundleSkillsDir = path.join(dir, 'bundle', 'skills');
+  const bundleCommandsDir = path.join(dir, 'bundle', 'commands');
 
-  return { dir, sourceHooksDir, sourceSkillsDir, snippetPath, manifestPath, bundleHooksDir, bundleSkillsDir, skillStems };
+  return {
+    dir,
+    sourceHooksDir,
+    sourceSkillsDir,
+    sourceCommandsDir,
+    snippetPath,
+    manifestPath,
+    bundleHooksDir,
+    bundleSkillsDir,
+    bundleCommandsDir,
+    skillStems,
+    commandStems,
+    // The full declared command set (including any skipped stem) — for the missing-source seam.
+    commandSet: commandStems.slice().sort(),
+  };
 }
 
-/** The full seam set to drive build/check against a fixture (both trees). */
+/** The full seam set to drive build/check against a fixture (all three trees). */
 function seams(fx) {
   return {
     sourceHooksDir: fx.sourceHooksDir,
     bundleHooksDir: fx.bundleHooksDir,
     sourceSkillsDir: fx.sourceSkillsDir,
     bundleSkillsDir: fx.bundleSkillsDir,
+    sourceCommandsDir: fx.sourceCommandsDir,
+    bundleCommandsDir: fx.bundleCommandsDir,
     manifestPath: fx.manifestPath,
     snippetPath: fx.snippetPath,
   };
@@ -113,11 +151,14 @@ function seams(fx) {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-// The fixture ships 4 planned hook files (2 gate scripts + lib/helper.cjs + lib/helper.test.cjs) and
-// 4 planned skill files (2 stems × {SKILL.md, support.md}) = 8 planned files total.
+// The fixture ships 4 planned hook files (2 gate scripts + lib/helper.cjs + lib/helper.test.cjs),
+// 4 planned skill files (2 stems × {SKILL.md, support.md}), and 2 planned command files (flat
+// gsd-one.md + gsd-two.md) = 10 planned files total. The non-matching README.md / .gitkeep planted in
+// commands/ are NOT in the disclosed set (the /^gsd-.*\.md$/ filter excludes them).
 const FIXTURE_HOOK_FILES = 4;
 const FIXTURE_SKILL_FILES = 4;
-const FIXTURE_TOTAL_FILES = FIXTURE_HOOK_FILES + FIXTURE_SKILL_FILES;
+const FIXTURE_COMMAND_FILES = 2;
+const FIXTURE_TOTAL_FILES = FIXTURE_HOOK_FILES + FIXTURE_SKILL_FILES + FIXTURE_COMMAND_FILES;
 
 test('build-then-check: buildCapability() then checkBundleFresh() reports fresh', () => {
   const fx = makeFixture();
@@ -351,4 +392,143 @@ test('WR-01 traversal-stem: a stem with path separators or absolute path in mani
   // A plain single-segment stem (no traversal) must still work.
   const { files } = plannedSkillFiles({ sourceSkillsDir: fx.sourceSkillsDir, skillSet: ['skill-one'] });
   assert.ok(files.length > 0, 'a safe stem enumerates its skill files normally');
+});
+
+// ── Commands bundling (CAP-10) ──────────────────────────────────────────────────
+// Commands are FLAT `<stem>.md` files (one per disclosed command), DATA-DRIVEN from the disclosed
+// command set on DISK (commands/gsd-*.md) — unlike skills' per-stem directory subtree (declared in the
+// manifest skills[]). The cases below MIRROR the skills cases for parity.
+
+test('commands data-driven set: readDisclosedCommandSet returns commands/gsd-*.md stems; adding/removing a file changes the set', () => {
+  const fx = makeFixture();
+  // The fixture discloses gsd-one.md + gsd-two.md (README.md / .gitkeep are excluded by the filter).
+  assert.deepEqual(readDisclosedCommandSet({ commandsDir: fx.sourceCommandsDir }), ['gsd-one', 'gsd-two']);
+
+  // Add a disclosed command on disk — the returned set FOLLOWS the disk (proves NOT hardcoded).
+  fs.writeFileSync(path.join(fx.sourceCommandsDir, 'gsd-three.md'), '# gsd-three\n');
+  assert.deepEqual(readDisclosedCommandSet({ commandsDir: fx.sourceCommandsDir }), ['gsd-one', 'gsd-three', 'gsd-two']);
+
+  // Remove one — the set shrinks. A non-gsd-*.md file (README.md) is never disclosed.
+  fs.rmSync(path.join(fx.sourceCommandsDir, 'gsd-one.md'));
+  assert.deepEqual(readDisclosedCommandSet({ commandsDir: fx.sourceCommandsDir }), ['gsd-three', 'gsd-two']);
+});
+
+test('commands missing-dir: readDisclosedCommandSet on an unreadable commands dir throws LOUD (never silent zero)', () => {
+  const fx = makeFixture();
+  assert.throws(
+    () => readDisclosedCommandSet({ commandsDir: path.join(fx.dir, 'does-not-exist') }),
+    /ENOENT|no such file/i,
+    'a missing commands dir is a LOUD throw, never a silent empty set'
+  );
+});
+
+test('commands verbatim copy: build copies every disclosed command .md byte-identical under commands/', () => {
+  const fx = makeFixture();
+  const built = buildCapability(seams(fx));
+  assert.equal(built.files.length, FIXTURE_TOTAL_FILES);
+  assert.ok(built.files.includes('commands/gsd-one.md'));
+  assert.ok(built.files.includes('commands/gsd-two.md'));
+  for (const stem of fx.commandStems) {
+    const src = path.join(fx.sourceCommandsDir, stem + '.md');
+    const bundled = path.join(fx.bundleCommandsDir, stem + '.md');
+    assert.ok(fs.existsSync(bundled), `${stem}.md exists in the bundle commands tree`);
+    assert.ok(fs.readFileSync(src).equals(fs.readFileSync(bundled)), `${stem}.md is byte-identical`);
+  }
+  // The non-matching planted files are NEVER copied into the bundle.
+  assert.equal(fs.existsSync(path.join(fx.bundleCommandsDir, 'README.md')), false);
+  assert.equal(fs.existsSync(path.join(fx.bundleCommandsDir, '.gitkeep')), false);
+});
+
+test('commands in --check parity (fresh): a clean build is fresh and checked counts the command files', () => {
+  const fx = makeFixture();
+  buildCapability(seams(fx));
+  const check = checkBundleFresh(seams(fx));
+  assert.equal(check.fresh, true);
+  assert.deepEqual(check.staleFiles, []);
+  // checked covers ALL THREE trees (4 hooks + 4 skills + 2 commands).
+  assert.equal(check.checked, FIXTURE_TOTAL_FILES);
+});
+
+test('commands-drift stale: corrupting a bundled command .md => not-fresh, naming the commands/ path "differs"', () => {
+  const fx = makeFixture();
+  buildCapability(seams(fx));
+  fs.appendFileSync(path.join(fx.bundleCommandsDir, 'gsd-one.md'), '\ndrift\n');
+
+  const check = checkBundleFresh(seams(fx));
+  assert.equal(check.fresh, false);
+  const named = check.staleFiles.find((s) => s.path === 'commands/gsd-one.md');
+  assert.ok(named, 'the corrupted bundled command file is named with a commands/ prefix');
+  assert.match(named.reason, /differs from canonical source/);
+});
+
+test('commands-drift missing: deleting a bundled command .md => not-fresh, naming it "missing from bundle"', () => {
+  const fx = makeFixture();
+  buildCapability(seams(fx));
+  fs.rmSync(path.join(fx.bundleCommandsDir, 'gsd-two.md'));
+
+  const check = checkBundleFresh(seams(fx));
+  assert.equal(check.fresh, false);
+  const named = check.staleFiles.find((s) => s.path === 'commands/gsd-two.md');
+  assert.ok(named, 'the deleted bundled command file is named with a commands/ prefix');
+  assert.match(named.reason, /missing from bundle/);
+});
+
+test('commands-drift extra: planting an undeclared gsd-*.md under bundle commands/ => not-fresh, naming it "extra"', () => {
+  const fx = makeFixture();
+  buildCapability(seams(fx));
+  // Plant an undeclared command file under the bundle commands tree (the WR-04 augmented-bundle case).
+  fs.writeFileSync(path.join(fx.bundleCommandsDir, 'gsd-planted.md'), 'not in the planned set\n');
+
+  const check = checkBundleFresh(seams(fx));
+  assert.equal(check.fresh, false, 'an augmented commands tree is NEVER reported fresh (WR-04 symmetry)');
+  const named = check.staleFiles.find((s) => s.path === 'commands/gsd-planted.md');
+  assert.ok(named, 'the planted command file is named with a commands/ prefix');
+  assert.match(named.reason, /extra file in bundle/);
+});
+
+test('commands missing-source: a disclosed command with no source .md is a LOUD throw (no partial bundle)', () => {
+  // gsd-two is DECLARED in the command set but its canonical source .md is intentionally absent. The
+  // disk-derived set would not include it, so inject the full set via the commandSet seam to prove the
+  // build fails LOUD (no partial bundle) when a declared command's source is missing.
+  const fx = makeFixture({ skipCommandSourceFor: ['gsd-two'] });
+  const withSet = Object.assign({}, seams(fx), { commandSet: fx.commandSet });
+  assert.throws(() => buildCapability(withSet), /missing canonical command source/);
+  assert.throws(() => buildCapability(withSet), /commands\/gsd-two\.md/);
+  // No partial bundle was written (the build threw before any copy of ANY tree).
+  assert.equal(fs.existsSync(fx.bundleHooksDir), false);
+  assert.equal(fs.existsSync(fx.bundleSkillsDir), false);
+  assert.equal(fs.existsSync(fx.bundleCommandsDir), false,
+    'commands bundle dir must also be absent — the throw must precede ALL mkdirSync calls');
+});
+
+test('commands WR-01 traversal-stem: a command stem with path separators or absolute path throws before any read', () => {
+  const fx = makeFixture();
+  const traversalStems = ['../../etc', '../other', '/etc/passwd', 'a/b', 'a\\b'];
+  for (const badStem of traversalStems) {
+    assert.throws(
+      () => plannedCommandFiles({ sourceCommandsDir: fx.sourceCommandsDir, commandSet: [badStem] }),
+      /refusing to read command source for unsafe stem name/,
+      `expected throw for traversal stem ${JSON.stringify(badStem)}`
+    );
+    // buildCapability must also throw (it calls plannedCommandFiles internally) when the bad stem is
+    // injected through the commandSet seam.
+    assert.throws(
+      () => buildCapability(Object.assign({}, seams(fx), { commandSet: [badStem] })),
+      /refusing to read command source for unsafe stem name/,
+      `buildCapability must throw for traversal stem ${JSON.stringify(badStem)}`
+    );
+  }
+  // A plain single-segment stem (no traversal) must still work.
+  const { files } = plannedCommandFiles({ sourceCommandsDir: fx.sourceCommandsDir, commandSet: ['gsd-one'] });
+  assert.deepEqual(files, ['gsd-one.md'], 'a safe stem maps to a flat <stem>.md entry');
+});
+
+test('commands confinement: a command file resolving outside the bundle commands root is rejected before any write', () => {
+  const fx = makeFixture();
+  assert.throws(() => confineUnder(fx.bundleCommandsDir, '../escape.md'), /outside the bundle root/);
+  assert.throws(() => confineUnder(fx.bundleCommandsDir, '/etc/evil.md'), /outside the bundle root/);
+  assert.throws(() => confineUnder(fx.bundleCommandsDir, 'sub/..'), /outside the bundle root/);
+  // A normal flat command path resolves under the commands root.
+  const ok = confineUnder(fx.bundleCommandsDir, 'gsd-one.md');
+  assert.ok(ok.startsWith(path.resolve(fx.bundleCommandsDir)));
 });

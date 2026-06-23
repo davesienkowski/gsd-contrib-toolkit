@@ -348,7 +348,8 @@ function buildCapability(deps = {}) {
 
   // Plan the commands tree DATA-DRIVEN from the disclosed command set on DISK (commands/gsd-*.md) —
   // the bundled set follows what is disclosed, never a hardcoded list (CAP-10 data-driven mandate).
-  const commandSet = readDisclosedCommandSet({ commandsDir: sourceCommandsDir });
+  // (deps.commandSet is an injectable seam for hermetic tests — production always derives from disk.)
+  const commandSet = deps.commandSet || readDisclosedCommandSet({ commandsDir: sourceCommandsDir });
   const commandsPlan = plannedCommandFiles({ sourceCommandsDir, commandSet });
 
   // Verify EVERY canonical source exists FIRST (fail-loud before any partial write).
@@ -560,7 +561,8 @@ function checkBundleFresh(deps = {}) {
   // ── Commands tree drift (DATA-DRIVEN from disclosed commands/gsd-*.md on disk) ──
   // A disclosed command whose canonical source `.md` is absent surfaces as 'canonical source missing'
   // (plannedCommandFiles records it in missingSources rather than emitting a planned file for it).
-  const commandSet = readDisclosedCommandSet({ commandsDir: sourceCommandsDir });
+  // (deps.commandSet is an injectable seam for hermetic tests — production always derives from disk.)
+  const commandSet = deps.commandSet || readDisclosedCommandSet({ commandsDir: sourceCommandsDir });
   const commandsPlan = plannedCommandFiles({ sourceCommandsDir, commandSet });
   for (const stem of commandsPlan.missingSources) {
     staleFiles.push({ path: 'commands/' + stem + '.md', reason: 'canonical source missing' });
