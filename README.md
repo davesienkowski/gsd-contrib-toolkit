@@ -20,10 +20,14 @@ the harness runs on every matching tool call (not the model). Because they fire
 before the permission check, they cannot be talked around by a deadline-pressured
 or rationalizing model.
 
-Wired into gsd-core's project-scoped settings (`settings.snippet.json`) are
+Installed into gsd-core's project-scoped `.claude/settings.json` by the capability
+CLI (`node bin/contrib-capability.cjs install` — see *Install / restore*) are
 **12 fail-closed PreToolUse gates** (11 on `Bash`, 1 on `Write`/`Edit`) plus
-**1 advisory `UserPromptSubmit` reminder**. The gates close concrete failure
-classes a gsd-core contribution gets bounced (or merged red) for:
+**1 advisory `UserPromptSubmit` reminder**. The wired set is derived from the
+canonical `settings.snippet.json` (the source `build-capability.cjs` reads). The
+`install.sh` script no longer wires settings at all — it is symlink-restore only.
+The gates close concrete failure classes a gsd-core
+contribution gets bounced (or merged red) for:
 
 - shipping **red** — a `git push`/PR with un-green `lint:ci`, a failing
   affected-test set, or a secret/injection/base64 hit in the diff;
@@ -125,7 +129,7 @@ surfaces as a fail-closed DENY plus a diagnosable report — not a silent miss.
 - **Install / restore** the toolkit (idempotent): `bash install.sh` — see
   *Install / restore* below.
 - The **12 contributor gates** fire automatically inside the gsd-core repo once
-  the settings snippet is merged.
+  the contrib-gate capability is installed (`node bin/contrib-capability.cjs install`).
 - Drive a contribution with the **`gsd-submit`** command (file → push → PR through
   the gates) and the **`gsd-core-contribution`** skill (the contribution knowledge,
   including the stamp → marker → gate → scan loop).
@@ -193,8 +197,8 @@ This section is load-bearing — the project's core value is honesty, not overse
 | `commands/`             | Vendored slash commands: `gsd-submit`, `gsd-review-sweep`, `gsd-triage-assist`, `gsd-release-preflight`, `gsd-ruleset-drift`; symlinked into `~/.claude`. |
 | `skills/`               | Vendored Claude skills: `gsd-core-contribution`, `maintainer-review-sweep`; symlinked into `~/.claude`. |
 | `capabilities/`         | The share-form GSD capability manifest (`contrib-gate/capability.json`) + its fragments. |
-| `settings.snippet.json` | The hooks settings block that `install.sh` merges into gsd-core's project `.claude/settings.json`. |
-| `install.sh`            | Idempotent installer/restorer — recreates symlinks and merges the settings snippet.      |
+| `settings.snippet.json` | The canonical hooks settings block — the wired-set source `build-capability.cjs` reads to generate the capability bundle (NOT merged by `install.sh`).         |
+| `install.sh`            | Idempotent `~/.claude` symlink restorer (commands + skills) — symlink restore only; never writes any `settings.json`.                       |
 
 ## Source of truth and symlinks
 
@@ -206,22 +210,74 @@ recovering lost work.
 
 ## Install / restore
 
-To (re)establish the toolkit — including after a GSD update or `gsd-ver` toggle:
+There are **two independent steps**: restore the `~/.claude` symlinks, and install
+(or toggle) the enforcement. They are separate tools with separate jobs.
+
+### 1. Restore the `~/.claude` symlinks
+
+To (re)establish the vendored skills and commands — including after a GSD update or
+`gsd-ver` toggle that clobbers `~/.claude`:
 
 ```bash
-bash install.sh /path/to/gsd-core
+bash install.sh
 ```
 
-`install.sh` is idempotent and re-runnable. It first **recreates the `~/.claude`
-symlinks** for the vendored skills and commands (refusing to clobber a real file),
-then **merges** `settings.snippet.json` into gsd-core's **project-scoped**
-`.claude/settings.json` by append/union into each hook-event array (deduped, never
-array-replace). If no gsd-core path is given, the settings merge is skipped with a
-warning and the symlink restore still runs. (`jq >= 1.5` is required for the merge.)
+`install.sh` is idempotent and re-runnable, and does **symlink restore only**: it
+recreates the `~/.claude` symlinks for the five vendored commands and two skills,
+pointing them back at this repo (refusing to clobber a real, non-symlink file).
+It takes **no gsd-core path argument**, needs **no `jq`**, and **never** writes any
+`settings.json` (neither `~/.claude` nor a project one).
+
+### 2. Install / toggle the enforcement (the capability CLI)
+
+The enforcement gates are installed and toggled by the capability driver
+(`bin/contrib-capability.cjs install | on | off | status | remove`), which
+drives the LIVE gsd-core capability engine **project-scoped** (into the local
+gsd-core checkout's `.claude/settings.json`, never `~/.claude`) and is **ledger +
+consent tracked**:
+
+```bash
+node bin/contrib-capability.cjs install            # stage + consent + ledger + marker-tag the 13 hooks
+node bin/contrib-capability.cjs on                 # (re)apply the tagged gates + enforcement flag on
+node bin/contrib-capability.cjs off  --reason <w>  # strip the tagged gates + flag off + logged receipt
+node bin/contrib-capability.cjs status             # report ledger + consent + live gate set
+node bin/contrib-capability.cjs remove --reason <w> # remove from ledger + consent + logged receipt
+```
+
+- **`install`** — stages + records consent (a real `bundleContentHash` over the
+  bundle), ledger-records, and marker-tags the gates into gsd-core's project
+  `.claude/settings.json`, reconciling any legacy duplicate entries into one
+  idempotent, byte-stable tagged set.
+- **`on`** — re-applies EXACTLY the marker-tagged contrib gates and flips
+  `workflow.gsd_contrib_enforcement` **on** (the flag lives in
+  `<gsd-core>/.planning/config.json`).
+- **`off`** — strips EXACTLY the marker-tagged gates from `settings.json`
+  (untagged + other-capability hooks survive), flips the flag **off**, and writes
+  an accountability receipt.
+- **`status`** — reports the ledger entry, the consent record, and the live gate
+  set.
+- **`remove`** — strips the gates, deletes the ledger-owned files + drops the
+  ledger entry, revokes project consent, and writes a receipt.
+
+### Toggle-off genuinely removes the enforcement
+
+This is honest by design: **toggling `off` (or `remove`) GENUINELY removes the
+enforcement** — the gates leave gsd-core's `settings.json` (the gates *are* the
+enforcement). It is never silent: `off` and `remove` both require a **non-empty
+`--reason "<why>"`** and append a logged, per-project-root accountability receipt
+at `<realpath(gsd-core)>/.gsd-contrib/override-receipts.log` — append-only JSONL of
+`{ ts, action, projectRoot, reason }`, the same log the `GSD_CONTRIB_OVERRIDE`
+escape valve uses. An empty reason is rejected before any mutation, and an
+un-writable receipt fails the operation (no un-logged disable).
+
+The enforcement is **not** "unbypassable" *as a capability* — only the installed
+**personal PreToolUse hooks** are harness-wide and unbypassable **while installed**
+(see *What it does NOT do*). The capability is a deliberate, consent + ledger
+tracked, reversible install.
 
 ## Settings scope
 
-The merge target is gsd-core's **project** `.claude/settings.json` — **never** the
-global `~/.claude/settings.json` (the installer refuses to write it). The project
-scope keeps the enforcement hooks firing only inside the gsd-core repository, which
-is the cleanest blast radius.
+The capability install/toggle target is gsd-core's **project**
+`.claude/settings.json` — **never** the global `~/.claude/settings.json`. The
+project scope keeps the enforcement hooks firing only inside the gsd-core
+repository, which is the cleanest blast radius.
