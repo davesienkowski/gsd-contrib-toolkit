@@ -46,6 +46,12 @@ const BUNDLE_DIR = path.join(REPO_ROOT, 'capabilities', 'contribution-toolkit');
 const BUNDLE_HOOKS_DIR = path.join(BUNDLE_DIR, 'hooks');
 const MANIFEST_PATH = path.join(BUNDLE_DIR, 'capability.json');
 
+// The canonical skill source tree (the single DEV SOURCE OF TRUTH for the shipped skills — the same
+// dir verify-capability.cjs reads for surface disclosure) and its bundle mirror. The bundle skills/
+// tree is GENERATED here, byte-for-byte, from CANONICAL_SKILLS_DIR — never hand-edited (CAP-09).
+const CANONICAL_SKILLS_DIR = path.join(REPO_ROOT, 'skills');
+const BUNDLE_SKILLS_DIR = path.join(BUNDLE_DIR, 'skills');
+
 const SEMVER_RE = /^\d+\.\d+\.\d+/;
 
 /**
@@ -128,6 +134,62 @@ function plannedBundleFiles(deps = {}) {
 }
 
 /**
+ * Read the DECLARED skill set from the capability manifest — the `skills[]` array verbatim. This is
+ * the skills analogue of readCanonicalScriptSet: the bundled skill set is DATA-DRIVEN from the
+ * manifest (NOT a hardcoded list), so a change to `skills[]` drives BOTH what the build copies AND
+ * what `--check` enforces. Tolerant of an absent/non-array `skills` field (returns []), and returns
+ * the sorted unique stems.
+ *
+ * @param {object} [deps]
+ * @param {string} [deps.manifestPath] path to capability.json.
+ * @param {(p:string) => string} [deps.readFile] injectable file reader.
+ * @returns {string[]} sorted unique skill stems (one per declared skill).
+ */
+function readDeclaredSkillSet(deps = {}) {
+  const manifestPath = deps.manifestPath || MANIFEST_PATH;
+  const readFile = deps.readFile || ((p) => fs.readFileSync(p, 'utf8'));
+  const manifest = JSON.parse(readFile(manifestPath));
+  const declared = Array.isArray(manifest.skills) ? manifest.skills : [];
+  const stems = new Set();
+  for (const s of declared) {
+    if (typeof s === 'string' && s.length > 0) stems.add(s);
+  }
+  return [...stems].sort();
+}
+
+/**
+ * Compute the planned bundle skill file list (relative to the bundle skills/ dir) from the DECLARED
+ * skill set: for each declared stem, every file under skills/<stem>/** prefixed `<stem>/...`. The
+ * single definition of "which skill files the bundle must contain" used by BOTH build and check.
+ *
+ * A declared stem whose canonical source dir is ABSENT (or not a directory) is recorded in
+ * `missingSources` so the build can fail LOUD (never a silent skip / partial bundle) — it is NOT
+ * silently dropped from the planned set.
+ *
+ * @param {object} [deps]
+ * @param {string} [deps.sourceSkillsDir] canonical skills/ dir (defaults to repo skills/).
+ * @param {string[]} [deps.skillSet] declared skill stems (defaults to manifest-derived).
+ * @param {string} [deps.manifestPath] manifest for the default skillSet.
+ * @returns {{files:string[], missingSources:string[]}} sorted relative POSIX paths + missing stems.
+ */
+function plannedSkillFiles(deps = {}) {
+  const sourceSkillsDir = deps.sourceSkillsDir || CANONICAL_SKILLS_DIR;
+  const skillSet = deps.skillSet || readDeclaredSkillSet({ manifestPath: deps.manifestPath });
+  const files = [];
+  const missingSources = [];
+  for (const stem of skillSet) {
+    const stemDir = path.join(sourceSkillsDir, stem);
+    if (!fs.existsSync(stemDir) || !fs.statSync(stemDir).isDirectory()) {
+      missingSources.push(stem);
+      continue;
+    }
+    for (const rel of listFilesRel(stemDir)) files.push(stem + '/' + rel);
+  }
+  files.sort();
+  return { files, missingSources };
+}
+
+/**
  * Guard: assert a resolved target stays under the confinement root. Rejects any path that escapes
  * (via `..` or absolute) the bundle hooks/ root BEFORE a write happens (T-11-01-01).
  *
@@ -158,6 +220,8 @@ function confineUnder(rootDir, rel) {
  * @param {object} [deps] injectable seams (default to the real repo paths).
  * @param {string} [deps.sourceHooksDir] canonical hooks/ dir.
  * @param {string} [deps.bundleHooksDir] target bundle hooks/ dir.
+ * @param {string} [deps.sourceSkillsDir] canonical skills/ dir.
+ * @param {string} [deps.bundleSkillsDir] target bundle skills/ dir.
  * @param {string} [deps.manifestPath] manifest to stamp.
  * @param {string} [deps.snippetPath] settings.snippet.json (for the wired set).
  * @param {string} [deps.version] version string to stamp (defaults to the manifest's current version).
@@ -166,13 +230,21 @@ function confineUnder(rootDir, rel) {
 function buildCapability(deps = {}) {
   const sourceHooksDir = deps.sourceHooksDir || CANONICAL_HOOKS_DIR;
   const bundleHooksDir = deps.bundleHooksDir || BUNDLE_HOOKS_DIR;
+  const sourceSkillsDir = deps.sourceSkillsDir || CANONICAL_SKILLS_DIR;
+  const bundleSkillsDir = deps.bundleSkillsDir || BUNDLE_SKILLS_DIR;
   const manifestPath = deps.manifestPath || MANIFEST_PATH;
   const snippetPath = deps.snippetPath || SNIPPET_PATH;
 
   const scriptSet = readCanonicalScriptSet({ snippetPath });
   const planned = plannedBundleFiles({ sourceHooksDir, scriptSet });
 
+  // Plan the skills tree DATA-DRIVEN from the manifest skills[] (the bundled set follows the
+  // declaration, never a hardcoded list).
+  const skillSet = readDeclaredSkillSet({ manifestPath });
+  const skillsPlan = plannedSkillFiles({ sourceSkillsDir, skillSet });
+
   // Verify EVERY canonical source exists FIRST (fail-loud before any partial write).
+  // (1) hooks: each planned hook file must be a regular file.
   const missing = [];
   for (const rel of planned) {
     const src = path.join(sourceHooksDir, rel);
@@ -182,6 +254,26 @@ function buildCapability(deps = {}) {
     throw new Error(
       'build-capability: missing canonical source file(s) — cannot build a partial bundle:\n  ' +
         missing.join('\n  ')
+    );
+  }
+  // (2) skills: a DECLARED skill whose canonical source dir is ABSENT is a LOUD throw (no partial
+  // bundle), mirroring the hooks missing-source check. Then each planned skill file must be a
+  // regular file too (a stem dir present but a planned member missing is still fail-loud).
+  if (skillsPlan.missingSources.length > 0) {
+    throw new Error(
+      'build-capability: missing canonical skill source dir(s) — cannot build a partial bundle:\n  ' +
+        skillsPlan.missingSources.map((s) => 'skills/' + s).join('\n  ')
+    );
+  }
+  const missingSkillFiles = [];
+  for (const rel of skillsPlan.files) {
+    const src = path.join(sourceSkillsDir, rel);
+    if (!fs.existsSync(src) || !fs.statSync(src).isFile()) missingSkillFiles.push(rel);
+  }
+  if (missingSkillFiles.length > 0) {
+    throw new Error(
+      'build-capability: missing canonical skill source file(s) — cannot build a partial bundle:\n  ' +
+        missingSkillFiles.map((r) => 'skills/' + r).join('\n  ')
     );
   }
 
@@ -194,6 +286,18 @@ function buildCapability(deps = {}) {
     fs.writeFileSync(dst, fs.readFileSync(src)); // Buffer copy — byte-for-byte, no transform.
   }
 
+  // Copy the planned skill files verbatim into the confined bundle skills/ dir (same machinery as
+  // hooks: Buffer copy, byte-for-byte, every write confined under the skills root).
+  if (skillsPlan.files.length > 0) {
+    fs.mkdirSync(bundleSkillsDir, { recursive: true });
+    for (const rel of skillsPlan.files) {
+      const src = path.join(sourceSkillsDir, rel);
+      const dst = confineUnder(bundleSkillsDir, rel);
+      fs.mkdirSync(path.dirname(dst), { recursive: true });
+      fs.writeFileSync(dst, fs.readFileSync(src)); // Buffer copy — byte-for-byte, no transform.
+    }
+  }
+
   // Stamp the manifest version: parse→set→write, preserving every other field verbatim.
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const version = deps.version || manifest.version;
@@ -203,7 +307,10 @@ function buildCapability(deps = {}) {
   manifest.version = version;
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
 
-  return { files: planned, version };
+  // The returned file count covers BOTH bundled trees: hooks rel-paths as-is, skill rel-paths
+  // prefixed `skills/` so they are namespace-unambiguous vs hooks/ paths.
+  const allFiles = [...planned, ...skillsPlan.files.map((r) => 'skills/' + r)].sort();
+  return { files: allFiles, version };
 }
 
 /**
@@ -219,15 +326,27 @@ function buildCapability(deps = {}) {
  * invariant. verify-capability's bundle-parity check REUSES this single function, so both gates share
  * the SAME staleness truth (design §4) — including extra-file rejection.
  *
+ * The skills tree is covered with the SAME staleness truth: each planned skill file is reported
+ * 'canonical source missing' / 'missing from bundle' / 'differs from canonical source', and any file
+ * under <bundleDir>/skills/ NOT in the planned skills set is reported 'extra file in bundle (not in
+ * planned set)' (the symmetric WR-04 half). Skills stale paths are reported with a `skills/` prefix so
+ * the CLI names them unambiguously vs `hooks/` paths.
+ *
  * @param {object} [deps] injectable seams.
  * @param {string} [deps.sourceHooksDir] canonical hooks/ dir.
  * @param {string} [deps.bundleHooksDir] bundle hooks/ dir to compare.
+ * @param {string} [deps.sourceSkillsDir] canonical skills/ dir.
+ * @param {string} [deps.bundleSkillsDir] bundle skills/ dir to compare.
+ * @param {string} [deps.manifestPath] manifest (for the declared skills set).
  * @param {string} [deps.snippetPath] settings.snippet.json (for the wired set).
  * @returns {{fresh:boolean, staleFiles:{path:string, reason:string}[], checked:number}}
  */
 function checkBundleFresh(deps = {}) {
   const sourceHooksDir = deps.sourceHooksDir || CANONICAL_HOOKS_DIR;
   const bundleHooksDir = deps.bundleHooksDir || BUNDLE_HOOKS_DIR;
+  const sourceSkillsDir = deps.sourceSkillsDir || CANONICAL_SKILLS_DIR;
+  const bundleSkillsDir = deps.bundleSkillsDir || BUNDLE_SKILLS_DIR;
+  const manifestPath = deps.manifestPath || MANIFEST_PATH;
   const snippetPath = deps.snippetPath || SNIPPET_PATH;
 
   const scriptSet = readCanonicalScriptSet({ snippetPath });
@@ -264,7 +383,46 @@ function checkBundleFresh(deps = {}) {
     }
   }
 
-  return { fresh: staleFiles.length === 0, staleFiles, checked: planned.length };
+  // ── Skills tree drift (DATA-DRIVEN from manifest skills[]) ──
+  // A declared stem whose canonical source dir is absent surfaces as 'canonical source missing'
+  // (plannedSkillFiles records it in missingSources rather than emitting planned files for it).
+  const skillSet = readDeclaredSkillSet({ manifestPath });
+  const skillsPlan = plannedSkillFiles({ sourceSkillsDir, skillSet });
+  for (const stem of skillsPlan.missingSources) {
+    staleFiles.push({ path: 'skills/' + stem, reason: 'canonical source missing' });
+  }
+  const plannedSkillRel = new Set(skillsPlan.files); // bundle-skills-relative (no `skills/` prefix)
+  for (const rel of skillsPlan.files) {
+    const src = path.join(sourceSkillsDir, rel);
+    const bundled = path.join(bundleSkillsDir, rel);
+    // (canonical source presence already implied by being in skillsPlan.files; re-check for safety)
+    if (!fs.existsSync(src) || !fs.statSync(src).isFile()) {
+      staleFiles.push({ path: 'skills/' + rel, reason: 'canonical source missing' });
+      continue;
+    }
+    if (!fs.existsSync(bundled) || !fs.statSync(bundled).isFile()) {
+      staleFiles.push({ path: 'skills/' + rel, reason: 'missing from bundle' });
+      continue;
+    }
+    if (!fs.readFileSync(src).equals(fs.readFileSync(bundled))) {
+      staleFiles.push({ path: 'skills/' + rel, reason: 'differs from canonical source' });
+    }
+  }
+  // Symmetric extra-file half — walk <bundleDir>/skills ONLY (never the whole bundle: fragments/ and
+  // hooks/ are not managed here), report any bundled skill file not in the planned skills set.
+  if (fs.existsSync(bundleSkillsDir)) {
+    for (const bundled of listFilesRel(bundleSkillsDir)) {
+      if (!plannedSkillRel.has(bundled)) {
+        staleFiles.push({ path: 'skills/' + bundled, reason: 'extra file in bundle (not in planned set)' });
+      }
+    }
+  }
+
+  return {
+    fresh: staleFiles.length === 0,
+    staleFiles,
+    checked: planned.length + skillsPlan.files.length,
+  };
 }
 
 /**
@@ -287,7 +445,11 @@ function runCli(argv = process.argv.slice(2)) {
     }
     process.stdout.write('[FAIL] build-capability --check — bundle is STALE vs canonical source:\n');
     for (const s of result.staleFiles) {
-      process.stdout.write('         hooks/' + s.path + ' — ' + s.reason + '\n');
+      // Skills stale paths already carry a `skills/` namespace prefix (set in checkBundleFresh);
+      // hooks stale paths are bundle-hooks-relative and get the `hooks/` prefix here. This keeps the
+      // printed path namespace-correct so a stale skill prints `skills/...`, never `hooks/skills/...`.
+      const printed = s.path.startsWith('skills/') ? s.path : 'hooks/' + s.path;
+      process.stdout.write('         ' + printed + ' — ' + s.reason + '\n');
     }
     process.stdout.write('       Run `node bin/build-capability.cjs` to regenerate the bundle.\n');
     return 1;
@@ -317,7 +479,9 @@ module.exports = {
   buildCapability,
   checkBundleFresh,
   readCanonicalScriptSet,
+  readDeclaredSkillSet,
   plannedBundleFiles,
+  plannedSkillFiles,
   confineUnder,
   runCli,
   SEMVER_RE,
