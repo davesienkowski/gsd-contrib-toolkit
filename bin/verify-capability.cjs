@@ -88,21 +88,37 @@ const HONESTY_OVERSELL_RE = [
   /this capability\b[^.]*\b(?:is|are|acts? as|provides?|reaches?|enforces?|fires? at|guarantees?)\b[^.]*\b(unbypassable|pretooluse)/i,
   /\bcapability is unbypassable\b/i,
 ];
-// A negator between "this capability" and the claim (within the sentence) means the sentence is an
-// honest disclaimer, not an oversell — release it even if an asserting verb is also present.
+// A negator that ACTUALLY NEGATES the enforcement predicate means the sentence is an honest
+// disclaimer, not an oversell.
+//
+// WR-02: the OLD blanket pattern (negator anywhere via `[^.]*` between subject and claim) was
+// EVADABLE — a negator attached to an UNRELATED predicate released a genuine oversell, e.g.
+//   "This capability is not advisory, and is unbypassable."          (not negates "advisory", not the claim)
+//   "This capability does not help you, but it is unbypassable."     (not negates "help", not the claim)
+// both falsely passed. The negator must sit IMMEDIATELY BEFORE the asserting verb that carries the
+// enforcement claim (i.e. it negates the SAME predicate), not merely co-occur in the sentence.
 const HONESTY_NEGATOR_RE =
-  /this capability\b[^.]*\b(?:no|not|never|n't|avoids?|without|lacks?|cannot|can't|does not)\b[^.]*\b(unbypassable|pretooluse)/i;
+  /this capability\b[^.]*?\b(?:no|not|never|n't|avoids?|without|lacks?|cannot|can't|does\s+not|do\s+not|adds?\s+no|installs?\s+no)\b\s*\b(?:is|are|acts?(?:\s+as)?|provides?|reaches?|enforces?|fires?(?:\s+at)?|guarantees?|unbypassable|pretooluse)\b/i;
 
 /**
  * True iff `text` POSITIVELY oversells THIS capability as unbypassable/PreToolUse-reaching. An honest
- * negating disclaimer (negator between subject and claim) is NOT an oversell.
+ * negating disclaimer (a negator that actually negates the enforcement predicate) is NOT an oversell.
  * @param {string} text
  * @returns {boolean}
  */
 function isOversold(text) {
   const s = typeof text === 'string' ? text : '';
-  if (HONESTY_NEGATOR_RE.test(s)) return false;
-  return HONESTY_OVERSELL_RE.some((re) => re.test(s));
+  // Pattern [1] (/\bcapability is unbypassable\b/) is an unconditional exact-phrase oversell — it is
+  // NOT subject to negator disambiguation, so a genuine "capability is unbypassable" is always caught
+  // even if an unrelated negator appears elsewhere in the sentence (WR-02 evasion fix).
+  if (HONESTY_OVERSELL_RE[1].test(s)) return true;
+  // Pattern [0] requires a positive asserting verb between subject and claim. Release it ONLY when a
+  // negator actually negates the enforcement predicate (negator adjacent to the asserting verb/claim).
+  if (HONESTY_OVERSELL_RE[0].test(s)) {
+    if (HONESTY_NEGATOR_RE.test(s)) return false;
+    return true;
+  }
+  return false;
 }
 
 // Back-compat export name (the test suite + module consumers reference HONESTY_RE).

@@ -416,6 +416,16 @@ test('WR-01 unit: isOversold releases honest negations and catches positive asse
   assert.equal(isOversold('This capability reaches PreToolUse.'), true);
 });
 
+// ── (i3) WR-02: a negator on an UNRELATED predicate must NOT release a genuine oversell ──
+test('WR-02: a negator negating an unrelated predicate does not evade the oversell check', () => {
+  const { isOversold } = require('./verify-capability.cjs');
+  // The OLD blanket negator pattern matched "not" anywhere between subject and claim, so a "not"
+  // attached to an UNRELATED predicate ("advisory" / "help") falsely RELEASED a real oversell. The
+  // tightened negator must only release when it actually negates the enforcement predicate.
+  assert.equal(isOversold('This capability is not advisory, and is unbypassable.'), true);
+  assert.equal(isOversold('This capability does not help you, but it is unbypassable.'), true);
+});
+
 // ── (j) WR-02: a LIVE validator that THROWS yields a clean [FAIL] + ok:false (no uncaught exception) ──
 test('WR-02: a throwing LIVE validator => clean [FAIL] for that validator, ok:false, no uncaught throw', () => {
   const fx = makeFixture(baseManifest(), SKILLS, COMMANDS);
