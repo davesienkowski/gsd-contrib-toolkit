@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * bin/contrib-capability.cjs — the CAP-03 thin driver for the contrib-gate capability.
+ * bin/contrib-capability.cjs — the CAP-03 thin driver for the contribution-gate capability.
  *
  *   node bin/contrib-capability.cjs install            # stage + consent + ledger + marker-tag the 13 hooks
  *   node bin/contrib-capability.cjs on                 # (re)apply the tagged gates + enforcement flag on
@@ -54,7 +54,7 @@
  *      `evaluateSourceAllowed` + `evaluateInstallTrust`, rejects first-party ids
  *      (isFirstPartyCapabilityId), and gates a consent prompt behind `verdict.requiresConsent &&
  *      !opts.consentGranted` (lifecycle.cjs ~L693-L774). For a private, local, project-scope
- *      install of a THIRD-PARTY id ('contrib-gate' is not first-party), that whole gate layer is
+ *      install of a THIRD-PARTY id ('contribution-gate' is not first-party), that whole gate layer is
  *      overhead we would have to satisfy with opts plumbing (consentGranted, strictKnownRegistries)
  *      to get a deterministic 'installed' result — composition lets us drive exactly the seams we
  *      need without depending on the orchestrator's trust verdict shape.
@@ -107,9 +107,9 @@ const {
 const { writeReceipt, receiptPathFor } = require('../hooks/lib/override.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const BUNDLE_CAP_DIR = path.join(REPO_ROOT, 'capabilities', 'contrib-gate');
+const BUNDLE_CAP_DIR = path.join(REPO_ROOT, 'capabilities', 'contribution-gate');
 const MANIFEST_PATH = path.join(BUNDLE_CAP_DIR, 'capability.json');
-const CAP_ID = 'contrib-gate';
+const CAP_ID = 'contribution-gate';
 
 // LIVE engine module paths (relative to the resolved gsd-core root) — resolved at runtime via
 // requireLiveScript so a renamed module FAILS LOUD instead of falling back to a vendored copy.
@@ -379,7 +379,7 @@ function reconcileLegacyEntries(args) {
 // ---------------------------------------------------------------------------
 
 /**
- * Drive the LIVE engine (composed seams — the spike's chosen path B) to install contrib-gate against
+ * Drive the LIVE engine (composed seams — the spike's chosen path B) to install contribution-gate against
  * a local gsd-core checkout: (1) reconcile away the legacy untagged duplicates, (2) record a real
  * project-scope consent (bundleContentHash + signatureForManifest), (3) recordInstall into the LIVE
  * ledger, (4) applyCapabilitySharedEdits to write the 13 manifest hooks marker-tagged. Idempotent.
@@ -571,7 +571,7 @@ function writeAccountabilityReceipt(args) {
 // ---------------------------------------------------------------------------
 
 /**
- * Read the strip-target sharedEdits the LIVE ledger recorded for contrib-gate at install. `off` strips
+ * Read the strip-target sharedEdits the LIVE ledger recorded for contribution-gate at install. `off` strips
  * exactly what install recorded (never a hand-built list), so the LIVE stripCapabilitySharedEdits
  * filters on CAP_MARKER===capId against the install-recorded targets. Falls back to the one known
  * settings target when the ledger entry omits sharedEdits (older install), so off still works.
@@ -798,7 +798,7 @@ function runRemove(opts = {}) {
   // (3) Accountability receipt (append-only, per-project-root) — an un-writable receipt FAILS remove.
   const receiptPath = writeAccountabilityReceipt({ liveRoot, action: 'remove', reason });
   lines.push('[remove] logged accountability receipt: ' + receiptPath);
-  lines.push('[remove] done — contrib-gate removed from the ledger; the gates left settings.json');
+  lines.push('[remove] done — contribution-gate removed from the ledger; the gates left settings.json');
   return { lines, status, strippedEdits, consentRevoked, receiptPath };
 }
 
@@ -834,10 +834,10 @@ function runStatus(opts = {}) {
     throw new DriverError('could not read the LIVE ledger: ' + (err && err.message));
   }
   if (installed) {
-    lines.push('[status] ledger: contrib-gate INSTALLED (version ' +
+    lines.push('[status] ledger: contribution-gate INSTALLED (version ' +
       (ledgerEntry.version || '?') + ', source ' + (ledgerEntry.source || '?') + ')');
   } else {
-    lines.push('[status] ledger: contrib-gate NOT in ledger');
+    lines.push('[status] ledger: contribution-gate NOT in ledger');
   }
 
   // Consent record.
@@ -855,9 +855,9 @@ function runStatus(opts = {}) {
   } catch (err) {
     throw new DriverError('could not read the consent store at ' + consentHome + ': ' + (err && err.message));
   }
-  lines.push('[status] consent: contrib-gate ' + (consented ? 'CONSENTED' : 'no project consent record'));
+  lines.push('[status] consent: contribution-gate ' + (consented ? 'CONSENTED' : 'no project consent record'));
 
-  // Live gates currently in settings.json (CAP_MARKER-tagged, owned by contrib-gate).
+  // Live gates currently in settings.json (CAP_MARKER-tagged, owned by contribution-gate).
   let liveGateCount = 0;
   const liveGateNames = [];
   const file = lifecycle.confinedSharedFile(liveRoot, SHARED_SETTINGS_REL);
@@ -895,7 +895,7 @@ function runStatus(opts = {}) {
 
 function usage() {
   return [
-    'contrib-capability — thin driver for the contrib-gate capability (drives the LIVE gsd-core engine)',
+    'contrib-capability — thin driver for the contribution-gate capability (drives the LIVE gsd-core engine)',
     '',
     '  node bin/contrib-capability.cjs install            stage + consent + ledger + marker-tag the 13 hooks',
     '  node bin/contrib-capability.cjs on                 (re)apply the tagged gates + enforcement flag on',

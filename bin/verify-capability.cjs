@@ -4,7 +4,7 @@
 /**
  * bin/verify-capability.cjs — the re-runnable SHARE-02 conformance check.
  *
- * Proves that `capabilities/contrib-gate/capability.json` (from 09-01) CONFORMS to the LIVE
+ * Proves that `capabilities/contribution-gate/capability.json` (from 09-01) CONFORMS to the LIVE
  * gsd-core capability-registry schema by REUSING gen-capability-registry.cjs's EXPORTED
  * validators — it NEVER reimplements a single schema field rule (HARD-02 / D-06). A drifted or
  * renamed LIVE validator therefore surfaces as a LOUD [FAIL], not a stale-policy false green.
@@ -48,11 +48,11 @@ const { requireLiveScript: liveRequireLiveScript, ScriptResolveError } = require
 const { checkBundleFresh: liveCheckBundleFresh } = require('./build-capability.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const MANIFEST_PATH = path.join(REPO_ROOT, 'capabilities', 'contrib-gate', 'capability.json');
-const BUNDLE_HOOKS_DIR = path.join(REPO_ROOT, 'capabilities', 'contrib-gate', 'hooks');
+const MANIFEST_PATH = path.join(REPO_ROOT, 'capabilities', 'contribution-gate', 'capability.json');
+const BUNDLE_HOOKS_DIR = path.join(REPO_ROOT, 'capabilities', 'contribution-gate', 'hooks');
 const SKILLS_DIR = path.join(REPO_ROOT, 'skills');
 const COMMANDS_DIR = path.join(REPO_ROOT, 'commands');
-const FOLDER_ID = 'contrib-gate';
+const FOLDER_ID = 'contribution-gate';
 const LIVE_SCRIPT_REL = 'scripts/gen-capability-registry.cjs';
 // The bundled resolver whose presence + reachability proves reuse-LIVE survives bundling (design §10).
 const BUNDLED_RESOLVER_REL = path.join('lib', 'resolve.cjs');
@@ -321,7 +321,7 @@ function runVerifyCapability(opts = {}) {
     }
   };
 
-  // validateCapability(cap, folderId) — folderId is the literal folder name 'contrib-gate'.
+  // validateCapability(cap, folderId) — folderId is the literal folder name 'contribution-gate'.
   checkErrors('validateCapability', () => live.validateCapability(manifest, FOLDER_ID), 'LIVE validateCapability(manifest, ' + JSON.stringify(FOLDER_ID) + ')');
   // validateVersionEnvelope(cap) — semver version + engines.gsd range (ADR-1244 D1).
   checkErrors('validateVersionEnvelope', () => live.validateVersionEnvelope(manifest), 'LIVE validateVersionEnvelope(manifest)');

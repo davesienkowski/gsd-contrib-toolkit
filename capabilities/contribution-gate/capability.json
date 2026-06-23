@@ -1,5 +1,5 @@
 {
-  "id": "contrib-gate",
+  "id": "contribution-gate",
   "role": "feature",
   "version": "1.0.0",
   "title": "GSD contribution gate toolkit",
@@ -39,7 +39,7 @@
     "workflow.gsd_contrib_enforcement": {
       "type": "boolean",
       "default": false,
-      "description": "Enable the contrib-gate advisory contribution during the GSD loop. Default off — flipping it to true is the explicit opt-in / behavior-consent signal; until then the capability is discovered-but-inactive."
+      "description": "Enable the contribution-gate advisory contribution during the GSD loop. Default off — flipping it to true is the explicit opt-in / behavior-consent signal; until then the capability is discovered-but-inactive."
     }
   },
   "steps": [],

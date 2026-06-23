@@ -14,7 +14,7 @@
  *              UNTAGGED user hook SURVIVES (the strip is marker-scoped, not a blanket wipe).
  *   on      -> applyCapabilitySharedEdits restores EXACTLY the 13 tagged entries.
  *   remove  -> removeCapability + revokeProjectConsent leave NO ledger entry and NO consent record
- *              for 'contrib-gate' in the SANDBOXED store.
+ *              for 'contribution-gate' in the SANDBOXED store.
  *
  * HERMETICITY (the load-bearing security invariant — mirrors fault-injection.test.cjs's
  * "REAL gsd-core source bytes UNCHANGED" guard): the REAL gsd-core .claude/settings.json AND the
@@ -28,7 +28,7 @@
  * REAL engine dir so requireLiveScript(sandbox, ...) loads the LIVE capability engine (read-only
  * require — the engine modules are never written), while the driver's WRITES (settings/ledger/
  * config/consent) all land under the temp root. The bundle is the REAL in-repo
- * capabilities/contrib-gate (read-only — its manifest hooks[] is the source of the exactly-13 set).
+ * capabilities/contribution-gate (read-only — its manifest hooks[] is the source of the exactly-13 set).
  *
  * REACHABILITY: when no real gsd-core source is reachable to seed the sandbox, every case
  * SKIPs-with-note (never fabricate a fake sentinel layout — a fabricated proof is worse than no
@@ -46,7 +46,7 @@ const drv = require('./contrib-capability.cjs');
 const { requireLiveScript } = require('../hooks/lib/resolve.cjs');
 const { resolveGsdCoreRoot } = require('../hooks/lib/resolve.cjs');
 
-const CAP_ID = 'contrib-gate';
+const CAP_ID = 'contribution-gate';
 const CAP_MARKER = '_gsdCapability';
 const SETTINGS_REL = path.join('.claude', 'settings.json');
 const LEDGER_REL = '.gsd-capabilities.json';
@@ -175,7 +175,7 @@ function sandboxOpts(sb) {
   return { liveRoot: sb.root, consentHome: sb.gsdHome };
 }
 
-/** Count CAP_MARKER-tagged contrib-gate entries in the sandbox settings.json, grouped by event. */
+/** Count CAP_MARKER-tagged contribution-gate entries in the sandbox settings.json, grouped by event. */
 function countTagged(settingsPath) {
   const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
   const hooks = settings && typeof settings.hooks === 'object' && !Array.isArray(settings.hooks)
@@ -202,7 +202,7 @@ function userHookSurvives(settingsPath) {
   return pre.some((e) => e && e._userOwned === true && !Object.prototype.hasOwnProperty.call(e, CAP_MARKER));
 }
 
-/** Read the sandboxed ledger; true iff a contrib-gate entry exists. */
+/** Read the sandboxed ledger; true iff a contribution-gate entry exists. */
 function ledgerHasCap(sb) {
   const led = requireLiveScript(sb.root, 'gsd-core/bin/lib/capability-ledger.cjs');
   let store = null;
@@ -227,7 +227,7 @@ function readEnforcementFlag(sb) {
   return cfg && cfg.workflow ? cfg.workflow.gsd_contrib_enforcement : undefined;
 }
 
-/** Read the sandboxed consent store; true iff a contrib-gate record exists. */
+/** Read the sandboxed consent store; true iff a contribution-gate record exists. */
 function consentHasCap(sb) {
   const cs = requireLiveScript(sb.root, 'gsd-core/bin/lib/capability-consent.cjs');
   let store = null;
@@ -244,7 +244,7 @@ function consentHasCap(sb) {
 
 test('manifest declares EXACTLY the 12 PreToolUse gates + 1 UserPromptSubmit advisory (= 13)', () => {
   const manifest = drv.readManifest();
-  assert.strictEqual(manifest.id, CAP_ID, 'manifest id must be contrib-gate');
+  assert.strictEqual(manifest.id, CAP_ID, 'manifest id must be contribution-gate');
   const hooks = Array.isArray(manifest.hooks) ? manifest.hooks : [];
   assert.strictEqual(hooks.length, 13, 'manifest hooks[] must declare exactly 13 entries');
   const pre = hooks.filter((h) => h.event === 'PreToolUse').length;
@@ -277,8 +277,8 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 13 tagged,
     assert.strictEqual(tagged.byEvent.PreToolUse, 12, 'exactly 12 PreToolUse gates tagged');
     assert.strictEqual(tagged.byEvent.UserPromptSubmit, 1, 'exactly 1 UserPromptSubmit advisory tagged');
     assert.strictEqual(userHookSurvives(sb.settingsPath), true, 'the pre-seeded untagged user hook must survive install');
-    assert.strictEqual(ledgerHasCap(sb), true, 'install must record a ledger entry for contrib-gate');
-    assert.strictEqual(consentHasCap(sb), true, 'install must record a consent record for contrib-gate');
+    assert.strictEqual(ledgerHasCap(sb), true, 'install must record a ledger entry for contribution-gate');
+    assert.strictEqual(consentHasCap(sb), true, 'install must record a consent record for contribution-gate');
 
     // ── off: EXACTLY the 13 tagged entries stripped; the UNTAGGED user hook SURVIVES ──
     drv.runOff(Object.assign({}, opts, { reason: 'CAP-07 hermetic lifecycle proof: off' }));
@@ -310,12 +310,12 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 13 tagged,
       'runOn must set workflow.gsd_contrib_enforcement=true in config.json'
     );
 
-    // ── remove: no ledger entry + no consent record for contrib-gate remain in the sandbox store ──
+    // ── remove: no ledger entry + no consent record for contribution-gate remain in the sandbox store ──
     drv.runRemove(Object.assign({}, opts, { reason: 'CAP-07 hermetic lifecycle proof: remove' }));
     tagged = countTagged(sb.settingsPath);
     assert.strictEqual(tagged.total, 0, 'remove must leave no tagged gates, leftover=' + tagged.total);
-    assert.strictEqual(ledgerHasCap(sb), false, 'remove must drop the ledger entry for contrib-gate');
-    assert.strictEqual(consentHasCap(sb), false, 'remove must revoke the consent record for contrib-gate');
+    assert.strictEqual(ledgerHasCap(sb), false, 'remove must drop the ledger entry for contribution-gate');
+    assert.strictEqual(consentHasCap(sb), false, 'remove must revoke the consent record for contribution-gate');
     assert.strictEqual(
       userHookSurvives(sb.settingsPath),
       true,

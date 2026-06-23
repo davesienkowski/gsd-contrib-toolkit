@@ -5,7 +5,7 @@
  *
  * Drives buildCapability / checkBundleFresh through their INJECTABLE seams (sourceHooksDir,
  * bundleHooksDir, manifestPath, snippetPath) against fixtures materialized in os.mkdtemp dirs —
- * the REAL capabilities/contrib-gate/ is NEVER mutated by this test. Assertions are on the returned
+ * the REAL capabilities/contribution-gate/ is NEVER mutated by this test. Assertions are on the returned
  * {fresh, staleFiles} / {files, version} shapes, never on process.exit (mirrors
  * bin/verify-capability.test.cjs + hooks/fault-injection.test.cjs disposable-sandbox style).
  *
@@ -64,7 +64,7 @@ function makeFixture(over = {}) {
   // A manifest to stamp.
   const manifestPath = path.join(dir, 'capability.json');
   const manifest = Object.assign(
-    { id: 'contrib-gate', role: 'feature', version: '2.3.4', title: 'Fixture', skills: ['x'] },
+    { id: 'contribution-gate', role: 'feature', version: '2.3.4', title: 'Fixture', skills: ['x'] },
     over.manifest || {}
   );
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
@@ -195,7 +195,7 @@ test('version-stamp: after buildCapability(), the written manifest version is a 
   const stamped = JSON.parse(fs.readFileSync(fx.manifestPath, 'utf8'));
   assert.match(stamped.version, SEMVER_RE);
   // The stamp preserves every other field (parse->set->write of the existing manifest).
-  assert.equal(stamped.id, 'contrib-gate');
+  assert.equal(stamped.id, 'contribution-gate');
   assert.equal(stamped.role, 'feature');
   assert.deepEqual(stamped.skills, ['x']);
 
