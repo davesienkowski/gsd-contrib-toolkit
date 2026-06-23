@@ -4,9 +4,12 @@
 /**
  * bin/contrib-capability.cjs — the CAP-03 thin driver for the contrib-gate capability.
  *
- *   node bin/contrib-capability.cjs install   # stage + consent + ledger + marker-tag the 13 hooks
- *   node bin/contrib-capability.cjs status     # report ledger entry + consent record + live gate set
- *   # (on | off | remove are added by Plan 12-02; the sandbox test by Plan 12-03)
+ *   node bin/contrib-capability.cjs install            # stage + consent + ledger + marker-tag the 13 hooks
+ *   node bin/contrib-capability.cjs on                 # (re)apply the tagged gates + enforcement flag on
+ *   node bin/contrib-capability.cjs off  --reason <w>  # strip the tagged gates + flag off + logged receipt
+ *   node bin/contrib-capability.cjs status             # report ledger entry + consent record + live gate set
+ *   node bin/contrib-capability.cjs remove --reason <w> # remove from ledger + consent + logged receipt
+ *   # (the disposable-sandbox integration test is Plan 12-03)
  *
  * This is a THIN DRIVER. It NEVER reimplements the gsd-core capability engine
  * (capability-lifecycle / consent / source / ledger). It `require()`s the LIVE engine through the
@@ -653,6 +656,91 @@ function countStripped(result) {
 }
 
 // ---------------------------------------------------------------------------
+// remove — LIVE removeCapability (strip + ledger) + revoke consent + receipt
+// ---------------------------------------------------------------------------
+
+/**
+ * `remove` — drive the LIVE removeCapability(id, {runtimeDir, removeData, consentStoreDir, scope}) to
+ * strip the capability-owned shared edits + delete the ledger-owned files + drop the ledger entry, and
+ * revoke the project consent record (the LIVE removeCapability revokes consent internally when a
+ * consentStoreDir + project scope are supplied; we ALSO call LIVE revokeProjectConsent keyed to the
+ * SAME projectRoot install bound, so a divergent findProjectRoot resolution can never leave an orphan
+ * consent record — T-12-02-ORPHAN). Then append the off/remove accountability receipt.
+ *
+ * Accountability (T-12-02-SKIPRECEIPT): remove requires a non-empty --reason and writes the same
+ * per-project-root, append-only receipt off does; an empty reason or an un-writable receipt FAILS the
+ * operation. The reason gate runs BEFORE any mutation.
+ *
+ * Honesty (HARD): never labels the capability itself "unbypassable".
+ *
+ * @param {object} [opts] injectable seams + `reason` (required) + optional removeData.
+ * @returns {{lines:string[], status:string, strippedEdits:number, consentRevoked:boolean, receiptPath:string}}
+ */
+function runRemove(opts = {}) {
+  const engine = loadLiveEngine(opts);
+  const { liveRoot, lifecycle, consent } = engine;
+  const consentHome = opts.consentHome || consentStoreHome();
+
+  // Accountability gate FIRST — reject an empty reason before any LIVE mutation.
+  const reason = requireReason(opts, 'remove');
+  // removeData defaults FALSE (preserve any CAPABILITY_DATA) unless explicitly requested.
+  const removeData = opts.removeData === true;
+
+  const lines = [];
+  lines.push('[remove] gsd-core checkout: ' + liveRoot);
+
+  // (1) LIVE removeCapability: strip shared edits + delete ledger-owned files + drop the ledger entry,
+  // and (with consentStoreDir + project scope) revoke the bound consent record internally.
+  const result = lifecycle.removeCapability(CAP_ID, {
+    runtimeDir: liveRoot,
+    removeData,
+    consentStoreDir: consentHome,
+    scope: 'project',
+  });
+  const status = (result && result.status) || 'unknown';
+  if (status === 'blocked') {
+    throw new DriverError(
+      'LIVE removeCapability blocked: ' +
+        ((result.blockReasons || []).join('; ') || 'unknown reason') +
+        ' — remove did not complete (an op that could not run is never reported as success)'
+    );
+  }
+  const strippedEdits = Array.isArray(result && result.strippedEdits)
+    ? countStripped(result.strippedEdits)
+    : countStripped(result && result.strippedEdits);
+  lines.push('[remove] LIVE removeCapability status=' + status + ' (strippedEdits=' + strippedEdits +
+    ', removedFiles=' + ((result && result.removedFiles && result.removedFiles.length) || 0) + ')');
+
+  // (2) Belt-and-suspenders: explicitly revoke the project consent keyed to the SAME projectRoot
+  // install bound (liveRoot), so a divergent findProjectRoot resolution inside removeCapability can
+  // never leave the install-bound record behind (T-12-02-ORPHAN). revokeProjectConsent is idempotent
+  // (absent record => no-op).
+  let consentRevoked = false;
+  try {
+    consent.revokeProjectConsent({ gsdHome: consentHome, projectRoot: liveRoot, id: CAP_ID });
+    consentRevoked = true;
+  } catch (err) {
+    // A consent-lock failure must be surfaced, never silently swallowed (mirrors LIVE #1459) — but the
+    // ledger removal already succeeded, so this is a LOUD warning line, not a hard fail of remove.
+    lines.push('[remove] WARNING: could not revoke project consent: ' + (err && err.message) +
+      ' — the consent record may be STALE; clear it manually (gsd capability trust revoke ' + CAP_ID + ')');
+  }
+  if (consentRevoked) {
+    lines.push('[remove] revoked project consent for ' + CAP_ID + ' (ledger + consent cleaned)');
+  }
+  if (result && result.consentRevokeFailed) {
+    lines.push('[remove] note: LIVE removeCapability also reported a consent-revoke warning: ' +
+      (result.consentRevokeWarning || ''));
+  }
+
+  // (3) Accountability receipt (append-only, per-project-root) — an un-writable receipt FAILS remove.
+  const receiptPath = writeAccountabilityReceipt({ liveRoot, action: 'remove', reason });
+  lines.push('[remove] logged accountability receipt: ' + receiptPath);
+  lines.push('[remove] done — contrib-gate removed from the ledger; the gates left settings.json');
+  return { lines, status, strippedEdits, consentRevoked, receiptPath };
+}
+
+// ---------------------------------------------------------------------------
 // status
 // ---------------------------------------------------------------------------
 
@@ -851,6 +939,7 @@ module.exports = {
   runInstall,
   runOn,
   runOff,
+  runRemove,
   runStatus,
   runCli,
   liveRequireLiveScript,
