@@ -594,3 +594,144 @@ test('bundledSkillNames throws DriverError (LOUD-on-miss) when the bundle has no
     fs.rmSync(sb, { recursive: true, force: true });
   }
 });
+
+test('deliverBundledSkills creates idempotent DIRECTORY symlinks per stem; re-points a stale symlink', () => {
+  const sb = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-deliver-'));
+  try {
+    const skillsDir = path.join(sb, 'skills');
+    const r = drv.deliverBundledSkills({ bundleDir: drv.BUNDLE_CAP_DIR, skillsDir });
+    assert.strictEqual(r.linked, 2, 'first deliver links both stems');
+    assert.strictEqual(r.already, 0, 'first deliver has none already correct');
+    assert.deepStrictEqual(r.names.slice().sort(), EXPECTED_SKILL_STEMS, 'names lists both stems');
+    for (const stem of EXPECTED_SKILL_STEMS) {
+      const target = path.join(skillsDir, stem);
+      const st = fs.lstatSync(target);
+      assert.ok(st.isSymbolicLink(), stem + ' target must be a symlink');
+      assert.strictEqual(
+        fs.readlinkSync(target),
+        path.join(drv.BUNDLE_CAP_DIR, 'skills', stem),
+        stem + ' symlink must point at the bundle source (absolute)'
+      );
+      // It is a DIRECTORY symlink — statSync (follows) sees a dir containing SKILL.md.
+      assert.ok(fs.statSync(target).isDirectory(), stem + ' followed target must be a directory');
+      assert.ok(fs.existsSync(path.join(target, 'SKILL.md')), stem + ' followed target must contain SKILL.md');
+    }
+    // Idempotent: a second run links nothing, counts both as already correct.
+    const r2 = drv.deliverBundledSkills({ bundleDir: drv.BUNDLE_CAP_DIR, skillsDir });
+    assert.strictEqual(r2.linked, 0, 'second deliver links nothing (idempotent)');
+    assert.strictEqual(r2.already, 2, 'second deliver counts both already correct');
+
+    // A stale symlink (points elsewhere) is re-pointed, not errored.
+    const stem = EXPECTED_SKILL_STEMS[0];
+    const target = path.join(skillsDir, stem);
+    const elsewhere = path.join(sb, 'elsewhere');
+    fs.mkdirSync(elsewhere);
+    fs.rmSync(target, { force: true });
+    fs.symlinkSync(elsewhere, target, 'dir');
+    const r3 = drv.deliverBundledSkills({ bundleDir: drv.BUNDLE_CAP_DIR, skillsDir });
+    assert.strictEqual(r3.linked, 1, 're-pointing a stale symlink counts as linked');
+    assert.strictEqual(r3.already, 1, 'the other stem stays already correct');
+    assert.strictEqual(
+      fs.readlinkSync(target),
+      path.join(drv.BUNDLE_CAP_DIR, 'skills', stem),
+      're-pointed symlink now points at the bundle source'
+    );
+  } finally {
+    fs.rmSync(sb, { recursive: true, force: true });
+  }
+});
+
+test('deliverBundledSkills NEVER clobbers a real (non-symlink) dir at a skill target (T-17-02-CLOBBER)', () => {
+  const sb = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-clobber-'));
+  try {
+    const skillsDir = path.join(sb, 'skills');
+    const stem = EXPECTED_SKILL_STEMS[0];
+    const realTarget = path.join(skillsDir, stem);
+    fs.mkdirSync(realTarget, { recursive: true });
+    const REAL_BODY = '# a REAL user skill dir — must NEVER be clobbered\n';
+    fs.writeFileSync(path.join(realTarget, 'SKILL.md'), REAL_BODY, 'utf8');
+
+    assert.throws(
+      () => drv.deliverBundledSkills({ bundleDir: drv.BUNDLE_CAP_DIR, skillsDir }),
+      (err) => (err instanceof drv.DriverError) && /refusing to overwrite/i.test(err.message),
+      'deliver must refuse to clobber a real dir at a skill target (T-17-02-CLOBBER)'
+    );
+    // The real dir's contents must be byte-intact and NOT a symlink.
+    assert.strictEqual(fs.lstatSync(realTarget).isSymbolicLink(), false, 'the real dir must NOT have become a symlink');
+    assert.strictEqual(fs.readFileSync(path.join(realTarget, 'SKILL.md'), 'utf8'), REAL_BODY, 'the real SKILL.md must be byte-intact');
+  } finally {
+    fs.rmSync(sb, { recursive: true, force: true });
+  }
+});
+
+test('removeBundledSkills unlinks ONLY our-bundle links; the bundle SKILL.md is never recursed/deleted', () => {
+  const sb = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-remove-'));
+  try {
+    const skillsDir = path.join(sb, 'skills');
+    drv.deliverBundledSkills({ bundleDir: drv.BUNDLE_CAP_DIR, skillsDir });
+    const rm = drv.removeBundledSkills({ bundleDir: drv.BUNDLE_CAP_DIR, skillsDir });
+    assert.strictEqual(rm.removed, 2, 'remove unlinks both delivered links');
+    for (const stem of EXPECTED_SKILL_STEMS) {
+      assert.strictEqual(fs.existsSync(path.join(skillsDir, stem)), false, stem + ' link must be reclaimed');
+      // CRITICAL: the unlink removed the LINK only — the bundle's real SKILL.md still exists.
+      assert.ok(
+        fs.existsSync(path.join(drv.BUNDLE_CAP_DIR, 'skills', stem, 'SKILL.md')),
+        stem + ' bundle SKILL.md must survive (never recursed into / deleted via the followed target)'
+      );
+    }
+  } finally {
+    fs.rmSync(sb, { recursive: true, force: true });
+  }
+});
+
+test('removeBundledSkills leaves a REAL dir at a skill target untouched (T-17-02-OVERREMOVE)', () => {
+  const sb = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-rm-realdir-'));
+  try {
+    const skillsDir = path.join(sb, 'skills');
+    const stem = EXPECTED_SKILL_STEMS[0];
+    const realTarget = path.join(skillsDir, stem);
+    fs.mkdirSync(realTarget, { recursive: true });
+    const REAL_BODY = '# real skill dir at a target — remove must leave it\n';
+    fs.writeFileSync(path.join(realTarget, 'SKILL.md'), REAL_BODY, 'utf8');
+
+    const rm = drv.removeBundledSkills({ bundleDir: drv.BUNDLE_CAP_DIR, skillsDir });
+    assert.strictEqual(rm.removed, 0, 'remove must reclaim nothing (a real dir is not ours)');
+    assert.strictEqual(fs.existsSync(realTarget), true, 'the real dir must survive remove (T-17-02-OVERREMOVE)');
+    assert.strictEqual(fs.readFileSync(path.join(realTarget, 'SKILL.md'), 'utf8'), REAL_BODY, 'real SKILL.md byte-intact');
+  } finally {
+    fs.rmSync(sb, { recursive: true, force: true });
+  }
+});
+
+test('removeBundledSkills leaves a FOREIGN symlink (outside our bundle) untouched (T-17-02-OVERREMOVE)', () => {
+  const sb = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-rm-foreign-'));
+  try {
+    const skillsDir = path.join(sb, 'skills');
+    const stem = EXPECTED_SKILL_STEMS[0];
+    const foreignTarget = path.join(skillsDir, stem);
+    const foreignDest = path.join(sb, 'foreign-skill');
+    fs.mkdirSync(foreignDest, { recursive: true });
+    fs.mkdirSync(skillsDir, { recursive: true });
+    fs.symlinkSync(foreignDest, foreignTarget, 'dir');
+
+    const rm = drv.removeBundledSkills({ bundleDir: drv.BUNDLE_CAP_DIR, skillsDir });
+    assert.strictEqual(rm.removed, 0, 'a foreign symlink is not ours to reclaim');
+    assert.strictEqual(fs.existsSync(foreignTarget), true, 'the foreign symlink must survive remove');
+    assert.strictEqual(fs.readlinkSync(foreignTarget), foreignDest, 'the foreign symlink target must be unchanged');
+  } finally {
+    fs.rmSync(sb, { recursive: true, force: true });
+  }
+});
+
+test('removeBundledSkills returns {removed:0} on a vanished bundle skills/ dir (ENOENT => nothing we own)', () => {
+  const sb = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-rm-enoent-'));
+  try {
+    const skillsDir = path.join(sb, 'skills');
+    // bundleDir has no skills/ dir => bundledSkillNames throws ENOENT => remove returns {removed:0}.
+    const rm = drv.removeBundledSkills({ bundleDir: sb, skillsDir });
+    assert.strictEqual(rm.removed, 0, 'a vanished bundle skills/ dir means nothing we own to reclaim');
+    assert.deepStrictEqual(rm.names, [], 'names empty on the ENOENT path');
+  } finally {
+    fs.rmSync(sb, { recursive: true, force: true });
+  }
+});

@@ -197,6 +197,14 @@ function consentStoreHome() {
 //   deliverBundledCommands throws a DriverError (install FAILS rather than overwrite a real file),
 //   mirroring install.sh's `die "refusing to overwrite real file"` (install.sh L73).
 //
+// SKILLS (21-01, TOG-02): skills are DIRECTORIES (each skill is a `<stem>/SKILL.md` tree), so
+//   deliverBundledSkills / removeBundledSkills are DIRECTORY-symlink mirrors of the command helpers —
+//   delivered with the explicit `'dir'` symlink type (`fs.symlinkSync(absSource, target, 'dir')`) and
+//   reclaimed by `lstat`+unlink of the LINK itself (`rmSync` WITHOUT `recursive`, so a followed target
+//   is NEVER recursed into / deleted). Both fail-safes are identical (never-clobber a real dir;
+//   reclaim only links into our bundle). These are PRIMITIVES only in 21-01 — not yet wired into the
+//   install/remove lifecycle (that is Plan 21-02).
+//
 // LIFECYCLE TIE DECISION (justified — per CONTEXT.md discretion): command delivery is tied to the
 //   install/remove lifecycle (delivered by `install`, reclaimed by `remove`), NOT the on/off
 //   enforcement toggle. Commands are AVAILABILITY, not enforcement — the on/off flag governs the gate
@@ -304,11 +312,16 @@ function bundledSkillNames(bundleDir) {
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch (err) {
-    throw new DriverError(
+    const de = new DriverError(
       'cannot read the bundle skills dir ' + dir + ' (' + (err && err.message) + ') — the bundle ' +
         'must ship its skills/ (run `node bin/build-capability.cjs` to regenerate); an install that ' +
         'cannot source its skills FAILS LOUD rather than deliver nothing'
     );
+    // Preserve the original fs error code so removeBundledSkills can distinguish ENOENT (a vanished
+    // bundle skills/ dir => nothing we own to reclaim => {removed:0}) from a genuine read failure
+    // (EACCES, etc. => LOUD throw). Without this the ENOENT branch is unreachable.
+    if (err && err.code) de.code = err.code;
+    throw de;
   }
   return entries
     .filter((e) => e.isDirectory() && fs.existsSync(path.join(dir, e.name, 'SKILL.md')))
@@ -437,6 +450,141 @@ function removeBundledCommands(args = {}) {
     if (current !== absSource) {
       continue; // a FOREIGN symlink (not into our bundle) — leave it untouched (T-17-02-OVERREMOVE)
     }
+    fs.rmSync(target, { force: true });
+    removed += 1;
+  }
+  return { removed, names };
+}
+
+/**
+ * DELIVER the bundled skills into the runtime skills dir as DIRECTORY symlinks — a directory-symlink
+ * mirror of deliverBundledCommands. Each skill is a `<stem>/SKILL.md` tree, so the target
+ * `<skillsDir>/<stem>` is a DIRECTORY symlink → the bundle's `skills/<stem>` dir (the third
+ * `fs.symlinkSync` arg `'dir'` is load-bearing on Windows, harmless on POSIX, and makes the
+ * dir-symlink intent explicit; commands omit it because they are file symlinks). Idempotent: a target
+ * already symlinked at the correct bundle source is left (count "already"); a symlink pointing
+ * elsewhere is re-pointed (count "linked"); a REAL non-symlink file/dir at a target is NEVER clobbered
+ * (throw a DriverError — T-17-02-CLOBBER); a missing target is created. Skills are sourced from the
+ * BUNDLE (T-17-02-REPOSOURCE).
+ *
+ * @param {object} args
+ * @param {string} args.bundleDir the bundle root whose skills/ dir is the source of truth.
+ * @param {string} args.skillsDir the runtime skills dir (claudeSkillsDir()).
+ * @returns {{linked:number, already:number, names:string[]}}
+ */
+function deliverBundledSkills(args = {}) {
+  const { bundleDir, skillsDir } = args;
+  if (typeof bundleDir !== 'string' || typeof skillsDir !== 'string') {
+    throw new DriverError('deliverBundledSkills requires { bundleDir, skillsDir } string paths');
+  }
+  const names = bundledSkillNames(bundleDir);
+  fs.mkdirSync(skillsDir, { recursive: true });
+  let linked = 0;
+  let already = 0;
+  for (const stem of names) {
+    const absSource = path.join(bundleDir, 'skills', stem);
+    const target = path.join(skillsDir, stem);
+    let st = null;
+    try {
+      st = fs.lstatSync(target);
+    } catch (_) {
+      st = null; // absent
+    }
+    if (st && st.isSymbolicLink()) {
+      // Already a symlink. Leave it iff it resolves to the correct bundle source (idempotent).
+      let current = '';
+      try {
+        current = fs.readlinkSync(target);
+      } catch (_) {
+        current = '';
+      }
+      if (current === absSource) {
+        already += 1;
+        continue;
+      }
+      // Symlink points elsewhere — re-point it (safe: replacing a symlink, not real data).
+      fs.rmSync(target, { force: true });
+      fs.symlinkSync(absSource, target, 'dir');
+      linked += 1;
+      continue;
+    }
+    if (st) {
+      // Exists and is NOT a symlink: a REAL file/dir. Fail-safe — never clobber (T-17-02-CLOBBER,
+      // mirrors deliverBundledCommands / install.sh L73 `die "refusing to overwrite real file"`).
+      throw new DriverError(
+        'refusing to overwrite existing entry at ' + target + ' (not a symlink into our bundle — ' +
+          'found a real file or directory) — skill delivery NEVER clobbers existing user content; ' +
+          'move it aside and re-run `install` (mirrors install.sh L73 fail-safe)'
+      );
+    }
+    // Missing — create the DIRECTORY symlink with an absolute target.
+    fs.symlinkSync(absSource, target, 'dir');
+    linked += 1;
+  }
+  return { linked, already, names };
+}
+
+/**
+ * RECLAIM exactly the delivered skill links — a directory-symlink mirror of removeBundledCommands. For
+ * each bundled skill stem, if the target is a SYMLINK whose resolved target is the bundle source
+ * (points INTO our bundle skills/ dir), unlink it (count "removed"); if absent, no-op; if it is a REAL
+ * non-symlink dir/file OR a symlink pointing ELSEWHERE, LEAVE it untouched (T-17-02-OVERREMOVE: only
+ * reclaim links into our bundle). CRITICAL: `fs.rmSync(target, { force: true })` WITHOUT `recursive`
+ * on an lstat'd symlink removes the LINK only — it NEVER follows into the target dir, so the bundle's
+ * real skills/<stem>/ tree is never recursed into or deleted. (Passing `recursive: true` would risk
+ * recursing a followed target — DO NOT.)
+ *
+ * @param {object} args
+ * @param {string} args.bundleDir the bundle root (its skills/ dir is the ownership boundary).
+ * @param {string} args.skillsDir the runtime skills dir.
+ * @returns {{removed:number, names:string[]}}
+ */
+function removeBundledSkills(args = {}) {
+  const { bundleDir, skillsDir } = args;
+  if (typeof bundleDir !== 'string' || typeof skillsDir !== 'string') {
+    throw new DriverError('removeBundledSkills requires { bundleDir, skillsDir } string paths');
+  }
+  let names;
+  try {
+    names = bundledSkillNames(bundleDir);
+  } catch (err) {
+    // ENOENT: a vanished bundle skills/ dir means there is nothing we own to reclaim — a remove must
+    // never throw on a missing bundle (the links it owns, if any, dangle harmlessly). For all other
+    // errors surface a DriverError rather than silently leaving delivered links in place (mirrors
+    // removeBundledCommands ENOENT-vs-other discipline).
+    if (err && err.code === 'ENOENT') {
+      return { removed: 0, names: [] };
+    }
+    throw new DriverError(
+      'could not read the bundle skills dir to reclaim delivered links (' +
+        (err && err.message) + ') — delivered skill links (if any) were NOT reclaimed; ' +
+        'resolve the error and re-run `remove` to complete reclaim'
+    );
+  }
+  let removed = 0;
+  for (const stem of names) {
+    const absSource = path.join(bundleDir, 'skills', stem);
+    const target = path.join(skillsDir, stem);
+    let st = null;
+    try {
+      st = fs.lstatSync(target);
+    } catch (_) {
+      continue; // absent — nothing to reclaim
+    }
+    if (!st.isSymbolicLink()) {
+      continue; // a REAL dir/file — never remove unrelated content (T-17-02-OVERREMOVE)
+    }
+    let current = '';
+    try {
+      current = fs.readlinkSync(target);
+    } catch (_) {
+      current = '';
+    }
+    if (current !== absSource) {
+      continue; // a FOREIGN symlink (not into our bundle) — leave it untouched (T-17-02-OVERREMOVE)
+    }
+    // Unlink the LINK only — rmSync WITHOUT recursive on a symlink removes the link, never follows
+    // into the target dir (the bundle's real skills/<stem>/ tree is never recursed/deleted).
     fs.rmSync(target, { force: true });
     removed += 1;
   }
@@ -1305,6 +1453,8 @@ module.exports = {
   bundledSkillNames,
   deliverBundledCommands,
   removeBundledCommands,
+  deliverBundledSkills,
+  removeBundledSkills,
   loadLiveEngine,
   readManifest,
   manifestHookBasenames,
