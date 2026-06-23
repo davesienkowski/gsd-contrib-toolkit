@@ -3,21 +3,16 @@
 /**
  * bin/self-test.test.cjs — HERMETIC test of the toolkit's OWN dog-food self-test runner.
  *
- * The runner (`bin/self-test.cjs`) packages THREE checks into one command:
+ * The runner (`bin/self-test.cjs`) packages TWO checks into one command:
  *   1. `node --check` over every hooks/**.cjs + bin/**.cjs (the JS analog of shellcheck).
- *   2. `shellcheck install.sh` GATED on shellcheck availability (skip-with-note when ENOENT).
- *   3. the existing node:test suite as the hook test harness.
+ *   2. the existing node:test suite as the hook test harness.
  *
- * THIS test does NOT spawn real children. It injects deterministic spawn/exec stubs through the
+ * THIS test does NOT spawn real children. It injects deterministic spawn stubs through the
  * runner's seams so the verdict math is proven offline:
- *   (a) clean run + shellcheck PRESENT  => ok:true
- *   (b) shellcheck ENOENT               => ok:true AND the env-limitation note is carried + printed
- *   (c) shellcheck real (non-ENOENT) failure => ok:false
+ *   (a) clean run                       => ok:true
  *   (d) one node --check failure        => ok:false
  *   (e) a failing test suite            => ok:false
- *
- * The note assertion (b) is the TEST-04 honesty guard (T-05-04-SILENTPASS): an absent shellcheck
- * can NEVER be a silent green — the skip MUST be visible.
+ *   (f) a missing covered test file     => ok:false
  *
  * @module bin/self-test.test
  */
@@ -25,9 +20,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { runSelfTest, nodeCheckAll, tryShellcheck, coveredTestsCheck, runTestSuite } = require('./self-test.cjs');
-
-const NOTE = 'shellcheck not installed — skipped (env limitation; runnable in CI)';
+const { runSelfTest, nodeCheckAll, coveredTestsCheck, runTestSuite } = require('./self-test.cjs');
 
 // --- Stub factories -------------------------------------------------------
 
@@ -50,26 +43,6 @@ function makeSpawn(cfg) {
   };
 }
 
-/**
- * An exec stub for shellcheck: 'ok' => returns; 'enoent' => throws ENOENT; 'fail' => throws status.
- * @param {'ok'|'enoent'|'fail'} mode
- */
-function makeExec(mode) {
-  return function exec() {
-    if (mode === 'ok') return '';
-    if (mode === 'enoent') {
-      const e = new Error('spawn shellcheck ENOENT');
-      e.code = 'ENOENT';
-      throw e;
-    }
-    // real shellcheck failure: ran, found problems → numeric status, no ENOENT.
-    const e = new Error('shellcheck found issues');
-    e.status = 1;
-    e.stderr = 'install.sh:1:1: warning: SC2086';
-    throw e;
-  };
-}
-
 // A fixed file list so the walk is deterministic for nodeCheckAll-driven cases.
 const FAKE_FILES = ['hooks/a.cjs', 'hooks/lib/b.cjs', 'bin/c.cjs'];
 
@@ -79,7 +52,6 @@ function baseDeps(over = {}) {
       repoRoot: '/repo',
       listFiles: () => FAKE_FILES.slice(),
       spawn: makeSpawn({}),
-      exec: makeExec('ok'),
       // Deterministic covered-tests presence (hermetic — the real files live under the real repo, not
       // the fake /repo). Default: all enumerated test files present, so the composition math is clean.
       covered: [{ path: 'bin/contrib-capability.test.cjs', covers: 'lifecycle' }],
@@ -110,26 +82,6 @@ test('nodeCheckAll: ok:false and records the failing file', () => {
   assert.equal(r.ok, false);
   assert.equal(r.failures.length, 1);
   assert.match(r.failures[0].path, /b\.cjs$/);
-});
-
-// --- tryShellcheck unit ---------------------------------------------------
-
-test('tryShellcheck: present + clean => ok:true, ran:true', () => {
-  const r = tryShellcheck('install.sh', { exec: makeExec('ok') });
-  assert.deepEqual({ ok: r.ok, ran: r.ran }, { ok: true, ran: true });
-});
-
-test('tryShellcheck: ENOENT => ok:true, ran:false, with the env-limitation note', () => {
-  const r = tryShellcheck('install.sh', { exec: makeExec('enoent') });
-  assert.equal(r.ok, true);
-  assert.equal(r.ran, false);
-  assert.equal(r.note, NOTE);
-});
-
-test('tryShellcheck: real (non-ENOENT) failure => ok:false, ran:true', () => {
-  const r = tryShellcheck('install.sh', { exec: makeExec('fail') });
-  assert.equal(r.ok, false);
-  assert.equal(r.ran, true);
 });
 
 // --- runTestSuite unit ----------------------------------------------------
@@ -173,25 +125,11 @@ test('coveredTestsCheck: ok:false and records the missing file (a vanished proof
 
 // --- runSelfTest composition (cases a–e) ----------------------------------
 
-test('(a) clean run + shellcheck present => ok:true', () => {
+test('(a) clean run => ok:true', () => {
   const r = runSelfTest(baseDeps());
   assert.equal(r.ok, true);
   assert.equal(r.nodeCheck.ok, true);
-  assert.equal(r.shellcheck.ok, true);
   assert.equal(r.testSuite.ok, true);
-});
-
-test('(b) shellcheck ENOENT => ok:true AND note carried (honest skip, not silent pass)', () => {
-  const r = runSelfTest(baseDeps({ exec: makeExec('enoent') }));
-  assert.equal(r.ok, true);
-  assert.equal(r.shellcheck.ran, false);
-  assert.equal(r.shellcheck.note, NOTE);
-});
-
-test('(c) non-ENOENT shellcheck failure => ok:false', () => {
-  const r = runSelfTest(baseDeps({ exec: makeExec('fail') }));
-  assert.equal(r.ok, false);
-  assert.equal(r.shellcheck.ok, false);
 });
 
 test('(d) one node --check failure => ok:false', () => {
