@@ -1,9 +1,11 @@
-# Cross-Runtime Delivery Model (RUN-01)
+# Cross-Runtime Delivery Model (DOC-03)
 
-> Scope: this is the focused **RUN-01** record of *how* the contribution toolkit is delivered
-> per runtime and *where* its enforcement actually applies. This record predates and does not
-> re-cover the `install.sh` retirement (Phase 23, now complete) or the full DOC-03 cross-runtime
-> user guide / README polish (Phase 24); Phase 24 can fold this into the larger DOC-03 guide.
+> Scope: this is the **DOC-03** cross-runtime guide — the single canonical home for *how* the
+> contribution toolkit is delivered per runtime, *where* its enforcement actually applies, *why*
+> slash-commands stay Claude-only (the CMD-01 finding), and the `off`-vs-`remove` lifecycle. It
+> began as the focused RUN-01 delivery record (Phase 22) and has been folded into this fuller
+> guide in Phase 24; the `install.sh` retirement (Phase 23) and the README polish (Phase 24,
+> 24-02) are covered separately and are not re-described here.
 
 ## The one-paragraph truth
 
@@ -103,3 +105,43 @@ exactly why they cannot follow the skills cross-runtime.
 upstream feature request — a request for a third-party slash-command overlay surface so a feature
 capability could contribute agent-facing slash-commands cross-runtime. See
 `docs/upstream/trek-e-capability-feature-requests.md` (captured, not filed this milestone).
+
+## Lifecycle: `off` vs `remove`
+
+The driver (`bin/contrib-capability.cjs`) is the single authority for delivery. Its subcommands are
+`install | on | off | status | remove`. The two ways to deactivate the toolkit — `off` and `remove`
+— differ in one decisive way: **`off` is re-activatable, `remove` is permanent.**
+
+| Subcommand | Hooks (gates) | Commands | Skills | Enforcement flag | Ledger / consent |
+|---|---|---|---|---|---|
+| `install` | apply + enable | deliver (5) | deliver (2) | flag **on** | record |
+| `on` | (re)apply | deliver | deliver | flag **on** | — |
+| `off` | **strip** | **reclaim** | **reclaim** | flag **off** | **preserved** |
+| `remove` | strip | reclaim | reclaim | flag off | **dropped + revoked** |
+
+**`install` lands fully ON.** A first-time `install` records consent + the ledger, applies the
+marker-tagged gates, delivers all 5 commands and both skills, and flips
+`workflow.gsd_contrib_enforcement` to true. Nothing is left half-installed.
+
+**`off` is a re-activatable disable.** It strips the marker-tagged gates from `settings.json`,
+reclaims the delivered commands and skills (unlinking only the symlinks that point into our bundle —
+never a real file or a foreign link), flips `workflow.gsd_contrib_enforcement` to false, and writes
+an append-only accountability receipt. Crucially, it **preserves** the ledger, the project consent,
+and the bundle — so a subsequent `on` restores every surface (gates + commands + skills + flag).
+That clean **`off` → `on` round-trip** is the whole point of `off`: deactivate now, re-activate later
+with nothing lost.
+
+**`remove` is permanent teardown.** It strips the gates, reclaims both surfaces, **deletes the
+ledger-owned files, revokes the project consent**, and writes a receipt. After `remove` there is no
+re-activatable state to restore — re-enabling means a fresh `install`.
+
+**Both deactivations are accountable and fail-closed.** Both `off` and `remove` require a non-empty
+`--reason`, and both **probe that the receipt is append-writable before mutating anything**. If the
+receipt cannot be written, the operation aborts and changes nothing — there is no un-logged disable.
+Disabling the contrib guard is a deliberate, recorded act.
+
+**Honesty note.** `off` and `remove` **genuinely remove the enforcement** — the gates *are* the
+enforcement, and stripping them removes it for real (not a soft toggle that leaves a hidden block in
+place). Enforcement exists only while the gates are installed on Claude Code; off-Claude it is
+advisory-only regardless. The toolkit is not described as guaranteed against circumvention — its
+enforcement is scoped to the Claude harness hooks while installed, and it is fully removable.
