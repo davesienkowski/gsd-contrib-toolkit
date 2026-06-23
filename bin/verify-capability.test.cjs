@@ -479,6 +479,87 @@ test('WR-04: gerund form "reaching" is caught by the oversell check', () => {
     '"avoids unbypassable enforcement" is an honest disclaimer');
 });
 
+// ── (i5) WR-01 denylist: readDescribedCommandSet NON_COMMAND_NOUNS denylist unit test ──
+test('WR-01 denylist unit: readDescribedCommandSet does not extract gsd-core/gsd-loop as declared commands', () => {
+  const { readDescribedCommandSet } = require('./verify-capability.cjs');
+  // NON_COMMAND_NOUNS: gsd-core and gsd-loop must NEVER be extracted as declared toolkit commands,
+  // even when they appear immediately before the word "command(s)" in natural prose.
+  assert.deepEqual(readDescribedCommandSet('These gsd-core commands are reused by the toolkit.'), [],
+    '"gsd-core commands" must not extract gsd-core as a declared command');
+  assert.deepEqual(readDescribedCommandSet('Extends gsd-core commands with contribution-specific logic.'), [],
+    '"Extends gsd-core commands" must not extract gsd-core');
+  assert.deepEqual(readDescribedCommandSet('gsd-loop command is not blocked.'), [],
+    '"gsd-loop command" must not extract gsd-loop as a declared command');
+  assert.deepEqual(readDescribedCommandSet('Wraps gsd-core commands and the gsd-loop command pipeline.'), [],
+    'both gsd-core and gsd-loop prose must be filtered');
+  // A REAL phantom command (gsd-phantom) must still be caught — denylist must not weaken detection.
+  assert.deepEqual(readDescribedCommandSet('Ships gsd-fake-one and gsd-fake-two commands. Also gsd-phantom command.'),
+    ['gsd-fake-one', 'gsd-fake-two', 'gsd-phantom'],
+    'real phantom commands are still extracted');
+  // Pattern (a) (parenthetical enumeration) must also filter NON_COMMAND_NOUNS.
+  assert.deepEqual(readDescribedCommandSet('commands (gsd-core, gsd-fake-one)'), ['gsd-fake-one'],
+    'NON_COMMAND_NOUNS are filtered from parenthetical enumerations too');
+});
+
+// ── (i6) WR-01 denylist integration: prose mentioning "gsd-core commands" does NOT false-FAIL ──
+test('WR-01 denylist integration: description with "gsd-core commands" prose does not false-FAIL surface-commands', () => {
+  // The manifest description contains "gsd-core commands" — a natural phrase that pattern (b) would
+  // previously extract as a declared command (gsd-core), causing a false declared-not-shipped FAIL
+  // since gsd-core.md doesn't exist in the bundle's commands/ dir. The NON_COMMAND_NOUNS denylist
+  // must suppress this false FAIL while still catching a real phantom (gsd-phantom).
+  const descWithCoreProse = baseManifest({
+    description:
+      'Extends gsd-core commands with contribution-specific gates. Ships the gsd-fake-one and ' +
+      'gsd-fake-two commands. This capability is advisory-only and does NOT reach the harness boundary. ' +
+      'The SEPARATE personal Claude Code PreToolUse hooks remain the harness-wide enforcement layer ' +
+      'and are unbypassable; that property belongs to those hooks, not to this capability.',
+  });
+  const fx = makeFixture(descWithCoreProse, SKILLS, COMMANDS);
+  try {
+    const r = runVerifyCapability({
+      liveRoot: '/fake/gsd-core',
+      requireLiveScript: () => stubValidators(),
+      manifestPath: fx.manifestPath,
+      bundleSkillsDir: fx.bundleSkillsDir,
+      bundleCommandsDir: fx.bundleCommandsDir,
+      checkBundleFresh: () => ({ fresh: true, staleFiles: [], checked: 0 }),
+    });
+    const surf = r.results.find((x) => x.name === 'surface-commands');
+    assert.ok(surf && surf.verdict === 'pass',
+      '"gsd-core commands" in prose must NOT produce a false-FAIL surface-commands: ' + (surf && surf.detail));
+  } finally {
+    cleanup(fx);
+  }
+});
+
+test('WR-01 denylist integration: description with "gsd-core commands" prose AND a real phantom gsd-phantom still FAILs', () => {
+  // The denylist filters gsd-core/gsd-loop but must NOT weaken detection of a genuinely phantom command.
+  const descWithPhantom = baseManifest({
+    description:
+      'Extends gsd-core commands. Ships the gsd-fake-one, gsd-fake-two, and gsd-phantom commands. ' +
+      'This capability is advisory-only and does NOT reach the harness boundary.',
+  });
+  // The bundle ships only gsd-fake-one + gsd-fake-two; gsd-phantom is declared but not shipped.
+  const fx = makeFixture(descWithPhantom, SKILLS, COMMANDS);
+  try {
+    const r = runVerifyCapability({
+      liveRoot: '/fake/gsd-core',
+      requireLiveScript: () => stubValidators(),
+      manifestPath: fx.manifestPath,
+      bundleSkillsDir: fx.bundleSkillsDir,
+      bundleCommandsDir: fx.bundleCommandsDir,
+      checkBundleFresh: () => ({ fresh: true, staleFiles: [], checked: 0 }),
+    });
+    assert.equal(r.ok, false, 'a real phantom command must still cause a FAIL');
+    const surf = r.results.find((x) => x.name === 'surface-commands');
+    assert.ok(surf && surf.verdict === 'fail', 'surface-commands FAILed for the phantom');
+    assert.match(surf.detail, /gsd-phantom/, 'names the phantom command — not gsd-core');
+    assert.doesNotMatch(surf.detail, /gsd-core/, 'gsd-core must NOT appear as a false declared phantom');
+  } finally {
+    cleanup(fx);
+  }
+});
+
 // ── (j) WR-02: a LIVE validator that THROWS yields a clean [FAIL] + ok:false (no uncaught exception) ──
 test('WR-02: a throwing LIVE validator => clean [FAIL] for that validator, ok:false, no uncaught throw', () => {
   const fx = makeFixture(baseManifest(), SKILLS, COMMANDS);

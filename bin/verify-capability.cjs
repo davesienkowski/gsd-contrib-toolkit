@@ -311,13 +311,26 @@ function readBundleHooks(bundleHooksDir) {
  * when grammatically presented as one (inside a "command(s) (...)" enumeration parenthetical, or
  * immediately before the word "command(s)"), so non-command gsd-* nouns in prose ("gsd-core",
  * "gsd-loop") are NOT false-flagged. Conservative by design: an honest manifest names its commands.
+ *
+ * NON_COMMAND_NOUNS (WR-01): ecosystem nouns that are NEVER toolkit command names. Pattern (b)
+ * ("gsd-X command(s)") would otherwise extract "gsd-core" or "gsd-loop" from perfectly natural prose
+ * ("extends gsd-core commands", "gsd-loop command pipeline") and produce a false declared-not-shipped
+ * FAIL. The denylist is applied AFTER extraction so detection of a genuinely undisclosed/over-declared
+ * command (e.g. "gsd-phantom command") is never weakened — only known ecosystem nouns are filtered.
  * @param {string} description
  * @returns {string[]} sorted unique lowercase command stems.
  */
+// Known gsd-* ecosystem nouns that are NEVER toolkit command stems — never appear in commands/ dir.
+const NON_COMMAND_NOUNS = new Set(['gsd-core', 'gsd-loop']);
+
 function readDescribedCommandSet(description) {
   const d = typeof description === 'string' ? description : '';
   const set = new Set();
-  const collect = (s) => (s.match(/gsd-[a-z0-9-]+/gi) || []).forEach((t) => set.add(t.toLowerCase()));
+  const collect = (s) =>
+    (s.match(/gsd-[a-z0-9-]+/gi) || [])
+      .map((t) => t.toLowerCase())
+      .filter((t) => !NON_COMMAND_NOUNS.has(t))
+      .forEach((t) => set.add(t));
   // (a) tokens inside a "command(s) (...)" enumeration parenthetical.
   let mt;
   const par = /commands?\s*\(([^)]*)\)/gi;
