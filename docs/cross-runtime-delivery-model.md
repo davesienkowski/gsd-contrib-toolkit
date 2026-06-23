@@ -68,8 +68,38 @@ nothing more.
   `skills/<stem>/SKILL.md`, so non-Claude skill delivery is reachable through the LIVE engine with
   no fork.
 
-## Slash-commands are Claude-only this milestone
+## Why slash-commands are Claude-only (CMD-01 finding)
 
-Slash-commands remain Claude-only for this milestone (ADR-959: the manifest's `commands[]` are
-gsd-tools CLI subcommands, not an agent slash-command overlay); cross-runtime slash-commands are
-escalated to **UPS-01** (see CMD-01 / UPS-01, Phase 24).
+The toolkit ships **5 agent-facing slash-commands** (`.md` files) and they stay **Claude-only**
+this milestone. The reason is not an oversight — it is a structural gap in the capability framework
+that CMD-01 set out to verify. The verified evidence (cited by location, not inlined):
+
+- **ADR-959** (`gsd-core/docs/adr/959-capability-command-contribution.md`) — the accepted design
+  for capability command contribution. It defines `commands[]` as a contribution of **first-party
+  gsd-tools CLI subcommands**, each declared as a `{family, module, router}` entry: a `family`
+  (the CLI command family name), a `module` (a `.cjs` module that implements it), and a `router`
+  (the dispatch entrypoint). These are subcommands of the `gsd-tools` CLI — invoked through
+  `gsd_run` / the opened `runCommand` entrypoint — **not** agent-facing slash-commands.
+- **`gsd-core/bin/lib/capability-loader.cjs:697`** — the loader dispatches each declared command
+  module as **executable CLI from the install root**, gated on a committed ledger entry. That
+  dispatch path confirms `commands[]` is a **CLI command family**, not an agent slash-command
+  overlay: the loader runs the module as a program, it does not register a `/command` an agent can
+  type into a prompt.
+
+**Consequence.** There is **no third-party slash-command overlay surface** in the capability
+framework — no native way for a feature capability to contribute agent-facing `/commands`
+cross-runtime. Because of that, the toolkit's 5 `.md` slash-commands stay **Claude-only via `.md`
+symlink** (the existing Claude delivery), and there is deliberately **no `.md` → `.cjs` rewrite**.
+Rewriting a prose slash-command into a `.cjs` command module would mis-shape an agent slash-command
+into a CLI subcommand — a different surface with a different invocation model — so it is the wrong
+fix, not a shortcut we skipped.
+
+**Contrast with skills.** Skills do **not** have this gap: the framework has a native third-party
+`skills[]` contribution, so the toolkit's 2 skills ship **cross-runtime** through the native
+copy-convert pipeline (Phase 22). Slash-commands have no equivalent contribution surface, which is
+exactly why they cannot follow the skills cross-runtime.
+
+**Escalation.** Cross-runtime slash-command support is escalated to **UPS-01** as a captured
+upstream feature request — a request for a third-party slash-command overlay surface so a feature
+capability could contribute agent-facing slash-commands cross-runtime. See
+`docs/upstream/trek-e-capability-feature-requests.md` (captured, not filed this milestone).
