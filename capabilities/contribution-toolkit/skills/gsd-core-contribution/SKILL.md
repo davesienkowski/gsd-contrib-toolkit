@@ -149,3 +149,18 @@ Exact snippets, body skeletons, label sets, and worktree setup → **[reference.
 - Trusting "green" from the rollup without reading the head SHA's check-runs
 - Editing `bin/lib/*.cjs` or treating it as source
 - Calling work "done" while the latest commit never re-ran Tests
+
+## Recovery Offramp
+
+**Trigger:** a contribution gate **DENIES** the action (a `PreToolUse` hook returns `deny`), OR this skill itself surfaces a **real blocking issue** mid-run (P1 fails to reproduce, `lint:ci` red, the full suite fails, a POLICY/LOCKED-decision conflict). A deny or a real red is NOT a dead end — but it is also NOT a thing you route around.
+
+**The deny is fail-closed and unbypassable. This offramp is an ADVISORY convenience layer, NOT a way around the gate.** It NEVER suggests bypassing the gate, and it NEVER suggests `GSD_CONTRIB_OVERRIDE` to dodge a real failure — the override receipt is for **transient infra** only (a flaky network/tool outage, already documented), never for a genuine red gate or an unreproduced finding. If the gate denied because the issue/PR is actually broken, the fix is to make it green, not to override it.
+
+**Two tracked recovery paths — reuse EXISTING GSD commands (no parallel remediation flow):**
+
+1. **Fix inline — `/gsd-quick`.** For a trivial/ad-hoc correction (a one-line body fix, a missing label, a small lint nit), make the fix via `/gsd-quick`, then resume the submission.
+2. **Route through the pipeline.** For anything non-trivial or worth tracking: `/gsd-debug` (investigation of the real mechanism behind the red), OR the full `/gsd-discuss-phase`→`/gsd-plan-phase`→`/gsd-execute-phase` pipeline (planned, atomically committed, verified) — so the fix is tracked + resumable rather than a one-off scratch edit.
+
+**Return to the submission.** Once the underlying issue is green, **re-enter the P0–P6 protocol and re-run the gate that denied** — the offramp resumes the contribution, it does not abandon it. The gate stays the load-bearing part; the offramp only routes you to the right GSD command to make it pass honestly.
+
+**Honest limitation (model-driven — same honesty as "hooks lock outcomes, not steps"):** this offramp is **MODEL-DRIVEN**. It fires only while the model is running inside this GSD/contribution flow (this skill is active). A bare `gh pr create` / `gh issue create` typed outside any skill is **still denied by the hook** — the fail-closed enforcement holds — but no skill is active to offer this offramp, and a hook **cannot drive the model after a deny**. The deny is the guarantee; the offramp is the convenience layered on top of it when a skill is in play.

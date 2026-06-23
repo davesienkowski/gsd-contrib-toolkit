@@ -17,6 +17,8 @@ Do not list issues, post any review, relabel, dismiss, or merge until that skill
 
 Which GSD commands this toolkit delegates to, wraps, or leaves alone — and the methodology this path inherits — is documented in `docs/REUSE-AND-METHODOLOGY.md` (the reuse map governs which commands the sweep delegates to).
 
+**Recovery Offramp.** If a gate **denies** an action during the sweep/re-review (or the skill surfaces a real blocking issue mid-triage), don't dead-stop and don't route around it: the deny stays **fail-closed/unbypassable** and this offramp is **advisory only** — it NEVER bypasses the gate or uses `GSD_CONTRIB_OVERRIDE` to dodge a real failure. Take one of two tracked paths, then return to the sweep once it's green: **`/gsd-quick`** for a trivial inline fix, or **`/gsd-debug`** (or `/gsd-discuss-phase`→`/gsd-plan-phase`→`/gsd-execute-phase`) for a tracked, resumable one. See the fuller **Recovery Offramp** section in the `gsd-core-contribution` skill for the full version.
+
 **Interpreting my request below (it may be plain prose — figure out the mode):**
 - Status / "what's ready" / "what should I clear" / "triage the repo" / empty → **sweep mode** (Phases 0–8).
 - Names or describes a specific PR (a number, or e.g. "the roadmap rollback PR") → **re-review** it; resolve the PR number from the open list first. If the description matches more than one open PR, ask which before reviewing.
