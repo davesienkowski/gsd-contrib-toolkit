@@ -179,6 +179,9 @@ Please read this as written — don't over-read it:
 
 ## Documentation
 
+- [docs/foundations.md](docs/foundations.md) — **what the toolkit is built on** and how it was
+  designed: trek-e's methodology, the skills-artificer law-lenses, the LIVE gsd-core machinery it
+  reuses, the lineage of every command/skill, and how the design serves gsd-core's contribution goals.
 - [docs/cross-runtime-delivery-model.md](docs/cross-runtime-delivery-model.md) — the per-runtime
   delivery model, symlink-vs-copy-convert, enforcement-is-Claude-only, the `off`-vs-`remove`
   lifecycle, and why slash-commands are Claude-only (ADR-959).
@@ -192,6 +195,9 @@ Please read this as written — don't over-read it:
 
 If you maintain gsd-core and are reviewing this toolkit:
 
+- Start with [docs/foundations.md](docs/foundations.md) — it lays out what the toolkit is assembled
+  from (your methodology, the artificer lenses, the LIVE gsd-core machinery), the lineage of every
+  command/skill, how it was designed, and how its design maps to what gsd-core is driving for.
 - The bundle conforms to the LIVE capability validators (tri-surface `declared == shipped` parity
   across hooks + skills + commands) — see the manifest `capability.json`.
 - The two things that would let this capability go *fully native* and *cross-runtime* are written up
