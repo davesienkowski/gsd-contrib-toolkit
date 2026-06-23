@@ -112,18 +112,28 @@ const COMMANDS = ['gsd-fake-one', 'gsd-fake-two'];
 // ── (a) conform path => ok:true ───────────────────────────────────────────────
 test('conform path: stub validators all return [] + matching surface => ok:true, every check passes', () => {
   const fx = makeFixture(baseManifest(), SKILLS, COMMANDS);
+  // WR-03: inject bundleHooksDir + checkBundleFresh so this case is FULLY hermetic — without these
+  // seams the bundle-parity + runtime-live-resolution checks fell back to the REAL on-disk bundle
+  // (and the real checkBundleFresh), making the test fail when the bundle had not been regenerated.
+  // baseManifest() declares no hooks[], so a bundle shipping only the bundled resolver conforms.
+  const bundle = conformantBundle([]);
+  const live = makeLiveRoot();
   try {
     const r = runVerifyCapability({
-      liveRoot: '/fake/gsd-core',
+      liveRoot: live,
       requireLiveScript: () => stubValidators(),
       manifestPath: fx.manifestPath,
       skillsDir: fx.skillsDir,
       commandsDir: fx.commandsDir,
+      bundleHooksDir: bundle.bundleHooksDir,
+      checkBundleFresh: () => ({ fresh: true, staleFiles: [], checked: 0 }),
     });
     assert.equal(r.ok, true, JSON.stringify(r.results, null, 2));
     assert.equal(r.results.every((x) => x.verdict === 'pass'), true, 'every check passes');
   } finally {
     cleanup(fx);
+    fs.rmSync(bundle.dir, { recursive: true, force: true });
+    fs.rmSync(live, { recursive: true, force: true });
   }
 });
 
