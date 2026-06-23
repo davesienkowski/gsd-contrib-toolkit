@@ -115,7 +115,8 @@ const CAP_ID = 'contrib-gate';
 // requireLiveScript so a renamed module FAILS LOUD instead of falling back to a vendored copy.
 const LIVE_LIFECYCLE_REL = 'gsd-core/bin/lib/capability-lifecycle.cjs';
 const LIVE_CONSENT_REL = 'gsd-core/bin/lib/capability-consent.cjs';
-const LIVE_SOURCE_REL = 'gsd-core/bin/lib/capability-source.cjs';
+// NOTE (CR-02): no LIVE_SOURCE_REL — the driver applies shared edits directly from the in-repo bundle
+// dir and never calls resolveCapabilitySource, so capability-source.cjs is intentionally not loaded.
 const LIVE_LEDGER_REL = 'gsd-core/bin/lib/capability-ledger.cjs';
 const LIVE_TRUST_REL = 'gsd-core/bin/lib/capability-trust.cjs';
 const LIVE_CONFIG_REL = 'gsd-core/bin/lib/config.cjs';
@@ -193,7 +194,7 @@ class DriverError extends Error {
  * @param {object} [opts]
  * @param {string|null} [opts.liveRoot]          gsd-core root; default resolveGsdCoreCwd(); null => LOUD.
  * @param {Function}    [opts.requireLiveScript] (root, rel) => module; default the resolve.cjs one.
- * @returns {{ liveRoot:string, lifecycle:object, consent:object, source:object, ledger:object, trust:object, CAP_MARKER:string }}
+ * @returns {{ liveRoot:string, lifecycle:object, consent:object, ledger:object, trust:object, config:object, CAP_MARKER:string }}
  */
 function loadLiveEngine(opts = {}) {
   const liveRoot = Object.prototype.hasOwnProperty.call(opts, 'liveRoot')
@@ -229,7 +230,12 @@ function loadLiveEngine(opts = {}) {
 
   const lifecycle = load(LIVE_LIFECYCLE_REL, 'lifecycle');
   const consent = load(LIVE_CONSENT_REL, 'consent');
-  const source = load(LIVE_SOURCE_REL, 'source');
+  // CR-02: capability-source is NOT loaded — the driver composes the shared-edit/ledger/consent seams
+  // and applies the shared edits DIRECTLY from the in-repo bundle dir (see ENTRYPOINT SPIKE note,
+  // "apply directly from the in-repo bundle dir … both keep the engine LIVE"). It never calls
+  // resolveCapabilitySource, so loading + returning `source` only created a DECEPTIVE LOUD-on-miss
+  // guarantee (a renamed/absent capability-source.cjs would pass the shape-check with zero entries).
+  // Loading nothing it does not use keeps the required[] shape-check an honest map of the real surface.
   const ledger = load(LIVE_LEDGER_REL, 'ledger');
   const trust = load(LIVE_TRUST_REL, 'trust');
   const config = load(LIVE_CONFIG_REL, 'config');
@@ -263,7 +269,7 @@ function loadLiveEngine(opts = {}) {
   }
   const CAP_MARKER = typeof lifecycle.CAP_MARKER === 'string' ? lifecycle.CAP_MARKER : '_gsdCapability';
 
-  return { liveRoot, lifecycle, consent, source, ledger, trust, config, CAP_MARKER };
+  return { liveRoot, lifecycle, consent, ledger, trust, config, CAP_MARKER };
 }
 
 // ---------------------------------------------------------------------------
@@ -967,7 +973,6 @@ module.exports = {
   SHARED_SETTINGS_REL,
   LIVE_LIFECYCLE_REL,
   LIVE_CONSENT_REL,
-  LIVE_SOURCE_REL,
   LIVE_LEDGER_REL,
   LIVE_TRUST_REL,
   DriverError,
