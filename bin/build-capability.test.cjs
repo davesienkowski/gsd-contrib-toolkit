@@ -189,6 +189,11 @@ test('confinement: a target escaping the bundle root is rejected before any writ
   const fx = makeFixture();
   assert.throws(() => confineUnder(fx.bundleHooksDir, '../escape.cjs'), /outside the bundle root/);
   assert.throws(() => confineUnder(fx.bundleHooksDir, '/etc/passwd'), /outside the bundle root/);
+  // WR-01: the root itself is NOT a valid target — '', '.', and any rel resolving to the root are
+  // rejected (the contract is "strictly UNDER root", never the directory itself).
+  assert.throws(() => confineUnder(fx.bundleHooksDir, ''), /outside the bundle root/);
+  assert.throws(() => confineUnder(fx.bundleHooksDir, '.'), /outside the bundle root/);
+  assert.throws(() => confineUnder(fx.bundleHooksDir, 'lib/..'), /outside the bundle root/);
   // A normal relative path resolves under the root.
   const ok = confineUnder(fx.bundleHooksDir, 'lib/helper.cjs');
   assert.ok(ok.startsWith(path.resolve(fx.bundleHooksDir)));

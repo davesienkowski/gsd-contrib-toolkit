@@ -139,7 +139,10 @@ function plannedBundleFiles(deps = {}) {
 function confineUnder(rootDir, rel) {
   const resolvedRoot = path.resolve(rootDir);
   const target = path.resolve(resolvedRoot, rel);
-  if (target !== resolvedRoot && !target.startsWith(resolvedRoot + path.sep)) {
+  // The target must be STRICTLY under resolvedRoot — the root itself is NOT a valid file target.
+  // When rel is '', '.', or any value resolving to resolvedRoot, this rejects it (WR-01): the
+  // confinement contract is "guaranteed UNDER rootDir", and the directory itself is never a write target.
+  if (!target.startsWith(resolvedRoot + path.sep)) {
     throw new Error(`build-capability: refusing to write outside the bundle root: ${rel}`);
   }
   return target;
