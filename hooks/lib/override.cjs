@@ -76,7 +76,11 @@ function receiptPathFor(worktreeRoot) {
  * per-worktree, so even the file itself is not shared across worktrees.
  *
  * @param {string} worktreeRoot absolute gsd-core worktree root.
- * @param {{reason?: string, command?: string, action?: string}} record
+ * @param {{reason?: string, command?: string, action?: string, projectRoot?: string}} record
+ *   `projectRoot` (optional): the realpath project root the receipt is accountable to. The receipt
+ *   LOCATION is already per-worktree, but the capability off/remove receipt (Plan 12-02) also records
+ *   the realpath(gsd-core) project root IN the record so the audit line is self-describing even if the
+ *   log is copied out of the worktree. Omitted (override path) => the field is not added.
  */
 function writeReceipt(worktreeRoot, record = {}) {
   const file = receiptPathFor(worktreeRoot);
@@ -90,6 +94,11 @@ function writeReceipt(worktreeRoot, record = {}) {
     // Truncate the command so a giant body does not bloat the audit log.
     command: command.length > 500 ? command.slice(0, 500) + '…[truncated]' : command,
   };
+  // Minimal generalization (Plan 12-02): record the accountable project root IN the entry when the
+  // caller supplies it (off/remove). The override escape valve omits it, keeping its entry shape.
+  if (record.projectRoot != null && String(record.projectRoot).length > 0) {
+    entry.projectRoot = String(record.projectRoot);
+  }
   // Append-only, newline-delimited JSON (jsonl): O_APPEND, no read-modify-write.
   fs.appendFileSync(file, JSON.stringify(entry) + '\n', { encoding: 'utf8' });
   return file;

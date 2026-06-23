@@ -98,6 +98,10 @@ const {
   requireLiveScript: liveRequireLiveScript,
   ScriptResolveError,
 } = require('../hooks/lib/resolve.cjs');
+// REUSE the in-repo append-only receipt writer (HARD honesty / accountability) — the SAME pattern the
+// GSD_CONTRIB_OVERRIDE escape valve uses. off/remove leave a deliberate, recorded receipt; we do NOT
+// fork a parallel receipt mechanism (the override.cjs record already carries an `action` field).
+const { writeReceipt, receiptPathFor } = require('../hooks/lib/override.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const BUNDLE_CAP_DIR = path.join(REPO_ROOT, 'capabilities', 'contrib-gate');
@@ -111,6 +115,13 @@ const LIVE_CONSENT_REL = 'gsd-core/bin/lib/capability-consent.cjs';
 const LIVE_SOURCE_REL = 'gsd-core/bin/lib/capability-source.cjs';
 const LIVE_LEDGER_REL = 'gsd-core/bin/lib/capability-ledger.cjs';
 const LIVE_TRUST_REL = 'gsd-core/bin/lib/capability-trust.cjs';
+const LIVE_CONFIG_REL = 'gsd-core/bin/lib/config.cjs';
+
+// The advisory-surface config flag the on/off toggle flips (manifest config key). It lives in the
+// gsd-core checkout's `.planning/config.json`; we flip it via the LIVE config.setConfigValue (never a
+// hand-rolled JSON write) so the advisory contribution's `when: workflow.gsd_contrib_enforcement`
+// genuinely turns on/off. on => true, off => false (off GENUINELY removes the enforcement).
+const ENFORCEMENT_FLAG = 'workflow.gsd_contrib_enforcement';
 
 // The settings file the gates are written into, relative to the gsd-core runtimeDir. The LIVE
 // confinedSharedFile() resolves this against runtimeDir and rejects any escape (T-12-01-PATH).
@@ -218,20 +229,24 @@ function loadLiveEngine(opts = {}) {
   const source = load(LIVE_SOURCE_REL, 'source');
   const ledger = load(LIVE_LEDGER_REL, 'ledger');
   const trust = load(LIVE_TRUST_REL, 'trust');
+  const config = load(LIVE_CONFIG_REL, 'config');
 
   // Shape check: every LIVE function the driver composes must be present (a gsd-core rename surfaces
-  // here as a LOUD fail, never a silent false-success — T-12-01-REIMPL).
+  // here as a LOUD fail, never a silent false-success — T-12-01-REIMPL / T-12-02-REIMPL).
   const required = [
     [lifecycle, 'applyCapabilitySharedEdits'],
     [lifecycle, 'stripCapabilitySharedEdits'],
+    [lifecycle, 'removeCapability'],
     [lifecycle, 'confinedSharedFile'],
     [consent, 'bundleContentHash'],
     [consent, 'recordProjectConsent'],
+    [consent, 'revokeProjectConsent'],
     [consent, 'readConsentStore'],
     [consent, 'consentStorePath'],
     [ledger, 'recordInstall'],
     [ledger, 'readLedger'],
     [trust, 'signatureForManifest'],
+    [config, 'setConfigValue'],
   ];
   const missing = required
     .filter(([m, fn]) => typeof (m && m[fn]) !== 'function')
@@ -245,7 +260,7 @@ function loadLiveEngine(opts = {}) {
   }
   const CAP_MARKER = typeof lifecycle.CAP_MARKER === 'string' ? lifecycle.CAP_MARKER : '_gsdCapability';
 
-  return { liveRoot, lifecycle, consent, source, ledger, trust, CAP_MARKER };
+  return { liveRoot, lifecycle, consent, source, ledger, trust, config, CAP_MARKER };
 }
 
 // ---------------------------------------------------------------------------
@@ -440,6 +455,204 @@ function runInstall(opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// off/remove accountability receipt (REUSE hooks/lib/override.cjs — EP-5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Require a non-empty accountability reason for off/remove. A disable MUST carry a real reason
+ * (mirrors override.cjs empty-reason rejection) — a missing/whitespace reason throws a DriverError so
+ * the operation FAILS LOUD before any state mutation, never proceeding un-accountable.
+ *
+ * @param {object} opts the run opts (reads opts.reason).
+ * @param {string} action 'off' | 'remove' (named in the error).
+ * @returns {string} the trimmed, non-empty reason.
+ */
+function requireReason(opts, action) {
+  const raw = opts && opts.reason;
+  const reason = typeof raw === 'string' ? raw.trim() : '';
+  if (reason.length === 0) {
+    throw new DriverError(
+      action + ' requires a non-empty --reason "<why>": disabling the contrib guard is a deliberate, ' +
+        'accountable act and is RECORDED in an append-only receipt — a disable without a real reason is ' +
+        'rejected (mirrors the GSD_CONTRIB_OVERRIDE empty-reason rejection; no silent un-logged disable)'
+    );
+  }
+  return reason;
+}
+
+/**
+ * Append a per-project-root, append-only accountability receipt for an off/remove, REUSING the
+ * hooks/lib/override.cjs writeReceipt pattern (fs.appendFileSync O_APPEND — never read-modify-write,
+ * never a shared global receipt; T-12-02-RACE). The receipt is keyed to realpath(gsd-core) so two
+ * sessions sharing one checkout each append without clobbering. An un-writable receipt FAILS the
+ * operation (DriverError) rather than letting the disable proceed un-logged (T-12-02-SKIPRECEIPT/EP-5).
+ *
+ * Record: { ts (ISO), action ('off'|'remove'), projectRoot (realpath gsd-core), reason }.
+ *
+ * @param {object} args
+ * @param {string} args.liveRoot resolved gsd-core root.
+ * @param {string} args.action   'off' | 'remove'.
+ * @param {string} args.reason   non-empty accountability reason (already validated).
+ * @returns {string} the receipt file path written.
+ */
+function writeAccountabilityReceipt(args) {
+  const { liveRoot, action, reason } = args;
+  // realpath the project root so the per-project-root key is canonical (a symlinked checkout keys to
+  // the same receipt as its real path — never two divergent receipts for one tree).
+  let projectRoot;
+  try {
+    projectRoot = fs.realpathSync(liveRoot);
+  } catch (_) {
+    projectRoot = liveRoot;
+  }
+  try {
+    return writeReceipt(projectRoot, { action, reason, projectRoot });
+  } catch (err) {
+    throw new DriverError(
+      'could not write the ' + action + ' accountability receipt at ' + receiptPathFor(projectRoot) +
+        ' (' + (err && err.message) + ') — a disable that cannot be LOGGED must FAIL rather than ' +
+        'proceed un-recorded (T-12-02-SKIPRECEIPT / override.cjs EP-5)'
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// on / off — toggle the marker-tagged gates + the advisory enforcement flag
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the strip-target sharedEdits the LIVE ledger recorded for contrib-gate at install. `off` strips
+ * exactly what install recorded (never a hand-built list), so the LIVE stripCapabilitySharedEdits
+ * filters on CAP_MARKER===capId against the install-recorded targets. Falls back to the one known
+ * settings target when the ledger entry omits sharedEdits (older install), so off still works.
+ *
+ * @param {object} ledger LIVE ledger module
+ * @param {string} liveRoot resolved gsd-core root
+ * @returns {Array<{file:string, marker?:string}>}
+ */
+function ledgerSharedEdits(ledger, liveRoot) {
+  let entry = null;
+  try {
+    const led = ledger.readLedger(liveRoot);
+    entry = led && led.entries && Object.prototype.hasOwnProperty.call(led.entries, CAP_ID)
+      ? led.entries[CAP_ID]
+      : null;
+  } catch (_) {
+    entry = null;
+  }
+  const recorded = entry && Array.isArray(entry.sharedEdits) ? entry.sharedEdits : null;
+  if (recorded && recorded.length > 0) return recorded;
+  // Fallback: the one settings file install always tags (keeps off working on a thin ledger entry).
+  return [{ file: SHARED_SETTINGS_REL, marker: CAP_ID }];
+}
+
+/**
+ * `on` — (re)apply EXACTLY the CAP_MARKER-tagged contrib gates via the LIVE apply engine, and flip the
+ * advisory `workflow.gsd_contrib_enforcement` flag to true via the LIVE config setter. Mirrors the
+ * install strip→apply idempotency pair (both halves LIVE) so a re-`on` is byte-stable.
+ *
+ * Honesty (HARD): on enables the gates; this driver NEVER labels the capability itself "unbypassable".
+ *
+ * @param {object} [opts] injectable seams (liveRoot/requireLiveScript/bundleDir/manifestPath).
+ * @returns {{lines:string[], applied:number, enforcement:boolean}}
+ */
+function runOn(opts = {}) {
+  const engine = loadLiveEngine(opts);
+  const { liveRoot, lifecycle, config, CAP_MARKER } = engine;
+  const bundleDir = opts.bundleDir || BUNDLE_CAP_DIR;
+  const manifestPath = opts.manifestPath || path.join(bundleDir, 'capability.json');
+  const manifest = readManifest(manifestPath);
+
+  const lines = [];
+  lines.push('[on] gsd-core checkout: ' + liveRoot);
+
+  // Strip→apply (the LIVE engine's own reapply discipline) so on re-applies EXACTLY one marker-tagged
+  // set — no growth on a re-run, and untagged/other-capability hooks are never touched (CAP_MARKER scope).
+  lifecycle.stripCapabilitySharedEdits({
+    runtimeDir: liveRoot,
+    capId: CAP_ID,
+    sharedEdits: ledgerSharedEdits(engine.ledger, liveRoot),
+  });
+  const sharedEdits = lifecycle.applyCapabilitySharedEdits({
+    runtimeDir: liveRoot,
+    capId: CAP_ID,
+    manifest,
+    sharedFiles: [SHARED_SETTINGS_REL],
+  });
+  const applied = Array.isArray(sharedEdits) ? sharedEdits.length : 0;
+  lines.push('[on] applied the CAP_MARKER (' + CAP_MARKER + ')-tagged contrib gates across ' + applied + ' file(s)');
+
+  // Flip the advisory surface ON via the LIVE config setter (writes <liveRoot>/.planning/config.json).
+  config.setConfigValue(liveRoot, ENFORCEMENT_FLAG, true);
+  lines.push('[on] set ' + ENFORCEMENT_FLAG + '=true (advisory contribution enabled)');
+  lines.push('[on] done — the installed PreToolUse gates are now live; the loop advisory is enabled');
+  return { lines, applied, enforcement: true };
+}
+
+/**
+ * `off` — strip EXACTLY the CAP_MARKER-tagged contrib gates via the LIVE strip engine (untagged
+ * pre-existing hooks and other capabilities' gates survive — it filters on CAP_MARKER===capId), flip
+ * `workflow.gsd_contrib_enforcement` to false, AND append a logged accountability receipt (Task 2):
+ * a disable is a deliberate, recorded act — never silent. An empty reason or an un-writable receipt
+ * FAILS the operation rather than proceeding un-logged (mirrors override.cjs EP-5).
+ *
+ * Honesty (HARD): off GENUINELY removes the gates from settings.json — toggle-off removes the
+ * enforcement; this driver NEVER labels the capability itself "unbypassable".
+ *
+ * @param {object} [opts] injectable seams + `reason` (required non-empty accountability reason).
+ * @returns {{lines:string[], stripped:number, enforcement:boolean, receiptPath:string}}
+ */
+function runOff(opts = {}) {
+  const engine = loadLiveEngine(opts);
+  const { liveRoot, lifecycle, config, CAP_MARKER } = engine;
+
+  // Accountability gate FIRST: reject an empty/whitespace reason BEFORE mutating anything, so a
+  // disable that cannot be logged never half-removes the enforcement (T-12-02-SKIPRECEIPT).
+  const reason = requireReason(opts, 'off');
+
+  const lines = [];
+  lines.push('[off] gsd-core checkout: ' + liveRoot);
+
+  const result = lifecycle.stripCapabilitySharedEdits({
+    runtimeDir: liveRoot,
+    capId: CAP_ID,
+    sharedEdits: ledgerSharedEdits(engine.ledger, liveRoot),
+  });
+  const stripped = countStripped(result);
+  lines.push('[off] stripped the CAP_MARKER (' + CAP_MARKER + ')-tagged contrib gates: ' + stripped +
+    ' entr' + (stripped === 1 ? 'y' : 'ies') + ' (untagged hooks survive)');
+
+  // Flip the advisory surface OFF via the LIVE config setter — off genuinely removes the enforcement.
+  config.setConfigValue(liveRoot, ENFORCEMENT_FLAG, false);
+  lines.push('[off] set ' + ENFORCEMENT_FLAG + '=false (advisory contribution disabled)');
+
+  // Accountability receipt (append-only, per-project-root) — an un-writable receipt FAILS off.
+  const receiptPath = writeAccountabilityReceipt({ liveRoot, action: 'off', reason });
+  lines.push('[off] logged accountability receipt: ' + receiptPath);
+  lines.push('[off] done — toggle-off removed the contrib gates from settings.json');
+  return { lines, stripped, enforcement: false, receiptPath };
+}
+
+/**
+ * Count entries stripped by LIVE stripCapabilitySharedEdits across its result shape (it returns a
+ * per-file record array; sum each record's stripped count, tolerating either a number or an array).
+ * @param {*} result
+ * @returns {number}
+ */
+function countStripped(result) {
+  if (typeof result === 'number') return result;
+  if (!Array.isArray(result)) return 0;
+  let total = 0;
+  for (const r of result) {
+    if (typeof r === 'number') { total += r; continue; }
+    if (r && typeof r.stripped === 'number') { total += r.stripped; continue; }
+    if (r && Array.isArray(r.removed)) { total += r.removed.length; continue; }
+    if (r && typeof r === 'object') total += 1;
+  }
+  return total;
+}
+
+// ---------------------------------------------------------------------------
 // status
 // ---------------------------------------------------------------------------
 
@@ -534,13 +747,35 @@ function usage() {
   return [
     'contrib-capability — thin driver for the contrib-gate capability (drives the LIVE gsd-core engine)',
     '',
-    '  node bin/contrib-capability.cjs install   stage + consent + ledger + marker-tag the 13 hooks',
-    '  node bin/contrib-capability.cjs status     report ledger + consent + live gate set',
+    '  node bin/contrib-capability.cjs install            stage + consent + ledger + marker-tag the 13 hooks',
+    '  node bin/contrib-capability.cjs on                 (re)apply the tagged gates + enforcement flag on',
+    '  node bin/contrib-capability.cjs off  --reason <w>  strip the tagged gates + flag off (+ logged receipt)',
+    '  node bin/contrib-capability.cjs status             report ledger + consent + live gate set',
+    '  node bin/contrib-capability.cjs remove --reason <w> remove from ledger + consent (+ logged receipt)',
     '',
-    '  (on | off | remove are added by Plan 12-02)',
+    'off/remove require --reason "<why>": disabling the contrib guard is a deliberate, accountable act',
+    'recorded in an append-only per-project-root receipt (.gsd-contrib/override-receipts.log).',
+    'toggle-off GENUINELY removes the gates from settings.json — the gates are the enforcement.',
     '',
     'Exit codes: 0 ok, 1 LOUD-on-miss (unresolved checkout / missing LIVE export / op failed), 2 usage.',
   ].join('\n');
+}
+
+/**
+ * Parse a non-option `--reason <value>` / `--reason=<value>` from the driver argv. Returns the raw
+ * string (empty when absent); requireReason() enforces non-emptiness with the accountable message.
+ * Plain process.argv parsing (the hooks/lib argv/flags helpers are command-string parsers, not
+ * subcommand-flag parsers — consistent with the 12-01 driver decision).
+ * @param {string[]} args argv after the subcommand.
+ * @returns {string}
+ */
+function parseReason(args) {
+  for (let i = 0; i < args.length; i += 1) {
+    const a = args[i];
+    if (a === '--reason') return args[i + 1] == null ? '' : String(args[i + 1]);
+    if (typeof a === 'string' && a.startsWith('--reason=')) return a.slice('--reason='.length);
+  }
+  return '';
 }
 
 /**
@@ -558,13 +793,19 @@ function runCli(argv) {
     return sub ? 0 : 2;
   }
 
-  if (sub !== 'install' && sub !== 'status') {
+  const KNOWN = new Set(['install', 'on', 'off', 'status', 'remove']);
+  if (!KNOWN.has(sub)) {
     process.stderr.write('contrib-capability: unknown subcommand "' + sub + '"\n\n' + usage() + '\n');
     return 2;
   }
 
   try {
-    const out = sub === 'install' ? runInstall() : runStatus();
+    let out;
+    if (sub === 'install') out = runInstall();
+    else if (sub === 'on') out = runOn();
+    else if (sub === 'off') out = runOff({ reason: parseReason(args.slice(1)) });
+    else if (sub === 'remove') out = runRemove({ reason: parseReason(args.slice(1)) });
+    else out = runStatus();
     for (const line of out.lines) process.stdout.write(line + '\n');
     return 0;
   } catch (err) {
@@ -601,7 +842,15 @@ module.exports = {
   readManifest,
   manifestHookBasenames,
   reconcileLegacyEntries,
+  ledgerSharedEdits,
+  countStripped,
+  requireReason,
+  writeAccountabilityReceipt,
+  parseReason,
+  ENFORCEMENT_FLAG,
   runInstall,
+  runOn,
+  runOff,
   runStatus,
   runCli,
   liveRequireLiveScript,
