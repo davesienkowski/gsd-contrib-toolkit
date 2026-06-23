@@ -172,6 +172,9 @@ function resolveGsdCoreCwd() {
  * invariant. So a readdir error returns {ok:false} and the caller turns it into a [FAIL], mirroring
  * the doctor / unresolved-liveRoot LOUD discipline already used in this file.
  *
+ * @deprecated As of 18-01 (CAP-11). Back-compat export only. The canonical declared==shipped
+ * check is BUNDLE-sourced via readBundleSkills(). This function still works but is no longer
+ * called by runVerifyCapability().
  * @param {string} skillsDir
  * @returns {{ok:boolean, skills:string[], error?:string}} ok:false => the dir was unreadable/missing.
  */
@@ -199,6 +202,9 @@ function readShippedSkills(skillsDir) {
  * {ok:false} so the caller emits a [FAIL]. (Previously this returned [] on error, surviving only
  * because an empty command set unconditionally FAILs downstream; the intent is now explicit and robust.)
  *
+ * @deprecated As of 18-01 (CAP-11). Back-compat export only. The canonical declared==shipped
+ * check is BUNDLE-sourced via readBundleCommands(). This function still works but is no longer
+ * called by runVerifyCapability().
  * @param {string} commandsDir
  * @returns {{ok:boolean, commands:string[], error?:string}} ok:false => the dir was unreadable/missing.
  */
