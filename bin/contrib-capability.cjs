@@ -484,6 +484,47 @@ function requireReason(opts, action) {
 }
 
 /**
+ * Probe that the per-project-root accountability receipt is APPEND-WRITABLE before any state mutation
+ * (CR-01 / T-12-02-SKIPRECEIPT). The accountability honesty ethos requires that a disable which cannot
+ * be LOGGED must FAIL before — not after — the gates are stripped or the enforcement flag is flipped.
+ * The check is a real append-mode open (O_CREAT|O_APPEND) of the receipt file (mkdir the dir first):
+ * this exercises the SAME write path writeReceipt uses (fs.appendFileSync O_APPEND), so an ENOSPC /
+ * EACCES / EROFS that would later sink writeReceipt is caught HERE, with zero state mutated. Opening
+ * for append (then immediately closing) writes no bytes — the real record is appended later by
+ * writeAccountabilityReceipt. On any failure, throws a DriverError and the caller aborts before
+ * touching settings.json / config.json / the ledger.
+ *
+ * @param {object} args
+ * @param {string} args.liveRoot resolved gsd-core root.
+ * @param {string} args.action   'off' | 'remove' (named in the error).
+ * @returns {string} the canonical projectRoot the receipt is keyed to (reused by the later write).
+ */
+function probeReceiptWritable(args) {
+  const { liveRoot, action } = args;
+  let projectRoot;
+  try {
+    projectRoot = fs.realpathSync(liveRoot);
+  } catch (_) {
+    projectRoot = liveRoot;
+  }
+  const receiptFile = receiptPathFor(projectRoot);
+  try {
+    fs.mkdirSync(path.dirname(receiptFile), { recursive: true });
+    // Append-mode open (O_CREAT|O_APPEND), write nothing, close — proves writeReceipt can append.
+    const fd = fs.openSync(receiptFile, 'a');
+    fs.closeSync(fd);
+  } catch (probeErr) {
+    throw new DriverError(
+      'cannot write the ' + action + ' accountability receipt at ' + receiptFile + ' (' +
+        (probeErr && probeErr.message) + ') — operation ABORTED before any state mutation: a disable ' +
+        'that cannot be LOGGED must FAIL rather than strip the gates un-recorded ' +
+        '(CR-01 / T-12-02-SKIPRECEIPT / override.cjs EP-5)'
+    );
+  }
+  return projectRoot;
+}
+
+/**
  * Append a per-project-root, append-only accountability receipt for an off/remove, REUSING the
  * hooks/lib/override.cjs writeReceipt pattern (fs.appendFileSync O_APPEND — never read-modify-write,
  * never a shared global receipt; T-12-02-RACE). The receipt is keyed to realpath(gsd-core) so two
@@ -612,6 +653,9 @@ function runOff(opts = {}) {
   // Accountability gate FIRST: reject an empty/whitespace reason BEFORE mutating anything, so a
   // disable that cannot be logged never half-removes the enforcement (T-12-02-SKIPRECEIPT).
   const reason = requireReason(opts, 'off');
+  // CR-01: PROVE the receipt is append-writable BEFORE stripping the gates / flipping the flag — a
+  // disable that cannot be LOGGED must FAIL with zero state mutated, not strip-then-fail-to-record.
+  probeReceiptWritable({ liveRoot, action: 'off' });
 
   const lines = [];
   lines.push('[off] gsd-core checkout: ' + liveRoot);
@@ -683,6 +727,9 @@ function runRemove(opts = {}) {
 
   // Accountability gate FIRST — reject an empty reason before any LIVE mutation.
   const reason = requireReason(opts, 'remove');
+  // CR-01: PROVE the receipt is append-writable BEFORE removeCapability strips edits / drops the
+  // ledger entry — a remove that cannot be LOGGED must FAIL with zero state mutated.
+  probeReceiptWritable({ liveRoot, action: 'remove' });
   // removeData defaults FALSE (preserve any CAPABILITY_DATA) unless explicitly requested.
   const removeData = opts.removeData === true;
 
