@@ -32,6 +32,7 @@ const {
   checkBundleFresh,
   confineUnder,
   readDeclaredSkillSet,
+  plannedSkillFiles,
   SEMVER_RE,
 } = require('./build-capability.cjs');
 
@@ -207,8 +208,10 @@ test('missing-source: a canonical source file absent at build is a LOUD throw (n
   // Remove one wired canonical source AFTER the snippet still references it.
   fs.rmSync(path.join(fx.sourceHooksDir, 'gate-a.cjs'));
   assert.throws(() => buildCapability(seams(fx)), /missing canonical source/);
-  // No partial bundle was written (the build threw before any copy).
+  // No partial bundle was written (the build threw before any copy of EITHER tree).
   assert.equal(fs.existsSync(fx.bundleHooksDir), false);
+  assert.equal(fs.existsSync(fx.bundleSkillsDir), false,
+    'skills bundle dir must also be absent — the throw must precede ALL mkdirSync calls');
 });
 
 test('confinement: a target escaping the bundle root is rejected before any write', () => {
@@ -323,4 +326,29 @@ test('skills confinement: a skill file resolving outside the bundle skills root 
   // A normal nested skill path resolves under the skills root.
   const ok = confineUnder(fx.bundleSkillsDir, 'skill-one/SKILL.md');
   assert.ok(ok.startsWith(path.resolve(fx.bundleSkillsDir)));
+});
+
+test('WR-01 traversal-stem: a stem with path separators or absolute path in manifest.skills[] throws before any read', () => {
+  const fx = makeFixture();
+  const traversalStems = ['../../etc', '../other', '/etc/passwd', 'a/b', 'a\\b'];
+  for (const badStem of traversalStems) {
+    // plannedSkillFiles must throw LOUD before touching the filesystem for any traversal stem.
+    assert.throws(
+      () => plannedSkillFiles({ sourceSkillsDir: fx.sourceSkillsDir, skillSet: [badStem] }),
+      /refusing to read skill source for unsafe stem name/,
+      `expected throw for traversal stem ${JSON.stringify(badStem)}`
+    );
+    // buildCapability must also throw (it calls plannedSkillFiles internally).
+    const m = JSON.parse(fs.readFileSync(fx.manifestPath, 'utf8'));
+    m.skills = [badStem];
+    fs.writeFileSync(fx.manifestPath, JSON.stringify(m, null, 2));
+    assert.throws(
+      () => buildCapability(seams(fx)),
+      /refusing to read skill source for unsafe stem name/,
+      `buildCapability must throw for traversal stem ${JSON.stringify(badStem)}`
+    );
+  }
+  // A plain single-segment stem (no traversal) must still work.
+  const { files } = plannedSkillFiles({ sourceSkillsDir: fx.sourceSkillsDir, skillSet: ['skill-one'] });
+  assert.ok(files.length > 0, 'a safe stem enumerates its skill files normally');
 });

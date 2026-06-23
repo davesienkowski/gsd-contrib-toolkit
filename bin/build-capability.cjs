@@ -178,6 +178,16 @@ function plannedSkillFiles(deps = {}) {
   const files = [];
   const missingSources = [];
   for (const stem of skillSet) {
+    // WR-01: Reject any stem that is not a plain single-segment directory name — a traversal stem
+    // (containing '/', '\', or '..') would cause listFilesRel to walk an arbitrary filesystem path
+    // and readFileSync to read arbitrary file contents. The write side is blocked by confineUnder,
+    // but the read side needs its own guard. Throw LOUD so a compromised manifest is noticed
+    // immediately rather than silently reading unexpected files from disk.
+    if (stem.includes('/') || stem.includes('\\') || path.isAbsolute(stem)) {
+      throw new Error(
+        `build-capability: refusing to read skill source for unsafe stem name: ${JSON.stringify(stem)}`
+      );
+    }
     const stemDir = path.join(sourceSkillsDir, stem);
     if (!fs.existsSync(stemDir) || !fs.statSync(stemDir).isDirectory()) {
       missingSources.push(stem);
