@@ -959,6 +959,9 @@ function runInstall(opts = {}) {
 
   lines.push('[install] done — fully ON + full surface delivered (hooks + commands + skills); ' +
     're-run is idempotent (LIVE apply strips its own marker first)');
+  lines.push('[install] note — the PreToolUse enforcement (the fail-closed gates) applies on the ' +
+    'Claude Code runtime only; on non-Claude runtimes the skills are delivered via the native ' +
+    'copy-convert and run advisory-only');
   return { lines, applied, reconciled, delivered, deliveredSkills };
 }
 
@@ -1148,6 +1151,9 @@ function runOn(opts = {}) {
   lines.push('[on] set ' + ENFORCEMENT_FLAG + '=true (advisory contribution enabled)');
   lines.push('[on] done — the installed PreToolUse gates are now live; commands + skills delivered; ' +
     'the loop advisory is enabled');
+  lines.push('[on] note — the PreToolUse enforcement (the fail-closed gates) applies on the ' +
+    'Claude Code runtime only; on non-Claude runtimes the skills are delivered via the native ' +
+    'copy-convert and run advisory-only');
   return { lines, applied, delivered, deliveredSkills, enforcement: true };
 }
 
@@ -1436,6 +1442,9 @@ function runStatus(opts = {}) {
   if (liveGateNames.length > 0) {
     lines.push('[status]   ' + liveGateNames.join(', '));
   }
+  lines.push('[status] note — the PreToolUse enforcement (the fail-closed gates) applies on the ' +
+    'Claude Code runtime only; on non-Claude runtimes the skills are delivered via the native ' +
+    'copy-convert and run advisory-only');
 
   return { lines, installed, consented, liveGateCount };
 }
