@@ -457,7 +457,7 @@ test('a pre-seeded REAL command file is NEVER clobbered by install and NEVER rec
     // install must FAIL LOUD (never clobber the real file) — the fail-safe mirrors install.sh L73.
     assert.throws(
       () => drv.runInstall(opts),
-      /refusing to overwrite real file/i,
+      /refusing to overwrite existing entry/i,
       'install must refuse to clobber a real non-symlink file at a command target (T-17-02-CLOBBER)'
     );
     assert.strictEqual(fs.readFileSync(realTarget, 'utf8'), REAL_BODY, 'the real file must be byte-identical after the refused install');
@@ -471,6 +471,46 @@ test('a pre-seeded REAL command file is NEVER clobbered by install and NEVER rec
     sb.dispose();
   }
   assertRealStateUnchanged(before);
+});
+
+test('partial delivery: a conflict at the last command leaves earlier symlinks reclaimed by remove', { skip: SKIP }, () => {
+  // WR-02: plant a real file at the LAST bundled command name so names[0..N-2] are linked as symlinks
+  // before the throw, then prove removeBundledCommands reclaims exactly those N-1 orphaned symlinks
+  // and leaves the planted real file intact (T-17-02-OVERREMOVE + partial-delivery path coverage).
+  const sb = makeCapSandbox(SOURCE_ROOT);
+  try {
+    const opts = sandboxOpts(sb);
+    const names = bundledCommandNames();
+    const last = names[names.length - 1];
+    const realTarget = path.join(sb.commandsDir, last);
+    fs.mkdirSync(sb.commandsDir, { recursive: true });
+    fs.writeFileSync(realTarget, '# real file — planted at the last command position\n', 'utf8');
+
+    // install throws at the last name (N-1 symlinks were already created before the throw).
+    assert.throws(
+      () => drv.runInstall(opts),
+      /refusing to overwrite existing entry/i,
+      'install must fail loud on the last-command conflict (T-17-02-CLOBBER)'
+    );
+
+    // N-1 symlinks are present as partial delivery.
+    const partialCount = names.slice(0, names.length - 1).filter(
+      (n) => fs.existsSync(path.join(sb.commandsDir, n))
+    ).length;
+    assert.strictEqual(partialCount, names.length - 1, 'N-1 commands must be partially delivered before the throw');
+
+    // remove reclaims the N-1 partial symlinks; the planted real file must survive untouched.
+    drv.runRemove(Object.assign({}, opts, { reason: 'WR-02 partial-delivery reclaim proof' }));
+    for (const n of names.slice(0, names.length - 1)) {
+      assert.ok(
+        !fs.existsSync(path.join(sb.commandsDir, n)),
+        n + ': partial symlink must be reclaimed by remove'
+      );
+    }
+    assert.ok(fs.existsSync(realTarget), 'the planted real file must survive remove (T-17-02-OVERREMOVE)');
+  } finally {
+    sb.dispose();
+  }
 });
 
 test('remove leaves a FOREIGN symlink (not into our bundle) at a command target untouched', { skip: SKIP }, () => {
