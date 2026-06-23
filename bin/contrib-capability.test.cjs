@@ -83,26 +83,63 @@ function realConsentPath() {
   return path.join(process.env.GSD_HOME || os.homedir(), '.gsd', 'consent.json');
 }
 
+/** The real Claude runtime command/skill dirs the driver would touch if a sandbox seam leaked. */
+function realClaudeDir() {
+  return process.env.CLAUDE_DIR || path.join(os.homedir(), '.claude');
+}
+function realClaudeCommandsDir() {
+  return path.join(realClaudeDir(), 'commands');
+}
+function realClaudeSkillsDir() {
+  return path.join(realClaudeDir(), 'skills');
+}
+
+/** Sorted listing of a dir's entries, or null if absent — a stray real-link delivery flips this. */
+function listDirOrNull(p) {
+  try {
+    return fs.readdirSync(p).slice().sort().join('\n');
+  } catch (_) {
+    return null;
+  }
+}
+
 /**
- * Snapshot the REAL gsd-core state (settings + ledger) and the real consent store as a
- * { path -> sha|null } map, so a mutation of ANY of them (write where there was none, or a byte
- * change) is caught by the after-comparison.
+ * Snapshot the REAL gsd-core state (settings + ledger), the real consent store (sha256), AND the real
+ * ~/.claude commands + skills dir LISTINGS as a { path -> snapshot|null } map, so a mutation of ANY of
+ * them (write where there was none, a byte change, or a stray delivered/reclaimed link in the real
+ * ~/.claude/skills | ~/.claude/commands) is caught by the after-comparison. The dir LISTINGS guard the
+ * 21-02 full-surface delivery/reclaim: a leaked skillsDir/commandsDir seam would surface as a new entry
+ * in the real ~/.claude listing here (T-21-08 hermeticity).
  */
 function snapshotRealState(sourceRoot) {
   const snap = {};
   snap[path.join(sourceRoot, SETTINGS_REL)] = sha(path.join(sourceRoot, SETTINGS_REL));
   snap[path.join(sourceRoot, LEDGER_REL)] = sha(path.join(sourceRoot, LEDGER_REL));
   snap[realConsentPath()] = sha(realConsentPath());
+  // 21-03: also snapshot the real ~/.claude command + skill dir LISTINGS (existence + entries) so a
+  // stray real-link delivery/reclaim (a leaked commandsDir/skillsDir seam) is CAUGHT, not silent.
+  snap['LISTING:' + realClaudeCommandsDir()] = listDirOrNull(realClaudeCommandsDir());
+  snap['LISTING:' + realClaudeSkillsDir()] = listDirOrNull(realClaudeSkillsDir());
   return snap;
 }
 
-/** Assert a real-state snapshot is byte/existence-identical to `before`. */
+/** Assert a real-state snapshot is byte/existence/listing-identical to `before`. */
 function assertRealStateUnchanged(before) {
-  for (const p of Object.keys(before)) {
+  for (const key of Object.keys(before)) {
+    if (key.startsWith('LISTING:')) {
+      const p = key.slice('LISTING:'.length);
+      assert.strictEqual(
+        listDirOrNull(p),
+        before[key],
+        'REAL ~/.claude dir mutated! ' + p + ' listing changed (existence/entries) — the full-surface ' +
+          'command/skill delivery MUST target the sandbox commandsDir/skillsDir, never the real ~/.claude'
+      );
+      continue;
+    }
     assert.strictEqual(
-      sha(p),
-      before[p],
-      'REAL state mutated! ' + p + ' changed (existence/bytes) — every lifecycle write MUST target ' +
+      sha(key),
+      before[key],
+      'REAL state mutated! ' + key + ' changed (existence/bytes) — every lifecycle write MUST target ' +
         'the mkdtemp sandbox + sandboxed GSD_HOME, never the real gsd-core settings/consent/ledger'
     );
   }
@@ -486,6 +523,46 @@ test('off without a reason FAILS before mutation; the sandbox settings are untou
   } finally {
     sb.dispose();
   }
+});
+
+test('off whose receipt cannot be written FAILS probe-first; gates/commands/skills/flag are ALL untouched', { skip: SKIP }, () => {
+  // CR-01 / T-21-05: probeReceiptWritable runs FIRST — a disable that cannot be LOGGED must FAIL with
+  // ZERO state mutated (never strip-then-fail-to-record). Make the receipt UN-writable by planting a
+  // regular FILE where the receipt's parent dir (<liveRoot>/.gsd-contrib) must be — mkdir(recursive)
+  // over an existing file throws, so the probe throws BEFORE any strip/reclaim/flag-flip.
+  const before = snapshotRealState(SOURCE_ROOT);
+  const sb = makeCapSandbox(SOURCE_ROOT);
+  try {
+    const opts = sandboxOpts(sb);
+    drv.runInstall(opts);
+
+    // Pre-condition: fully ON (13 gates + 5 commands + 2 skills + flag true).
+    assert.strictEqual(countTagged(sb.settingsPath).total, 13, 'pre: 13 tagged gates');
+    assert.strictEqual(countDeliveredCommands(sb).delivered, 5, 'pre: 5 command links');
+    assert.strictEqual(countDeliveredSkills(sb).delivered, 2, 'pre: 2 skill links');
+    assert.strictEqual(readEnforcementFlag(sb), true, 'pre: enforcement flag true');
+
+    // Plant a regular file at <liveRoot>/.gsd-contrib so the receipt-dir mkdir (probe) fails.
+    const receiptDir = path.join(sb.root, '.gsd-contrib');
+    fs.writeFileSync(receiptDir, 'not a directory — forces the receipt probe to fail\n', 'utf8');
+    const settingsBefore = sha(sb.settingsPath);
+
+    assert.throws(
+      () => drv.runOff(Object.assign({}, opts, { reason: 'CR-01 probe-first proof: receipt unwritable' })),
+      (err) => err instanceof drv.DriverError && /accountability receipt/i.test(err.message),
+      'off must FAIL when the receipt cannot be written (probe-first), not strip-then-fail-to-record'
+    );
+
+    // ZERO mutation: gates, commands, skills, flag, and the settings bytes are ALL unchanged.
+    assert.strictEqual(sha(sb.settingsPath), settingsBefore, 'a probe-failed off must NOT mutate settings.json');
+    assert.strictEqual(countTagged(sb.settingsPath).total, 13, 'the 13 tagged gates remain after the probe-failed off');
+    assert.strictEqual(countDeliveredCommands(sb).delivered, 5, 'the 5 command links remain after the probe-failed off (no reclaim)');
+    assert.strictEqual(countDeliveredSkills(sb).delivered, 2, 'the 2 skill links remain after the probe-failed off (no reclaim)');
+    assert.strictEqual(readEnforcementFlag(sb), true, 'the enforcement flag stays true after the probe-failed off (no flip)');
+  } finally {
+    sb.dispose();
+  }
+  assertRealStateUnchanged(before);
 });
 
 test('the sandbox temp root is removed by dispose() (no temp consent/ledger residue leaks)', { skip: SKIP }, () => {
