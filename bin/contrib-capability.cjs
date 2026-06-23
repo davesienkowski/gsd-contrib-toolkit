@@ -251,6 +251,71 @@ function bundledCommandNames(bundleDir) {
     .sort();
 }
 
+// ---------------------------------------------------------------------------
+// skill delivery (deliver-on-install / reclaim-on-remove) — DIRECTORY-symlink
+// mirror of the command helpers; skills are <stem>/SKILL.md trees, not flat .md
+// files, so they are delivered as DIRECTORY symlinks (fs.symlinkSync(..., 'dir'))
+// and reclaimed by lstat+unlink of the LINK (never a recursive removal of the
+// followed target). The two fail-safes are identical: never clobber a real
+// file/dir at a skill target (T-17-02-CLOBBER), and reclaim ONLY symlinks
+// pointing into our bundle (T-17-02-OVERREMOVE). NOTE (21-01): these are the
+// PRIMITIVES only — they are not yet wired into runInstall/runRemove (that is
+// the LIFECYCLE TIE work for Plan 21-02); until then they are dead code proven
+// in isolation by the 21-01 unit probes.
+
+/**
+ * Resolve the runtime skills dir Claude Code reads agent skills from: `${CLAUDE_DIR:-~/.claude}/skills`.
+ * A byte-for-byte structural mirror of claudeCommandsDir (precedence: skillsDir > claudeDir >
+ * CLAUDE_DIR env > ~/.claude). Injectable via opts.skillsDir so the lifecycle test can point delivery
+ * at a sandbox.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.skillsDir] explicit override (the test injects a sandbox dir); wins outright.
+ * @param {string} [opts.claudeDir] explicit ${CLAUDE_DIR} root override; skills dir = <claudeDir>/skills.
+ * @returns {string} absolute path to the runtime skills dir.
+ */
+function claudeSkillsDir(opts = {}) {
+  if (opts && typeof opts.skillsDir === 'string' && opts.skillsDir.length > 0) {
+    return opts.skillsDir;
+  }
+  const claudeDir =
+    (opts && typeof opts.claudeDir === 'string' && opts.claudeDir.length > 0 && opts.claudeDir) ||
+    process.env.CLAUDE_DIR ||
+    path.join(os.homedir(), '.claude');
+  return path.join(claudeDir, 'skills');
+}
+
+/**
+ * Enumerate the bundled skill stems from the BUNDLE's skills/ dir on disk: the immediate subdirectories
+ * of <bundleDir>/skills that contain a SKILL.md (the SAME read-point verify-capability.cjs
+ * readShippedSkills uses). Sourcing from the BUNDLE (never the repo working tree) makes a remote-installed
+ * bundle self-sufficient (T-17-02-REPOSOURCE). Returns sorted stem names. Throws DriverError (LOUD-on-miss)
+ * on a readdir error — an install that cannot source its skills FAILS LOUD (mirrors bundledCommandNames).
+ *
+ * No name-regex constant: command stems are flat `gsd-*.md` files (COMMAND_NAME_RE); skill stems are
+ * arbitrary directory names gated solely by the presence of a SKILL.md, exactly like readShippedSkills.
+ *
+ * @param {string} bundleDir bundle root (BUNDLE_CAP_DIR or an injected sandbox bundle).
+ * @returns {string[]} the SKILL.md-bearing subdir names present in <bundleDir>/skills.
+ */
+function bundledSkillNames(bundleDir) {
+  const dir = path.join(bundleDir, 'skills');
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    throw new DriverError(
+      'cannot read the bundle skills dir ' + dir + ' (' + (err && err.message) + ') — the bundle ' +
+        'must ship its skills/ (run `node bin/build-capability.cjs` to regenerate); an install that ' +
+        'cannot source its skills FAILS LOUD rather than deliver nothing'
+    );
+  }
+  return entries
+    .filter((e) => e.isDirectory() && fs.existsSync(path.join(dir, e.name, 'SKILL.md')))
+    .map((e) => e.name)
+    .sort();
+}
+
 /**
  * DELIVER the bundled slash-command .md's into the runtime commands dir, mirroring install.sh
  * exactly: target `<commandsDir>/<name>.md`; `mkdir -p` the parent; if the target is already a symlink
@@ -1235,7 +1300,9 @@ module.exports = {
   resolveGsdCoreCwd,
   consentStoreHome,
   claudeCommandsDir,
+  claudeSkillsDir,
   bundledCommandNames,
+  bundledSkillNames,
   deliverBundledCommands,
   removeBundledCommands,
   loadLiveEngine,

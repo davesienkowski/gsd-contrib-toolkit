@@ -535,3 +535,62 @@ test('remove leaves a FOREIGN symlink (not into our bundle) at a command target 
     sb.dispose();
   }
 });
+
+// ───────────────────────── 21-01 skill-delivery primitives (TOG-02) ─────────────────────────
+//
+// The skill helpers are DIRECTORY-symlink mirrors of the command helpers (skills are <stem>/SKILL.md
+// trees, not flat .md files). These tests prove the primitives IN ISOLATION (they are dead code until
+// 21-02 wires them into the lifecycle). No LIVE gsd-core engine is needed — these are pure fs unit
+// probes, so they run unconditionally (no SKIP).
+
+/** The 2 bundled skill stems (data-driven from the REAL bundle skills/ dir). */
+const EXPECTED_SKILL_STEMS = ['gsd-core-contribution', 'maintainer-review-sweep'];
+
+test('claudeSkillsDir resolves ${CLAUDE_DIR:-~/.claude}/skills with skillsDir>claudeDir>CLAUDE_DIR precedence', () => {
+  // Default: <homedir>/.claude/skills (no CLAUDE_DIR override in scope).
+  const savedEnv = process.env.CLAUDE_DIR;
+  try {
+    delete process.env.CLAUDE_DIR;
+    assert.strictEqual(
+      drv.claudeSkillsDir({}),
+      path.join(os.homedir(), '.claude', 'skills'),
+      'default skills dir is <homedir>/.claude/skills'
+    );
+    // skillsDir explicit override wins outright (mirrors commandsDir).
+    assert.strictEqual(drv.claudeSkillsDir({ skillsDir: '/x/y' }), '/x/y', 'skillsDir override wins outright');
+    // claudeDir override => <claudeDir>/skills.
+    assert.strictEqual(drv.claudeSkillsDir({ claudeDir: '/c' }), path.join('/c', 'skills'), 'claudeDir => <claudeDir>/skills');
+    // CLAUDE_DIR env => <env>/skills, but skillsDir/claudeDir still win.
+    process.env.CLAUDE_DIR = '/env';
+    assert.strictEqual(drv.claudeSkillsDir({}), path.join('/env', 'skills'), 'CLAUDE_DIR env => <env>/skills');
+    assert.strictEqual(drv.claudeSkillsDir({ claudeDir: '/c' }), path.join('/c', 'skills'), 'claudeDir beats CLAUDE_DIR env');
+    assert.strictEqual(drv.claudeSkillsDir({ skillsDir: '/x/y' }), '/x/y', 'skillsDir beats CLAUDE_DIR env');
+  } finally {
+    if (savedEnv === undefined) delete process.env.CLAUDE_DIR;
+    else process.env.CLAUDE_DIR = savedEnv;
+  }
+});
+
+test('bundledSkillNames enumerates the 2 SKILL.md-bearing subdirs of the BUNDLE skills/ dir, sorted', () => {
+  const names = drv.bundledSkillNames(drv.BUNDLE_CAP_DIR);
+  assert.deepStrictEqual(
+    names.slice().sort(),
+    EXPECTED_SKILL_STEMS,
+    'bundledSkillNames returns exactly the 2 bundle skill stems (T-17-02-REPOSOURCE: sourced from the bundle)'
+  );
+  // Returned already sorted.
+  assert.deepStrictEqual(names, EXPECTED_SKILL_STEMS, 'bundledSkillNames returns the stems sorted');
+});
+
+test('bundledSkillNames throws DriverError (LOUD-on-miss) when the bundle has no skills/ dir', () => {
+  const sb = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-noskills-'));
+  try {
+    assert.throws(
+      () => drv.bundledSkillNames(sb),
+      (err) => (err instanceof drv.DriverError) && /skills/.test(err.message),
+      'a bundle with no skills/ dir must FAIL LOUD (mirrors bundledCommandNames ENOENT-throw)'
+    );
+  } finally {
+    fs.rmSync(sb, { recursive: true, force: true });
+  }
+});
