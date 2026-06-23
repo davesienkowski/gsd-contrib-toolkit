@@ -99,7 +99,23 @@ function makeFixture(manifest, shippedSkills, shippedCommands) {
     fs.writeFileSync(path.join(commandsDir, c + '.md'), '# ' + c + '\n');
   }
 
-  return { dir, manifestPath, skillsDir, commandsDir };
+  // 18-01 (CAP-11): the canonical surface check is BUNDLE-sourced, so the fixture also materializes a
+  // sandbox BUNDLE skills/ + commands/ tree (mirroring the shipped sets) that the tests inject as
+  // bundleSkillsDir / bundleCommandsDir. (The skillsDir/commandsDir repo seams remain for back-compat
+  // callers; they no longer drive a surface verdict.)
+  const bundleSkillsDir = path.join(dir, 'bundle', 'skills');
+  fs.mkdirSync(bundleSkillsDir, { recursive: true });
+  for (const s of shippedSkills) {
+    fs.mkdirSync(path.join(bundleSkillsDir, s), { recursive: true });
+    fs.writeFileSync(path.join(bundleSkillsDir, s, 'SKILL.md'), '# ' + s + '\n');
+  }
+  const bundleCommandsDir = path.join(dir, 'bundle', 'commands');
+  fs.mkdirSync(bundleCommandsDir, { recursive: true });
+  for (const c of shippedCommands) {
+    fs.writeFileSync(path.join(bundleCommandsDir, c + '.md'), '# ' + c + '\n');
+  }
+
+  return { dir, manifestPath, skillsDir, commandsDir, bundleSkillsDir, bundleCommandsDir };
 }
 
 function cleanup(fx) {
@@ -125,6 +141,8 @@ test('conform path: stub validators all return [] + matching surface => ok:true,
       manifestPath: fx.manifestPath,
       skillsDir: fx.skillsDir,
       commandsDir: fx.commandsDir,
+      bundleSkillsDir: fx.bundleSkillsDir,
+      bundleCommandsDir: fx.bundleCommandsDir,
       bundleHooksDir: bundle.bundleHooksDir,
       checkBundleFresh: () => ({ fresh: true, staleFiles: [], checked: 0 }),
     });
@@ -213,17 +231,18 @@ test('a stub validateCapability returning a nonempty error array => ok:false (no
   }
 });
 
-// ── (f) under-disclosure: declared skills are a strict subset of shipped => ok:false ──
-test('under-disclosure: manifest declares fewer skills than skillsDir ships => ok:false', () => {
-  // Manifest declares only skill-a, but the skillsDir ships skill-a AND skill-b.
+// ── (f) under-disclosure: declared skills are a strict subset of BUNDLE-shipped => ok:false ──
+test('under-disclosure: manifest declares fewer skills than the bundle ships => ok:false', () => {
+  // 18-01 (CAP-11): SHIPPED resolves from the BUNDLE. Manifest declares only skill-a, but the bundle
+  // skills/ ships skill-a AND skill-b (shipped-not-declared) => FAIL.
   const fx = makeFixture(baseManifest({ skills: ['skill-a'] }), SKILLS, COMMANDS);
   try {
     const r = runVerifyCapability({
       liveRoot: '/fake/gsd-core',
       requireLiveScript: () => stubValidators(),
       manifestPath: fx.manifestPath,
-      skillsDir: fx.skillsDir,
-      commandsDir: fx.commandsDir,
+      bundleSkillsDir: fx.bundleSkillsDir,
+      bundleCommandsDir: fx.bundleCommandsDir,
     });
     assert.equal(r.ok, false, 'under-disclosure must fail (defeats the consent gate otherwise)');
     const surf = r.results.find((x) => x.name === 'surface-skills');
@@ -234,17 +253,17 @@ test('under-disclosure: manifest declares fewer skills than skillsDir ships => o
   }
 });
 
-// ── (f2) under-disclosure: a shipped command not named in the description => ok:false ──
-test('under-disclosure: a shipped command not named in the description => ok:false', () => {
-  // The base description names gsd-fake-one + gsd-fake-two; ship a third, undisclosed command.
+// ── (f2) under-disclosure: a BUNDLE-shipped command not named in the description => ok:false ──
+test('under-disclosure: a bundle-shipped command not named in the description => ok:false', () => {
+  // The base description names gsd-fake-one + gsd-fake-two; the bundle ships a third, undisclosed command.
   const fx = makeFixture(baseManifest(), SKILLS, ['gsd-fake-one', 'gsd-fake-two', 'gsd-undisclosed']);
   try {
     const r = runVerifyCapability({
       liveRoot: '/fake/gsd-core',
       requireLiveScript: () => stubValidators(),
       manifestPath: fx.manifestPath,
-      skillsDir: fx.skillsDir,
-      commandsDir: fx.commandsDir,
+      bundleSkillsDir: fx.bundleSkillsDir,
+      bundleCommandsDir: fx.bundleCommandsDir,
     });
     assert.equal(r.ok, false, 'an undisclosed command fails the surface check');
     const surf = r.results.find((x) => x.name === 'surface-commands');
@@ -300,66 +319,66 @@ test('honesty no-regression: the honest disclaimer (PreToolUse only re the perso
   }
 });
 
-// ── (h) CR-01: an unreadable/missing skillsDir FAILs surface-skills (LOUD), even with skills:[] ──
-test('CR-01: a missing skillsDir => surface-skills FAIL / ok:false, even when manifest.skills is empty', () => {
-  // Build a normal fixture, then point skillsDir at a path that does NOT exist. With manifest.skills:[]
-  // the OLD code compared [] vs [] and reported a silent PASS — a forged green for a check that could
-  // not run. The hardened readShippedSkills must surface this as a [FAIL].
+// ── (h) CR-01: an unreadable/missing BUNDLE skills dir FAILs surface-skills (LOUD), even with skills:[] ──
+test('CR-01: a missing bundle skills dir => surface-skills FAIL / ok:false, even when manifest.skills is empty', () => {
+  // 18-01 (CAP-11): LOUD-on-miss now applies to the BUNDLE surface dir. Point bundleSkillsDir at a path
+  // that does NOT exist. With manifest.skills:[] a naive check would compare [] vs [] and forge a green;
+  // readBundleSkills must surface this as a COULD-NOT-RUN [FAIL].
   const fx = makeFixture(baseManifest({ skills: [] }), SKILLS, COMMANDS);
-  const missingSkillsDir = path.join(fx.dir, 'no-such-skills-dir');
+  const missingBundleSkillsDir = path.join(fx.dir, 'no-such-bundle-skills-dir');
   try {
     const r = runVerifyCapability({
       liveRoot: '/fake/gsd-core',
       requireLiveScript: () => stubValidators(),
       manifestPath: fx.manifestPath,
-      skillsDir: missingSkillsDir,
-      commandsDir: fx.commandsDir,
+      bundleSkillsDir: missingBundleSkillsDir,
+      bundleCommandsDir: fx.bundleCommandsDir,
     });
-    assert.equal(r.ok, false, 'an unreadable skills dir is NEVER a silent conformant (LOUD-on-miss)');
+    assert.equal(r.ok, false, 'an unreadable bundle skills dir is NEVER a silent conformant (LOUD-on-miss)');
     const surf = r.results.find((x) => x.name === 'surface-skills');
-    assert.ok(surf && surf.verdict === 'fail', 'surface-skills FAILed because the dir could not be read');
+    assert.ok(surf && surf.verdict === 'fail', 'surface-skills FAILed because the bundle dir could not be read');
     assert.match(surf.detail, /could not run|COULD NOT RUN/i, 'detail explains the check could not run');
   } finally {
     cleanup(fx);
   }
 });
 
-// ── (h2) CR-01 symmetry: an unreadable/missing commandsDir FAILs surface-commands (LOUD) ──
-test('CR-01: a missing commandsDir => surface-commands FAIL / ok:false (LOUD-on-miss)', () => {
+// ── (h2) CR-01 symmetry: an unreadable/missing BUNDLE commands dir FAILs surface-commands (LOUD) ──
+test('CR-01: a missing bundle commands dir => surface-commands FAIL / ok:false (LOUD-on-miss)', () => {
   const fx = makeFixture(baseManifest(), SKILLS, COMMANDS);
-  const missingCommandsDir = path.join(fx.dir, 'no-such-commands-dir');
+  const missingBundleCommandsDir = path.join(fx.dir, 'no-such-bundle-commands-dir');
   try {
     const r = runVerifyCapability({
       liveRoot: '/fake/gsd-core',
       requireLiveScript: () => stubValidators(),
       manifestPath: fx.manifestPath,
-      skillsDir: fx.skillsDir,
-      commandsDir: missingCommandsDir,
+      bundleSkillsDir: fx.bundleSkillsDir,
+      bundleCommandsDir: missingBundleCommandsDir,
     });
-    assert.equal(r.ok, false, 'an unreadable commands dir is NEVER a silent conformant');
+    assert.equal(r.ok, false, 'an unreadable bundle commands dir is NEVER a silent conformant');
     const surf = r.results.find((x) => x.name === 'surface-commands');
-    assert.ok(surf && surf.verdict === 'fail', 'surface-commands FAILed because the dir could not be read');
+    assert.ok(surf && surf.verdict === 'fail', 'surface-commands FAILed because the bundle dir could not be read');
     assert.match(surf.detail, /could not run|COULD NOT RUN/i, 'detail explains the check could not run');
   } finally {
     cleanup(fx);
   }
 });
 
-// ── (h3) CR-01 no-regression: a readable-but-empty skillsDir + manifest.skills:[] still PASSes ──
-test('CR-01 no-regression: a readable EMPTY skillsDir with manifest.skills:[] => surface-skills PASS', () => {
+// ── (h3) CR-01 no-regression: a readable-but-empty BUNDLE skills dir + manifest.skills:[] still PASSes ──
+test('CR-01 no-regression: a readable EMPTY bundle skills dir with manifest.skills:[] => surface-skills PASS', () => {
   // "read succeeded, zero skills found" is a legitimate PASS (declared:[] == shipped:[]). Only an
   // unreadable dir is a FAIL — distinguish the two.
-  const fx = makeFixture(baseManifest({ skills: [] }), [], COMMANDS); // skillsDir exists, ships no skills
+  const fx = makeFixture(baseManifest({ skills: [] }), [], COMMANDS); // bundle skills dir exists, ships none
   try {
     const r = runVerifyCapability({
       liveRoot: '/fake/gsd-core',
       requireLiveScript: () => stubValidators(),
       manifestPath: fx.manifestPath,
-      skillsDir: fx.skillsDir,
-      commandsDir: fx.commandsDir,
+      bundleSkillsDir: fx.bundleSkillsDir,
+      bundleCommandsDir: fx.bundleCommandsDir,
     });
     const surf = r.results.find((x) => x.name === 'surface-skills');
-    assert.ok(surf && surf.verdict === 'pass', 'an empty-but-readable skills dir matching skills:[] PASSes');
+    assert.ok(surf && surf.verdict === 'pass', 'an empty-but-readable bundle skills dir matching skills:[] PASSes');
   } finally {
     cleanup(fx);
   }
@@ -514,6 +533,7 @@ function conformantBundle(scripts) {
 const HOOK_SCRIPTS = ['hooks/gh-edit.cjs', 'hooks/gh-pr-create.cjs'];
 
 // ── (k) conform: hooks files present + fresh bundle + reachable live + bundled resolver => all PASS ──
+// 18-01 (CAP-11): the hooks file-presence check is now the bidirectional `surface-hooks` membership leg.
 test('11-03 conform: hooks present, fresh bundle, reachable liveRoot, bundled resolver => 3 new checks PASS', () => {
   const fx = makeFixture(manifestWithHooks(HOOK_SCRIPTS), SKILLS, COMMANDS);
   const bundle = conformantBundle(HOOK_SCRIPTS);
@@ -523,16 +543,16 @@ test('11-03 conform: hooks present, fresh bundle, reachable liveRoot, bundled re
       liveRoot: live,
       requireLiveScript: () => stubValidators(),
       manifestPath: fx.manifestPath,
-      skillsDir: fx.skillsDir,
-      commandsDir: fx.commandsDir,
+      bundleSkillsDir: fx.bundleSkillsDir,
+      bundleCommandsDir: fx.bundleCommandsDir,
       bundleHooksDir: bundle.bundleHooksDir,
       checkBundleFresh: () => ({ fresh: true, staleFiles: [], checked: 3 }),
     });
     assert.equal(r.ok, true, JSON.stringify(r.results, null, 2));
-    const hm = r.results.find((x) => x.name === 'hooks-manifest');
+    const hm = r.results.find((x) => x.name === 'surface-hooks');
     const bp = r.results.find((x) => x.name === 'bundle-parity');
     const rr = r.results.find((x) => x.name === 'runtime-live-resolution');
-    assert.ok(hm && hm.verdict === 'pass', 'hooks-manifest PASS');
+    assert.ok(hm && hm.verdict === 'pass', 'surface-hooks PASS');
     assert.ok(bp && bp.verdict === 'pass', 'bundle-parity PASS');
     assert.ok(rr && rr.verdict === 'pass', 'runtime-live-resolution PASS');
   } finally {
@@ -542,10 +562,11 @@ test('11-03 conform: hooks present, fresh bundle, reachable liveRoot, bundled re
   }
 });
 
-// ── (l) hooks-file miss: a declared hooks[].script with no bundle file => hooks-manifest FAIL, ok:false ──
-test('11-03 hooks-file miss: a declared hooks[].script absent from the bundle => hooks-manifest FAIL, ok:false', () => {
+// ── (l) hooks-file miss: a declared hooks[].script with no bundle file => surface-hooks FAIL, ok:false ──
+test('11-03 hooks-file miss: a declared hooks[].script absent from the bundle => surface-hooks FAIL, ok:false', () => {
   const fx = makeFixture(manifestWithHooks(HOOK_SCRIPTS), SKILLS, COMMANDS);
-  // Bundle ships only the FIRST script (+ resolver); the second declared script has no file.
+  // Bundle ships only the FIRST script (+ resolver); the second declared script has no file
+  // (declared-not-shipped).
   const bundle = conformantBundle([HOOK_SCRIPTS[0]]);
   const live = makeLiveRoot();
   try {
@@ -553,14 +574,14 @@ test('11-03 hooks-file miss: a declared hooks[].script absent from the bundle =>
       liveRoot: live,
       requireLiveScript: () => stubValidators(),
       manifestPath: fx.manifestPath,
-      skillsDir: fx.skillsDir,
-      commandsDir: fx.commandsDir,
+      bundleSkillsDir: fx.bundleSkillsDir,
+      bundleCommandsDir: fx.bundleCommandsDir,
       bundleHooksDir: bundle.bundleHooksDir,
       checkBundleFresh: () => ({ fresh: true, staleFiles: [], checked: 2 }),
     });
     assert.equal(r.ok, false, 'a declared script with no bundle file is NEVER a silent conformant');
-    const hm = r.results.find((x) => x.name === 'hooks-manifest');
-    assert.ok(hm && hm.verdict === 'fail', 'hooks-manifest FAILed');
+    const hm = r.results.find((x) => x.name === 'surface-hooks');
+    assert.ok(hm && hm.verdict === 'fail', 'surface-hooks FAILed');
     assert.match(hm.detail, /gh-pr-create\.cjs/, 'names the missing script path');
   } finally {
     cleanup(fx);

@@ -45,11 +45,20 @@ const path = require('node:path');
 const { requireLiveScript: liveRequireLiveScript, ScriptResolveError } = require('../hooks/lib/resolve.cjs');
 // Plan 11-01's bundle staleness truth: the parity check REUSES this single source so verify-capability
 // and `build-capability --check` can NEVER disagree about whether the bundle is fresh (design §4).
-const { checkBundleFresh: liveCheckBundleFresh } = require('./build-capability.cjs');
+// 18-01 (CAP-11): the bundle-commands reader REUSES build-capability's EXACT disclosed-command filter
+// (COMMAND_NAME_RE = /^gsd-.*\.md$/) so the verified set provably equals the built set — never a
+// second regex literal that could silently drift.
+const { checkBundleFresh: liveCheckBundleFresh, COMMAND_NAME_RE } = require('./build-capability.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const MANIFEST_PATH = path.join(REPO_ROOT, 'capabilities', 'contribution-toolkit', 'capability.json');
-const BUNDLE_HOOKS_DIR = path.join(REPO_ROOT, 'capabilities', 'contribution-toolkit', 'hooks');
+const BUNDLE_DIR = path.join(REPO_ROOT, 'capabilities', 'contribution-toolkit');
+const MANIFEST_PATH = path.join(BUNDLE_DIR, 'capability.json');
+const BUNDLE_HOOKS_DIR = path.join(BUNDLE_DIR, 'hooks');
+// 18-01 (CAP-11): the SHIPPED surface set the unified tri-surface check resolves against is the
+// BUNDLE (what an adopter actually installs), NOT the repo source dirs. See readBundle* + the
+// surface block below for the replace-vs-add rationale (18-CONTEXT design_decision).
+const BUNDLE_SKILLS_DIR = path.join(BUNDLE_DIR, 'skills');
+const BUNDLE_COMMANDS_DIR = path.join(BUNDLE_DIR, 'commands');
 const SKILLS_DIR = path.join(REPO_ROOT, 'skills');
 const COMMANDS_DIR = path.join(REPO_ROOT, 'commands');
 const FOLDER_ID = 'contribution-toolkit';
@@ -209,6 +218,110 @@ function readShippedCommands(commandsDir) {
   return { ok: true, commands: out };
 }
 
+// ── 18-01 (CAP-11): BUNDLE surface readers — the SHIPPED set the tri-surface check resolves against ──
+//
+// WHY BUNDLE-SOURCED (replace, not add): the surface an adopter actually installs is the BUNDLE
+// (capabilities/contribution-toolkit/{hooks,skills,commands}), not the repo source dirs. The old
+// surface-skills/surface-commands checks compared the manifest against the REPO source (skills/,
+// commands/); `bundle-parity`/`build --check` already proves bundle == repo byte-for-byte, so a SECOND
+// repo-source surface check adds NO signal and leaves two checks that can SILENTLY DISAGREE — exactly
+// what 18-CONTEXT.md forbids. So the canonical declared==shipped assertion is BUNDLE-sourced and the
+// repo-source surface check is REMOVED. `checkBundleFresh` (byte-staleness) stays orthogonal and
+// untouched: it owns "is the bundle fresh"; this check owns "declared SURFACE membership == bundle
+// SURFACE membership". Each reader is LOUD-on-miss: an unreadable bundle dir is {ok:false} so the
+// caller emits a COULD-NOT-RUN [FAIL], never a forged green.
+
+/**
+ * Read the BUNDLE's shipped skill set: immediate subdirs of bundleSkillsDir that contain a SKILL.md.
+ * LOUD-on-miss: an unreadable/missing dir returns {ok:false, error}.
+ * @param {string} bundleSkillsDir
+ * @returns {{ok:boolean, skills:string[], error?:string}}
+ */
+function readBundleSkills(bundleSkillsDir) {
+  let entries;
+  try {
+    entries = fs.readdirSync(bundleSkillsDir, { withFileTypes: true });
+  } catch (err) {
+    return { ok: false, skills: [], error: (err && err.message) || String(err) };
+  }
+  const out = [];
+  for (const ent of entries) {
+    if (!ent.isDirectory()) continue;
+    if (fs.existsSync(path.join(bundleSkillsDir, ent.name, 'SKILL.md'))) out.push(ent.name);
+  }
+  out.sort();
+  return { ok: true, skills: out };
+}
+
+/**
+ * Read the BUNDLE's shipped command set: basenames (sans .md) of bundleCommandsDir/gsd-*.md files,
+ * using build-capability's EXACT COMMAND_NAME_RE so the verified set provably equals the built set.
+ * LOUD-on-miss: an unreadable/missing dir returns {ok:false, error}.
+ * @param {string} bundleCommandsDir
+ * @returns {{ok:boolean, commands:string[], error?:string}}
+ */
+function readBundleCommands(bundleCommandsDir) {
+  let entries;
+  try {
+    entries = fs.readdirSync(bundleCommandsDir, { withFileTypes: true });
+  } catch (err) {
+    return { ok: false, commands: [], error: (err && err.message) || String(err) };
+  }
+  const out = [];
+  for (const ent of entries) {
+    if (!ent.isFile()) continue;
+    if (COMMAND_NAME_RE.test(ent.name)) out.push(ent.name.replace(/\.md$/, ''));
+  }
+  out.sort();
+  return { ok: true, commands: out };
+}
+
+/**
+ * Read the BUNDLE's shipped hook set: top-level *.cjs basenames under bundleHooksDir, EXCLUDING the
+ * hooks/lib/ subdir (lib is the bundled resolver support tree, not a declarable hook surface).
+ * LOUD-on-miss: an unreadable/missing dir returns {ok:false, error}.
+ * @param {string} bundleHooksDir
+ * @returns {{ok:boolean, hooks:string[], error?:string}}
+ */
+function readBundleHooks(bundleHooksDir) {
+  let entries;
+  try {
+    entries = fs.readdirSync(bundleHooksDir, { withFileTypes: true });
+  } catch (err) {
+    return { ok: false, hooks: [], error: (err && err.message) || String(err) };
+  }
+  const out = [];
+  for (const ent of entries) {
+    if (!ent.isFile()) continue; // top-level only — skips the hooks/lib/ subdir
+    if (/\.cjs$/.test(ent.name)) out.push(ent.name);
+  }
+  out.sort();
+  return { ok: true, hooks: out };
+}
+
+/**
+ * 18-01 (CAP-11): extract the gsd-* command stems a manifest description DISCLOSES AS COMMANDS — the
+ * DECLARED side of the bidirectional commands surface check. A token counts as a command claim only
+ * when grammatically presented as one (inside a "command(s) (...)" enumeration parenthetical, or
+ * immediately before the word "command(s)"), so non-command gsd-* nouns in prose ("gsd-core",
+ * "gsd-loop") are NOT false-flagged. Conservative by design: an honest manifest names its commands.
+ * @param {string} description
+ * @returns {string[]} sorted unique lowercase command stems.
+ */
+function readDescribedCommandSet(description) {
+  const d = typeof description === 'string' ? description : '';
+  const set = new Set();
+  const collect = (s) => (s.match(/gsd-[a-z0-9-]+/gi) || []).forEach((t) => set.add(t.toLowerCase()));
+  // (a) tokens inside a "command(s) (...)" enumeration parenthetical.
+  let mt;
+  const par = /commands?\s*\(([^)]*)\)/gi;
+  while ((mt = par.exec(d))) collect(mt[1]);
+  // (b) a run of gsd-* tokens sitting immediately before the word "command(s)".
+  const adj = /((?:gsd-[a-z0-9-]+(?:[,\s]+(?:and\s+)?)?)+)\s+commands?\b/gi;
+  while ((mt = adj.exec(d))) collect(mt[1]);
+  return [...set].sort();
+}
+
 /**
  * One verdict line.
  * @param {string} name
@@ -228,9 +341,11 @@ function result(name, verdict, detail) {
  * @param {string|null} [opts.liveRoot]            gsd-core root; default resolveGsdCoreCwd(); null => LOUD fail.
  * @param {Function}    [opts.requireLiveScript]   (root, rel) => module; default the resolve.cjs live one.
  * @param {string}      [opts.manifestPath]        path to capability.json; default MANIFEST_PATH.
- * @param {string}      [opts.skillsDir]           default SKILLS_DIR.
- * @param {string}      [opts.commandsDir]         default COMMANDS_DIR.
+ * @param {string}      [opts.skillsDir]           default SKILLS_DIR (repo source — back-compat only).
+ * @param {string}      [opts.commandsDir]         default COMMANDS_DIR (repo source — back-compat only).
  * @param {string}      [opts.bundleHooksDir]      bundle hooks/ dir; default BUNDLE_HOOKS_DIR.
+ * @param {string}      [opts.bundleSkillsDir]     bundle skills/ dir; default BUNDLE_SKILLS_DIR (18-01).
+ * @param {string}      [opts.bundleCommandsDir]   bundle commands/ dir; default BUNDLE_COMMANDS_DIR (18-01).
  * @param {Function}    [opts.checkBundleFresh]    () => {fresh, staleFiles, checked}; default the real one.
  * @returns {{ok:boolean, results:Array<{name,verdict,detail}>}}
  */
@@ -241,6 +356,9 @@ function runVerifyCapability(opts = {}) {
   const skillsDir = opts.skillsDir || SKILLS_DIR;
   const commandsDir = opts.commandsDir || COMMANDS_DIR;
   const bundleHooksDir = opts.bundleHooksDir || BUNDLE_HOOKS_DIR;
+  // 18-01 (CAP-11): the BUNDLE surface dirs are the SHIPPED source of truth for the tri-surface check.
+  const bundleSkillsDir = opts.bundleSkillsDir || BUNDLE_SKILLS_DIR;
+  const bundleCommandsDir = opts.bundleCommandsDir || BUNDLE_COMMANDS_DIR;
   const checkBundleFresh = opts.checkBundleFresh || liveCheckBundleFresh;
 
   const results = [];
@@ -330,62 +448,86 @@ function runVerifyCapability(opts = {}) {
   // validateAgainstContract(cap, capId) — contribution.into vs the loop-host contract + when refs a config key.
   checkErrors('validateAgainstContract', () => live.validateAgainstContract(manifest, FOLDER_ID), 'LIVE validateAgainstContract(manifest, ' + JSON.stringify(FOLDER_ID) + ')');
 
-  // ── SHARE-01 surface disclosure (T-09-02-UNDERDISCLOSE): declared == shipped, data-driven from disk. ──
-  // LOUD-on-miss (CR-01): if the skills dir can't be read at all, the disclosure check COULD NOT RUN —
-  // never silently PASS it (that would forge a green when skills/ is missing/permission-denied AND
-  // manifest.skills is empty).
-  const skillsResult = readShippedSkills(skillsDir);
-  if (!skillsResult.ok) {
-    results.push(result(
-      'surface-skills',
-      'fail',
-      'cannot read skills/ directory (' + skillsResult.error + ') — the surface-disclosure check COULD NOT ' +
-        'RUN; a check that did not run is NEVER reported conformant (LOUD-on-miss)'
-    ));
-  } else {
-    const shippedSkills = skillsResult.skills;
-    const declaredSkills = Array.isArray(manifest.skills) ? manifest.skills.slice().sort() : [];
-    const skillsUndisclosed = shippedSkills.filter((s) => !declaredSkills.includes(s));
-    const skillsOverdeclared = declaredSkills.filter((s) => !shippedSkills.includes(s));
-    if (skillsUndisclosed.length === 0 && skillsOverdeclared.length === 0) {
-      results.push(result('surface-skills', 'pass', 'manifest.skills == shipped skills/: [' + shippedSkills.join(', ') + ']'));
-    } else {
-      const parts = [];
-      if (skillsUndisclosed.length) parts.push('UNDER-discloses (shipped but not declared): ' + skillsUndisclosed.join(', '));
-      if (skillsOverdeclared.length) parts.push('declares but does not ship: ' + skillsOverdeclared.join(', '));
-      results.push(result(
-        'surface-skills',
-        'fail',
-        'manifest skill surface != shipped skills/ — ' + parts.join(' | ') +
-          ' — under-disclosure defeats the ADR-1244 D5 consent gate'
-      ));
-    }
-  }
-
   const description = typeof manifest.description === 'string' ? manifest.description : '';
-  const commandsResult = readShippedCommands(commandsDir);
-  if (!commandsResult.ok) {
+
+  // ── 18-01 (CAP-11): UNIFIED BUNDLE-SOURCED TRI-SURFACE declared==shipped check ──────────────────
+  //
+  // REPLACES the old repo-source surface-skills/surface-commands checks AND the one-directional portion
+  // of hooks-manifest. The SHIPPED set for ALL THREE surfaces resolves from the BUNDLE
+  // (capabilities/contribution-toolkit/{skills,commands,hooks}) — what an adopter actually installs —
+  // NOT from the repo source dirs. Per the 18-CONTEXT design_decision (replace, not add): keeping a
+  // second repo-source surface check adds no signal (bundle-parity already covers bundle == repo) and
+  // leaves two checks that can silently disagree. The byte-staleness `bundle-parity` (checkBundleFresh)
+  // check below STAYS untouched — it owns staleness; THIS check owns surface MEMBERSHIP. Both directions
+  // FAIL for every surface (declared-not-shipped AND shipped-not-declared), and an unreadable bundle dir
+  // is a COULD-NOT-RUN [FAIL] (LOUD-on-miss), never a forged green.
+  //
+  // One result line PER surface (surface-skills / surface-commands / surface-hooks) keeps each surface's
+  // verdict individually legible, but every line sources SHIPPED from the bundle.
+
+  // Helper: emit a bidirectional surface verdict, or a LOUD-on-miss FAIL if the reader could not run.
+  const surfaceVerdict = (name, reader, declaredSet, label, missReason) => {
+    if (!reader.ok) {
+      results.push(result(
+        name,
+        'fail',
+        'cannot read bundle ' + label + ' directory (' + reader.error + ') — the ' + name +
+          ' check COULD NOT RUN; a check that did not run is NEVER reported conformant (LOUD-on-miss)'
+      ));
+      return;
+    }
+    const declared = declaredSet.slice().sort();
+    const shipped = reader.set.slice().sort();
+    const declaredNotShipped = declared.filter((x) => !shipped.includes(x));
+    const shippedNotDeclared = shipped.filter((x) => !declared.includes(x));
+    if (declaredNotShipped.length === 0 && shippedNotDeclared.length === 0) {
+      results.push(result(name, 'pass', 'manifest ' + label + ' surface == bundle ' + label + ': [' + shipped.join(', ') + ']'));
+      return;
+    }
+    const parts = [];
+    if (shippedNotDeclared.length) parts.push('bundle SHIPS but manifest does not declare: ' + shippedNotDeclared.join(', '));
+    if (declaredNotShipped.length) parts.push('manifest DECLARES but bundle does not ship: ' + declaredNotShipped.join(', '));
     results.push(result(
-      'surface-commands',
+      name,
       'fail',
-      'cannot read commands/ directory (' + commandsResult.error + ') — the surface-disclosure check ' +
-        'COULD NOT RUN; a check that did not run is NEVER reported conformant (LOUD-on-miss)'
+      'manifest ' + label + ' surface != bundle ' + label + ' surface — ' + parts.join(' | ') +
+        ' — ' + missReason
     ));
+  };
+
+  // skills: manifest.skills[] (declared) == bundle skills/<stem>/SKILL.md (shipped), bidirectional.
+  const bundleSkills = readBundleSkills(bundleSkillsDir);
+  surfaceVerdict(
+    'surface-skills',
+    bundleSkills.ok ? { ok: true, set: bundleSkills.skills } : bundleSkills,
+    Array.isArray(manifest.skills) ? manifest.skills : [],
+    'skills',
+    'a divergence breaks declared==shipped honesty (under-disclosure defeats the ADR-1244 D5 consent gate; over-declaration ships a phantom)'
+  );
+
+  // commands: prose-disclosed gsd-* stems in the description (declared) == bundle commands/gsd-*.md
+  // (shipped), bidirectional. The declared set is the bundle command stems NAMED in the description.
+  const bundleCommands = readBundleCommands(bundleCommandsDir);
+  if (!bundleCommands.ok) {
+    surfaceVerdict('surface-commands', bundleCommands, [], 'commands', '');
   } else {
-  const shippedCommands = commandsResult.commands;
-  const commandsUndisclosed = shippedCommands.filter((c) => !description.includes(c));
-  if (shippedCommands.length > 0 && commandsUndisclosed.length === 0) {
-    results.push(result('surface-commands', 'pass', 'every shipped command named in description: [' + shippedCommands.join(', ') + ']'));
-  } else if (shippedCommands.length === 0) {
-    results.push(result('surface-commands', 'fail', 'no gsd-*.md commands found under ' + commandsDir + ' — expected the disclosed command set'));
-  } else {
-    results.push(result(
+    const shippedCommands = bundleCommands.commands;
+    // The DECLARED command set is the gsd-* stems the description names AS COMMANDS — bidirectional:
+    //   shipped-not-declared = a bundle command not named in the description (under-disclosure);
+    //   declared-not-shipped = a gsd-* command claimed in the description with no bundle file (phantom).
+    // To avoid false positives on non-command gsd-* nouns (e.g. "gsd-core", "gsd-loop", the project/loop
+    // names that legitimately appear in prose), a token counts as a COMMAND CLAIM only when it is
+    // grammatically presented as one: inside a "command(s) (...)" enumeration parenthetical, OR sitting
+    // immediately before the word "command(s)". This is intentionally conservative — a real command must
+    // be DISCLOSED as a command, and the consent-gate honesty we protect is "named-as-a-command".
+    const declaredCommands = readDescribedCommandSet(description);
+    surfaceVerdict(
       'surface-commands',
-      'fail',
-      'manifest under-discloses executable surface: ' + commandsUndisclosed.join(', ') +
-        ' — command(s) ship under commands/ but are not named in the description; defeats the ADR-1244 D5 consent gate'
-    ));
-  }
+      { ok: true, set: shippedCommands },
+      declaredCommands,
+      'commands',
+      'a divergence breaks declared==shipped honesty (under-disclosure defeats the ADR-1244 D5 consent gate; over-declaration names a phantom command)'
+    );
   }
 
   // ── SHARE-01 enforcement honesty (T-09-02-OVERSELL): no capability-self unbypassable/PreToolUse claim. ──
@@ -402,51 +544,33 @@ function runVerifyCapability(opts = {}) {
     results.push(result('honesty', 'pass', 'description does not oversell — no capability-self unbypassable/PreToolUse claim'));
   }
 
-  // ── CAP-02 #1: hooks[] manifest FILE PRESENCE (closes the schema↔disk gap). ──
-  // The LIVE validateCapability check above already asserts the hooks[] SCHEMA + script-safety (rule
-  // C4 / isSafeHookScriptPath) — we do NOT reimplement that (HARD-02). This TOOLKIT-OWNED check asserts
-  // the schema-safe path actually points at a file shipped in OUR bundle: every manifest hooks[].script
-  // must EXIST under bundleHooksDir. A declared-but-absent script FAILs LOUD (never a silent pass).
+  // ── 18-01 (CAP-11): hooks surface — the THIRD leg of the unified tri-surface check, BIDIRECTIONAL. ──
+  // REPLACES the old one-directional `hooks-manifest` (which only asserted declared→bundle file presence).
+  // The LIVE validateCapability above governs hooks[] SCHEMA + script-safety (HARD-02 — not reimplemented
+  // here). This TOOLKIT-OWNED check asserts SURFACE MEMBERSHIP against the BUNDLE in BOTH directions:
+  //   declared-not-shipped = a manifest hooks[].script with no bundle hooks/<file> (the old direction); AND
+  //   shipped-not-declared = a stray bundle hooks/<file>.cjs not declared in hooks[] (the NEW reverse leg).
+  // Result name `surface-hooks` matches its skills/commands siblings. The hooks[].script paths are
+  // bundle-root-relative (e.g. 'hooks/gh-edit.cjs'); strip the leading 'hooks/' to get the bundle basename.
   const declaredHooks = Array.isArray(manifest.hooks) ? manifest.hooks : [];
-  const missingHookFiles = [];
+  const declaredHookSet = [];
   for (const h of declaredHooks) {
     const script = h && typeof h.script === 'string' ? h.script : '';
     if (!script) {
-      missingHookFiles.push('(hooks[] entry with no string script)');
+      declaredHookSet.push('(hooks[] entry with no string script)');
       continue;
     }
-    // The manifest script path is relative to the bundle ROOT (e.g. 'hooks/gh-edit.cjs'); the bundle
-    // hooks/ dir is that 'hooks/' prefix, so strip a leading 'hooks/' to land inside bundleHooksDir.
-    const rel = script.replace(/^hooks\//, '');
-    const abs = path.join(bundleHooksDir, rel);
-    let present = false;
-    try {
-      present = fs.statSync(abs).isFile();
-    } catch (_) {
-      present = false;
-    }
-    if (!present) missingHookFiles.push(script);
+    declaredHookSet.push(script.replace(/^hooks\//, ''));
   }
-  if (declaredHooks.length === 0) {
-    // No hooks[] declared — nothing to assert presence for; the schema check governs whether an empty
-    // hooks[] is legal. A clean PASS here (the disk-presence invariant is vacuously satisfied).
-    results.push(result('hooks-manifest', 'pass', 'manifest declares no hooks[] — no bundle script files to assert'));
-  } else if (missingHookFiles.length === 0) {
-    results.push(result(
-      'hooks-manifest',
-      'pass',
-      'every manifest hooks[].script file exists under the bundle (' + declaredHooks.length + ' script(s))'
-    ));
-  } else {
-    results.push(result(
-      'hooks-manifest',
-      'fail',
-      'manifest hooks[].script file(s) MISSING from the bundle ' + bundleHooksDir + ': ' +
-        missingHookFiles.join(', ') +
-        ' — a declared script with no bundle file is NEVER a silent conformant (schema says safe-path, ' +
-        'parity says present-and-identical; this closes the schema↔disk gap)'
-    ));
-  }
+  const bundleHooks = readBundleHooks(bundleHooksDir);
+  surfaceVerdict(
+    'surface-hooks',
+    bundleHooks.ok ? { ok: true, set: bundleHooks.hooks } : bundleHooks,
+    declaredHookSet,
+    'hooks',
+    'a divergence breaks declared==shipped honesty (a declared script with no bundle file is a broken install; ' +
+      'a stray bundle hook not declared in hooks[] is an undeclared executable surface — neither is EVER a silent conformant)'
+  );
 
   // ── CAP-02 #2: bundle⇄source PARITY via Plan 11-01's checkBundleFresh (single staleness truth). ──
   // REUSE checkBundleFresh() rather than re-deriving the byte comparison so verify-capability and
@@ -567,4 +691,19 @@ if (require.main === module) {
   }
 }
 
-module.exports = { runVerifyCapability, runCli, resolveGsdCoreCwd, readShippedSkills, readShippedCommands, HONESTY_RE, isOversold };
+module.exports = {
+  runVerifyCapability,
+  runCli,
+  resolveGsdCoreCwd,
+  // Repo-source readers — EXPORTED for back-compat only. As of 18-01 (CAP-11) they NO LONGER source any
+  // green surface verdict: the canonical declared==shipped assertion is BUNDLE-sourced (readBundle*).
+  readShippedSkills,
+  readShippedCommands,
+  // 18-01 (CAP-11): the BUNDLE surface readers the unified tri-surface check resolves SHIPPED against.
+  readBundleSkills,
+  readBundleCommands,
+  readBundleHooks,
+  readDescribedCommandSet,
+  HONESTY_RE,
+  isOversold,
+};

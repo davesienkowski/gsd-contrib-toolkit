@@ -664,4 +664,7 @@ module.exports = {
   confineUnder,
   runCli,
   SEMVER_RE,
+  // Exported so verify-capability.cjs's bundle-commands reader REUSES the EXACT disclosed-command
+  // filter rather than inventing a second regex that could drift (18-01 / CAP-11).
+  COMMAND_NAME_RE,
 };
