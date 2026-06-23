@@ -57,6 +57,7 @@ const COVERED_TESTS = Object.freeze([
   { path: 'bin/install-delivers-commands.test.cjs', covers: 'CAP-10 LOCAL install delivers the 5 commands to the runtime commands dir + remove reclaims them; manifest has no commands[] array' },
   { path: 'bin/self-test.test.cjs', covers: 'the self-test runner itself (hermetic verdict math)' },
   { path: 'bin/verify-capability.test.cjs', covers: 'CAP-11 tri-surface declared==shipped parity (bundle-sourced, bidirectional, 6-cell deliberate-mismatch matrix)' },
+  { path: 'bin/offramp-presence.test.cjs', covers: 'FLOW-01 Recovery Offramp present + consistent across the 3 canonical surfaces and their 3 bundled copies (both paths named + fail-closed/advisory no-bypass disclaimer + byte-parity)' },
   { path: 'hooks/fault-injection.test.cjs', covers: 'HARD-01/HARD-02 fault injection (fail-closed deny + shape drift)' },
 ]);
 
