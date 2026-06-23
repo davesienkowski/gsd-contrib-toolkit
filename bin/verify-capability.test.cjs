@@ -719,3 +719,210 @@ test('18-01 unit: readBundleSkills/readBundleCommands/readBundleHooks are export
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Plan 18-01 (CAP-11) Task 2: the HERMETIC 6-cell deliberate-mismatch matrix.
+//
+// For EACH of the 3 surfaces (skills, commands, hooks) x EACH of the 2 directions
+// (declare-without-ship, ship-without-declare) we build a COMPLETE tri-surface bundle in an
+// os.mkdtemp sandbox, introduce ONE mismatch on the COPY, and assert the verifier returns a FAIL
+// (r.ok === false + the offending surface verdict === 'fail', naming the offending entry). Every cell
+// operates ONLY on the sandbox via the injected bundleSkillsDir/bundleCommandsDir/bundleHooksDir seams
+// and rm's the sandbox in a finally — the real capabilities/contribution-toolkit is NEVER touched
+// (T-18-04-MUTATE). A conformant baseline (ok:true) precedes the mismatch cells, and a structural
+// hermetic-guarantee assertion proves the cells inject sandbox seams rather than defaults.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// The conformant tri-surface declared sets.
+const TRI_SKILLS = ['skill-x', 'skill-y'];
+const TRI_COMMANDS = ['gsd-alpha', 'gsd-beta'];
+const TRI_HOOKS = ['hooks/one.cjs', 'hooks/two.cjs'];
+
+/**
+ * Build a COMPLETE conformant tri-surface bundle + matching manifest + makeLiveRoot in an os.mkdtemp
+ * sandbox. The returned `seams` plug straight into runVerifyCapability; `mutate(fns)` lets a cell
+ * deliberately diverge ONE surface on the COPY before running. Nothing here touches the real bundle.
+ *
+ * @param {object} [over] manifest overrides (e.g. an extra declared skill/command/hook for a cell).
+ * @returns {{dir, live, seams, paths, cleanup}}
+ */
+function makeTriBundle(over = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-tri-bundle-'));
+  const bundleDir = path.join(dir, 'bundle');
+  const bundleSkillsDir = path.join(bundleDir, 'skills');
+  const bundleCommandsDir = path.join(bundleDir, 'commands');
+  const bundleHooksDir = path.join(bundleDir, 'hooks');
+
+  // skills/<stem>/SKILL.md
+  for (const s of TRI_SKILLS) {
+    fs.mkdirSync(path.join(bundleSkillsDir, s), { recursive: true });
+    fs.writeFileSync(path.join(bundleSkillsDir, s, 'SKILL.md'), '# ' + s + '\n');
+  }
+  // commands/gsd-*.md
+  fs.mkdirSync(bundleCommandsDir, { recursive: true });
+  for (const c of TRI_COMMANDS) fs.writeFileSync(path.join(bundleCommandsDir, c + '.md'), '# ' + c + '\n');
+  // hooks/*.cjs + hooks/lib/resolve.cjs (the bundled resolver the runtime check asserts)
+  fs.mkdirSync(path.join(bundleHooksDir, 'lib'), { recursive: true });
+  for (const h of TRI_HOOKS) fs.writeFileSync(path.join(bundleHooksDir, h.replace(/^hooks\//, '')), '// ' + h + '\n');
+  fs.writeFileSync(path.join(bundleHooksDir, 'lib', 'resolve.cjs'), "module.exports = require('../../../hooks/lib/resolve.cjs');\n");
+
+  // A matching manifest: declares the same tri-surface sets, and a description that NAMES the commands.
+  const manifest = baseManifest(
+    Object.assign(
+      {
+        skills: TRI_SKILLS.slice(),
+        hooks: TRI_HOOKS.map((s) => ({ event: 'PreToolUse', script: s })),
+        description:
+          'Ships skills and the ' + TRI_COMMANDS.join(' and ') + ' commands. This capability is ' +
+          'advisory-only and does NOT reach the harness boundary.',
+      },
+      over
+    )
+  );
+  const manifestPath = path.join(dir, 'capability.json');
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+  const live = makeLiveRoot();
+  const seams = {
+    liveRoot: live,
+    requireLiveScript: () => stubValidators(),
+    manifestPath,
+    bundleSkillsDir,
+    bundleCommandsDir,
+    bundleHooksDir,
+    checkBundleFresh: () => ({ fresh: true, staleFiles: [], checked: TRI_HOOKS.length }),
+  };
+  const cleanup = () => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(live, { recursive: true, force: true });
+  };
+  return { dir, live, seams, paths: { bundleSkillsDir, bundleCommandsDir, bundleHooksDir, manifestPath }, cleanup };
+}
+
+// ── baseline: a conformant tri-surface sandbox bundle => ok:true (every surface PASS) ──
+test('18-01 tri-surface baseline: a conformant sandbox bundle (declared == shipped, all 3 surfaces) => ok:true', () => {
+  const fx = makeTriBundle();
+  try {
+    const r = runVerifyCapability(fx.seams);
+    assert.equal(r.ok, true, JSON.stringify(r.results, null, 2));
+    for (const name of ['surface-skills', 'surface-commands', 'surface-hooks']) {
+      const s = r.results.find((x) => x.name === name);
+      assert.ok(s && s.verdict === 'pass', name + ' PASS in the conformant baseline');
+    }
+  } finally {
+    fx.cleanup();
+  }
+});
+
+// ── cell 1: skills declare-without-ship => surface-skills FAIL ──
+test('18-01 tri-surface cell 1 (skills declare-without-ship): manifest declares a skill with no bundle dir => FAIL', () => {
+  // Declare an extra skill in the manifest; do NOT create its bundle skills/<stem>/ dir.
+  const fx = makeTriBundle({ skills: TRI_SKILLS.concat('skill-phantom') });
+  try {
+    const r = runVerifyCapability(fx.seams);
+    assert.equal(r.ok, false, 'a declared skill with no bundle dir is NEVER a silent conformant');
+    const s = r.results.find((x) => x.name === 'surface-skills');
+    assert.ok(s && s.verdict === 'fail', 'surface-skills FAILed');
+    assert.match(s.detail, /skill-phantom/, 'names the declared-not-shipped skill');
+  } finally {
+    fx.cleanup();
+  }
+});
+
+// ── cell 2: skills ship-without-declare => surface-skills FAIL ──
+test('18-01 tri-surface cell 2 (skills ship-without-declare): a stray bundle skill not declared => FAIL', () => {
+  const fx = makeTriBundle();
+  // Write a stray bundle skills/ghost/SKILL.md NOT in manifest.skills[].
+  fs.mkdirSync(path.join(fx.paths.bundleSkillsDir, 'ghost'), { recursive: true });
+  fs.writeFileSync(path.join(fx.paths.bundleSkillsDir, 'ghost', 'SKILL.md'), '# ghost\n');
+  try {
+    const r = runVerifyCapability(fx.seams);
+    assert.equal(r.ok, false, 'a shipped skill not declared is NEVER a silent conformant');
+    const s = r.results.find((x) => x.name === 'surface-skills');
+    assert.ok(s && s.verdict === 'fail', 'surface-skills FAILed');
+    assert.match(s.detail, /ghost/, 'names the shipped-not-declared skill');
+  } finally {
+    fx.cleanup();
+  }
+});
+
+// ── cell 3: commands declare-without-ship => surface-commands FAIL ──
+test('18-01 tri-surface cell 3 (commands declare-without-ship): description names a command with no bundle file => FAIL', () => {
+  // Name a gsd-phantom command in the description; do NOT create bundle commands/gsd-phantom.md.
+  const fx = makeTriBundle({
+    description:
+      'Ships skills and the ' + TRI_COMMANDS.concat('gsd-phantom').join(' and ') + ' commands. This ' +
+      'capability is advisory-only and does NOT reach the harness boundary.',
+  });
+  try {
+    const r = runVerifyCapability(fx.seams);
+    assert.equal(r.ok, false, 'a described command with no bundle file is NEVER a silent conformant');
+    const s = r.results.find((x) => x.name === 'surface-commands');
+    assert.ok(s && s.verdict === 'fail', 'surface-commands FAILed');
+    assert.match(s.detail, /gsd-phantom/, 'names the declared-not-shipped command');
+  } finally {
+    fx.cleanup();
+  }
+});
+
+// ── cell 4: commands ship-without-declare => surface-commands FAIL ──
+test('18-01 tri-surface cell 4 (commands ship-without-declare): a stray bundle command not described => FAIL', () => {
+  const fx = makeTriBundle();
+  // Write a stray bundle commands/gsd-ghost.md NOT named in the description.
+  fs.writeFileSync(path.join(fx.paths.bundleCommandsDir, 'gsd-ghost.md'), '# ghost\n');
+  try {
+    const r = runVerifyCapability(fx.seams);
+    assert.equal(r.ok, false, 'a shipped command not described is NEVER a silent conformant');
+    const s = r.results.find((x) => x.name === 'surface-commands');
+    assert.ok(s && s.verdict === 'fail', 'surface-commands FAILed');
+    assert.match(s.detail, /gsd-ghost/, 'names the shipped-not-declared command');
+  } finally {
+    fx.cleanup();
+  }
+});
+
+// ── cell 5: hooks declare-without-ship => surface-hooks FAIL ──
+test('18-01 tri-surface cell 5 (hooks declare-without-ship): a hooks[].script with no bundle file => FAIL', () => {
+  // Declare an extra hooks[].script (hooks/ghost.cjs); do NOT create bundle hooks/ghost.cjs.
+  const fx = makeTriBundle({
+    hooks: TRI_HOOKS.concat('hooks/ghost.cjs').map((s) => ({ event: 'PreToolUse', script: s })),
+  });
+  try {
+    const r = runVerifyCapability(fx.seams);
+    assert.equal(r.ok, false, 'a declared hook with no bundle file is NEVER a silent conformant');
+    const s = r.results.find((x) => x.name === 'surface-hooks');
+    assert.ok(s && s.verdict === 'fail', 'surface-hooks FAILed');
+    assert.match(s.detail, /ghost\.cjs/, 'names the declared-not-shipped hook');
+  } finally {
+    fx.cleanup();
+  }
+});
+
+// ── cell 6: hooks ship-without-declare => surface-hooks FAIL (the NEW reverse direction) ──
+test('18-01 tri-surface cell 6 (hooks ship-without-declare): a stray bundle hook not declared => FAIL', () => {
+  const fx = makeTriBundle();
+  // Write a stray bundle hooks/ghost.cjs NOT declared in hooks[].
+  fs.writeFileSync(path.join(fx.paths.bundleHooksDir, 'ghost.cjs'), '// ghost\n');
+  try {
+    const r = runVerifyCapability(fx.seams);
+    assert.equal(r.ok, false, 'a shipped hook not declared is NEVER a silent conformant (the NEW reverse leg)');
+    const s = r.results.find((x) => x.name === 'surface-hooks');
+    assert.ok(s && s.verdict === 'fail', 'surface-hooks FAILed');
+    assert.match(s.detail, /ghost\.cjs/, 'names the shipped-not-declared hook');
+  } finally {
+    fx.cleanup();
+  }
+});
+
+// ── hermetic guarantee: the 18-01 cells inject sandbox seams (never the real bundle) ──
+test('18-01 tri-surface hermetic: the cells inject os.mkdtemp bundle seams, never the real bundle/manifest', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'verify-capability.test.cjs'), 'utf8');
+  // Structural proof the matrix is sandbox-sourced: makeTriBundle uses os.mkdtempSync and every cell
+  // drives runVerifyCapability(fx.seams) where seams carry sandbox bundleSkills/Commands/Hooks dirs.
+  assert.match(src, /function makeTriBundle/, 'the tri-surface fixture builder exists');
+  assert.match(src, /mkdtempSync\(path\.join\(os\.tmpdir\(\), 'gsd-tri-bundle-'\)\)/, 'the fixture is an os.mkdtemp sandbox');
+  assert.match(src, /runVerifyCapability\(fx\.seams\)/, 'cells drive the verifier via the sandbox seams');
+  assert.match(src, /bundleSkillsDir,\n\s*bundleCommandsDir,\n\s*bundleHooksDir,/, 'seams carry all 3 sandbox bundle dirs');
+  // And the real bundle path must NOT appear as a hard-coded mutation target anywhere in the matrix.
+  assert.doesNotMatch(src, /writeFileSync\([^)]*capabilities[\\/]+contribution-toolkit/, 'no cell writes into the real bundle');
+});
