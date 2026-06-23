@@ -138,6 +138,8 @@ analysis, not a blind fixture edit.
 
 ## 9. Migration from `install.sh`
 
+> **SUPERSEDED by the 2026-06-23 on/off full-surface-toggle spec (v2.3, Phase 23): `install.sh` is now RETIRED (deleted), not slimmed. The driver's idempotent fully-ON `install` is the sole entrypoint.** The historical §9 body below records the v2.1 decision as it stood.
+
 - `install.sh` keeps **only** the `~/.claude` symlink restore (and its stale vendored list is fixed to
   include the 3 new phase-8 commands).
 - Its `settings.json` merge is **superseded** by the ledger-clean capability `install`.

@@ -8,9 +8,10 @@ the runnable tools (`bin/`), and — the load-bearing layer — the Claude Code
 a broken issue/PR or editing a generated `bin/lib/*.cjs` artifact.
 
 This repository is the **owned source of truth**. Every at-risk asset lives here
-and is symlinked back into `~/.claude`, and `install.sh` restores everything
-idempotently after any GSD update or `gsd-ver` toggle — so a reinstall can never
-lose the toolkit.
+and is symlinked back into `~/.claude`, and `node bin/contrib-capability.cjs install`
+is the **sole** entrypoint that restores the full surface — hooks + commands + skills —
+idempotently: re-run it after any GSD update or `gsd-ver` toggle to repair the toolkit
+without losing work, so a reinstall can never lose the toolkit.
 
 ## What it does
 
@@ -24,8 +25,7 @@ Installed into gsd-core's project-scoped `.claude/settings.json` by the capabili
 CLI (`node bin/contrib-capability.cjs install` — see *Install / restore*) are
 **12 fail-closed PreToolUse gates** (11 on `Bash`, 1 on `Write`/`Edit`) plus
 **1 advisory `UserPromptSubmit` reminder**. The wired set is derived from the
-canonical `settings.snippet.json` (the source `build-capability.cjs` reads). The
-`install.sh` script no longer wires settings at all — it is symlink-restore only.
+canonical `settings.snippet.json` (the source `build-capability.cjs` reads).
 The gates close concrete failure classes a gsd-core
 contribution gets bounced (or merged red) for:
 
@@ -126,8 +126,8 @@ surfaces as a fail-closed DENY plus a diagnosable report — not a silent miss.
 
 ### Contributor workflow
 
-- **Install / restore** the toolkit (idempotent): `bash install.sh` — see
-  *Install / restore* below.
+- **Install / restore** the toolkit (idempotent):
+  `node bin/contrib-capability.cjs install` — see *Install / restore* below.
 - The **12 PreToolUse gates** (the 13-hook bundle's 12 fail-closed gates plus the
   1 advisory reminder) fire automatically inside the gsd-core repo once the
   contribution-toolkit capability is installed (`node bin/contrib-capability.cjs install`).
@@ -217,8 +217,7 @@ This section is load-bearing — the project's core value is honesty, not overse
 | `commands/`             | Vendored slash commands: `gsd-submit`, `gsd-review-sweep`, `gsd-triage-assist`, `gsd-release-preflight`, `gsd-ruleset-drift`; symlinked into `~/.claude`. |
 | `skills/`               | Vendored Claude skills: `gsd-core-contribution`, `maintainer-review-sweep`; symlinked into `~/.claude`. |
 | `capabilities/`         | The share-form GSD capability: the **self-contained** `contribution-toolkit/` bundle — `capability.json` + `fragments/` + the bundled `hooks/` (13), `skills/` (2), and `commands/` (5) a remote install delivers (NOT hooks-only). |
-| `settings.snippet.json` | The canonical hooks settings block — the wired-set source `build-capability.cjs` reads to generate the capability bundle (NOT merged by `install.sh`).         |
-| `install.sh`            | Idempotent `~/.claude` symlink restorer (commands + skills) — symlink restore only; never writes any `settings.json`.                       |
+| `settings.snippet.json` | The canonical hooks settings block — the wired-set source `build-capability.cjs` reads to generate the capability bundle.         |
 
 ## Source of truth and symlinks
 
@@ -230,31 +229,23 @@ recovering lost work.
 
 ## Install / restore
 
-There are **two independent steps**: restore the `~/.claude` symlinks, and install
-(or toggle) the enforcement. They are separate tools with separate jobs.
+There is **one local entrypoint** — the capability driver
+`node bin/contrib-capability.cjs install` — which restores the `~/.claude` symlinks
+AND installs/toggles the enforcement; plus a separate published-capability remote
+route for anyone other than the owner (see step 2 below).
 
-### 1. Restore the `~/.claude` symlinks
+### 1. Install / restore the full surface (the capability CLI)
 
-To (re)establish the vendored skills and commands — including after a GSD update or
-`gsd-ver` toggle that clobbers `~/.claude`:
+`node bin/contrib-capability.cjs install` is the **single, idempotent, re-runnable**
+entrypoint. It delivers the vendored commands + skills (as `~/.claude` symlinks back
+into this repo, with a never-clobber fail-safe that refuses to overwrite a real,
+non-symlink file) and stages + marker-tags the enforcement gates — so re-running it
+after a GSD update or `gsd-ver` toggle that clobbers `~/.claude` restores the full
+surface without losing work.
 
-```bash
-bash install.sh
-```
-
-`install.sh` is idempotent and re-runnable, and does **symlink restore only**: it
-recreates the `~/.claude` symlinks for the five vendored commands and two skills,
-pointing them back at this repo (refusing to clobber a real, non-symlink file).
-It takes **no gsd-core path argument**, needs **no `jq`**, and **never** writes any
-`settings.json` (neither `~/.claude` nor a project one).
-
-### 2. Install / toggle the enforcement (the capability CLI)
-
-The enforcement gates are installed and toggled by the capability driver
-(`bin/contrib-capability.cjs install | on | off | status | remove`), which
-drives the LIVE gsd-core capability engine **project-scoped** (into the local
-gsd-core checkout's `.claude/settings.json`, never `~/.claude`) and is **ledger +
-consent tracked**:
+The driver drives the LIVE gsd-core capability engine **project-scoped** (into the
+local gsd-core checkout's `.claude/settings.json`, never `~/.claude`) and is
+**ledger + consent tracked**:
 
 ```bash
 node bin/contrib-capability.cjs install            # stage + consent + ledger + marker-tag the 13 hooks
@@ -279,7 +270,7 @@ node bin/contrib-capability.cjs remove --reason <w> # remove from ledger + conse
 - **`remove`** — strips the gates, deletes the ledger-owned files + drops the
   ledger entry, revokes project consent, and writes a receipt.
 
-### 3. Install from the published capability (remote git)
+### 2. Install from the published capability (remote git)
 
 The toolkit is also published as a **public, git-installable GSD capability** at
 `github.com/davesienkowski/gsd-contribution-toolkit` (tagged `#v2.0.0`). This is the
@@ -298,7 +289,7 @@ node <gsd-core>/bin/gsd-tools.cjs capability install \
 - `--shared-file .claude/settings.json` is **required**: it is where the adapter
   wires the bundled hooks so the gates fire inside the project.
 - The toolkit install engine lays the command `.md`s into the runtime commands
-  directory (the honest delivery mechanism — mirroring `install.sh`'s symlink
+  directory (the honest delivery mechanism — mirroring the driver's symlink-delivery
   semantics, just copied from the published tree rather than symlinked from this repo).
 - The public repo was renamed to `gsd-contribution-toolkit` from its earlier
   `…-gate` name; GitHub redirects the old URL, so an existing `#v1.0.0` install

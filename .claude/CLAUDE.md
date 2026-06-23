@@ -19,7 +19,7 @@ than merged red. (Verifier-reach = spec-reach, applied to Dave's own contributio
 ### Constraints
 
 - **Enforcement mechanism**: Claude Code `PreToolUse` hooks returning `permissionDecision:"deny"` — fire before permission checks, unbypassable (even `--dangerously-skip-permissions`). — The only layer that survives model rationalization.
-- **Containment**: One git repo Dave owns (`~/repos/gsd-contrib-toolkit/`); `~/.claude` copies are symlinks back to it; `install.sh` is idempotent and re-runnable after any GSD update. — A `gsd-ver`/reinstall toggle must never lose the work.
+- **Containment**: One git repo Dave owns (`~/repos/gsd-contrib-toolkit/`); `~/.claude` copies are symlinks back to it; the driver `node bin/contrib-capability.cjs install` is the idempotent re-runnable-repair path (re-run after any GSD update). — A `gsd-ver`/reinstall toggle must never lose the work.
 - **Settings scope**: Project-scoped `gsd-core/.claude/settings.json` (gitignored locally) so hooks fire only in the gsd-core repo. — Cleanest blast radius. (Decision below; revisit if a global+cwd-guard proves necessary.)
 - **Privacy**: Nothing committed to or pushed at upstream gsd-core; no upstream repo edits. — Private until proven.
 - **Honesty**: Hooks lock outcomes, not steps. "Always create todos first" stays model-driven and is documented as such. — Don't oversell determinism.

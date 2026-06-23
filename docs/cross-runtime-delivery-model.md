@@ -1,9 +1,9 @@
 # Cross-Runtime Delivery Model (RUN-01)
 
 > Scope: this is the focused **RUN-01** record of *how* the contribution toolkit is delivered
-> per runtime and *where* its enforcement actually applies. It deliberately does **not** cover
-> the `install.sh` retirement (Phase 23) or the full DOC-03 cross-runtime user guide / README
-> polish (Phase 24); Phase 24 can fold this into the larger DOC-03 guide.
+> per runtime and *where* its enforcement actually applies. This record predates and does not
+> re-cover the `install.sh` retirement (Phase 23, now complete) or the full DOC-03 cross-runtime
+> user guide / README polish (Phase 24); Phase 24 can fold this into the larger DOC-03 guide.
 
 ## The one-paragraph truth
 

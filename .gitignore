@@ -19,6 +19,6 @@ node_modules/
 *.log
 
 # NOTE: the vendored source-of-truth assets are deliberately NOT ignored.
-# skills/, commands/, hooks/, settings.snippet.json, install.sh, and README.md
+# skills/, commands/, hooks/, settings.snippet.json, and README.md
 # are the tracked source of truth a GSD reinstall must never be able to lose.
 # Do not add ignore rules for those paths.
