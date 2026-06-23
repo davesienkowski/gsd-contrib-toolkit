@@ -5,6 +5,10 @@ description: Use when sweeping a GitHub repo you maintain (issues + PRs) to deci
 
 # Maintainer Review Sweep
 
+## Advisory-only on non-Claude runtimes
+
+PreToolUse enforcement is a Claude Code harness feature. On non-Claude runtimes (Codex, OpenCode, …) this toolkit runs **advisory-only** — the gates are not enforced; treat its guidance as advice, not a hard block. Enforcement (the fail-closed PreToolUse deny) exists ONLY on the Claude Code runtime; everywhere else this skill's gates are guidance you must follow yourself, not a hard stop.
+
 ## Overview
 
 A maintainer-grade triage + re-review pipeline. It ranks open work by **cost-to-advance** (a re-review beats a fresh design pass), then re-reviews change-requested PRs against the blocking reviewer's findings, the governing ADRs, and software-law lenses — and stops at "clear to merge" unless explicitly authorized.

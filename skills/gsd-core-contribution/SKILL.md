@@ -9,6 +9,10 @@ description: Use when filing or preparing a bug/fix issue and pull request for t
 >
 > **NEVER open the issue or PR before its gate is green.** Do not "file now and run lint/tests as a follow-up" — a PR that then fails `lint:ci` or the suite is the #1543/#1532 failure mode (lands red on the cut, doesn't beat the deadline). Gates run *before* the push, always.
 
+## Advisory-only on non-Claude runtimes
+
+PreToolUse enforcement is a Claude Code harness feature. On non-Claude runtimes (Codex, OpenCode, …) this toolkit runs **advisory-only** — the gates are not enforced; treat its guidance as advice, not a hard block. Enforcement (the fail-closed PreToolUse deny) exists ONLY on the Claude Code runtime; everywhere else this skill's gates are guidance you must follow yourself, not a hard stop.
+
 ## Overview
 
 Author a verified finding into a **properly-filed issue + fix PR** on `open-gsd/gsd-core` that passes every intake gate on the first try and matches how the lead maintainer (trek-e) files. This is the **authoring** counterpart to `maintainer-review-sweep` (which reviews *others'* PRs).
