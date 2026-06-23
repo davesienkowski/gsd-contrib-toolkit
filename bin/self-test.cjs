@@ -16,10 +16,16 @@
  *      never a silent pass, never a hard failure (T-05-04-SILENTPASS / TEST-04 honesty).
  *      shellcheck is absent in THIS env, so this is the path that executes here.
  *   3. the existing node:test suite as the hook test harness — nonzero status => fail.
+ *      The repo-wide `node --test` already DISCOVERS every *.test.cjs, so the install/toggle
+ *      lifecycle proof (bin/contrib-capability.test.cjs, CAP-07) runs as part of this suite. To
+ *      make that coverage EXPLICIT (so a missing/renamed test file is CAUGHT, not silently un-run),
+ *      runSelfTest also enumerates the load-bearing test files (COVERED_TESTS) and flips ok:false
+ *      if any is absent — and the CLI NAMES them, so the install/toggle surface is visible at runtime.
  *
  * Exit code is 0 ONLY when node --check is clean, shellcheck passed-or-skipped-with-note,
- * AND the test suite is green. Every subprocess verdict derives strictly from status===0
- * (T-05-04-SWALLOW: a non-zero status can never be swallowed).
+ * the enumerated load-bearing test files are present, AND the test suite is green. Every
+ * subprocess verdict derives strictly from status===0 (T-05-04-SWALLOW: a non-zero status can
+ * never be swallowed).
  *
  * Pure node builtins (node:fs, node:child_process) — installs NOTHING (T-05-04-SC).
  * Mirrors doctor.cjs's runCli/exit pattern and lint-ci-stamp.cjs's execFileSync discipline.
@@ -36,6 +42,20 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const SCAN_DIRS = ['hooks', 'bin'];
 const INSTALL_SH = 'install.sh';
 const SHELLCHECK_SKIP_NOTE = 'shellcheck not installed — skipped (env limitation; runnable in CI)';
+
+/**
+ * Load-bearing test files the suite MUST run, each with a human-readable name of the surface it
+ * covers. `node --test` discovers *.test.cjs by glob, so a renamed/deleted test would silently
+ * vanish from the run (a green suite that no longer proves what it claims). Enumerating them here
+ * — and flipping ok:false when one is absent — makes the coverage EXPLICIT and the install/toggle
+ * lifecycle proof a NAMED, fail-loud part of the self-test (CONTEXT: "self-test.cjs integrates the
+ * new checks"). Repo-relative POSIX paths.
+ */
+const COVERED_TESTS = Object.freeze([
+  { path: 'bin/contrib-capability.test.cjs', covers: 'capability install/off/on/remove lifecycle (CAP-07, disposable sandbox)' },
+  { path: 'bin/self-test.test.cjs', covers: 'the self-test runner itself (hermetic verdict math)' },
+  { path: 'hooks/fault-injection.test.cjs', covers: 'HARD-01/HARD-02 fault injection (fail-closed deny + shape drift)' },
+]);
 
 /**
  * Recursively list every *.cjs (relative to repoRoot) under hooks/ and bin/. Includes lib/
@@ -116,6 +136,31 @@ function tryShellcheck(scriptPath, deps = {}) {
 }
 
 /**
+ * Verify each load-bearing, NAMED test file (COVERED_TESTS) is present on disk. `node --test`
+ * discovers tests by glob, so a renamed/deleted file silently drops out of the run; this makes the
+ * coverage EXPLICIT — a missing enumerated test flips ok:false so a vanished proof is caught, not
+ * silently un-run. (The repo-wide `node --test` still EXECUTES them; this is the presence guard.)
+ *
+ * @param {object} deps
+ * @param {string} deps.repoRoot
+ * @param {Array<{path:string, covers:string}>} [deps.covered] injectable enumeration (defaults to COVERED_TESTS).
+ * @param {(p:string) => boolean} [deps.exists] injectable existence check (defaults to fs.existsSync).
+ * @returns {{ok:boolean, present:{path:string, covers:string}[], missing:{path:string, covers:string}[]}}
+ */
+function coveredTestsCheck(deps) {
+  const repoRoot = deps.repoRoot;
+  const covered = deps.covered || COVERED_TESTS;
+  const exists = deps.exists || ((p) => fs.existsSync(p));
+  const present = [];
+  const missing = [];
+  for (const entry of covered) {
+    const abs = path.isAbsolute(entry.path) ? entry.path : path.join(repoRoot, entry.path);
+    (exists(abs) ? present : missing).push(entry);
+  }
+  return { ok: missing.length === 0, present, missing };
+}
+
+/**
  * Run the existing node:test suite as the self-test core. nonzero status => fail.
  *
  * @param {object} deps
@@ -140,18 +185,21 @@ function runTestSuite(deps) {
  * @param {() => string[]} [deps.listFiles]
  * @param {(cmd:string, args:string[], opts?:object) => any} [deps.spawn]
  * @param {(cmd:string, args:string[], opts?:object) => string} [deps.exec]
- * @returns {{ok:boolean, nodeCheck:object, shellcheck:object, testSuite:object}}
+ * @param {Array<{path:string, covers:string}>} [deps.covered]
+ * @param {(p:string) => boolean} [deps.exists]
+ * @returns {{ok:boolean, nodeCheck:object, shellcheck:object, coveredTests:object, testSuite:object}}
  */
 function runSelfTest(deps = {}) {
   const repoRoot = deps.repoRoot || REPO_ROOT;
-  const { listFiles, spawn, exec } = deps;
+  const { listFiles, spawn, exec, covered, exists } = deps;
 
   const nodeCheck = nodeCheckAll({ repoRoot, listFiles, spawn });
   const shellcheck = tryShellcheck(path.join(repoRoot, INSTALL_SH), { exec });
+  const coveredTests = coveredTestsCheck({ repoRoot, covered, exists });
   const testSuite = runTestSuite({ repoRoot, spawn });
 
-  const ok = nodeCheck.ok && shellcheck.ok && testSuite.ok;
-  return { ok, nodeCheck, shellcheck, testSuite };
+  const ok = nodeCheck.ok && shellcheck.ok && coveredTests.ok && testSuite.ok;
+  return { ok, nodeCheck, shellcheck, coveredTests, testSuite };
 }
 
 /**
@@ -192,13 +240,27 @@ function runCli(deps = {}) {
     if (sc.stderr) process.stdout.write('         ' + String(sc.stderr).trim() + '\n');
   }
 
-  // 3. node:test harness verdict (the suite already streamed its own output via inherited stdio).
+  // 3. named load-bearing test coverage (the install/toggle lifecycle proof is surfaced by name).
+  const ct = result.coveredTests;
+  if (ct.ok) {
+    process.stdout.write('  [PASS] covered tests — ' + ct.present.length + ' load-bearing test file(s) present:\n');
+    for (const e of ct.present) {
+      process.stdout.write('         ' + e.path + ' — ' + e.covers + '\n');
+    }
+  } else {
+    process.stdout.write('  [FAIL] covered tests — ' + ct.missing.length + ' load-bearing test file(s) MISSING (silently un-run):\n');
+    for (const e of ct.missing) {
+      process.stdout.write('         ' + e.path + ' — ' + e.covers + '\n');
+    }
+  }
+
+  // 4. node:test harness verdict (the suite already streamed its own output via inherited stdio).
   const ts = result.testSuite;
   process.stdout.write('  [' + (ts.ok ? 'PASS' : 'FAIL') + '] node --test — hook test suite ' + (ts.ok ? 'green' : 'RED (exit ' + ts.status + ')') + '\n');
 
   process.stdout.write('\n');
   if (result.ok) {
-    process.stdout.write('Self-test PASSED — node --check clean, shellcheck passed-or-skipped-with-note, suite green.\n');
+    process.stdout.write('Self-test PASSED — node --check clean, shellcheck passed-or-skipped-with-note, covered tests present, suite green.\n');
   } else {
     process.stdout.write('Self-test FAILED — fix the toolkit before a broken hook can fail-closed-brick the workflow.\n');
   }
@@ -209,4 +271,4 @@ if (require.main === module) {
   process.exit(runCli());
 }
 
-module.exports = { runSelfTest, nodeCheckAll, tryShellcheck, runTestSuite, runCli, listCjsFiles, SHELLCHECK_SKIP_NOTE };
+module.exports = { runSelfTest, nodeCheckAll, tryShellcheck, coveredTestsCheck, runTestSuite, runCli, listCjsFiles, SHELLCHECK_SKIP_NOTE, COVERED_TESTS };

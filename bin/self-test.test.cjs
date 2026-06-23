@@ -25,7 +25,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { runSelfTest, nodeCheckAll, tryShellcheck, runTestSuite } = require('./self-test.cjs');
+const { runSelfTest, nodeCheckAll, tryShellcheck, coveredTestsCheck, runTestSuite } = require('./self-test.cjs');
 
 const NOTE = 'shellcheck not installed — skipped (env limitation; runnable in CI)';
 
@@ -80,6 +80,10 @@ function baseDeps(over = {}) {
       listFiles: () => FAKE_FILES.slice(),
       spawn: makeSpawn({}),
       exec: makeExec('ok'),
+      // Deterministic covered-tests presence (hermetic — the real files live under the real repo, not
+      // the fake /repo). Default: all enumerated test files present, so the composition math is clean.
+      covered: [{ path: 'bin/contrib-capability.test.cjs', covers: 'lifecycle' }],
+      exists: () => true,
     },
     over
   );
@@ -140,6 +144,33 @@ test('runTestSuite: ok:false on nonzero status', () => {
   assert.equal(r.ok, false);
 });
 
+// --- coveredTestsCheck unit -----------------------------------------------
+
+test('coveredTestsCheck: ok:true when every enumerated test file is present', () => {
+  const r = coveredTestsCheck({
+    repoRoot: '/repo',
+    covered: [{ path: 'bin/contrib-capability.test.cjs', covers: 'lifecycle' }],
+    exists: () => true,
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.missing.length, 0);
+  assert.equal(r.present.length, 1);
+});
+
+test('coveredTestsCheck: ok:false and records the missing file (a vanished proof is caught, not silently un-run)', () => {
+  const r = coveredTestsCheck({
+    repoRoot: '/repo',
+    covered: [
+      { path: 'bin/contrib-capability.test.cjs', covers: 'lifecycle' },
+      { path: 'bin/self-test.test.cjs', covers: 'runner' },
+    ],
+    exists: (p) => !p.endsWith('contrib-capability.test.cjs'),
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.missing.length, 1);
+  assert.match(r.missing[0].path, /contrib-capability\.test\.cjs$/);
+});
+
 // --- runSelfTest composition (cases a–e) ----------------------------------
 
 test('(a) clean run + shellcheck present => ok:true', () => {
@@ -177,4 +208,16 @@ test('(e) failing test suite => ok:false', () => {
   const r = runSelfTest(baseDeps({ spawn: makeSpawn({ test: () => ({ status: 1 }) }) }));
   assert.equal(r.ok, false);
   assert.equal(r.testSuite.ok, false);
+});
+
+test('(f) a missing covered (enumerated) test file => ok:false (named coverage is fail-loud)', () => {
+  const r = runSelfTest(
+    baseDeps({
+      covered: [{ path: 'bin/contrib-capability.test.cjs', covers: 'lifecycle' }],
+      exists: () => false,
+    })
+  );
+  assert.equal(r.ok, false);
+  assert.equal(r.coveredTests.ok, false);
+  assert.equal(r.coveredTests.missing.length, 1);
 });
