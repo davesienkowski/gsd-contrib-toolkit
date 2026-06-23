@@ -9,6 +9,10 @@
   "engines": {
     "gsd": ">=1.6.0"
   },
+  "provenance": {
+    "sourceRepo": "https://github.com/davesienkowski/gsd-contribution-toolkit",
+    "commit": "c364f5702b099957189644cf9590e02539bfd01f"
+  },
   "runtimeCompat": {
     "supported": [
       "*"
