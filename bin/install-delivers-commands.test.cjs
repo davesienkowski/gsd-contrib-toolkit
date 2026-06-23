@@ -66,6 +66,10 @@ const EXPECTED_COMMANDS = [
   'gsd-ruleset-drift',
 ];
 
+// The 2 bundled skill stems the install/on delivers alongside the commands (21-03 full-surface e2e),
+// named explicitly so a silently-dropped skill is CAUGHT in the end-to-end half too.
+const EXPECTED_SKILL_STEMS = ['gsd-core-contribution', 'maintainer-review-sweep'];
+
 // ──────────────────────────────── 1. DELIVERY + RECLAIM (unconditional) ────────────────────────────────
 //
 // Drives the REAL deliverBundledCommands / removeBundledCommands (pure node:fs over the BUNDLE — no live
@@ -198,7 +202,7 @@ function makeSandbox(sourceRoot) {
 }
 
 test(
-  'end-to-end: runInstall delivers the 5 commands to the runtime commands dir (alongside the skills+hooks install) + runRemove reclaims them',
+  'end-to-end: runInstall delivers the 5 commands + 2 skills (alongside the 13 hooks) fully ON + runRemove reclaims both',
   { skip: E2E_SKIP },
   () => {
     const sb = makeSandbox(SOURCE_ROOT);
@@ -235,14 +239,48 @@ test(
       }, 0);
       assert.strictEqual(taggedHooks, 13, 'the 5 commands must land ALONGSIDE the 13 marker-tagged hooks (full local-parity install)');
 
-      // runRemove reclaims exactly the 5 command links (accountable — under the LIVE remove receipt).
-      const removed = drv.runRemove(Object.assign({ reason: '17-03 end-to-end command-reclaim proof' }, opts));
+      // 21-03 full-surface co-existence: the 2 SKILLS also land at the sandbox skills dir as bundle
+      // DIRECTORY symlinks on the SAME runInstall — a remote install reproduces the FULL local surface
+      // (commands + hooks + skills together).
+      assert.ok(
+        installed.deliveredSkills && installed.deliveredSkills.names.length === EXPECTED_SKILL_STEMS.length,
+        'runInstall must deliver the 2 skills alongside the 5 commands + 13 hooks (full-surface install)'
+      );
+      for (const stem of EXPECTED_SKILL_STEMS) {
+        const target = path.join(sb.skillsDir, stem);
+        const st = fs.lstatSync(target);
+        assert.ok(st.isSymbolicLink(), 'runInstall must materialize ' + stem + ' as a dir symlink in the runtime skills dir');
+        assert.strictEqual(
+          fs.readlinkSync(target),
+          path.join(BUNDLE_DIR, 'skills', stem),
+          stem + ' must resolve into the bundle (self-sufficient remote install)'
+        );
+      }
+
+      // 21-03: install lands FULLY ON — the enforcement flag is true after runInstall.
+      const cfg = JSON.parse(fs.readFileSync(path.join(sb.root, '.planning', 'config.json'), 'utf8'));
+      assert.strictEqual(
+        cfg && cfg.workflow ? cfg.workflow.gsd_contrib_enforcement : undefined,
+        true,
+        'runInstall must set workflow.gsd_contrib_enforcement=true (install lands fully ON)'
+      );
+
+      // runRemove reclaims exactly the 5 command links AND the 2 skill links (accountable — under the
+      // LIVE remove receipt).
+      const removed = drv.runRemove(Object.assign({ reason: '21-03 end-to-end command+skill-reclaim proof' }, opts));
       assert.ok(
         removed.reclaimed && removed.reclaimed.removed === EXPECTED_COMMANDS.length,
         'runRemove must reclaim EXACTLY the 5 delivered slash-command links'
       );
+      assert.ok(
+        removed.reclaimedSkills && removed.reclaimedSkills.removed === EXPECTED_SKILL_STEMS.length,
+        'runRemove must reclaim EXACTLY the 2 delivered skill links'
+      );
       for (const base of EXPECTED_COMMANDS) {
         assert.ok(!fs.existsSync(path.join(sb.commandsDir, base + '.md')), base + '.md must be reclaimed by runRemove');
+      }
+      for (const stem of EXPECTED_SKILL_STEMS) {
+        assert.ok(!fs.existsSync(path.join(sb.skillsDir, stem)), stem + ' skill link must be reclaimed by runRemove');
       }
     } finally {
       sb.dispose();
