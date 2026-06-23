@@ -52,6 +52,25 @@ const MANIFEST_PATH = path.join(BUNDLE_DIR, 'capability.json');
 const CANONICAL_SKILLS_DIR = path.join(REPO_ROOT, 'skills');
 const BUNDLE_SKILLS_DIR = path.join(BUNDLE_DIR, 'skills');
 
+// The canonical command source dir (the single DEV SOURCE OF TRUTH for the shipped agent-facing
+// slash-commands — the same dir verify-capability.cjs reads for surface disclosure) and its bundle
+// mirror. The bundle commands/ tree is GENERATED here, byte-for-byte, from CANONICAL_COMMANDS_DIR —
+// never hand-edited (CAP-10). Unlike skills (a per-stem DIRECTORY subtree), commands are FLAT single
+// `.md` files: one `<stem>.md` per disclosed command.
+//
+// ADR-959 HONESTY BOUNDARY: the commands are shipped as plain bundle FILES only. The manifest must
+// NOT gain a `commands[]` `{family, module, router}` CLI array — that field denotes first-party
+// gsd-tools CLI subcommand routers, a DIFFERENT artifact than agent-facing slash-commands. This
+// generator ships the `.md`s; it does not touch the manifest beyond the existing version stamp.
+const CANONICAL_COMMANDS_DIR = path.join(REPO_ROOT, 'commands');
+const BUNDLE_COMMANDS_DIR = path.join(BUNDLE_DIR, 'commands');
+
+// The disclosed command set is DATA-DRIVEN from disk: the basenames of every `gsd-*.md` under the
+// canonical commands/ dir. This is the EXACT filter verify-capability.cjs's readShippedCommands uses,
+// so the bundled set provably equals the disclosed/verified set (T-17-01-HARDCODE) — never a
+// hardcoded literal of the 5 names.
+const COMMAND_NAME_RE = /^gsd-.*\.md$/;
+
 const SEMVER_RE = /^\d+\.\d+\.\d+/;
 
 /**
@@ -200,6 +219,76 @@ function plannedSkillFiles(deps = {}) {
 }
 
 /**
+ * Read the DISCLOSED command set from DISK — the basenames (sans `.md`) of every `gsd-*.md` under the
+ * canonical commands/ dir. This is the command analogue of readDeclaredSkillSet, but DATA-DRIVEN from
+ * DISK (not the manifest): the bundled command set follows what is actually disclosed on disk, never a
+ * hardcoded list, so adding/removing a `commands/gsd-*.md` changes the bundled set. Uses the SAME
+ * `/^gsd-.*\.md$/` filter as verify-capability.cjs readShippedCommands, so the bundled set provably
+ * equals the disclosed/verified set (T-17-01-HARDCODE).
+ *
+ * Matches the skills discipline: a readable dir is REQUIRED — an unreadable/missing commands dir is a
+ * LOUD throw (never a silent "zero commands", which would forge an empty bundle). The missing-SOURCE
+ * (a declared command whose `.md` is absent) discipline is handled in plannedCommandFiles/build.
+ *
+ * @param {object} [deps]
+ * @param {string} [deps.commandsDir] canonical commands/ dir (defaults to repo commands/).
+ * @param {(p:string, opts:object) => fs.Dirent[]} [deps.readdir] injectable dir reader.
+ * @returns {string[]} sorted unique command stems (filename sans .md), one per disclosed command.
+ */
+function readDisclosedCommandSet(deps = {}) {
+  const commandsDir = deps.commandsDir || CANONICAL_COMMANDS_DIR;
+  const readdir = deps.readdir || ((p, opts) => fs.readdirSync(p, opts));
+  const entries = readdir(commandsDir, { withFileTypes: true });
+  const stems = new Set();
+  for (const ent of entries) {
+    if (!ent.isFile()) continue;
+    if (COMMAND_NAME_RE.test(ent.name)) stems.add(ent.name.replace(/\.md$/, ''));
+  }
+  return [...stems].sort();
+}
+
+/**
+ * Compute the planned bundle command file list (relative to the bundle commands/ dir) from the
+ * DISCLOSED command set: one FLAT `<stem>.md` entry per command stem. Commands are flat single `.md`
+ * files (unlike skills' per-stem directory subtree), so this does NOT recurse a per-command dir — it
+ * maps each safe stem to `<stem>.md`. The single definition of "which command files the bundle must
+ * contain" used by BOTH build and check.
+ *
+ * A disclosed stem whose canonical source `<stem>.md` is ABSENT is recorded in `missingSources` so the
+ * build can fail LOUD (never a silent skip / partial bundle), mirroring plannedSkillFiles.
+ *
+ * @param {object} [deps]
+ * @param {string} [deps.sourceCommandsDir] canonical commands/ dir (defaults to repo commands/).
+ * @param {string[]} [deps.commandSet] disclosed command stems (defaults to disk-derived).
+ * @returns {{files:string[], missingSources:string[]}} sorted relative POSIX paths + missing stems.
+ */
+function plannedCommandFiles(deps = {}) {
+  const sourceCommandsDir = deps.sourceCommandsDir || CANONICAL_COMMANDS_DIR;
+  const commandSet = deps.commandSet || readDisclosedCommandSet({ commandsDir: sourceCommandsDir });
+  const files = [];
+  const missingSources = [];
+  for (const stem of commandSet) {
+    // WR-01: Reject any stem that is not a plain single-segment name — a traversal stem (containing
+    // '/', '\', or absolute) would cause path.join/readFileSync to read arbitrary file contents. The
+    // write side is blocked by confineUnder, but the read side needs its own guard. Throw LOUD so a
+    // tampered command name is noticed immediately rather than silently reading unexpected files.
+    if (stem.includes('/') || stem.includes('\\') || path.isAbsolute(stem)) {
+      throw new Error(
+        `build-capability: refusing to read command source for unsafe stem name: ${JSON.stringify(stem)}`
+      );
+    }
+    const srcFile = path.join(sourceCommandsDir, stem + '.md');
+    if (!fs.existsSync(srcFile) || !fs.statSync(srcFile).isFile()) {
+      missingSources.push(stem);
+      continue;
+    }
+    files.push(stem + '.md');
+  }
+  files.sort();
+  return { files, missingSources };
+}
+
+/**
  * Guard: assert a resolved target stays under the confinement root. Rejects any path that escapes
  * (via `..` or absolute) the bundle hooks/ root BEFORE a write happens (T-11-01-01).
  *
@@ -232,6 +321,8 @@ function confineUnder(rootDir, rel) {
  * @param {string} [deps.bundleHooksDir] target bundle hooks/ dir.
  * @param {string} [deps.sourceSkillsDir] canonical skills/ dir.
  * @param {string} [deps.bundleSkillsDir] target bundle skills/ dir.
+ * @param {string} [deps.sourceCommandsDir] canonical commands/ dir.
+ * @param {string} [deps.bundleCommandsDir] target bundle commands/ dir.
  * @param {string} [deps.manifestPath] manifest to stamp.
  * @param {string} [deps.snippetPath] settings.snippet.json (for the wired set).
  * @param {string} [deps.version] version string to stamp (defaults to the manifest's current version).
@@ -242,6 +333,8 @@ function buildCapability(deps = {}) {
   const bundleHooksDir = deps.bundleHooksDir || BUNDLE_HOOKS_DIR;
   const sourceSkillsDir = deps.sourceSkillsDir || CANONICAL_SKILLS_DIR;
   const bundleSkillsDir = deps.bundleSkillsDir || BUNDLE_SKILLS_DIR;
+  const sourceCommandsDir = deps.sourceCommandsDir || CANONICAL_COMMANDS_DIR;
+  const bundleCommandsDir = deps.bundleCommandsDir || BUNDLE_COMMANDS_DIR;
   const manifestPath = deps.manifestPath || MANIFEST_PATH;
   const snippetPath = deps.snippetPath || SNIPPET_PATH;
 
@@ -252,6 +345,11 @@ function buildCapability(deps = {}) {
   // declaration, never a hardcoded list).
   const skillSet = readDeclaredSkillSet({ manifestPath });
   const skillsPlan = plannedSkillFiles({ sourceSkillsDir, skillSet });
+
+  // Plan the commands tree DATA-DRIVEN from the disclosed command set on DISK (commands/gsd-*.md) —
+  // the bundled set follows what is disclosed, never a hardcoded list (CAP-10 data-driven mandate).
+  const commandSet = readDisclosedCommandSet({ commandsDir: sourceCommandsDir });
+  const commandsPlan = plannedCommandFiles({ sourceCommandsDir, commandSet });
 
   // Verify EVERY canonical source exists FIRST (fail-loud before any partial write).
   // (1) hooks: each planned hook file must be a regular file.
@@ -286,6 +384,16 @@ function buildCapability(deps = {}) {
         missingSkillFiles.map((r) => 'skills/' + r).join('\n  ')
     );
   }
+  // (3) commands: a DISCLOSED command whose canonical source `.md` is ABSENT is a LOUD throw (no
+  // partial bundle), mirroring the hooks + skills missing-source checks. This throw is checked
+  // alongside the hooks/skills checks BEFORE any write of ANY tree, so a missing command source can
+  // never leave a half-written bundle (T-17-01-PARTIAL).
+  if (commandsPlan.missingSources.length > 0) {
+    throw new Error(
+      'build-capability: missing canonical command source file(s) — cannot build a partial bundle:\n  ' +
+        commandsPlan.missingSources.map((s) => 'commands/' + s + '.md').join('\n  ')
+    );
+  }
 
   // Copy verbatim into the confined bundle hooks/ dir.
   fs.mkdirSync(bundleHooksDir, { recursive: true });
@@ -308,6 +416,19 @@ function buildCapability(deps = {}) {
     }
   }
 
+  // Copy the planned command files verbatim into the confined bundle commands/ dir (same machinery as
+  // hooks + skills: Buffer copy, byte-for-byte, every write confined under the commands root). Commands
+  // are FLAT `<stem>.md` files — no per-command subtree.
+  if (commandsPlan.files.length > 0) {
+    fs.mkdirSync(bundleCommandsDir, { recursive: true });
+    for (const rel of commandsPlan.files) {
+      const src = path.join(sourceCommandsDir, rel);
+      const dst = confineUnder(bundleCommandsDir, rel);
+      fs.mkdirSync(path.dirname(dst), { recursive: true });
+      fs.writeFileSync(dst, fs.readFileSync(src)); // Buffer copy — byte-for-byte, no transform.
+    }
+  }
+
   // Stamp the manifest version: parse→set→write, preserving every other field verbatim.
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const version = deps.version || manifest.version;
@@ -317,9 +438,13 @@ function buildCapability(deps = {}) {
   manifest.version = version;
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
 
-  // The returned file count covers BOTH bundled trees: hooks rel-paths as-is, skill rel-paths
-  // prefixed `skills/` so they are namespace-unambiguous vs hooks/ paths.
-  const allFiles = [...planned, ...skillsPlan.files.map((r) => 'skills/' + r)].sort();
+  // The returned file count covers ALL THREE bundled trees: hooks rel-paths as-is, skill rel-paths
+  // prefixed `skills/`, and command rel-paths prefixed `commands/` so they are namespace-unambiguous.
+  const allFiles = [
+    ...planned,
+    ...skillsPlan.files.map((r) => 'skills/' + r),
+    ...commandsPlan.files.map((r) => 'commands/' + r),
+  ].sort();
   return { files: allFiles, version };
 }
 
@@ -347,6 +472,8 @@ function buildCapability(deps = {}) {
  * @param {string} [deps.bundleHooksDir] bundle hooks/ dir to compare.
  * @param {string} [deps.sourceSkillsDir] canonical skills/ dir.
  * @param {string} [deps.bundleSkillsDir] bundle skills/ dir to compare.
+ * @param {string} [deps.sourceCommandsDir] canonical commands/ dir.
+ * @param {string} [deps.bundleCommandsDir] bundle commands/ dir to compare.
  * @param {string} [deps.manifestPath] manifest (for the declared skills set).
  * @param {string} [deps.snippetPath] settings.snippet.json (for the wired set).
  * @returns {{fresh:boolean, staleFiles:{path:string, reason:string}[], checked:number}}
@@ -356,6 +483,8 @@ function checkBundleFresh(deps = {}) {
   const bundleHooksDir = deps.bundleHooksDir || BUNDLE_HOOKS_DIR;
   const sourceSkillsDir = deps.sourceSkillsDir || CANONICAL_SKILLS_DIR;
   const bundleSkillsDir = deps.bundleSkillsDir || BUNDLE_SKILLS_DIR;
+  const sourceCommandsDir = deps.sourceCommandsDir || CANONICAL_COMMANDS_DIR;
+  const bundleCommandsDir = deps.bundleCommandsDir || BUNDLE_COMMANDS_DIR;
   const manifestPath = deps.manifestPath || MANIFEST_PATH;
   const snippetPath = deps.snippetPath || SNIPPET_PATH;
 
@@ -428,10 +557,44 @@ function checkBundleFresh(deps = {}) {
     }
   }
 
+  // ── Commands tree drift (DATA-DRIVEN from disclosed commands/gsd-*.md on disk) ──
+  // A disclosed command whose canonical source `.md` is absent surfaces as 'canonical source missing'
+  // (plannedCommandFiles records it in missingSources rather than emitting a planned file for it).
+  const commandSet = readDisclosedCommandSet({ commandsDir: sourceCommandsDir });
+  const commandsPlan = plannedCommandFiles({ sourceCommandsDir, commandSet });
+  for (const stem of commandsPlan.missingSources) {
+    staleFiles.push({ path: 'commands/' + stem + '.md', reason: 'canonical source missing' });
+  }
+  const plannedCommandRel = new Set(commandsPlan.files); // bundle-commands-relative (no `commands/` prefix)
+  for (const rel of commandsPlan.files) {
+    const src = path.join(sourceCommandsDir, rel);
+    const bundled = path.join(bundleCommandsDir, rel);
+    if (!fs.existsSync(src) || !fs.statSync(src).isFile()) {
+      staleFiles.push({ path: 'commands/' + rel, reason: 'canonical source missing' });
+      continue;
+    }
+    if (!fs.existsSync(bundled) || !fs.statSync(bundled).isFile()) {
+      staleFiles.push({ path: 'commands/' + rel, reason: 'missing from bundle' });
+      continue;
+    }
+    if (!fs.readFileSync(src).equals(fs.readFileSync(bundled))) {
+      staleFiles.push({ path: 'commands/' + rel, reason: 'differs from canonical source' });
+    }
+  }
+  // Symmetric extra-file half — walk <bundleDir>/commands ONLY, report any bundled command file not in
+  // the planned commands set (the WR-04 "never an augmented bundle" half for commands).
+  if (fs.existsSync(bundleCommandsDir)) {
+    for (const bundled of listFilesRel(bundleCommandsDir)) {
+      if (!plannedCommandRel.has(bundled)) {
+        staleFiles.push({ path: 'commands/' + bundled, reason: 'extra file in bundle (not in planned set)' });
+      }
+    }
+  }
+
   return {
     fresh: staleFiles.length === 0,
     staleFiles,
-    checked: planned.length + skillsPlan.files.length,
+    checked: planned.length + skillsPlan.files.length + commandsPlan.files.length,
   };
 }
 
@@ -455,10 +618,12 @@ function runCli(argv = process.argv.slice(2)) {
     }
     process.stdout.write('[FAIL] build-capability --check — bundle is STALE vs canonical source:\n');
     for (const s of result.staleFiles) {
-      // Skills stale paths already carry a `skills/` namespace prefix (set in checkBundleFresh);
-      // hooks stale paths are bundle-hooks-relative and get the `hooks/` prefix here. This keeps the
-      // printed path namespace-correct so a stale skill prints `skills/...`, never `hooks/skills/...`.
-      const printed = s.path.startsWith('skills/') ? s.path : 'hooks/' + s.path;
+      // Skills + commands stale paths already carry their `skills/` / `commands/` namespace prefix
+      // (set in checkBundleFresh); hooks stale paths are bundle-hooks-relative and get the `hooks/`
+      // prefix here. This keeps the printed path namespace-correct so a stale skill prints `skills/...`
+      // and a stale command prints `commands/...`, never `hooks/skills/...` / `hooks/commands/...`.
+      const printed =
+        s.path.startsWith('skills/') || s.path.startsWith('commands/') ? s.path : 'hooks/' + s.path;
       process.stdout.write('         ' + printed + ' — ' + s.reason + '\n');
     }
     process.stdout.write('       Run `node bin/build-capability.cjs` to regenerate the bundle.\n');
@@ -490,8 +655,10 @@ module.exports = {
   checkBundleFresh,
   readCanonicalScriptSet,
   readDeclaredSkillSet,
+  readDisclosedCommandSet,
   plannedBundleFiles,
   plannedSkillFiles,
+  plannedCommandFiles,
   confineUnder,
   runCli,
   SEMVER_RE,
