@@ -1002,11 +1002,22 @@ function runRemove(opts = {}) {
       (result.consentRevokeWarning || ''));
   }
 
-  // (3) Accountability receipt (append-only, per-project-root) — an un-writable receipt FAILS remove.
+  // (3) RECLAIM exactly the delivered slash-command links (only links into our bundle — never a real
+  // file or a foreign symlink; T-17-02-OVERREMOVE). This runs BEFORE the final receipt write so the
+  // reclaim is covered by the SAME logged accountability receipt (the receipt's action='remove'
+  // already accounts for the whole remove; the reclaimed-command count is in the log lines). off does
+  // NOT touch the command links — only remove (and an uninstall) reclaims them.
+  const bundleDir = opts.bundleDir || BUNDLE_CAP_DIR;
+  const commandsDir = claudeCommandsDir(opts);
+  const reclaimed = removeBundledCommands({ bundleDir, commandsDir });
+  lines.push('[remove] reclaimed ' + reclaimed.removed + ' delivered slash-command link(s) from ' +
+    commandsDir + ' (only links into our bundle; real files + foreign symlinks left untouched)');
+
+  // (4) Accountability receipt (append-only, per-project-root) — an un-writable receipt FAILS remove.
   const receiptPath = writeAccountabilityReceipt({ liveRoot, action: 'remove', reason });
   lines.push('[remove] logged accountability receipt: ' + receiptPath);
   lines.push('[remove] done — contribution-toolkit removed from the ledger; the gates left settings.json');
-  return { lines, status, strippedEdits, consentRevoked, receiptPath };
+  return { lines, status, strippedEdits, consentRevoked, reclaimed, receiptPath };
 }
 
 // ---------------------------------------------------------------------------

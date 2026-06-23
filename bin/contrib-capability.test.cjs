@@ -160,6 +160,10 @@ function makeCapSandbox(sourceRoot) {
   const gsdHome = path.join(root, '.gsdhome');
   fs.mkdirSync(gsdHome, { recursive: true });
 
+  // A sandboxed runtime commands dir for the slash-command delivery/reclaim (Plan 17-02). Injected via
+  // sandboxOpts.commandsDir so the driver NEVER writes to the real ~/.claude/commands (T-17-02-REALCHECKOUT).
+  const commandsDir = path.join(root, '.claude-runtime', 'commands');
+
   let disposed = false;
   function dispose() {
     if (disposed) return;
@@ -167,12 +171,50 @@ function makeCapSandbox(sourceRoot) {
     fs.rmSync(root, { recursive: true, force: true });
   }
 
-  return { root, gsdHome, settingsPath, dispose };
+  return { root, gsdHome, settingsPath, commandsDir, dispose };
 }
 
-/** The injectable seam opts that confine EVERY driver write to the sandbox. */
+/**
+ * The injectable seam opts that confine EVERY driver write to the sandbox — liveRoot (settings/ledger/
+ * config), consentHome (consent store), and commandsDir (the slash-command delivery target). Injecting
+ * commandsDir means the command delivery/reclaim NEVER touches the real ~/.claude/commands.
+ */
 function sandboxOpts(sb) {
-  return { liveRoot: sb.root, consentHome: sb.gsdHome };
+  return { liveRoot: sb.root, consentHome: sb.gsdHome, commandsDir: sb.commandsDir };
+}
+
+/** The 5 bundled slash-command basenames the install delivers (data-driven from the REAL bundle). */
+function bundledCommandNames() {
+  return drv.bundledCommandNames(drv.BUNDLE_CAP_DIR);
+}
+
+/**
+ * Count the delivered command symlinks in the sandbox commands dir that resolve to the bundle source.
+ * Returns { delivered, names } — delivered = how many of the bundled commands are present as a symlink
+ * pointing at <BUNDLE>/commands/<name>.md (proves the local-parity symlink form, not a stray copy).
+ */
+function countDeliveredCommands(sb) {
+  const names = bundledCommandNames();
+  let delivered = 0;
+  for (const name of names) {
+    const target = path.join(sb.commandsDir, name);
+    let st = null;
+    try {
+      st = fs.lstatSync(target);
+    } catch (_) {
+      continue;
+    }
+    if (!st.isSymbolicLink()) continue;
+    const want = path.join(drv.BUNDLE_CAP_DIR, 'commands', name);
+    let cur = '';
+    try {
+      cur = fs.readlinkSync(target);
+    } catch (_) {
+      cur = '';
+    }
+    if (cur === want) delivered += 1;
+  }
+  return { delivered, names };
 }
 
 /** Count CAP_MARKER-tagged contribution-toolkit entries in the sandbox settings.json, grouped by event. */
@@ -279,6 +321,11 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 13 tagged,
     assert.strictEqual(userHookSurvives(sb.settingsPath), true, 'the pre-seeded untagged user hook must survive install');
     assert.strictEqual(ledgerHasCap(sb), true, 'install must record a ledger entry for contribution-toolkit');
     assert.strictEqual(consentHasCap(sb), true, 'install must record a consent record for contribution-toolkit');
+    // 17-02: install delivers the 5 bundled slash-commands as symlinks → the bundle, into the SANDBOX
+    // commands dir (never the real ~/.claude/commands — confined via sandboxOpts.commandsDir).
+    let cmds = countDeliveredCommands(sb);
+    assert.strictEqual(cmds.names.length, 5, 'the bundle must ship exactly 5 slash-commands');
+    assert.strictEqual(cmds.delivered, 5, 'install must deliver all 5 command symlinks → the bundle, got ' + cmds.delivered);
 
     // ── off: EXACTLY the 13 tagged entries stripped; the UNTAGGED user hook SURVIVES ──
     drv.runOff(Object.assign({}, opts, { reason: 'CAP-07 hermetic lifecycle proof: off' }));
@@ -295,6 +342,10 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 13 tagged,
       false,
       'runOff must set workflow.gsd_contrib_enforcement=false in config.json'
     );
+    // 17-02: off governs enforcement, NOT command availability — the 5 command links SURVIVE an off
+    // (commands are tied to install/remove, not the on/off toggle).
+    cmds = countDeliveredCommands(sb);
+    assert.strictEqual(cmds.delivered, 5, 'off must NOT remove the command links (commands are availability, not enforcement), got ' + cmds.delivered);
 
     // ── on: the 13 tagged entries are restored (and the untagged user hook is still there) ──
     drv.runOn(opts);
@@ -321,6 +372,9 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 13 tagged,
       true,
       'the pre-seeded untagged user hook must STILL survive after the full cycle'
     );
+    // 17-02: remove reclaims EXACTLY the 5 delivered command links — none remain after the cycle.
+    cmds = countDeliveredCommands(sb);
+    assert.strictEqual(cmds.delivered, 0, 'remove must reclaim all 5 delivered command links, leftover=' + cmds.delivered);
   } finally {
     sb.dispose();
   }
@@ -382,4 +436,62 @@ test('the sandbox temp root is removed by dispose() (no temp consent/ledger resi
   assert.strictEqual(fs.existsSync(root), true, 'the sandbox exists during the test');
   sb.dispose();
   assert.strictEqual(fs.existsSync(root), false, 'dispose() must rmSync the sandbox (T-12-03-LEAK)');
+});
+
+// ───────────────────────── 17-02 command-delivery fail-safes ─────────────────────────
+
+test('a pre-seeded REAL command file is NEVER clobbered by install and NEVER reclaimed by remove', { skip: SKIP }, () => {
+  // T-17-02-CLOBBER + T-17-02-OVERREMOVE: a real (non-symlink) file at a command target must survive
+  // BOTH install (install FAILS LOUD rather than overwrite it) and remove (remove leaves it untouched
+  // — it only reclaims symlinks pointing into our bundle).
+  const before = snapshotRealState(SOURCE_ROOT);
+  const sb = makeCapSandbox(SOURCE_ROOT);
+  try {
+    const opts = sandboxOpts(sb);
+    const names = bundledCommandNames();
+    const realTarget = path.join(sb.commandsDir, names[0]);
+    const REAL_BODY = '# a REAL user file at a command path — must NEVER be clobbered\n';
+    fs.mkdirSync(sb.commandsDir, { recursive: true });
+    fs.writeFileSync(realTarget, REAL_BODY, 'utf8');
+
+    // install must FAIL LOUD (never clobber the real file) — the fail-safe mirrors install.sh L73.
+    assert.throws(
+      () => drv.runInstall(opts),
+      /refusing to overwrite real file/i,
+      'install must refuse to clobber a real non-symlink file at a command target (T-17-02-CLOBBER)'
+    );
+    assert.strictEqual(fs.readFileSync(realTarget, 'utf8'), REAL_BODY, 'the real file must be byte-identical after the refused install');
+    assert.strictEqual(fs.lstatSync(realTarget).isSymbolicLink(), false, 'the real file must NOT have become a symlink');
+
+    // remove must leave the real file untouched (it only reclaims symlinks into our bundle).
+    drv.runRemove(Object.assign({}, opts, { reason: '17-02 fail-safe proof: real file survives remove' }));
+    assert.strictEqual(fs.existsSync(realTarget), true, 'remove must NOT reclaim a real file at a command target (T-17-02-OVERREMOVE)');
+    assert.strictEqual(fs.readFileSync(realTarget, 'utf8'), REAL_BODY, 'the real file must be byte-identical after remove');
+  } finally {
+    sb.dispose();
+  }
+  assertRealStateUnchanged(before);
+});
+
+test('remove leaves a FOREIGN symlink (not into our bundle) at a command target untouched', { skip: SKIP }, () => {
+  // T-17-02-OVERREMOVE: a symlink pointing somewhere OTHER than our bundle is not ours to reclaim.
+  const sb = makeCapSandbox(SOURCE_ROOT);
+  try {
+    const opts = sandboxOpts(sb);
+    const names = bundledCommandNames();
+    // Install delivers the 5 bundle symlinks first.
+    drv.runInstall(opts);
+    // Replace one delivered link with a FOREIGN symlink (points outside our bundle).
+    const foreignTarget = path.join(sb.commandsDir, names[0]);
+    const foreignDest = path.join(sb.root, 'somewhere-else.md');
+    fs.writeFileSync(foreignDest, 'foreign\n', 'utf8');
+    fs.rmSync(foreignTarget, { force: true });
+    fs.symlinkSync(foreignDest, foreignTarget);
+
+    drv.runRemove(Object.assign({}, opts, { reason: '17-02 fail-safe proof: foreign symlink survives remove' }));
+    assert.strictEqual(fs.existsSync(foreignTarget), true, 'remove must leave a foreign symlink untouched');
+    assert.strictEqual(fs.readlinkSync(foreignTarget), foreignDest, 'the foreign symlink target must be unchanged');
+  } finally {
+    sb.dispose();
+  }
 });
