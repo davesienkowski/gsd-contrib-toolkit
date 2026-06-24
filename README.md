@@ -295,6 +295,28 @@ node <gsd-core>/bin/gsd-tools.cjs capability install \
   `…-gate` name; GitHub redirects the old URL, so an existing `#v1.0.0` install
   does not hard-break.
 
+**Integrity-pinned npm install.** The bundle is also published to npm as
+`@davesienkowski/gsd-contribution-toolkit` (`#v2.1.3`). Unlike the git adapter — which
+records a **null** integrity digest — the `npm:` source kind verifies the downloaded
+tarball against a real `sha512-` digest **before** staging, so a tampered artifact is
+refused fail-closed. This is the only channel that turns the ADR-1244 integrity guarantee
+**on** for an installer:
+
+```bash
+DIGEST=$(npm view @davesienkowski/gsd-contribution-toolkit@2.1.3 dist.integrity)
+node <gsd-core>/bin/gsd-tools.cjs capability install \
+  npm:@davesienkowski/gsd-contribution-toolkit@2.1.3 \
+  --integrity "$DIGEST" \
+  --scope project --yes --shared-file .claude/settings.json
+```
+
+- Published digest for `2.1.3`: `sha512-5H+u7QH2bSrrc4tmFiUy1JTnMXq0SqLabFX6lOrNFhDCXHIeJ4648Ix2PTk/Y6zpuRh2NRN/TdJFAyIrn2CQ0Q==`
+  (authoritative source is `npm view … dist.integrity`).
+- `capability.json` now carries an ADR-1244 D1 `provenance: { sourceRepo, commit }` block —
+  advisory metadata that surfaces in the install ledger and does **not** gate the install.
+- Proven end-to-end (positive install + tamper-refused + fail-closed) via
+  `bin/prove-integrity-provenance.cjs`; see `proofs/integrity-provenance-proof.md`.
+
 ### Toggle-Off Genuinely Removes the Enforcement
 
 This is honest by design: **toggling `off` (or `remove`) GENUINELY removes the
