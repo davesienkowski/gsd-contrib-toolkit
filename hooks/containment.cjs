@@ -284,6 +284,9 @@ function pushRemote(seg) {
  * @param {(root:string)=>string[]} deps.stagedPaths cached-set reader (A fallback)
  * @param {(root:string, remote:string)=>string} deps.remoteUrl remote URL resolver (B)
  * @param {(root:string)=>string} deps.currentBranch branch resolver (B)
+ * @param {{checkOverride:Function, writeReceipt:Function}} deps.overrideImpl the override
+ *   module (B origin-only consult): checkOverride(root) reads GSD_CONTRIB_OVERRIDE,
+ *   writeReceipt(root, record) appends the per-worktree audit receipt.
  * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
  */
 function gate(stdinString, deps) {
@@ -327,18 +330,58 @@ function gate(stdinString, deps) {
   if (!isUpstreamRemote(url)) {
     return allow(); // pushing to a fork / non-upstream remote is fine
   }
-  // Target IS upstream open-gsd/gsd-core. Per PROJECT privacy, contribution goes via a FORK,
-  // so ANY direct push to the upstream origin is denied — even from a contribution branch.
+  // Target IS upstream open-gsd/gsd-core. Pushing private work here leaks it, so the default
+  // is DENY. ROB-03 (ENF-07 option B): a deliberate, accountable maintainer push to `origin`
+  // (the same-repo CODEOWNER flow) may be honored via a LOGGED override — origin ONLY. A
+  // non-origin upstream remote stays physically contained even with the override set.
   const branch = deps.currentBranch(deps.gsdCoreRoot); // may throw → fail closed
-  const branchNote = isContributionBranch(branch)
-    ? 'Even though `' + branch + '` is a contribution branch, contribution goes via a FORK — '
-    : 'Branch `' + branch + '` is not a contribution branch, and ';
+
+  if (remote === 'origin') {
+    // Gate-local origin-only override consult. Kept HERE (not in the shared runGate) so the
+    // harness never learns to flip a RETURNED policy deny — that wider blast radius is the
+    // deferred generalization (CONTEXT §Deferred). The override is consulted only on the
+    // conjunction isUpstreamRemote(url) === true (above) AND remote name === 'origin'.
+    const check = deps.overrideImpl.checkOverride(deps.gsdCoreRoot);
+    if (check && check.override) {
+      // A bypass we cannot log is a bypass we cannot honor: write the receipt FIRST and fail
+      // closed if it cannot be written (mirrors failclosed.cjs:173-178). The reason is read
+      // from the env by checkOverride and persisted as escaped, length-capped JSON by
+      // writeReceipt — no shell, no eval, no path interpolation (reason-injection safe).
+      try {
+        deps.overrideImpl.writeReceipt(deps.gsdCoreRoot, {
+          reason: check.reason,
+          command,
+          action: 'containment-upstream-push',
+        });
+      } catch (_) {
+        return deny(
+          'Containment override present but its receipt could not be written — denying ' +
+            '(fail closed, ENF-07).'
+        );
+      }
+      return allow();
+    }
+    // No override → DENY, and DO advertise GSD_CONTRIB_OVERRIDE here: it now works on this
+    // exact (origin) path, so the promise is honest.
+    return deny(
+      'Containment breach blocked (ENF-07): `' + remote + '` resolves to the UPSTREAM ' +
+        'open-gsd/gsd-core. Pushing private work to upstream from branch `' + branch +
+        '` leaks it. If this is a deliberate, accountable maintainer push to `origin`, set ' +
+        'GSD_CONTRIB_OVERRIDE="<reason>" and re-run — the push is then ALLOWED and a ' +
+        'per-worktree override receipt is logged. Otherwise push to a fork (`git push fork ' +
+        branch + '`) and open a PR, or use your `!` shell channel.'
+    );
+  }
+
+  // A non-origin remote that nonetheless resolves to upstream open-gsd/gsd-core stays
+  // physically contained. The override is INERT here, so the message must NOT advertise it
+  // (advertising an inert escape is the spoof we are fixing — T-25-03-05).
   return deny(
     'Containment breach blocked (ENF-07): `' + remote + '` resolves to the UPSTREAM ' +
-      'open-gsd/gsd-core. ' + branchNote + 'pushing private work to upstream leaks it. ' +
-      'Push to your FORK remote instead (e.g. `git push fork ' + branch + '`), then open a ' +
-      'PR from the fork. Override with GSD_CONTRIB_OVERRIDE="<reason>" only if you are a ' +
-      'maintainer deliberately pushing upstream (logged).'
+      'open-gsd/gsd-core. Pushing private work to upstream from branch `' + branch +
+      '` leaks it. This remote is physically contained: a deliberate maintainer push is only ' +
+      'possible to `origin` (the same-repo flow), not to `' + remote + '`. Push to a fork ' +
+      '(`git push fork ' + branch + '`) and open a PR, or use your `!` shell channel.'
   );
 }
 
@@ -374,6 +417,10 @@ function runContainmentGate(stdinString, deps = {}) {
     if (!resolved.stagedPaths) resolved.stagedPaths = stagedPathsLive;
     if (!resolved.remoteUrl) resolved.remoteUrl = remoteUrlLive;
     if (!resolved.currentBranch) resolved.currentBranch = currentBranchLive;
+    // The origin-only override consult (B) and the runGate thrown-path use the SAME override
+    // module; default it once here so both the gate-local consult and ctx stay consistent.
+    if (!resolved.overrideImpl) resolved.overrideImpl = require('./lib/override.cjs');
+    ctx.overrideImpl = ctx.overrideImpl || resolved.overrideImpl;
     return gate(stdinString, resolved);
   }, ctx);
 }
