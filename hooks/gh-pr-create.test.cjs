@@ -44,6 +44,12 @@ const GOOD_PR_BODY = [
 // Same valid template but WITHOUT a Fixes/Closes #N line.
 const NO_LINK_BODY = GOOD_PR_BODY.replace('Fixes #12', 'see the issue');
 
+// ROB-02: a non-empty open-PR list for the head branch. Injecting this engages the
+// UNCHANGED ENF-18 check-run gate (the green-gate is preserved for an existing-PR head
+// SHA). The default deps() below lists NO open PR (a first create), so any test that
+// must exercise the check-run gate injects `listPrsForHead: () => EXISTING_PR`.
+const EXISTING_PR = [{ number: 1738 }];
+
 function deps(over = {}) {
   return Object.assign(
     {
@@ -64,6 +70,11 @@ function deps(over = {}) {
         allRequiredGreen: true,
         conclusions: [{ name: 'Tests', status: 'completed', conclusion: 'success' }],
       }),
+      // ROB-02: default to the FIRST-create path — no open PR for the head branch. gsd-core
+      // CI runs on `pull_request`, so a green check-run precondition is UNSATISFIABLE before
+      // the PR exists; the first create relaxes ONLY the CI-green step. Tests that exercise
+      // the existing-PR check-run gate inject `listPrsForHead: () => EXISTING_PR`.
+      listPrsForHead: () => [],
       overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
     },
     over
@@ -201,6 +212,9 @@ test('a thrown live target WITH a logged override → allow (HARD-03)', () => {
 });
 
 // ---- ENF-18 Tier-2: CI-check-run-green condition ----------------------------------
+// NOTE (ROB-02): the check-run gate now only engages for an EXISTING-PR head branch, so
+// every test below injects `listPrsForHead: () => EXISTING_PR` to exercise it. The
+// first-create relaxation (empty open-PR list) is covered in the ROB-02 block further down.
 
 // A green / not-green readCheckRuns stub factory.
 function ci(over = {}) {
@@ -218,7 +232,7 @@ function ci(over = {}) {
 test('ENF-18: green check-runs (Tests ran + all success) → allow', () => {
   const d = runPrGate(
     input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
-    deps({ readCheckRuns: () => ci() })
+    deps({ listPrsForHead: () => EXISTING_PR, readCheckRuns: () => ci() })
   );
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
 });
@@ -227,6 +241,7 @@ test('ENF-18: a not-green conclusion (failure) → DENY naming the CI check-run 
   const d = runPrGate(
     input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
+      listPrsForHead: () => EXISTING_PR,
       readCheckRuns: () =>
         ci({
           allRequiredGreen: false,
@@ -242,6 +257,7 @@ test('ENF-18: Tests did NOT run on the head SHA (changeset-only, #1532) → DENY
   const d = runPrGate(
     input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
+      listPrsForHead: () => EXISTING_PR,
       readCheckRuns: () => ci({ testsRan: false, allRequiredGreen: false, conclusions: [] }),
     })
   );
@@ -253,6 +269,7 @@ test('ENF-18: a throwing readCheckRuns (gh unauth / unparseable) → FAIL CLOSED
   const d = runPrGate(
     input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
+      listPrsForHead: () => EXISTING_PR,
       readCheckRuns: () => {
         throw new Error('gh: not authenticated');
       },
@@ -264,6 +281,7 @@ test('ENF-18: a throwing readCheckRuns (gh unauth / unparseable) → FAIL CLOSED
 test('ENF-18: the four existing checks gate FIRST — bad template denies before the CI read runs', () => {
   let ciCalled = false;
   const d = runPrGate(input('gh pr create --base next --title x --body ""'), deps({
+    listPrsForHead: () => EXISTING_PR,
     readCheckRuns: () => {
       ciCalled = true;
       return ci();
@@ -276,7 +294,7 @@ test('ENF-18: the four existing checks gate FIRST — bad template denies before
 
 test('ENF-18 synonym: gh api POST pulls, green CI → allow', () => {
   const cmd = `gh api -X POST repos/o/r/pulls -f title=x -f base=next -f body='${escapeSingle(GOOD_PR_BODY)}'`;
-  const d = runPrGate(input(cmd), deps({ readCheckRuns: () => ci() }));
+  const d = runPrGate(input(cmd), deps({ listPrsForHead: () => EXISTING_PR, readCheckRuns: () => ci() }));
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
 });
 
@@ -285,6 +303,7 @@ test('ENF-18 synonym: gh api POST pulls, not-green CI → DENY', () => {
   const d = runPrGate(
     input(cmd),
     deps({
+      listPrsForHead: () => EXISTING_PR,
       readCheckRuns: () =>
         ci({ allRequiredGreen: false, conclusions: [{ name: 'Tests', status: 'completed', conclusion: 'failure' }] }),
     })
@@ -296,7 +315,7 @@ test('ENF-18 synonym: gh api POST pulls, not-green CI → DENY', () => {
 test('ENF-18 synonym: curl POST pulls, green CI → allow', () => {
   const payload = JSON.stringify({ title: 'x', base: 'next', body: GOOD_PR_BODY });
   const cmd = `curl -X POST https://api.github.com/repos/o/r/pulls -d '${payload.replace(/'/g, "'\\''")}'`;
-  const d = runPrGate(input(cmd), deps({ readCheckRuns: () => ci() }));
+  const d = runPrGate(input(cmd), deps({ listPrsForHead: () => EXISTING_PR, readCheckRuns: () => ci() }));
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
 });
 
@@ -306,6 +325,7 @@ test('ENF-18 synonym: curl POST pulls, not-green CI → DENY', () => {
   const d = runPrGate(
     input(cmd),
     deps({
+      listPrsForHead: () => EXISTING_PR,
       readCheckRuns: () =>
         ci({ allRequiredGreen: false, conclusions: [{ name: 'Tests', status: 'completed', conclusion: 'failure' }] }),
     })
@@ -380,6 +400,7 @@ test('IN-01: ENF-18 deny reason prominently states EVERY check-run must conclude
   const d = runPrGate(
     input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
+      listPrsForHead: () => EXISTING_PR,
       readCheckRuns: () =>
         ci({ allRequiredGreen: false, conclusions: [{ name: 'Tests', status: 'completed', conclusion: 'failure' }] }),
     })
@@ -438,6 +459,111 @@ test('ROB-01: out-of-tree pr create -R to a FORK (dave/gsd-core-fork) → ALLOW 
     robDenyingOverride
   );
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+// --- ROB-02: first `gh pr create` relaxation (no open PR for the head branch) ---
+// gsd-core's test.yml runs CI on `pull_request`, so a green check-run precondition is
+// UNSATISFIABLE before the PR exists — the first create was blocked every time during the
+// live #1154 → PR #1738 run and had to be routed through the `!` channel. The FIRST create
+// (empty open-PR list) relaxes ONLY the CI-green step; every OTHER ENF-18 precondition still
+// applies, and the green-gate is preserved for an existing-PR head SHA.
+
+test('ROB-02: first create (empty open-PR list) + otherwise-valid PR → ALLOW (CI read SKIPPED)', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({
+      listPrsForHead: () => [], // no open PR for the head branch → first create
+      // Prove the relaxation actually SKIPS the check-run read: were it consulted this would
+      // throw → fail-closed deny. An ALLOW proves the CI-green step was skipped on first create.
+      readCheckRuns: () => {
+        throw new Error('ROB-02: the check-run read must be SKIPPED on a first create');
+      },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('ROB-02: existing PR + a failure check-run → DENY (green-gate intact)', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({
+      listPrsForHead: () => EXISTING_PR, // an open PR exists → run the unchanged ENF-18 gate
+      readCheckRuns: () =>
+        ci({
+          allRequiredGreen: false,
+          conclusions: [{ name: 'Tests', status: 'completed', conclusion: 'failure' }],
+        }),
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /check.?run|CI|head/i);
+});
+
+test('ROB-02: existing PR + green check-runs → ALLOW (unchanged existing-PR behavior)', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({ listPrsForHead: () => EXISTING_PR, readCheckRuns: () => ci() })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('ROB-02: an unreadable listPrsForHead (gh unauth, throws) → FAIL CLOSED deny (HARD-01)', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({
+      listPrsForHead: () => {
+        throw new Error('gh: not authenticated');
+      },
+      // readCheckRuns stays green by default — the deny must come from the unreadable PR-list
+      // read, proving the fail-closed is the listPrsForHead throw path (mirrors readCheckRuns).
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
+});
+
+test('ROB-02: first create still DENIES a non-CI precondition (missing Fixes #N)', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title x --body "${escapeNl(NO_LINK_BODY)}"`),
+    deps({
+      listPrsForHead: () => [], // first create — but the link precondition still applies
+      // Prove it is the link check (step 3, BEFORE ENF-18) that denies: a thrown CI read would
+      // also deny, but for the wrong reason. ALLOW-of-the-relaxation must NOT swallow this.
+      readCheckRuns: () => {
+        throw new Error('ROB-02: the link precondition must deny before any CI read');
+      },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /Fixes|Closes|linked.issue/i);
+});
+
+test('ROB-02: first create still DENIES a disallowed base (ENF-10) before the relaxation', () => {
+  const d = runPrGate(
+    input(`gh pr create --base main --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({
+      listPrsForHead: () => [],
+      readCheckRuns: () => {
+        throw new Error('ROB-02: the base precondition must deny before any CI read');
+      },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /base|target|main/i);
+});
+
+test('ROB-02: first create still DENIES a bad branch name (toolkit-owned) before the relaxation', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({
+      branch: 'my-random-branch',
+      listPrsForHead: () => [],
+      readCheckRuns: () => {
+        throw new Error('ROB-02: the branch-name precondition must deny before any CI read');
+      },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /branch/i);
 });
 
 // Helpers. A real `gh pr create --body "..."` command carries REAL newlines inside the
