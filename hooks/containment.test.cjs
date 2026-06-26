@@ -185,6 +185,106 @@ test('unreadable remote WITH a logged override → allow (HARD-03)', () => {
   assert.strictEqual(d.permissionDecision, 'allow');
 });
 
+// ---- ROB-03 (ENF-07 option B): accountable origin-ONLY override + honest messages ----
+// The override is consulted ONLY on the conjunction (remote NAME === 'origin') AND
+// (isUpstreamRemote(url) === true). The remote NAME — not just the URL — is the origin-only
+// discriminator: 'origin' and 'upstream' below both resolve to UPSTREAM, yet only 'origin' is
+// overridable.
+
+test('origin upstream push WITH a valid override → ALLOW + a receipt is written [ROB-03]', () => {
+  const calls = [];
+  const d = runContainmentGate(
+    input('git push origin fix/12-x'),
+    deps({
+      remoteUrl: (root, r) => (r === 'origin' ? UPSTREAM : FORK),
+      currentBranch: () => 'fix/12-x',
+      overrideImpl: {
+        checkOverride: () => ({ override: true, reason: 'maintainer push #1738' }),
+        writeReceipt: (root, record) => {
+          calls.push({ root, record });
+          return '/tmp/gsd-core/.gsd-contrib/override-receipts.log';
+        },
+      },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  // The receipt MUST actually have been written (a bypass we cannot log is one we cannot honor).
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(calls[0].root, '/tmp/gsd-core'); // keyed to the per-worktree gsd-core root
+  assert.strictEqual(calls[0].record.reason, 'maintainer push #1738');
+  assert.strictEqual(calls[0].record.action, 'containment-upstream-push');
+});
+
+test('origin upstream push, override set but writeReceipt THROWS → DENY (fail closed) [ROB-03]', () => {
+  const d = runContainmentGate(
+    input('git push origin fix/12-x'),
+    deps({
+      remoteUrl: (root, r) => (r === 'origin' ? UPSTREAM : FORK),
+      currentBranch: () => 'fix/12-x',
+      overrideImpl: {
+        checkOverride: () => ({ override: true, reason: 'maintainer push' }),
+        writeReceipt: () => {
+          throw new Error('disk full');
+        },
+      },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /receipt could not be written/);
+});
+
+test('NON-origin upstream remote WITH override set → DENY, message has NO override promise [ROB-03]', () => {
+  // remote NAME 'upstream' resolves to open-gsd/gsd-core (isUpstreamRemote true), but the
+  // override is inert here: it must DENY even with the override set, and must NOT advertise it.
+  const d = runContainmentGate(
+    input('git push upstream fix/12-x'),
+    deps({
+      remoteUrl: () => UPSTREAM,
+      currentBranch: () => 'fix/12-x',
+      overrideImpl: {
+        checkOverride: () => ({ override: true, reason: 'maintainer push' }),
+        // The consult must NEVER reach this remote — a write here is a bug.
+        writeReceipt: () => {
+          throw new Error('writeReceipt must not be called on a non-origin remote');
+        },
+      },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.doesNotMatch(d.permissionDecisionReason, /GSD_CONTRIB_OVERRIDE/);
+});
+
+test('origin upstream push with NO override → DENY, message DOES advertise GSD_CONTRIB_OVERRIDE [ROB-03]', () => {
+  const d = runContainmentGate(
+    input('git push origin fix/12-x'),
+    deps({
+      remoteUrl: (root, r) => (r === 'origin' ? UPSTREAM : FORK),
+      currentBranch: () => 'fix/12-x',
+      overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /GSD_CONTRIB_OVERRIDE/);
+});
+
+test('fork push with an override set → ALLOW, the override is never consulted [ROB-03]', () => {
+  // isUpstreamRemote(FORK) === false → allow before the consult; checkOverride must not run.
+  const d = runContainmentGate(
+    input('git push fork fix/12-x'),
+    deps({
+      remoteUrl: (root, r) => (r === 'fork' ? FORK : UPSTREAM),
+      currentBranch: () => 'fix/12-x',
+      overrideImpl: {
+        checkOverride: () => {
+          throw new Error('override must not be consulted on a fork push');
+        },
+        writeReceipt: () => {},
+      },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
 // ---- fail-closed parse / input ----
 
 test('malformed stdin JSON → FAIL CLOSED deny (HARD-01)', () => {
