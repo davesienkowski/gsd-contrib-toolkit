@@ -412,6 +412,82 @@ test('tokenTargetsGsdCoreApi: a non-repos/ path does NOT match → false', () =>
   assert.strictEqual(res.tokenTargetsGsdCoreApi('user/repos/open-gsd/gsd-core'), false);
 });
 
+// --- commandTargetsGsdCore: GH_REPO-aware + three-way discriminator (CHD-01, Task 2) ---
+// Three-way (binding [Postel + Leaky Abstractions]):
+//   clearly-not-targeting (no repo-spec intent) → false (ROB-01 passthrough preserved)
+//   explicit spec that parses as open-gsd/gsd-core → true (DENY)
+//   explicit spec that is GitHub-ish but parseOwnerRepo CANNOT resolve → true (fail-closed DENY)
+//   explicit spec that parses as a clearly-non-upstream fork → false (no false-deny)
+
+test('commandTargetsGsdCore: case-variant -R Open-GSD/GSD-Core → true (CR-01 via Task-1 reroute)', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('gh issue create -R Open-GSD/GSD-Core --title x')),
+    true
+  );
+});
+
+test('commandTargetsGsdCore: GH_REPO=open-gsd/gsd-core env token → true (CR-02)', () => {
+  const parsed = parseCommand('GH_REPO=open-gsd/gsd-core gh issue create --title x');
+  // Goodhart: assert the env token actually drove the classification — argv keeps the
+  // leading NAME=VALUE in seg.tokens (not seg.program, which is `gh`).
+  assert.strictEqual(parsed.segments[0].program, 'gh');
+  assert.strictEqual(parsed.segments[0].tokens[0], 'GH_REPO=open-gsd/gsd-core');
+  assert.strictEqual(res.commandTargetsGsdCore(parsed), true);
+});
+
+test('commandTargetsGsdCore: case-variant GH_REPO=Open-GSD/GSD-Core env token → true', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('GH_REPO=Open-GSD/GSD-Core gh pr create --base next')),
+    true
+  );
+});
+
+test('commandTargetsGsdCore: GH_HOST + GH_REPO env tokens → true (host-qualified)', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(
+      parseCommand('GH_HOST=github.com GH_REPO=open-gsd/gsd-core gh issue create --title x')
+    ),
+    true
+  );
+});
+
+test('commandTargetsGsdCore: GH_REPO=dave/gsd-core-fork (fork env token) → false (no false-deny)', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('GH_REPO=dave/gsd-core-fork gh issue create --title x')),
+    false
+  );
+});
+
+test('commandTargetsGsdCore: explicit -R weird::garbage (githubish-unparseable) → true (fail-closed)', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('gh issue create -R weird::garbage --title x')),
+    true
+  );
+});
+
+test('commandTargetsGsdCore: explicit GH_REPO=:::bad (githubish-unparseable) → true (fail-closed)', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('GH_REPO=:::bad gh issue create --title x')),
+    true
+  );
+});
+
+test('commandTargetsGsdCore: a lowercase NAME=VALUE (not GH_REPO) leading token is ignored → false', () => {
+  // `gh_repo=...` (lowercase) is NOT the GH_REPO env var; must not trigger targeting.
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('gh issue list')),
+    false
+  );
+});
+
+test('commandTargetsGsdCore: a -f title=x field token is NOT mistaken for an env assignment → false', () => {
+  // The `title=x` token follows the program; it is not a leading env assignment.
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('gh api repos/dave/gsd-core-fork/issues -f title=x')),
+    false
+  );
+});
+
 // --- Integration against the REAL gsd-core checkout when present ---
 const REAL_GSD_CORE = '/home/dave/repos/gsd-core';
 const hasRealCore =
