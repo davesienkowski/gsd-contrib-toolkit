@@ -314,6 +314,24 @@ test('isUpstreamRemote recognizes open-gsd/gsd-core across URL forms', () => {
   assert.ok(!isUpstreamRemote('https://github.com/dave/gsd-core.git'));
 });
 
+// CHD-01 (T-26-02-01): rerouted through parseOwnerRepo → case-fold (CR-01) + port-strip.
+test('isUpstreamRemote case-folds a mixed-case upstream URL → true (CR-01)', () => {
+  assert.ok(isUpstreamRemote('https://github.com/Open-GSD/GSD-Core.git'));
+  assert.ok(isUpstreamRemote('git@github.com:Open-GSD/GSD-Core.git'));
+});
+
+test('isUpstreamRemote handles a port-qualified upstream host → true', () => {
+  assert.ok(isUpstreamRemote('https://github.com:443/open-gsd/gsd-core'));
+  assert.ok(isUpstreamRemote('https://github.com:443/Open-GSD/GSD-Core.git'));
+});
+
+test('isUpstreamRemote: a fork / wrong-owner remote stays false (no false-deny)', () => {
+  assert.ok(!isUpstreamRemote('git@github.com:dave/gsd-core-fork.git'));
+  assert.ok(!isUpstreamRemote('https://github.com/dave/gsd-core.git'));
+  assert.ok(!isUpstreamRemote(''));
+  assert.ok(!isUpstreamRemote('not-a-url'));
+});
+
 test('isContributionBranch matches fix|docs|feat/, not main', () => {
   assert.ok(isContributionBranch('fix/12-x'));
   assert.ok(isContributionBranch('docs/13-y'));
