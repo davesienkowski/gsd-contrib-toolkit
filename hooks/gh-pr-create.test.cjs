@@ -410,6 +410,36 @@ test('IN-02: ownerRepoFromRemote returns null (fail closed) on an unsafe owner/r
   assert.strictEqual(ownerRepoFromRemote('https://github.com/o;rm/r.git'), null);
 });
 
+// --- ROB-01: out-of-tree passthrough seam (null root) + the -R/--repo hole ---
+// Deterministic denying override so the fail-closed case stays hermetic.
+const robDenyingOverride = {
+  overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
+};
+
+test('ROB-01: out-of-tree, NON-targeting command (cd /tmp && gh pr list) → ALLOW (passthrough)', () => {
+  // No worktreeRoot / liveTemplate / liveTarget / branch injected → the real resolver runs;
+  // cd /tmp has no gsd-core sentinel → null root → non-targeting → passthrough ALLOW.
+  const d = runPrGate(input('cd /tmp && gh pr list'), robDenyingOverride);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('ROB-01: out-of-tree pr create targeting open-gsd/gsd-core via -R → DENY (fail-closed)', () => {
+  const d = runPrGate(
+    input('cd /tmp && gh pr create -R open-gsd/gsd-core --base next --title x --body "b"'),
+    robDenyingOverride
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /open-gsd\/gsd-core|checkout|verify/i);
+});
+
+test('ROB-01: out-of-tree pr create -R to a FORK (dave/gsd-core-fork) → ALLOW (no false deny)', () => {
+  const d = runPrGate(
+    input('cd /tmp && gh pr create -R dave/gsd-core-fork --base next --title x --body "b"'),
+    robDenyingOverride
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
 // Helpers. A real `gh pr create --body "..."` command carries REAL newlines inside the
 // double-quoted token (the harness passes the literal command string). argv preserves
 // real newlines verbatim; only escapes a backslash. So the native double-quoted body

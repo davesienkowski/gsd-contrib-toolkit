@@ -137,6 +137,53 @@ test('a thrown live gate (e.g. reshaped script) → FAIL CLOSED deny (HARD-01)',
   assert.strictEqual(d.permissionDecision, 'deny');
 });
 
+// --- ROB-01: out-of-tree passthrough seam (null root) + the -R/--repo hole ---
+// Deterministic override stub for the fail-closed cases below.
+const denyingOverride = {
+  overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
+};
+
+test('ROB-01: out-of-tree, NON-targeting command (cd /tmp && gh issue list) → ALLOW (passthrough)', () => {
+  // No worktreeRoot / liveVersionGate injected → the real resolver runs; cd /tmp has no
+  // gsd-core sentinel → null root → non-targeting → passthrough ALLOW (never fail-closed).
+  const d = runIssueGate(input('cd /tmp && gh issue list'), denyingOverride);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('ROB-01: out-of-tree command targeting open-gsd/gsd-core via -R → DENY (fail-closed)', () => {
+  // null root (cd /tmp) BUT the command names upstream open-gsd/gsd-core via -R → the gate
+  // cannot load the LIVE version gate without a checkout → fail closed (HARD-02).
+  const d = runIssueGate(
+    input('cd /tmp && gh issue create -R open-gsd/gsd-core --label bug --title x --body "no version"'),
+    denyingOverride
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /open-gsd\/gsd-core|checkout|verify/i);
+});
+
+test('ROB-01: out-of-tree -R to a FORK (dave/gsd-core-fork) → ALLOW (no false deny)', () => {
+  const d = runIssueGate(
+    input('cd /tmp && gh issue create -R dave/gsd-core-fork --label bug --title x --body "x"'),
+    denyingOverride
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('ROB-01: in-tree root with a genuinely MISSING live version gate → DENY (HARD-02 preserved)', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  // A non-null root (passed as worktreeRoot) that lacks scripts/issue-version-gate.cjs →
+  // requireLiveScript throws → DENY. Proves the passthrough fires ONLY on a null root, never
+  // on an in-tree command whose LIVE script is missing/renamed.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'intree-noscript-'));
+  const d = runIssueGate(
+    input('gh issue create --label bug --title x --body "whatever"'),
+    Object.assign({ worktreeRoot: root }, denyingOverride)
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+});
+
 test('a thrown live gate WITH a logged override → allow (HARD-03)', () => {
   const d = runIssueGate(
     input(`gh issue create --label bug --title x --body "${BAD_BODY}"`),
