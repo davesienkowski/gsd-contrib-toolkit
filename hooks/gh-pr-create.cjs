@@ -49,7 +49,7 @@ const path = require('node:path');
 const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction, findActionSegment } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
-const { resolveRootForCommand, requireLiveScript } = require('./lib/resolve.cjs');
+const { resolveRootForCommand, requireLiveScript, commandTargetsGsdCore } = require('./lib/resolve.cjs');
 
 // FailClosed/safeCommand: shared IN-03 helpers from failclosed.cjs.
 
@@ -430,7 +430,23 @@ function runPrGate(stdinString, deps = {}) {
     let root = resolved.worktreeRoot || null;
     if (!root && (!resolved.liveTemplate || !resolved.liveTarget || !resolved.branch)) {
       root = resolveRootForCommand(ctx.command, process.cwd());
-      if (!root) return allow();
+      if (!root) {
+        // ROB-01 locked discriminator (same seam as gh-issue-create): an out-of-tree command
+        // (null root) passes through (ALLOW) ONLY when it does NOT target upstream
+        // open-gsd/gsd-core. A -R/--repo / gh-api / curl command that targets it is a real PR
+        // action we cannot verify without a checkout → fail closed (HARD-02). NOTE: this is the
+        // runPrGate null-root seam ONLY; the ENF-18 first-create / check-run logic in gate() is
+        // owned by ROB-02 (plan 25-02) and is deliberately untouched here.
+        if (commandTargetsGsdCore(parseCommand(ctx.command))) {
+          throw new FailClosed(
+            'out-of-tree command targets upstream open-gsd/gsd-core (-R/--repo / gh-api / curl) ' +
+              'but no local gsd-core checkout is reachable from its cwd — cannot load the LIVE ' +
+              'pr-template / pr-target policy to verify it (HARD-02: no runtime-root fallback) → ' +
+              'failing closed.'
+          );
+        }
+        return allow();
+      }
     }
     ctx.worktreeRoot = ctx.worktreeRoot || root;
     if (!resolved.liveTemplate) {
