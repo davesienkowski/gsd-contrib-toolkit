@@ -49,7 +49,7 @@ const path = require('node:path');
 const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction, findActionSegment } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
-const { resolveRootForCommand, requireLiveScript, commandTargetsGsdCore } = require('./lib/resolve.cjs');
+const { resolveRootForCommand, requireLiveScript, commandTargetsGsdCore, parseOwnerRepo } = require('./lib/resolve.cjs');
 
 // FailClosed/safeCommand: shared IN-03 helpers from failclosed.cjs.
 
@@ -708,39 +708,26 @@ function defaultListPrsForHead(root, branch) {
 }
 
 /**
- * Parse owner/repo from a git remote URL (https or ssh form). Returns {owner,repo} or
- * null. Strips a trailing `.git`.
+ * Parse owner/repo from a git remote URL (https or ssh form). Routes the parse through the
+ * unified parseOwnerRepo normalizer (CHD-01 / WR-03 — case-fold + port-strip + `.git`/scheme/
+ * user normalization), then RE-APPLIES the IN-02 SAFE-character validation so the existing
+ * security fail-closed is preserved verbatim. Returns {owner,repo} (LOWER-cased — parseOwnerRepo
+ * normalizes case; GitHub routes owner/repo case-insensitively so the `gh api
+ * repos/<owner>/<repo>/...` path is unaffected) or null. Keeps the {owner,repo}|null shape the
+ * defaultReadCheckRuns consumer depends on (Hyrum preserved).
  * @param {string} url
  * @returns {{owner:string, repo:string}|null}
  */
 function ownerRepoFromRemote(url) {
-  if (typeof url !== 'string' || !url) return null;
-  let s = url.trim();
-  // ssh: git@github.com:owner/repo(.git)
-  const sshMatch = /^[^@]+@[^:]+:(.+)$/.exec(s);
-  if (sshMatch) {
-    s = sshMatch[1];
-  } else {
-    // https://github.com/owner/repo(.git) — strip scheme + host.
-    const schemeIdx = s.indexOf('://');
-    if (schemeIdx !== -1) {
-      const after = s.slice(schemeIdx + 3);
-      const slash = after.indexOf('/');
-      s = slash === -1 ? '' : after.slice(slash + 1);
-    }
-  }
-  s = s.replace(/\.git$/i, '');
-  const parts = s.split('/').filter((p) => p.length > 0);
-  if (parts.length < 2) return null;
-  const owner = parts[parts.length - 2];
-  const repo = parts[parts.length - 1];
+  const r = parseOwnerRepo(url);
+  if (!r) return null;
   // IN-02: owner/repo are interpolated into the `gh api repos/<owner>/<repo>/...` path. The call
   // uses execFileSync with an array arg (no shell) today, so this is hardening — validate both
   // against a conservative safe-character set so a future shell-based refactor cannot become
   // injectable, and an odd remote fails CLOSED (return null → caller throws FailClosed → deny).
   const SAFE = /^[A-Za-z0-9._-]+$/;
-  if (!SAFE.test(owner) || !SAFE.test(repo)) return null;
-  return { owner, repo };
+  if (!SAFE.test(r.owner) || !SAFE.test(r.repo)) return null;
+  return { owner: r.owner, repo: r.repo };
 }
 
 
