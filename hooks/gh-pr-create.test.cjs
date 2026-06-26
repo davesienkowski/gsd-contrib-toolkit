@@ -431,6 +431,28 @@ test('IN-02: ownerRepoFromRemote returns null (fail closed) on an unsafe owner/r
   assert.strictEqual(ownerRepoFromRemote('https://github.com/o;rm/r.git'), null);
 });
 
+// CHD-01 (T-26-02-03 / Gall step 3): ownerRepoFromRemote routes through parseOwnerRepo —
+// case-folds consistently with the unified normalizer, preserves the SAFE-char fail-closed.
+test('CHD-01: ownerRepoFromRemote case-folds owner/repo consistently with parseOwnerRepo', () => {
+  assert.deepStrictEqual(
+    ownerRepoFromRemote('https://github.com/Open-GSD/GSD-Core'),
+    { owner: 'open-gsd', repo: 'gsd-core' }
+  );
+  assert.deepStrictEqual(
+    ownerRepoFromRemote('git@github.com:Open-GSD/GSD-Core.git'),
+    { owner: 'open-gsd', repo: 'gsd-core' }
+  );
+});
+
+test('CHD-01: ownerRepoFromRemote keeps the {owner,repo}|null shape; null on a single-segment / garbage remote', () => {
+  assert.deepStrictEqual(
+    ownerRepoFromRemote('https://github.com/dave/fork.git'),
+    { owner: 'dave', repo: 'fork' }
+  );
+  assert.strictEqual(ownerRepoFromRemote('weird::garbage'), null);
+  assert.strictEqual(ownerRepoFromRemote('https://github.com/single'), null);
+});
+
 // --- ROB-01: out-of-tree passthrough seam (null root) + the -R/--repo hole ---
 // Deterministic denying override so the fail-closed case stays hermetic.
 const robDenyingOverride = {
