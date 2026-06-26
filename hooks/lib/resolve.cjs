@@ -291,7 +291,22 @@ function tokenTargetsGsdCoreApi(token) {
  * (HARD-02 — never reach for a possibly-stale runtime root).
  *
  * Reads STRUCTURED argv only (parsed.segments flags/shortFlags/tokens) — never a
- * raw-string re-parse (HARD-04). A fork or a non-gh command returns false.
+ * raw-string re-parse (HARD-04). It is THREE-way (binding [Postel + Leaky Abstractions]):
+ *   - NO repo-spec intent (no -R/--repo, no GH_REPO token, no upstream api/curl token)
+ *     → false (ROB-01 passthrough preserved — a clearly-non-upstream command passes through).
+ *   - an explicit repo-spec (flags.repo / shortFlags.R / a leading GH_REPO=… env token)
+ *     that parses as open-gsd/gsd-core, OR a gh-api/curl `repos/open-gsd/gsd-core` token
+ *     → true (targeting → DENY).
+ *   - an explicit repo-spec that parseOwnerRepo CANNOT resolve (GitHub-ish but unparseable)
+ *     → true (fail-closed targeting — an un-enumerated explicit target is a containment
+ *     bypass, never a silent non-upstream ALLOW; the Postel-inversion).
+ *   - an explicit repo-spec that parses as a clearly-non-upstream fork → that source is NOT
+ *     targeting (a fork must still passthrough — no false-deny).
+ *
+ * The GH_REPO/GH_HOST env target is read from the LEADING `NAME=VALUE` tokens argv keeps in
+ * seg.tokens (CR-02): argv normalizes a leading env-assignment OUT of seg.program but RETAINS
+ * it as a leading seg.tokens entry — so an ordinary `--flag=value` or a post-program
+ * `-f title=x` field is never mistaken for an env assignment.
  *
  * @param {{ok?:boolean, segments?:Array}} parsed result of parseCommand(command)
  * @returns {boolean}
@@ -302,11 +317,39 @@ function commandTargetsGsdCore(parsed) {
     if (!seg) continue;
     const flags = seg.flags || {};
     const shortFlags = seg.shortFlags || {};
-    // gh native explicit target: --repo <v> / --repo=<v> / -R <v> / -R<v>.
-    if (repoSpecTargetsGsdCore(flags.repo)) return true;
-    if (repoSpecTargetsGsdCore(shortFlags.R)) return true;
-    // gh-api path positional / curl api.github.com URL token.
     const tokens = Array.isArray(seg.tokens) ? seg.tokens : [];
+
+    // Collect every EXPLICIT repo-spec source for this segment:
+    //   gh native --repo <v> / --repo=<v> / -R <v> / -R<v>, and a leading GH_REPO=… env token.
+    const explicitSpecs = [];
+    if (typeof flags.repo === 'string') explicitSpecs.push(flags.repo);
+    if (typeof shortFlags.R === 'string') explicitSpecs.push(shortFlags.R);
+
+    // Scan the LEADING run of `NAME=VALUE` env-assignment tokens (they precede the program
+    // per argv's normalization). Stop at the first non-assignment token (the program) so a
+    // post-program `title=x` / `--flag=value` is never read as an env assignment.
+    for (const tok of tokens) {
+      if (typeof tok !== 'string') break;
+      const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(tok);
+      if (!m) break; // first non-assignment token = the program → stop scanning
+      if (m[1] === 'GH_REPO') explicitSpecs.push(m[2]);
+      // GH_HOST is recognized as part of the env-target shape but the gate keys on
+      // owner/repo (host is advisory), so its value does not itself drive classification.
+    }
+
+    // Three-way over each explicit repo-spec source.
+    for (const spec of explicitSpecs) {
+      const r = parseOwnerRepo(spec);
+      if (r) {
+        if (r.owner === GSD_CORE_OWNER && r.repo === GSD_CORE_REPO) return true; // upstream → DENY
+        // else: parses as a clearly-non-upstream fork → not targeting via this source (continue).
+      } else {
+        // explicit spec present but unparseable (GitHub-ish but unparseable) → fail-closed.
+        return true;
+      }
+    }
+
+    // gh-api path positional / curl api.github.com URL token (upstream match).
     for (const tok of tokens) {
       if (tokenTargetsGsdCoreApi(tok)) return true;
     }
