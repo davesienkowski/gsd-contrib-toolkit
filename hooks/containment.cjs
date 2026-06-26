@@ -36,7 +36,7 @@
 
 const { parseCommand } = require('./lib/argv.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
-const { resolveGsdCoreRoot, commandStartDir, ScriptResolveError } = require('./lib/resolve.cjs');
+const { resolveGsdCoreRoot, commandStartDir, ScriptResolveError, parseOwnerRepo } = require('./lib/resolve.cjs');
 
 // FailClosed/safeCommand: shared IN-03 helpers from failclosed.cjs.
 
@@ -76,28 +76,20 @@ function isToolkitArtifact(p) {
 }
 
 /**
- * Does this remote URL point at the UPSTREAM open-gsd/gsd-core (ENF-07)? Recognizes both
- * https and ssh forms; the owner MUST be `open-gsd` and the repo `gsd-core` — a personal
- * fork (`dave/gsd-core-fork`, `dave/gsd-core`) is NOT upstream.
+ * Does this remote URL point at the UPSTREAM open-gsd/gsd-core (ENF-07)? Routes through the
+ * unified parseOwnerRepo normalizer (CHD-01 / WR-03) so it case-folds (CR-01) and port-strips
+ * exactly like the resolve.cjs classifiers — recognizes https/http (+ optional `:port`) and ssh
+ * forms; the owner MUST be `open-gsd` and the repo `gsd-core`. A personal fork
+ * (`dave/gsd-core-fork`, `dave/gsd-core`) is NOT upstream (no false-deny). Behavior-preserving
+ * reroute: keeps the boolean shape the gate() consumer (:330) depends on, only ADDING the
+ * case-fold + port handling the hand-rolled body lacked.
  *
  * @param {string} url
  * @returns {boolean}
  */
 function isUpstreamRemote(url) {
-  if (typeof url !== 'string' || url.length === 0) return false;
-  // Normalize: strip scheme/user, unify ':' (ssh) and '/' separators after the host.
-  let s = url.trim();
-  s = s.replace(/^[a-z]+:\/\//i, ''); // https:// , ssh://
-  s = s.replace(/^[^@]+@/, ''); // git@
-  // Now host[:/]owner/repo(.git)? — split host from the path on the first ':' or '/'.
-  const m = /^([^:/]+)[:/](.+)$/.exec(s);
-  if (!m) return false;
-  let pathPart = m[2].replace(/\.git$/i, '');
-  const segs = pathPart.split('/').filter((x) => x.length > 0);
-  if (segs.length < 2) return false;
-  const owner = segs[segs.length - 2];
-  const repo = segs[segs.length - 1];
-  return owner === 'open-gsd' && repo === 'gsd-core';
+  const r = parseOwnerRepo(url);
+  return !!r && r.owner === 'open-gsd' && r.repo === 'gsd-core';
 }
 
 /**
