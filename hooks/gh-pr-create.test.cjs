@@ -588,6 +588,84 @@ test('ROB-02: first create still DENIES a bad branch name (toolkit-owned) before
   assert.match(d.permissionDecisionReason, /branch/i);
 });
 
+// --- WR-01: the ENF-18 readers honor the command's explicit -R/GH_REPO target ---
+// When the command names an explicit upstream target while the worktree origin is a fork, the
+// readers (listPrsForHead / readCheckRuns) must read PRs/check-runs from the UPSTREAM repo — so
+// an upstream red PR can no longer hide behind a fork origin. The readers receive the resolved
+// {owner,repo} as a second argument (single-source: the same explicit target the gate derives).
+
+test('WR-01: -R upstream target while origin is a fork → readers read upstream; red PR → DENY', () => {
+  let listTarget; let ciTarget;
+  const d = runPrGate(
+    input(`gh pr create -R open-gsd/gsd-core --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({
+      listPrsForHead: (head, target) => {
+        listTarget = target;
+        return EXISTING_PR; // an OPEN PR exists upstream → engages the (unchanged) check-run gate
+      },
+      readCheckRuns: (sha, target) => {
+        ciTarget = target;
+        return ci({ allRequiredGreen: false, conclusions: [{ name: 'Tests', status: 'completed', conclusion: 'failure' }] });
+      },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /check.?run|CI|head/i);
+  // BOTH readers were handed the explicit upstream target (not the worktree origin).
+  assert.deepStrictEqual(listTarget, { owner: 'open-gsd', repo: 'gsd-core' });
+  assert.deepStrictEqual(ciTarget, { owner: 'open-gsd', repo: 'gsd-core' });
+});
+
+test('WR-01: case-variant -R Open-GSD/GSD-Core target → readers read the case-folded upstream', () => {
+  let listTarget;
+  const d = runPrGate(
+    input(`gh pr create -R Open-GSD/GSD-Core --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({
+      listPrsForHead: (head, target) => { listTarget = target; return []; }, // first create
+      readCheckRuns: () => ci(),
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.deepStrictEqual(listTarget, { owner: 'open-gsd', repo: 'gsd-core' });
+});
+
+test('WR-01: GH_REPO=open-gsd/gsd-core env target → readers read upstream', () => {
+  let listTarget;
+  const d = runPrGate(
+    input(`GH_REPO=open-gsd/gsd-core gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({
+      listPrsForHead: (head, target) => { listTarget = target; return []; },
+      readCheckRuns: () => ci(),
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.deepStrictEqual(listTarget, { owner: 'open-gsd', repo: 'gsd-core' });
+});
+
+test('WR-01: NO explicit -R/GH_REPO target → readers fall back to origin (target is null)', () => {
+  let listTarget = 'UNSET'; let ciTarget = 'UNSET';
+  const d = runPrGate(
+    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({
+      listPrsForHead: (head, target) => { listTarget = target; return EXISTING_PR; },
+      readCheckRuns: (sha, target) => { ciTarget = target; return ci(); },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.strictEqual(listTarget, null);
+  assert.strictEqual(ciTarget, null);
+});
+
+test('WR-01: an explicit -R target unparseable by the enumerated forms → FAIL CLOSED deny', () => {
+  const d = runPrGate(
+    input(`gh pr create -R weird::garbage --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    // Were the explicit target ignored, the empty open-PR list would be a first-create ALLOW;
+    // the unparseable explicit target must instead fail closed (no silent origin-fallback ALLOW).
+    deps({ listPrsForHead: () => [] })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+});
+
 // Helpers. A real `gh pr create --body "..."` command carries REAL newlines inside the
 // double-quoted token (the harness passes the literal command string). argv preserves
 // real newlines verbatim; only escapes a backslash. So the native double-quoted body
