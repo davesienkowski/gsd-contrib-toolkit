@@ -177,6 +177,111 @@ test('resolveRootForCommand: no cd, baseCwd is a gsd-core checkout → returns t
   );
 });
 
+// --- commandTargetsGsdCore: does a parsed command explicitly target UPSTREAM open-gsd/gsd-core? ---
+// The ROB-01 discriminator (HARD-04: reads STRUCTURED argv, never a raw-string re-parse).
+// An out-of-tree command (resolveRootForCommand → null) passes through (ALLOW) ONLY when it does
+// NOT target upstream gsd-core. A `-R/--repo open-gsd/gsd-core`, a gh-api `repos/open-gsd/gsd-core`
+// path positional, or a curl `api.github.com/repos/open-gsd/gsd-core` URL all target it regardless
+// of cwd → those must NOT passthrough (Task 2 fails them closed).
+
+test('commandTargetsGsdCore: native -R open-gsd/gsd-core → true', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('gh issue create -R open-gsd/gsd-core --title x')),
+    true
+  );
+});
+
+test('commandTargetsGsdCore: --repo open-gsd/gsd-core → true', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('gh issue create --repo open-gsd/gsd-core --title x')),
+    true
+  );
+});
+
+test('commandTargetsGsdCore: --repo=open-gsd/gsd-core (attached form) → true', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('gh pr create --repo=open-gsd/gsd-core --base next')),
+    true
+  );
+});
+
+test('commandTargetsGsdCore: host-qualified -R github.com/open-gsd/gsd-core → true', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('gh issue create -R github.com/open-gsd/gsd-core')),
+    true
+  );
+});
+
+test('commandTargetsGsdCore: -R open-gsd/gsd-core.git (trailing .git stripped) → true', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('gh issue create -R open-gsd/gsd-core.git')),
+    true
+  );
+});
+
+test('commandTargetsGsdCore: gh api -X POST repos/open-gsd/gsd-core/issues → true', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(
+      parseCommand('gh api -X POST repos/open-gsd/gsd-core/issues -f title=x')
+    ),
+    true
+  );
+});
+
+test('commandTargetsGsdCore: gh api repos/open-gsd/gsd-core/pulls → true', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('gh api repos/open-gsd/gsd-core/pulls')),
+    true
+  );
+});
+
+test('commandTargetsGsdCore: curl api.github.com/repos/open-gsd/gsd-core URL → true', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(
+      parseCommand('curl -X POST https://api.github.com/repos/open-gsd/gsd-core/issues -d "{}"')
+    ),
+    true
+  );
+});
+
+test('commandTargetsGsdCore: a fork (dave/gsd-core-fork) is NOT a target → false', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('gh issue create -R dave/gsd-core-fork --title x')),
+    false
+  );
+});
+
+test('commandTargetsGsdCore: dave/gsd-core (right repo name, WRONG owner) → false', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('gh issue create -R dave/gsd-core --title x')),
+    false
+  );
+});
+
+test('commandTargetsGsdCore: gh issue list (no -R) → false', () => {
+  assert.strictEqual(res.commandTargetsGsdCore(parseCommand('gh issue list')), false);
+});
+
+test('commandTargetsGsdCore: a non-gh out-of-tree command (cat) → false', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('cat ~/.claude/skills/x/law.md')),
+    false
+  );
+});
+
+test('commandTargetsGsdCore: cd into a skills dir then cat → false', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('cd ~/.claude/skills/x && cat law.md')),
+    false
+  );
+});
+
+test('commandTargetsGsdCore: an unparseable / empty / null parse result → false', () => {
+  assert.strictEqual(res.commandTargetsGsdCore({ ok: false, reason: 'x' }), false);
+  assert.strictEqual(res.commandTargetsGsdCore(null), false);
+  assert.strictEqual(res.commandTargetsGsdCore(parseCommand('')), false);
+});
+
 // --- Integration against the REAL gsd-core checkout when present ---
 const REAL_GSD_CORE = '/home/dave/repos/gsd-core';
 const hasRealCore =

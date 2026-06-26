@@ -49,7 +49,7 @@ const path = require('node:path');
 const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction, findActionSegment } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
-const { resolveRootForCommand, requireLiveScript } = require('./lib/resolve.cjs');
+const { resolveRootForCommand, requireLiveScript, commandTargetsGsdCore } = require('./lib/resolve.cjs');
 
 // FailClosed/safeCommand: shared IN-03 helpers from failclosed.cjs.
 
@@ -281,6 +281,9 @@ function jsonField(payload, key) {
  * @param {(p:string)=>(string|null)} deps.readBodyFile
  * @param {(headSha:string)=>{headSha:string,testsRan:boolean,allRequiredGreen:boolean,conclusions:Array}} deps.readCheckRuns
  *   ENF-18 injectable read of the head SHA's AUTHORITATIVE check-runs (throws → fail-closed)
+ * @param {(branch:string)=>Array} deps.listPrsForHead
+ *   ROB-02 injectable read of the OPEN PRs for the head branch (empty → first create → CI-green
+ *   relaxed; non-empty → existing PR → check-run gate engages; throws → fail-closed)
  * @param {string} [deps.headSha] inject the head SHA directly (else resolved from deps.root)
  * @param {string} [deps.root] worktree root the ENF-18 head-SHA resolution reads from
  * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
@@ -381,6 +384,25 @@ function gate(stdinString, deps) {
   // resolveHeadSha or readCheckRuns (gh unauth, spawn fail, unparseable JSON, missing
   // SHA) propagates to runGate → fail-closed deny (HARD-01). readCheckRuns reads the REAL
   // check-runs (commits/<sha>/check-runs), NOT the evaluate-mode ruleset rollup.
+  //
+  // ROB-02 first-create relaxation: gsd-core's CI runs on `pull_request` (and pushes to
+  // next/main/release/hotfix), so a green check-run precondition is UNSATISFIABLE before the
+  // PR exists — the first `gh pr create` was blocked every time during the live #1154 → PR
+  // #1738 run. BEFORE resolving the head SHA, consult an injectable listPrsForHead(head) for
+  // the head branch: an EMPTY open-PR list means no PR exists yet → CI cannot have run → SKIP
+  // the check-run gate and fall through to ALLOW (preconditions 0-4 having already passed —
+  // ONLY the CI-green step is relaxed). A NON-EMPTY list means an open PR exists → run the
+  // UNCHANGED check-run gate below (a concluded non-`success` conclusion STILL DENIES — the
+  // green-gate is preserved for re-creates / existing-PR head SHAs). If listPrsForHead THROWS
+  // (gh unauth / unreadable), it propagates to runGate → fail-closed deny (HARD-01), mirroring
+  // the readCheckRuns throw discipline. The discriminator is "no OPEN PR for the head branch"
+  // (`--state open`), NOT "zero check-runs on the head SHA" — a post-PR branch can transiently
+  // have zero queued runs and must not be able to masquerade as a first create.
+  const openPrs = deps.listPrsForHead(head); // may throw → fail-closed deny (HARD-01)
+  if (Array.isArray(openPrs) && openPrs.length === 0) {
+    return allow(); // first create — no open PR yet, CI cannot have run; CI-green step relaxed
+  }
+
   const headSha =
     typeof deps.headSha === 'string' && deps.headSha
       ? deps.headSha
@@ -430,7 +452,23 @@ function runPrGate(stdinString, deps = {}) {
     let root = resolved.worktreeRoot || null;
     if (!root && (!resolved.liveTemplate || !resolved.liveTarget || !resolved.branch)) {
       root = resolveRootForCommand(ctx.command, process.cwd());
-      if (!root) return allow();
+      if (!root) {
+        // ROB-01 locked discriminator (same seam as gh-issue-create): an out-of-tree command
+        // (null root) passes through (ALLOW) ONLY when it does NOT target upstream
+        // open-gsd/gsd-core. A -R/--repo / gh-api / curl command that targets it is a real PR
+        // action we cannot verify without a checkout → fail closed (HARD-02). NOTE: this is the
+        // runPrGate null-root seam ONLY; the ENF-18 first-create / check-run logic in gate() is
+        // owned by ROB-02 (plan 25-02) and is deliberately untouched here.
+        if (commandTargetsGsdCore(parseCommand(ctx.command))) {
+          throw new FailClosed(
+            'out-of-tree command targets upstream open-gsd/gsd-core (-R/--repo / gh-api / curl) ' +
+              'but no local gsd-core checkout is reachable from its cwd — cannot load the LIVE ' +
+              'pr-template / pr-target policy to verify it (HARD-02: no runtime-root fallback) → ' +
+              'failing closed.'
+          );
+        }
+        return allow();
+      }
     }
     ctx.worktreeRoot = ctx.worktreeRoot || root;
     if (!resolved.liveTemplate) {
@@ -449,6 +487,13 @@ function runPrGate(stdinString, deps = {}) {
     }
     if (!resolved.readCheckRuns) {
       resolved.readCheckRuns = (headSha) => defaultReadCheckRuns(resolved.root, headSha);
+    }
+    if (!resolved.listPrsForHead) {
+      // ROB-02: default first-create detector — list the OPEN PRs for the head branch from the
+      // SAME worktree root the rest of the gate uses. An empty array → first create (CI-green
+      // relaxed); a non-empty array → existing PR (check-run gate engages). Any spawn/parse/auth
+      // failure THROWS FailClosed (an unauth gh DENIES, never relaxes) — mirrors readCheckRuns.
+      resolved.listPrsForHead = (branch) => defaultListPrsForHead(resolved.root, branch);
     }
     if (!resolved.readBodyFile) {
       const fs = require('node:fs');
@@ -604,6 +649,62 @@ function normalizeCheckRuns(headSha, runs) {
   const allRequiredGreen =
     conclusions.length > 0 && conclusions.every((c) => c.conclusion === GREEN_CONCLUSION);
   return { headSha, testsRan, allRequiredGreen, conclusions };
+}
+
+/**
+ * ROB-02 default first-create detector: list the OPEN PRs for the head branch.
+ *
+ * Reads `gh pr list --head <branch> --json number --state open` via execFileSync (no shell,
+ * array args, cwd = the resolved worktree root) so the branch is a fixed argv element — never
+ * interpolated into a shell string (T-25-02-04 injection). Returns the parsed JSON array (empty
+ * → no open PR → first create). ANY spawn/parse/auth/shape failure THROWS FailClosed so runGate
+ * fails closed (HARD-01) — an unauthenticated `gh` DENIES, it never relaxes the CI-green gate.
+ *
+ * @param {string} root absolute worktree root (cwd for the `gh` read).
+ * @param {string} branch the head branch name.
+ * @returns {Array} the open PRs for the head branch (possibly empty).
+ */
+function defaultListPrsForHead(root, branch) {
+  const { execFileSync } = require('node:child_process');
+  if (typeof branch !== 'string' || !branch) {
+    throw new FailClosed('ROB-02: no head branch to list open PRs for — failing closed (HARD-01)');
+  }
+  const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] };
+  if (root) opts.cwd = root;
+
+  // gh exits nonzero on unauth / API failure → execFileSync throws → fail closed. The branch
+  // is a fixed array element (no shell), so a crafted branch name cannot inject (T-25-02-04).
+  let raw;
+  try {
+    raw = execFileSync(
+      'gh',
+      ['pr', 'list', '--head', branch, '--json', 'number', '--state', 'open'],
+      opts
+    );
+  } catch (err) {
+    throw new FailClosed(
+      'ROB-02: could not read the open PRs for head branch `' + branch + '` via `gh pr list` (' +
+        ((err && err.message) || 'gh failure / unauthenticated') +
+        ') — failing closed (HARD-01). An unauthenticated gh never relaxes the CI-green gate.'
+    );
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new FailClosed(
+      'ROB-02: the `gh pr list` response for head branch `' + branch +
+        '` was not parseable JSON — failing closed (HARD-01)'
+    );
+  }
+  if (!Array.isArray(parsed)) {
+    throw new FailClosed(
+      'ROB-02: `gh pr list --json number` did not return an array for head branch `' + branch +
+        '` — failing closed (HARD-01)'
+    );
+  }
+  return parsed;
 }
 
 /**

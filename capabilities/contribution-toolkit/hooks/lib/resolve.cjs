@@ -162,6 +162,96 @@ function resolveRootForCommand(command, baseCwd) {
   }
 }
 
+// The UPSTREAM repo every contribution gate governs. A personal fork (`dave/gsd-core-fork`,
+// `dave/gsd-core`) is NOT this target — only owner===open-gsd AND repo===gsd-core.
+const GSD_CORE_OWNER = 'open-gsd';
+const GSD_CORE_REPO = 'gsd-core';
+
+/**
+ * Does an explicit `-R/--repo` VALUE name the upstream open-gsd/gsd-core repo?
+ *
+ * Accepts a bare `owner/repo`, a host-qualified `github.com/owner/repo`, an ssh
+ * `git@github.com:owner/repo`, an https URL, and a trailing `.git`. The owner/repo are
+ * the LAST two path segments after host/scheme/user normalization (the shape proven in
+ * containment.cjs isUpstreamRemote) — so a fork (`dave/gsd-core-fork`) or a wrong-owner
+ * same-name repo (`dave/gsd-core`) does NOT match.
+ *
+ * @param {*} value the flag value (only strings can match)
+ * @returns {boolean}
+ */
+function repoSpecTargetsGsdCore(value) {
+  if (typeof value !== 'string' || value.length === 0) return false;
+  let s = value.trim();
+  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, ''); // strip scheme (https:// , ssh://)
+  s = s.replace(/^[^@/]+@/, ''); // strip git@ user (before any path slash)
+  s = s.replace(/\.git$/i, '');
+  s = s.replace(/^\/+/, '');
+  // ssh `host:owner/repo` → unify the host separator to '/'.
+  s = s.replace(/^([^:/]+):/, '$1/');
+  const segs = s.split('/').filter((x) => x.length > 0);
+  if (segs.length < 2) return false;
+  const owner = segs[segs.length - 2];
+  const repo = segs[segs.length - 1];
+  return owner === GSD_CORE_OWNER && repo === GSD_CORE_REPO;
+}
+
+/**
+ * Does a single token name the upstream gsd-core repo via a REST path — a gh-api path
+ * positional (`repos/open-gsd/gsd-core/...`) or a curl URL token
+ * (`https://api.github.com/repos/open-gsd/gsd-core/...`)? The token is normalized
+ * (scheme + api.github.com host + leading slash + `.git` stripped) then matched against
+ * the `repos/<owner>/<repo>` prefix so only the upstream owner/repo pair counts.
+ *
+ * @param {*} token
+ * @returns {boolean}
+ */
+function tokenTargetsGsdCoreApi(token) {
+  if (typeof token !== 'string' || token.length === 0) return false;
+  let s = token.trim();
+  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, ''); // strip scheme
+  s = s.replace(/^api\.github\.com/i, ''); // strip the GitHub REST host
+  s = s.replace(/^\/+/, ''); // strip leading slashes
+  s = s.replace(/\.git$/i, '');
+  const re = new RegExp('^repos/' + GSD_CORE_OWNER + '/' + GSD_CORE_REPO + '(?:/|$)', 'i');
+  return re.test(s);
+}
+
+/**
+ * Pure discriminator: does a PARSED command explicitly target the UPSTREAM
+ * open-gsd/gsd-core repo, regardless of the command's cwd?
+ *
+ * This is the ROB-01 seam used by the gh gates: an out-of-tree command (one whose
+ * effective cwd resolves to no gsd-core sentinel, so resolveRootForCommand → null)
+ * passes through (ALLOW) ONLY when it does NOT target upstream gsd-core. A command that
+ * DOES target it (via `-R/--repo open-gsd/gsd-core`, a gh-api `repos/open-gsd/gsd-core`
+ * path, or a curl `api.github.com/repos/open-gsd/gsd-core` URL) is a real contribution
+ * action the toolkit cannot verify without a local checkout → the caller fails it closed
+ * (HARD-02 — never reach for a possibly-stale runtime root).
+ *
+ * Reads STRUCTURED argv only (parsed.segments flags/shortFlags/tokens) — never a
+ * raw-string re-parse (HARD-04). A fork or a non-gh command returns false.
+ *
+ * @param {{ok?:boolean, segments?:Array}} parsed result of parseCommand(command)
+ * @returns {boolean}
+ */
+function commandTargetsGsdCore(parsed) {
+  if (!parsed || parsed.ok !== true || !Array.isArray(parsed.segments)) return false;
+  for (const seg of parsed.segments) {
+    if (!seg) continue;
+    const flags = seg.flags || {};
+    const shortFlags = seg.shortFlags || {};
+    // gh native explicit target: --repo <v> / --repo=<v> / -R <v> / -R<v>.
+    if (repoSpecTargetsGsdCore(flags.repo)) return true;
+    if (repoSpecTargetsGsdCore(shortFlags.R)) return true;
+    // gh-api path positional / curl api.github.com URL token.
+    const tokens = Array.isArray(seg.tokens) ? seg.tokens : [];
+    for (const tok of tokens) {
+      if (tokenTargetsGsdCoreApi(tok)) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * require() a LIVE gsd-core script by its path relative to the gsd-core root.
  *
@@ -215,4 +305,5 @@ module.exports = {
   commandStartDir,
   expandHome,
   resolveRootForCommand,
+  commandTargetsGsdCore,
 };
