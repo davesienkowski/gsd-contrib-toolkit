@@ -105,27 +105,39 @@ function isContributionBranch(branch) {
 }
 
 /**
- * Detect the git action + its relevant args from a parsed segment. argv records the
+ * Detect EVERY relevant git action across a parsed command's segments. argv records the
  * non-dash args after the subcommand as further `subcommands` entries, so for `git push
  * origin main` → subcommands = ['push','origin','main']; for `git add .planning/x sdk/y` →
  * ['add','.planning/x','sdk/y'].
  *
+ * A single Bash invocation may CHAIN several git actions (`git add -A && git commit -m x &&
+ * git push origin main`) — one PreToolUse call. This collects ALL of them so gate() can
+ * evaluate each, instead of returning on the FIRST match (the CHD-02 leak: a chained
+ * `commit && push origin main` would only gate the add and skip ENF-07 on the push).
+ *
+ * Shape (CHD-02, Hyrum-audited): returns an ORDERED ARRAY of `{kind, args, seg}` — one entry
+ * per matching git segment — replacing the prior single `{kind,args,seg}` object. The empty
+ * array is the new no-op signal (was `{kind:'other'}`). Each entry carries its OWN seg so
+ * pushRemote(seg)/explicitAddPaths(args) operate on the right segment. The only in-tree
+ * consumers are gate() (below) and hooks/containment.test.cjs, both updated atomically.
+ *
  * @param {Object} parsed argv.parseCommand result (ok:true)
- * @returns {{kind:'add'|'commit'|'push'|'other', args:string[]}}
+ * @returns {Array<{kind:'add'|'commit'|'push', args:string[], seg:Object}>}
  */
 function detectGit(parsed) {
   const segs = Array.isArray(parsed.segments) && parsed.segments.length > 0
     ? parsed.segments
     : [parsed];
+  const actions = [];
   for (const seg of segs) {
     if (seg.program !== 'git') continue;
     const sub = seg.subcommands || [];
     const verb = sub[0];
-    if (verb === 'add') return { kind: 'add', args: sub.slice(1), seg };
-    if (verb === 'commit') return { kind: 'commit', args: sub.slice(1), seg };
-    if (verb === 'push') return { kind: 'push', args: sub.slice(1), seg };
+    if (verb === 'add') actions.push({ kind: 'add', args: sub.slice(1), seg });
+    else if (verb === 'commit') actions.push({ kind: 'commit', args: sub.slice(1), seg });
+    else if (verb === 'push') actions.push({ kind: 'push', args: sub.slice(1), seg });
   }
-  return { kind: 'other', args: [], seg: segs[0] };
+  return actions;
 }
 
 /**
@@ -268,56 +280,52 @@ function pushRemote(seg) {
 }
 
 /**
- * The pure gate decision with all impure deps injected.
+ * Containment A for a single add/commit action: DENY if any path being staged/committed is a
+ * toolkit / `.planning` artifact (ENF-06). An `add` evaluates its explicit path operands (or
+ * the cached set for a bare `git add .`/`-A`/`-u`); a `commit` evaluates the cached set.
  *
- * @param {string} stdinString raw PreToolUse JSON
- * @param {Object} deps
- * @param {string} deps.gsdCoreRoot worktree root
- * @param {(root:string)=>string[]} deps.stagedPaths cached-set reader (A fallback)
- * @param {(root:string, remote:string)=>string} deps.remoteUrl remote URL resolver (B)
- * @param {(root:string)=>string} deps.currentBranch branch resolver (B)
- * @param {{checkOverride:Function, writeReceipt:Function}} deps.overrideImpl the override
- *   module (B origin-only consult): checkOverride(root) reads GSD_CONTRIB_OVERRIDE,
- *   writeReceipt(root, record) appends the per-worktree audit receipt.
+ * @param {{kind:'add'|'commit', args:string[]}} action one detectGit action
+ * @param {Object} deps gate deps (gsdCoreRoot, stagedPaths)
  * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
  */
-function gate(stdinString, deps) {
-  const input = readHookInput(stdinString);
-  const command = (input.tool_input && input.tool_input.command) || '';
-
-  const parsed = parseCommand(command);
-  if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
-
-  const git = detectGit(parsed);
-  if (git.kind === 'other') return allow(); // not add/commit/push → no-op
-
-  // ---- Containment A: git add / git commit ----
-  if (git.kind === 'add' || git.kind === 'commit') {
-    let paths;
-    if (git.kind === 'add') {
-      const explicit = explicitAddPaths(git.args);
-      // Explicit path operands are evaluated directly; a bare `git add .`/`-A`/`-u` has no
-      // operand → fall back to what would actually be staged (the cached set).
-      paths = explicit.length > 0 ? explicit : deps.stagedPaths(deps.gsdCoreRoot);
-    } else {
-      // bare commit → the cached set is what is about to be committed.
-      paths = deps.stagedPaths(deps.gsdCoreRoot);
-    }
-    const offenders = (paths || []).filter(isToolkitArtifact);
-    if (offenders.length > 0) {
-      return deny(
-        'Containment breach blocked (ENF-06): these toolkit / `.planning` artifacts must ' +
-          'NOT enter the gsd-core repo:\n' +
-          offenders.map((p) => '  - ' + p).join('\n') + '\n' +
-          'They belong in the private gsd-contrib-toolkit repo only. Unstage them ' +
-          '(`git restore --staged <path>`) before committing.'
-      );
-    }
-    return allow();
+function gateContainmentA(action, deps) {
+  let paths;
+  if (action.kind === 'add') {
+    const explicit = explicitAddPaths(action.args);
+    // Explicit path operands are evaluated directly; a bare `git add .`/`-A`/`-u` has no
+    // operand → fall back to what would actually be staged (the cached set).
+    paths = explicit.length > 0 ? explicit : deps.stagedPaths(deps.gsdCoreRoot);
+  } else {
+    // bare commit → the cached set is what is about to be committed.
+    paths = deps.stagedPaths(deps.gsdCoreRoot);
   }
+  const offenders = (paths || []).filter(isToolkitArtifact);
+  if (offenders.length > 0) {
+    return deny(
+      'Containment breach blocked (ENF-06): these toolkit / `.planning` artifacts must ' +
+        'NOT enter the gsd-core repo:\n' +
+        offenders.map((p) => '  - ' + p).join('\n') + '\n' +
+        'They belong in the private gsd-contrib-toolkit repo only. Unstage them ' +
+        '(`git restore --staged <path>`) before committing.'
+    );
+  }
+  return allow();
+}
 
-  // ---- Containment B: git push ----
-  const remote = pushRemote(git.seg);
+/**
+ * Containment B for a single push action: DENY if the target remote resolves to upstream
+ * open-gsd/gsd-core (ENF-07), honoring the ROB-03 origin-only logged override. Each push
+ * carries its OWN seg, so a chained / multi-push command resolves each remote independently.
+ * A failure to read the remote URL or branch THROWS → propagates to runGate → fails closed
+ * (the ROB-03 origin-only override + the thrown-path general override are unchanged).
+ *
+ * @param {{kind:'push', seg:Object}} action one detectGit push action
+ * @param {string} command the full raw command (recorded in the override receipt)
+ * @param {Object} deps gate deps (gsdCoreRoot, remoteUrl, currentBranch, overrideImpl)
+ * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
+ */
+function gateContainmentB(action, command, deps) {
+  const remote = pushRemote(action.seg);
   const url = deps.remoteUrl(deps.gsdCoreRoot, remote); // may throw → fail closed
   if (!isUpstreamRemote(url)) {
     return allow(); // pushing to a fork / non-upstream remote is fine
@@ -375,6 +383,46 @@ function gate(stdinString, deps) {
       'possible to `origin` (the same-repo flow), not to `' + remote + '`. Push to a fork ' +
       '(`git push fork ' + branch + '`) and open a PR, or use your `!` shell channel.'
   );
+}
+
+/**
+ * The pure gate decision with all impure deps injected.
+ *
+ * Evaluates EVERY git action in the (possibly chained) command in order: Containment A for
+ * each add/commit, Containment B for each push. DENIES on the FIRST action that fails
+ * (fail-closed — a denied command is blocked regardless of later actions); allows only if
+ * every action passes. A single-action command collapses to a one-element loop and reproduces
+ * the prior decision + reason byte-for-byte (CHD-02).
+ *
+ * @param {string} stdinString raw PreToolUse JSON
+ * @param {Object} deps
+ * @param {string} deps.gsdCoreRoot worktree root
+ * @param {(root:string)=>string[]} deps.stagedPaths cached-set reader (A fallback)
+ * @param {(root:string, remote:string)=>string} deps.remoteUrl remote URL resolver (B)
+ * @param {(root:string)=>string} deps.currentBranch branch resolver (B)
+ * @param {{checkOverride:Function, writeReceipt:Function}} deps.overrideImpl the override
+ *   module (B origin-only consult): checkOverride(root) reads GSD_CONTRIB_OVERRIDE,
+ *   writeReceipt(root, record) appends the per-worktree audit receipt.
+ * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
+ */
+function gate(stdinString, deps) {
+  const input = readHookInput(stdinString);
+  const command = (input.tool_input && input.tool_input.command) || '';
+
+  const parsed = parseCommand(command);
+  if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
+
+  const actions = detectGit(parsed);
+  if (actions.length === 0) return allow(); // no add/commit/push → no-op
+
+  for (const action of actions) {
+    const decision = action.kind === 'push'
+      ? gateContainmentB(action, command, deps)
+      : gateContainmentA(action, deps);
+    // Deny on the FIRST failing action — a denied command is blocked regardless of the rest.
+    if (decision && decision.permissionDecision === 'deny') return decision;
+  }
+  return allow();
 }
 
 /**
