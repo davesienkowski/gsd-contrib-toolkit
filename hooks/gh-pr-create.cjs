@@ -244,6 +244,45 @@ function resolveBase(seg, route) {
 }
 
 /**
+ * Resolve the HEAD branch the PR actually opens FROM across routes — honoring an explicit
+ * `--head`/`-H <branch>` (incl. the cross-repo `owner:branch` form) when present, else null
+ * so the caller falls back to the current branch (deps.branch).
+ *
+ * SUBTLE PARSING CONSTRAINT (binding, verified 2026-06-26): `-H` is ALSO gh's HTTP-header
+ * flag — the hook's own `gh api -H 'Accept: …'` and the user's gh-api/curl routes carry an
+ * HTTP header in `-H`, NEVER the head. So `-H` is read as the head ONLY on the NATIVE
+ * `gh pr create` route. On gh-api the head travels via `-f head=`; on curl via the JSON
+ * "head" field. Reading `-H` as head on those routes would mistake `Accept: …` for a branch.
+ *
+ * @param {Object} seg
+ * @param {string} route 'native' | 'gh-api' | 'curl'
+ * @returns {string|null} the raw head string (possibly `owner:branch`), or null when absent
+ */
+function resolveHead(seg, route) {
+  const flags = (seg && seg.flags) || {};
+  const shortFlags = (seg && seg.shortFlags) || {};
+  if (route === 'native') {
+    // `--head v` / `--head=v` → flags.head; `-H v` / `-Hv` → shortFlags.H. NATIVE route only.
+    if (typeof flags.head === 'string') return flags.head;
+    if (typeof shortFlags.H === 'string') return shortFlags.H;
+    return null;
+  }
+  if (route === 'gh-api') {
+    // The head is an `-f head=` / `--field head=` PAIR here — NEVER `-H` (that is the
+    // `Accept:` HTTP header on this route). Reading `-H` as head would be the spoof.
+    let head = null;
+    scanFieldPairs(seg, (k, v) => {
+      if (k === 'head') head = v;
+    });
+    return head;
+  }
+  // curl: head travels in the JSON payload, never `-H` (an HTTP header here too).
+  const payload = typeof flags.data === 'string' ? flags.data : shortFlags.d;
+  if (typeof payload === 'string') return jsonField(payload, 'head');
+  return null;
+}
+
+/**
  * Best-effort extract a string field from a JSON-ish payload. Prefers JSON.parse.
  * @param {string} payload
  * @param {string} key
@@ -325,7 +364,10 @@ function gate(stdinString, deps) {
 
   const body = resolveBody(seg, route, deps.readBodyFile); // may throw FailClosed
   const base = resolveBase(seg, route);
-  const head = deps.branch;
+  // CHD-03: honor an explicit `--head`/`-H <branch>` (route-scoped to native) so EVERY
+  // head-dependent check below evaluates the branch the PR actually opens FROM — falling back
+  // to deps.branch ONLY when no `--head` is given (the no-head path is byte-for-byte unchanged).
+  const head = resolveHead(seg, route) || deps.branch;
 
   // (1) ENF-02 — LIVE template policy (call, never reimplement).
   const tmpl = deps.liveTemplate.evaluatePrTemplate(
@@ -830,6 +872,7 @@ module.exports = {
   gate,
   resolveBody,
   resolveBase,
+  resolveHead,
   normalizeBody,
   evaluateCiResult,
   resolveHeadSha,
