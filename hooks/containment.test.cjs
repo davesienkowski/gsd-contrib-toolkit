@@ -12,11 +12,13 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
+const { parseCommand } = require('./lib/argv.cjs');
 const {
   runContainmentGate,
   isToolkitArtifact,
   isUpstreamRemote,
   isContributionBranch,
+  detectGit,
 } = require('./containment.cjs');
 
 function input(command) {
@@ -294,6 +296,31 @@ test('malformed stdin JSON → FAIL CLOSED deny (HARD-01)', () => {
 test('unparseable command (unbalanced quote) → FAIL CLOSED deny (HARD-04)', () => {
   const d = runContainmentGate(input('git commit -m "unterminated'), deps());
   assert.strictEqual(d.permissionDecision, 'deny');
+});
+
+// ---- detectGit: multi-action shape (CHD-02) ----
+// detectGit now returns an ORDERED ARRAY of every relevant git action across the parsed
+// segments (object → array Hyrum shape change). A chained command yields one entry per
+// matching git segment, each carrying its OWN seg; a non-git command yields an empty array.
+
+test('detectGit collects ALL chained git actions (add + commit + push), not just the first', () => {
+  const actions = detectGit(parseCommand('git add -A && git commit -m x && git push origin main'));
+  assert.ok(Array.isArray(actions), 'detectGit returns an array');
+  assert.deepStrictEqual(actions.map((a) => a.kind), ['add', 'commit', 'push']);
+  const push = actions.find((a) => a.kind === 'push');
+  assert.ok(push, 'a push action is present (not dropped after the first match)');
+  // each action carries its OWN segment so pushRemote(seg) resolves the right push tail.
+  assert.ok(push.seg.tokens.includes('push') && push.seg.tokens.includes('origin'));
+});
+
+test('detectGit collapses a single git action to a one-element array', () => {
+  const actions = detectGit(parseCommand('git commit -m x'));
+  assert.strictEqual(actions.length, 1);
+  assert.strictEqual(actions[0].kind, 'commit');
+});
+
+test('detectGit returns an empty array for a non-git command (the new no-op signal)', () => {
+  assert.deepStrictEqual(detectGit(parseCommand('npm test')), []);
 });
 
 // ---- pure predicate units ----
