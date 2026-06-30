@@ -12,7 +12,23 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { runPrGate, evaluateCiResult, ownerRepoFromRemote } = require('./gh-pr-create.cjs');
+const {
+  runPrGate,
+  evaluateCiResult,
+  ownerRepoFromRemote,
+  resolveHead,
+} = require('./gh-pr-create.cjs');
+const { parseCommand: _parseCmd } = require('./lib/argv.cjs');
+const { classifyAction: _classifyAction, findActionSegment: _findActionSegment } = require('./lib/classify.cjs');
+
+// CHD-03 helper: derive the (seg, route) the gate sees from a raw command, so the
+// route-scoped resolveHead can be unit-tested in isolation.
+function headCtx(command) {
+  const parsed = _parseCmd(command);
+  const action = _classifyAction(parsed);
+  const seg = _findActionSegment(parsed, 'pr-create');
+  return { seg, route: action.route || 'native' };
+}
 
 const liveTemplate = require('/home/dave/repos/gsd-core/scripts/pr-template-policy.cjs');
 const liveTarget = require('/home/dave/repos/gsd-core/scripts/pr-target-policy.cjs');
@@ -664,6 +680,73 @@ test('WR-01: an explicit -R target unparseable by the enumerated forms → FAIL 
     deps({ listPrsForHead: () => [] })
   );
   assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+});
+
+// ── CHD-03 Task 1: route-scoped --head/-H resolver (resolveHead) ────────────────
+// `-H` is ALSO gh's HTTP-header flag (the hook's own `gh api -H 'Accept: …'`, and the
+// user's gh-api/curl routes), so the head lookup is scoped to the NATIVE `gh pr create`
+// route ONLY. On the gh-api / curl routes the head travels via `-f head=` / JSON, never `-H`.
+
+test('CHD-03 resolveHead: native `-H <branch>` → the branch', () => {
+  const { seg, route } = headCtx('gh pr create -H fix/99-red --base next --title x --body b');
+  assert.strictEqual(route, 'native');
+  assert.strictEqual(resolveHead(seg, route), 'fix/99-red');
+});
+
+test('CHD-03 resolveHead: native `-Hfix/99-red` (value-attached) → the branch', () => {
+  const { seg, route } = headCtx('gh pr create -Hfix/99-red --base next --title x --body b');
+  assert.strictEqual(resolveHead(seg, route), 'fix/99-red');
+});
+
+test('CHD-03 resolveHead: native `--head=<branch>` → the branch', () => {
+  const { seg, route } = headCtx('gh pr create --head=feat/9-x --base next --title x --body b');
+  assert.strictEqual(resolveHead(seg, route), 'feat/9-x');
+});
+
+test('CHD-03 resolveHead: native `--head <branch>` (space) → the branch', () => {
+  const { seg, route } = headCtx('gh pr create --head fix/12-y --base next --title x --body b');
+  assert.strictEqual(resolveHead(seg, route), 'fix/12-y');
+});
+
+test('CHD-03 resolveHead: native `--head <owner:branch>` → the raw owner:branch form', () => {
+  const { seg, route } = headCtx('gh pr create --head dave:fix/3-y --base next --title x --body b');
+  assert.strictEqual(resolveHead(seg, route), 'dave:fix/3-y');
+});
+
+test('CHD-03 resolveHead: native with NO --head/-H → null (gate falls back to deps.branch)', () => {
+  const { seg, route } = headCtx('gh pr create --base next --title x --body b');
+  assert.strictEqual(resolveHead(seg, route), null);
+});
+
+test('CHD-03 resolveHead: gh-api `-H Accept: …` is NOT read as head (route-scoping) → null', () => {
+  const { seg, route } = headCtx(
+    `gh api -X POST repos/o/r/pulls -H 'Accept: application/vnd.github+json' -f base=next -f title=x`
+  );
+  assert.strictEqual(route, 'gh-api');
+  assert.strictEqual(resolveHead(seg, route), null);
+});
+
+test('CHD-03 resolveHead: gh-api reads `-f head=` when present', () => {
+  const { seg, route } = headCtx('gh api -X POST repos/o/r/pulls -f head=feat/7-x -f base=next');
+  assert.strictEqual(route, 'gh-api');
+  assert.strictEqual(resolveHead(seg, route), 'feat/7-x');
+});
+
+test('CHD-03 resolveHead: curl reads JSON "head", ignores `-H` header', () => {
+  const payload = JSON.stringify({ head: 'feat/8-x', base: 'next', body: 'b' });
+  const { seg, route } = headCtx(
+    `curl -X POST https://api.github.com/repos/o/r/pulls -H 'Accept: application/vnd.github+json' -d '${payload}'`
+  );
+  assert.strictEqual(route, 'curl');
+  assert.strictEqual(resolveHead(seg, route), 'feat/8-x');
+});
+
+test('CHD-03 resolveHead: curl with NO head field → null', () => {
+  const payload = JSON.stringify({ base: 'next', body: 'b' });
+  const { seg, route } = headCtx(
+    `curl -X POST https://api.github.com/repos/o/r/pulls -d '${payload}'`
+  );
+  assert.strictEqual(resolveHead(seg, route), null);
 });
 
 // Helpers. A real `gh pr create --body "..."` command carries REAL newlines inside the
