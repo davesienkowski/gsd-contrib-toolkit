@@ -287,6 +287,83 @@ test('fork push with an override set → ALLOW, the override is never consulted 
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
 });
 
+// ---- CHAINED commands: per-action containment over one PreToolUse call (CHD-02 / CR-03) ----
+// A single Bash invocation may chain add+commit+push. gate() must evaluate EVERY action, not
+// just the first — the exact leak CR-03 closes: `commit && push origin main` to upstream must
+// hit ENF-07 Containment B on the PUSH (today's first-match would only gate the add).
+
+test('CHAINED add && commit && push origin main (origin=upstream) → DENY via Containment B on the PUSH [Goodhart, CR-03]', () => {
+  const remoteCalls = [];
+  const d = runContainmentGate(
+    input('git add -A && git commit -m x && git push origin main'),
+    deps({
+      // legitimate staged source → Containment A on the add/commit must NOT be the denier,
+      // so the only thing that can DENY is Containment B on the push.
+      stagedPaths: () => ['sdk/src/query/decisions.ts'],
+      remoteUrl: (root, r) => {
+        remoteCalls.push(r);
+        return r === 'origin' ? UPSTREAM : FORK;
+      },
+      currentBranch: () => 'main',
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  // Goodhart — prove the deny fired on the PUSH segment, not the add/commit:
+  // (1) the push remote ('origin') was actually consulted for its URL (evaluation reached B),
+  assert.ok(remoteCalls.includes('origin'), 'remoteUrl was consulted for the push segment');
+  // (2) the reason is the ENF-07 upstream-push message (origin path advertises the override),
+  assert.match(d.permissionDecisionReason, /ENF-07/);
+  assert.match(d.permissionDecisionReason, /GSD_CONTRIB_OVERRIDE/);
+  // (3) and NOT the ENF-06 staged-artifact (Containment A) message — it is the push, not the add.
+  assert.doesNotMatch(d.permissionDecisionReason, /ENF-06/);
+});
+
+test('the chained push deny reason is byte-for-byte identical to the single push deny [single-action preserved, CHD-02]', () => {
+  const mk = (cmd) =>
+    runContainmentGate(
+      input(cmd),
+      deps({
+        remoteUrl: (root, r) => (r === 'origin' ? UPSTREAM : FORK),
+        currentBranch: () => 'main',
+        stagedPaths: () => ['sdk/src/query/decisions.ts'],
+      })
+    );
+  const single = mk('git push origin main');
+  const chained = mk('git add -A && git commit -m x && git push origin main');
+  assert.strictEqual(single.permissionDecision, 'deny');
+  assert.strictEqual(chained.permissionDecision, 'deny');
+  // The collapsed single-action path and the chained path produce the SAME reason — the push
+  // action carries its own seg, so the chain reproduces the prior single-push decision exactly.
+  assert.strictEqual(chained.permissionDecisionReason, single.permissionDecisionReason);
+});
+
+test('CHAINED commit && push fork branch (fork remote) → ALLOW [CR-03 regression, no false-deny]', () => {
+  const d = runContainmentGate(
+    input('git commit -m x && git push fork fix/12-x'),
+    deps({
+      stagedPaths: () => ['sdk/src/query/decisions.ts'],
+      remoteUrl: (root, r) => (r === 'fork' ? FORK : UPSTREAM),
+      currentBranch: () => 'fix/12-x',
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('CHAINED add .planning/x && push fork branch → DENY via Containment A (per-add fires in a chain) [CR-03]', () => {
+  // The `.planning/` staged path is an offender on the FIRST action; the gate short-circuits to
+  // that deny even though the later fork push would itself ALLOW — proving A fires per-add.
+  const d = runContainmentGate(
+    input('git add .planning/STATE.md && git push fork fix/12-x'),
+    deps({
+      remoteUrl: (root, r) => (r === 'fork' ? FORK : UPSTREAM),
+      currentBranch: () => 'fix/12-x',
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-06/);
+  assert.match(d.permissionDecisionReason, /\.planning/);
+});
+
 // ---- fail-closed parse / input ----
 
 test('malformed stdin JSON → FAIL CLOSED deny (HARD-01)', () => {
