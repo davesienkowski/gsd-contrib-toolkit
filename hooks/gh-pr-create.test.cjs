@@ -682,6 +682,103 @@ test('WR-01: an explicit -R target unparseable by the enumerated forms → FAIL 
   assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
 });
 
+// ── CHD-03 Task 2: the resolved --head drives ENF-10 + listPrsForHead + CI read ──
+// A `--head`/`-H` PR must be gated on the branch it actually opens FROM (CR-04). The bare
+// `--head red-ci` branch feeds ENF-10 / listPrsForHead / the head-SHA CI read; an `owner:branch`
+// cross-repo head reads its check-runs from the HEAD owner's repo; an unresolvable head denies.
+
+test('CHD-03: `-H <conforming>` with an existing red-CI PR on that branch → DENY (CI gate on the --head branch; Goodhart)', () => {
+  let listBranch = 'UNSET';
+  const d = runPrGate(
+    input(`gh pr create -H fix/99-red --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({
+      branch: 'fix/12-the-thing', // the CURRENT branch — must NOT be what the gate evaluates
+      listPrsForHead: (branch) => { listBranch = branch; return EXISTING_PR; },
+      readCheckRuns: () =>
+        ci({ allRequiredGreen: false, conclusions: [{ name: 'Tests', status: 'completed', conclusion: 'failure' }] }),
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /check.?run|CI|head/i);
+  // GOODHART: the decision fired on the RESOLVED --head branch, not the current branch.
+  assert.strictEqual(listBranch, 'fix/99-red');
+  assert.notStrictEqual(listBranch, 'fix/12-the-thing');
+});
+
+test('CHD-03: `-H <conforming>` first-create (empty PR list) → ALLOW; listPrsForHead keyed on the --head branch', () => {
+  let listBranch = 'UNSET';
+  const d = runPrGate(
+    input(`gh pr create -H fix/77-x --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({
+      branch: 'fix/12-the-thing',
+      listPrsForHead: (branch) => { listBranch = branch; return []; }, // first create on the --head branch
+      readCheckRuns: () => { throw new Error('must be SKIPPED on a first create'); },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.strictEqual(listBranch, 'fix/77-x');
+});
+
+test('CHD-03: `-H bad_branch_name` → DENY via ENF-10 branch-name on the --head branch (not the current branch)', () => {
+  const d = runPrGate(
+    input(`gh pr create -H bad_branch_name --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({ branch: 'fix/12-the-thing' }) // current branch IS conforming — the deny must come from --head
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /branch/i);
+  assert.match(d.permissionDecisionReason, /bad_branch_name/);
+  assert.match(d.permissionDecisionReason, /toolkit|our own|replicat/i);
+});
+
+test('CHD-03: an unresolvable `--head` (CI read for the resolved head throws) → FAIL CLOSED deny', () => {
+  const d = runPrGate(
+    input(`gh pr create -H fix/55-x --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({
+      branch: 'fix/12-the-thing',
+      listPrsForHead: () => EXISTING_PR,
+      readCheckRuns: () => { throw new Error('gh: cannot resolve head SHA for fix/55-x'); },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+});
+
+test('CHD-03: `--head owner:branch` → branch-name uses the branch portion; check-runs read the HEAD owner repo; PR-list reads the base repo', () => {
+  let listBranch = 'UNSET'; let listTarget = 'UNSET'; let ciTarget = 'UNSET';
+  const d = runPrGate(
+    input(`gh pr create -R open-gsd/gsd-core --head dave:fix/3-y --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({
+      branch: 'fix/12-the-thing',
+      listPrsForHead: (branch, target) => { listBranch = branch; listTarget = target; return EXISTING_PR; },
+      readCheckRuns: (sha, target) => { ciTarget = target; return ci(); }, // green
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  // branch-name / listPrsForHead evaluate the BRANCH portion (fix/3-y matches fix/<n>-…).
+  assert.strictEqual(listBranch, 'fix/3-y');
+  // the OPEN-PR list reads the BASE repo (where the PR opens).
+  assert.deepStrictEqual(listTarget, { owner: 'open-gsd', repo: 'gsd-core' });
+  // the check-runs read the HEAD owner's repo (dave's fork; same repo name as the base).
+  assert.deepStrictEqual(ciTarget, { owner: 'dave', repo: 'gsd-core' });
+});
+
+test('CHD-03: `--head owner:branch` with a red check-run in the HEAD owner repo → DENY (head repo CI)', () => {
+  let ciTarget = 'UNSET';
+  const d = runPrGate(
+    input(`gh pr create -R open-gsd/gsd-core --head dave:fix/3-y --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({
+      branch: 'fix/12-the-thing',
+      listPrsForHead: () => EXISTING_PR,
+      readCheckRuns: (sha, target) => {
+        ciTarget = target;
+        return ci({ allRequiredGreen: false, conclusions: [{ name: 'Tests', status: 'completed', conclusion: 'failure' }] });
+      },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /check.?run|CI|head/i);
+  assert.deepStrictEqual(ciTarget, { owner: 'dave', repo: 'gsd-core' });
+});
+
 // ── CHD-03 Task 1: route-scoped --head/-H resolver (resolveHead) ────────────────
 // `-H` is ALSO gh's HTTP-header flag (the hook's own `gh api -H 'Accept: …'`, and the
 // user's gh-api/curl routes), so the head lookup is scoped to the NATIVE `gh pr create`
