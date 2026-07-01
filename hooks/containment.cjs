@@ -313,11 +313,44 @@ function gateContainmentA(action, deps) {
 }
 
 /**
+ * Is a `git push` target a URL (a repository location) rather than a configured remote NAME?
+ * A URL target contains a scheme (`://`) OR matches the scp-style ssh `user@host:owner/repo`
+ * form. A bare word with no `://` and no scp-`@host:` (`origin`, `fork`, `upstream`, or a
+ * relative path like `.` / `../x`) is a configured remote NAME (or a path) → false.
+ *
+ * This discriminator is the CHD-04 (WR-02) fix seam: a URL target must be classified DIRECTLY
+ * via isUpstreamRemote — never routed through `git remote get-url <url>` (remoteUrlLive), which
+ * THROWS FailClosed on a non-remote-name and is then flipped to ALLOW+receipt by the GENERAL
+ * runGate override (failclosed.cjs:155-181), bypassing ROB-03's origin-only conjunction. The
+ * scp regex mirrors parseOwnerRepo's own ssh-form matcher (Kerckhoffs: no new obscure URL
+ * parser). It is deliberately conservative toward NAME: a bare remote name must NOT be
+ * misread as a URL, or `origin`/`upstream` would skip the remoteUrl classification.
+ *
+ * @param {string} target the pushRemote(seg) value (the <repository> positional)
+ * @returns {boolean}
+ */
+function isUrlTarget(target) {
+  if (typeof target !== 'string' || target.length === 0) return false;
+  if (target.includes('://')) return true; // any scheme:// form (https/http/ssh/git)
+  if (/^[^@/\s]+@[^@:/\s]+:/.test(target)) return true; // scp-style ssh `git@host:owner/repo`
+  return false;
+}
+
+/**
  * Containment B for a single push action: DENY if the target remote resolves to upstream
  * open-gsd/gsd-core (ENF-07), honoring the ROB-03 origin-only logged override. Each push
  * carries its OWN seg, so a chained / multi-push command resolves each remote independently.
  * A failure to read the remote URL or branch THROWS → propagates to runGate → fails closed
  * (the ROB-03 origin-only override + the thrown-path general override are unchanged).
+ *
+ * CHD-04 (WR-02): BEFORE consulting `deps.remoteUrl(root, remote)`, discriminate a URL target
+ * from a configured remote NAME (isUrlTarget). A URL target is classified DIRECTLY via
+ * isUpstreamRemote — a URL is by definition NOT the named `origin`, so an upstream URL push is
+ * a RETURNED policy deny with the override INERT (failclosed.cjs:150-156), never the thrown
+ * `git remote get-url <url>` that the general override would rescue. A fork URL allows. Only a
+ * configured remote NAME falls through to the existing remoteUrl path, so a genuinely transient
+ * git error on a NAMED remote still throws → override-rescuable (unchanged). The fix is
+ * gate-local to ENF-07: no runGate/failclosed.cjs edit, no new try/rescue (Kerckhoffs).
  *
  * @param {{kind:'push', seg:Object}} action one detectGit push action
  * @param {string} command the full raw command (recorded in the override receipt)
@@ -326,6 +359,28 @@ function gateContainmentA(action, deps) {
  */
 function gateContainmentB(action, command, deps) {
   const remote = pushRemote(action.seg);
+
+  // CHD-04 URL-vs-remote-name discriminator (before any `git remote get-url`). A URL target
+  // is classified directly — never through the throw→general-override path (WR-02).
+  if (isUrlTarget(remote)) {
+    if (!isUpstreamRemote(remote)) {
+      return allow(); // a fork URL (or a path remote) push is fine — not upstream
+    }
+    // Upstream open-gsd/gsd-core named by a URL. A URL is NOT the named `origin`, so the
+    // origin-only override is INERT here: RETURN the policy deny (which the general runGate
+    // override never rescues) and — like the non-origin NAMED path — do NOT advertise the
+    // override (advertising an inert escape is the spoof, T-25-03-05 / T-26-05-01).
+    const branch = deps.currentBranch(deps.gsdCoreRoot); // may throw → fail closed
+    return deny(
+      'Containment breach blocked (ENF-07): `' + remote + '` is a URL that resolves to the ' +
+        'UPSTREAM open-gsd/gsd-core. Pushing private work to upstream from branch `' + branch +
+        '` leaks it. A bare URL target is physically contained: a deliberate maintainer push ' +
+        'is only possible to the named `origin` remote (the same-repo flow), not to a URL. ' +
+        'Push to a fork (`git push fork ' + branch + '`) and open a PR, or use your `!` shell ' +
+        'channel.'
+    );
+  }
+
   const url = deps.remoteUrl(deps.gsdCoreRoot, remote); // may throw → fail closed
   if (!isUpstreamRemote(url)) {
     return allow(); // pushing to a fork / non-upstream remote is fine
@@ -489,6 +544,7 @@ module.exports = {
   isContributionBranch,
   detectGit,
   pushRemote,
+  isUrlTarget,
   explicitAddPaths,
   stagedPathsLive,
   remoteUrlLive,
