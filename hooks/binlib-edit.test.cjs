@@ -101,6 +101,9 @@ test('lib before bin (lib/bin/x.cjs — wrong order) → allow (segment order is
 });
 
 test('missing file_path → fail-closed deny (HARD-01)', () => {
+  // HARD-01 is preserved for the tools this gate governs (Write/Edit): a Write/Edit that
+  // carries no file_path cannot be evaluated → fail closed. `input(undefined)` defaults to
+  // tool_name:'Edit', so this stays a DENY even after the non-Write/Edit self-filter lands.
   const d = runBinlibGate(input(undefined), deps());
   assert.strictEqual(d.permissionDecision, 'deny');
 });
@@ -109,6 +112,38 @@ test('non-string file_path → fail-closed deny (HARD-01)', () => {
   const stdin = JSON.stringify({ tool_name: 'Edit', tool_input: { file_path: 123 } });
   const d = runBinlibGate(stdin, deps());
   assert.strictEqual(d.permissionDecision, 'deny');
+});
+
+// --- tool_name self-filter (defense-in-depth layer 2) --------------------------------------
+// This gate governs only Write|Edit. When installed CATCH-ALL (no manifest matcher) it also
+// receives Bash/other payloads that legitimately carry no file_path — those MUST short-circuit
+// to ALLOW, never trip the Write/Edit HARD-01 fail-closed (the root cause of every-Bash-deny).
+
+test('tool_name:"Bash" payload (command, no file_path) → allow (self-filter, not HARD-01 deny)', () => {
+  const stdin = JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git status' } });
+  const d = runBinlibGate(stdin, deps());
+  assert.strictEqual(d.permissionDecision, 'allow');
+});
+
+test('non-Write/Edit tool (Read) with no file_path → allow (self-filter)', () => {
+  const stdin = JSON.stringify({ tool_name: 'Read', tool_input: {} });
+  const d = runBinlibGate(stdin, deps());
+  assert.strictEqual(d.permissionDecision, 'allow');
+});
+
+test('absent tool_name with no file_path → allow (self-filter, this gate does not govern it)', () => {
+  const stdin = JSON.stringify({ tool_input: {} });
+  const d = runBinlibGate(stdin, deps());
+  assert.strictEqual(d.permissionDecision, 'allow');
+});
+
+test('tool_name:"Bash" whose command mentions a bin/lib/*.cjs path → allow (Bash is not governed here)', () => {
+  const stdin = JSON.stringify({
+    tool_name: 'Bash',
+    tool_input: { command: 'node bin/lib/decisions.cjs' },
+  });
+  const d = runBinlibGate(stdin, deps());
+  assert.strictEqual(d.permissionDecision, 'allow');
 });
 
 test('malformed stdin JSON → fail-closed deny (HARD-01)', () => {
