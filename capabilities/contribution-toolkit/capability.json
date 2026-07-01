@@ -27,50 +27,62 @@
   "hooks": [
     {
       "event": "PreToolUse",
+      "matcher": "Bash",
       "script": "hooks/gh-issue-create.cjs"
     },
     {
       "event": "PreToolUse",
+      "matcher": "Bash",
       "script": "hooks/gh-pr-create.cjs"
     },
     {
       "event": "PreToolUse",
+      "matcher": "Bash",
       "script": "hooks/gh-edit.cjs"
     },
     {
       "event": "PreToolUse",
+      "matcher": "Bash",
       "script": "hooks/githooks-seal.cjs"
     },
     {
       "event": "PreToolUse",
+      "matcher": "Bash",
       "script": "hooks/issue-dedupe.cjs"
     },
     {
       "event": "PreToolUse",
+      "matcher": "Bash",
       "script": "hooks/freshness.cjs"
     },
     {
       "event": "PreToolUse",
+      "matcher": "Bash",
       "script": "hooks/containment.cjs"
     },
     {
       "event": "PreToolUse",
+      "matcher": "Bash",
       "script": "hooks/policy-invariants.cjs"
     },
     {
       "event": "PreToolUse",
+      "matcher": "Bash",
       "script": "hooks/lint-ci-marker.cjs"
     },
     {
       "event": "PreToolUse",
+      "matcher": "Bash",
       "script": "hooks/git-commit-convention.cjs"
     },
     {
       "event": "PreToolUse",
+      "matcher": "Bash",
       "script": "hooks/scan-gate.cjs"
     },
     {
       "event": "PreToolUse",
+      "matcher": "Write|Edit",
       "script": "hooks/binlib-edit.cjs"
     },
     {
