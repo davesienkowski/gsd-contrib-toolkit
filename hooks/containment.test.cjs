@@ -287,6 +287,101 @@ test('fork push with an override set → ALLOW, the override is never consulted 
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
 });
 
+// ---- CHD-04 (ENF-07 / WR-02): URL-form upstream push is a CLASSIFIED policy deny ----
+// A push target named by URL (not a configured remote NAME) must be classified DIRECTLY via
+// isUpstreamRemote — never routed through `git remote get-url <url>`, which THROWS FailClosed on
+// a non-remote-name URL and is then flipped to ALLOW+receipt by the GENERAL runGate override
+// (failclosed.cjs:155-181), bypassing ROB-03's origin-only conjunction. A URL target is by
+// definition NOT the named `origin`, so the override stays INERT: the deny is RETURNED, and a
+// returned policy deny is NEVER override-rescued (failclosed.cjs:150-156) — proven by asserting
+// writeReceipt was not called.
+
+const URL_UPSTREAM = 'https://github.com/open-gsd/gsd-core.git';
+const SSH_UPSTREAM = 'git@github.com:open-gsd/gsd-core.git';
+const URL_FORK = 'https://github.com/dave/fork.git';
+
+// The realistic leak shape: `git remote get-url <url>` THROWS on a URL target. With the override
+// set, the OLD (buggy) path flips that throw to ALLOW+receipt; the fix classifies the URL before
+// ever calling remoteUrl, so this throwing stub must NEVER be reached for a URL target.
+const throwingRemoteUrl = () => {
+  throw new Error('fatal: No such remote (git remote get-url on a URL target)');
+};
+// An override that, if (wrongly) consulted on the thrown path, would rescue + receipt.
+function rescueOverride(receipts) {
+  return {
+    checkOverride: () => ({ override: true, reason: 'maintainer push' }),
+    writeReceipt: (root, record) => {
+      receipts.push(record);
+      return '/tmp/gsd-core/.gsd-contrib/override-receipts.log';
+    },
+  };
+}
+
+test('URL-form upstream push (https) + override set → DENY (returned policy deny, override inert) [CHD-04/WR-02]', () => {
+  const receipts = [];
+  const d = runContainmentGate(
+    input('git push ' + URL_UPSTREAM + ' main'),
+    deps({ remoteUrl: throwingRemoteUrl, currentBranch: () => 'main', overrideImpl: rescueOverride(receipts) })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  // GOODHART: the override was inert — no receipt (it is a RETURNED policy deny, not a rescued throw).
+  assert.strictEqual(receipts.length, 0, 'override inert — no receipt written for a returned policy deny');
+  assert.match(d.permissionDecisionReason, /ENF-07/);
+  // The non-origin/URL deny must NOT advertise the override (advertising an inert escape is the spoof).
+  assert.doesNotMatch(d.permissionDecisionReason, /GSD_CONTRIB_OVERRIDE/);
+});
+
+test('URL-form upstream push (ssh git@) + override set → DENY (override inert) [CHD-04]', () => {
+  const receipts = [];
+  const d = runContainmentGate(
+    input('git push ' + SSH_UPSTREAM + ' main'),
+    deps({ remoteUrl: throwingRemoteUrl, currentBranch: () => 'main', overrideImpl: rescueOverride(receipts) })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.strictEqual(receipts.length, 0, 'override inert — no receipt written');
+});
+
+test('URL-form FORK push → ALLOW (fork URL, not upstream); remoteUrl never consulted [CHD-04]', () => {
+  const d = runContainmentGate(
+    input('git push ' + URL_FORK + ' main'),
+    deps({
+      // If the discriminator misclassified the URL as a NAME, this would throw → fail closed deny.
+      remoteUrl: () => { throw new Error('remoteUrl must not be consulted for a URL target'); },
+      currentBranch: () => 'main',
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('named-origin upstream push + valid override → ALLOW + receipt (ROB-03 unchanged by CHD-04)', () => {
+  const receipts = [];
+  const d = runContainmentGate(
+    input('git push origin main'),
+    deps({
+      remoteUrl: (root, r) => (r === 'origin' ? UPSTREAM : FORK),
+      currentBranch: () => 'main',
+      overrideImpl: rescueOverride(receipts),
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.strictEqual(receipts.length, 1, 'the named-origin override path STILL writes a receipt (ROB-03)');
+});
+
+test('transient git error on a legitimate NAMED remote + override → still RESCUED (unchanged) [CHD-04 preserves runGate]', () => {
+  const receipts = [];
+  const d = runContainmentGate(
+    input('git push fork main'),
+    deps({
+      // a real transient failure resolving a NAMED remote — must still take the thrown-rescue path.
+      remoteUrl: throwingRemoteUrl,
+      currentBranch: () => 'main',
+      overrideImpl: rescueOverride(receipts),
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.strictEqual(receipts.length, 1, 'a NAMED remote whose remoteUrl throws is still override-rescued (receipt written)');
+});
+
 // ---- CHAINED commands: per-action containment over one PreToolUse call (CHD-02 / CR-03) ----
 // A single Bash invocation may chain add+commit+push. gate() must evaluate EVERY action, not
 // just the first — the exact leak CR-03 closes: `commit && push origin main` to upstream must
