@@ -49,7 +49,7 @@ const path = require('node:path');
 const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction, findActionSegment } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
-const { resolveRootForCommand, requireLiveScript, commandTargetsGsdCore } = require('./lib/resolve.cjs');
+const { resolveRootForCommand, requireLiveScript, commandTargetsGsdCore, parseOwnerRepo } = require('./lib/resolve.cjs');
 
 // FailClosed/safeCommand: shared IN-03 helpers from failclosed.cjs.
 
@@ -244,6 +244,64 @@ function resolveBase(seg, route) {
 }
 
 /**
+ * Resolve the HEAD branch the PR actually opens FROM across routes — honoring an explicit
+ * `--head`/`-H <branch>` (incl. the cross-repo `owner:branch` form) when present, else null
+ * so the caller falls back to the current branch (deps.branch).
+ *
+ * SUBTLE PARSING CONSTRAINT (binding, verified 2026-06-26): `-H` is ALSO gh's HTTP-header
+ * flag — the hook's own `gh api -H 'Accept: …'` and the user's gh-api/curl routes carry an
+ * HTTP header in `-H`, NEVER the head. So `-H` is read as the head ONLY on the NATIVE
+ * `gh pr create` route. On gh-api the head travels via `-f head=`; on curl via the JSON
+ * "head" field. Reading `-H` as head on those routes would mistake `Accept: …` for a branch.
+ *
+ * @param {Object} seg
+ * @param {string} route 'native' | 'gh-api' | 'curl'
+ * @returns {string|null} the raw head string (possibly `owner:branch`), or null when absent
+ */
+function resolveHead(seg, route) {
+  const flags = (seg && seg.flags) || {};
+  const shortFlags = (seg && seg.shortFlags) || {};
+  if (route === 'native') {
+    // `--head v` / `--head=v` → flags.head; `-H v` / `-Hv` → shortFlags.H. NATIVE route only.
+    if (typeof flags.head === 'string') return flags.head;
+    if (typeof shortFlags.H === 'string') return shortFlags.H;
+    return null;
+  }
+  if (route === 'gh-api') {
+    // The head is an `-f head=` / `--field head=` PAIR here — NEVER `-H` (that is the
+    // `Accept:` HTTP header on this route). Reading `-H` as head would be the spoof.
+    let head = null;
+    scanFieldPairs(seg, (k, v) => {
+      if (k === 'head') head = v;
+    });
+    return head;
+  }
+  // curl: head travels in the JSON payload, never `-H` (an HTTP header here too).
+  const payload = typeof flags.data === 'string' ? flags.data : shortFlags.d;
+  if (typeof payload === 'string') return jsonField(payload, 'head');
+  return null;
+}
+
+/**
+ * Split a raw head value into `{ headOwner, headBranch }`. The cross-repo `--head owner:branch`
+ * form carries a fork OWNER before the `:`; a bare branch has no owner. Git branch names cannot
+ * contain `:`, so a `:` reliably marks the owner/branch boundary (only the FIRST `:` is the
+ * separator). A leading/trailing-empty colon form is treated as a bare branch (headOwner null).
+ *
+ * @param {string} rawHead
+ * @returns {{headOwner:string|null, headBranch:string}}
+ */
+function splitHead(rawHead) {
+  if (typeof rawHead !== 'string') return { headOwner: null, headBranch: rawHead };
+  const colon = rawHead.indexOf(':');
+  if (colon === -1) return { headOwner: null, headBranch: rawHead };
+  const owner = rawHead.slice(0, colon);
+  const branch = rawHead.slice(colon + 1);
+  if (owner.length === 0 || branch.length === 0) return { headOwner: null, headBranch: rawHead };
+  return { headOwner: owner, headBranch: branch };
+}
+
+/**
  * Best-effort extract a string field from a JSON-ish payload. Prefers JSON.parse.
  * @param {string} payload
  * @param {string} key
@@ -325,7 +383,15 @@ function gate(stdinString, deps) {
 
   const body = resolveBody(seg, route, deps.readBodyFile); // may throw FailClosed
   const base = resolveBase(seg, route);
-  const head = deps.branch;
+  // CHD-03: honor an explicit `--head`/`-H <branch>` (route-scoped to native) so EVERY
+  // head-dependent check below evaluates the branch the PR actually opens FROM — falling back
+  // to deps.branch ONLY when no `--head` is given (the no-head path is byte-for-byte unchanged).
+  // Split the cross-repo `owner:branch` form: the BRANCH portion drives the ENF-10 base/branch
+  // policies + the ROB-02 listPrsForHead; the OWNER (when present) resolves the head's OWN repo
+  // for the head-SHA + check-runs read (the CI lives in the head fork, not the base/origin).
+  const rawHead = resolveHead(seg, route) || deps.branch;
+  const { headOwner, headBranch } = splitHead(rawHead);
+  const head = headBranch; // every head-dependent check evaluates the branch portion
 
   // (1) ENF-02 — LIVE template policy (call, never reimplement).
   const tmpl = deps.liveTemplate.evaluatePrTemplate(
@@ -398,16 +464,34 @@ function gate(stdinString, deps) {
   // the readCheckRuns throw discipline. The discriminator is "no OPEN PR for the head branch"
   // (`--state open`), NOT "zero check-runs on the head SHA" — a post-PR branch can transiently
   // have zero queued runs and must not be able to masquerade as a first create.
-  const openPrs = deps.listPrsForHead(head); // may throw → fail-closed deny (HARD-01)
+  // WR-01: thread the command's EXPLICIT -R/GH_REPO target ({owner,repo}|null, resolved ONCE in
+  // runPrGate from the same parsed command the gate sees) into BOTH readers, so the repo they
+  // read the open-PR list / check-runs FROM is provably the repo the command targets — not the
+  // worktree origin unconditionally. null → the default readers fall back to origin (unchanged).
+  const openPrs = deps.listPrsForHead(head, deps.targetRepo); // may throw → fail-closed deny (HARD-01)
   if (Array.isArray(openPrs) && openPrs.length === 0) {
     return allow(); // first create — no open PR yet, CI cannot have run; CI-green step relaxed
   }
 
+  // CHD-03: resolve the head's REPO + SHA. For an `owner:branch` cross-repo head the CI lives
+  // in the HEAD owner's fork (same repo NAME as the base, different owner), NOT the base/origin —
+  // so the check-runs read targets that repo (reusing the WR-01 single-source reader plumbing:
+  // the head's repo is threaded into readCheckRuns exactly like an explicit -R target). A
+  // cross-repo head SHA cannot be read from the local worktree, so it is resolved from the head's
+  // repo; an unresolvable head (gh read throws) propagates → runGate fail-closed deny (HARD-01).
+  // When headOwner is null (no --head, or a bare same-repo branch) the LOCAL resolveHeadSha(root)
+  // + the WR-01 deps.targetRepo path are UNCHANGED.
+  const headRepo = headOwner
+    ? resolveHeadRepo(headOwner, deps.targetRepo, deps.root || deps.worktreeRoot)
+    : null;
+  const readTarget = headRepo || deps.targetRepo;
   const headSha =
     typeof deps.headSha === 'string' && deps.headSha
       ? deps.headSha
-      : resolveHeadSha(deps.root || deps.worktreeRoot);
-  const checkRuns = deps.readCheckRuns(headSha); // may throw → fail-closed deny
+      : headOwner
+        ? resolveCrossRepoHeadSha(deps.root || deps.worktreeRoot, headRepo, headBranch)
+        : resolveHeadSha(deps.root || deps.worktreeRoot);
+  const checkRuns = deps.readCheckRuns(headSha, readTarget); // may throw → fail-closed deny
   const ci = evaluateCiResult(checkRuns);
   if (!ci.green) {
     return deny(
@@ -445,6 +529,14 @@ function runPrGate(stdinString, deps = {}) {
 
   return runGate(() => {
     const resolved = Object.assign({}, deps);
+    // WR-01: resolve the command's EXPLICIT -R/--repo/GH_REPO target ONCE from the parsed command
+    // (the SAME extraction the gate's targeting decision uses — single source so the reader repo
+    // cannot diverge from the gate's targeting repo). null = no explicit target → the readers fall
+    // back to the worktree origin (unchanged). An explicit target that parseOwnerRepo cannot
+    // resolve THROWS FailClosed here → runGate fail-closed deny (no silent origin-fallback ALLOW).
+    if (resolved.targetRepo === undefined) {
+      resolved.targetRepo = resolveExplicitTarget(parseCommand(ctx.command));
+    }
     // Resolve the root from the command's OWN cwd (it may `cd` into a worktree), not the
     // session cwd. null = the command does not target a gsd-core checkout → allow. The
     // head branch is read from that same root so a cross-repo session reads the worktree's
@@ -486,14 +578,15 @@ function runPrGate(stdinString, deps = {}) {
       resolved.root = root || resolved.worktreeRoot;
     }
     if (!resolved.readCheckRuns) {
-      resolved.readCheckRuns = (headSha) => defaultReadCheckRuns(resolved.root, headSha);
+      resolved.readCheckRuns = (headSha, targetRepo) => defaultReadCheckRuns(resolved.root, headSha, targetRepo);
     }
     if (!resolved.listPrsForHead) {
       // ROB-02: default first-create detector — list the OPEN PRs for the head branch from the
       // SAME worktree root the rest of the gate uses. An empty array → first create (CI-green
       // relaxed); a non-empty array → existing PR (check-run gate engages). Any spawn/parse/auth
       // failure THROWS FailClosed (an unauth gh DENIES, never relaxes) — mirrors readCheckRuns.
-      resolved.listPrsForHead = (branch) => defaultListPrsForHead(resolved.root, branch);
+      // WR-01: when an explicit -R/GH_REPO target is present it reads from THAT repo, not origin.
+      resolved.listPrsForHead = (branch, targetRepo) => defaultListPrsForHead(resolved.root, branch, targetRepo);
     }
     if (!resolved.readBodyFile) {
       const fs = require('node:fs');
@@ -546,6 +639,115 @@ function resolveHeadSha(root) {
 }
 
 /**
+ * CHD-03: resolve the REPO the cross-repo `owner:branch` head lives in. gh's `owner:branch`
+ * keeps the SAME repo NAME as the base — only the OWNER differs — so the head repo is
+ * `{ owner: headOwner, repo: <base repo name> }`. The base repo name comes from the command's
+ * EXPLICIT -R/GH_REPO target when present (the WR-01 single source), else the worktree origin.
+ * The owner/repo are re-validated against the IN-02 SAFE-character set (they are interpolated
+ * into the `gh api repos/<owner>/<repo>/...` path) so an odd value fails CLOSED (deny), never a
+ * silent wrong-repo read.
+ *
+ * @param {string} headOwner the fork owner before the `:` in `owner:branch`.
+ * @param {{owner:string,repo:string}|null} targetRepo the explicit -R target, or null.
+ * @param {string} [root] worktree root (cwd for the origin read when no explicit target).
+ * @returns {{owner:string, repo:string}}
+ */
+function resolveHeadRepo(headOwner, targetRepo, root) {
+  let repoName = targetRepo && targetRepo.repo ? targetRepo.repo : null;
+  if (!repoName) {
+    const { execFileSync } = require('node:child_process');
+    const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] };
+    if (root) opts.cwd = root;
+    let url;
+    try {
+      url = execFileSync('git', ['remote', 'get-url', 'origin'], opts).trim();
+    } catch (err) {
+      throw new FailClosed(
+        'CHD-03: could not resolve the head repo NAME from the worktree origin for an ' +
+          '`owner:branch` --head (' + ((err && err.message) || 'git failure') +
+          ') — failing closed (an unresolvable --head denies).'
+      );
+    }
+    const slug = ownerRepoFromRemote(url);
+    if (!slug) {
+      throw new FailClosed(
+        'CHD-03: could not parse the head repo name from the worktree origin remote — failing closed.'
+      );
+    }
+    repoName = slug.repo;
+  }
+  const SAFE = /^[A-Za-z0-9._-]+$/;
+  const owner = String(headOwner).toLowerCase();
+  const repo = String(repoName).toLowerCase();
+  if (!SAFE.test(owner) || !SAFE.test(repo)) {
+    throw new FailClosed(
+      'CHD-03: the `owner:branch` head owner/repo (`' + owner + '/' + repo + '`) contains an ' +
+        'unsafe character — failing closed (no wrong-repo CI read).'
+    );
+  }
+  return { owner, repo };
+}
+
+/**
+ * CHD-03: resolve the SHA of a cross-repo `owner:branch` head from the HEAD's repo. The local
+ * worktree HEAD is NOT this branch (the user is on a different branch / fork), so the SHA is read
+ * remotely via `gh api repos/<owner>/<repo>/commits/<branch>` (the ref form GitHub resolves to a
+ * commit). The branch is a FIXED argv element (no shell) so it cannot inject. ANY spawn/parse/auth
+ * failure THROWS FailClosed so runGate fails closed (HARD-01) — an unresolvable `--head` DENIES.
+ *
+ * @param {string} root worktree root (cwd for the `gh` read).
+ * @param {{owner:string,repo:string}} headRepo the head's repo.
+ * @param {string} headBranch the branch portion of `owner:branch`.
+ * @returns {string} the resolved head commit SHA.
+ */
+function resolveCrossRepoHeadSha(root, headRepo, headBranch) {
+  const { execFileSync } = require('node:child_process');
+  if (!headRepo || !headRepo.owner || !headRepo.repo) {
+    throw new FailClosed('CHD-03: no head repo to resolve the cross-repo head SHA — failing closed.');
+  }
+  if (typeof headBranch !== 'string' || !headBranch) {
+    throw new FailClosed('CHD-03: no head branch to resolve the cross-repo head SHA — failing closed.');
+  }
+  const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] };
+  if (root) opts.cwd = root;
+  let raw;
+  try {
+    raw = execFileSync(
+      'gh',
+      [
+        'api',
+        '-H', 'Accept: application/vnd.github+json',
+        'repos/' + headRepo.owner + '/' + headRepo.repo + '/commits/' + headBranch,
+      ],
+      opts
+    );
+  } catch (err) {
+    throw new FailClosed(
+      'CHD-03: could not resolve the head SHA for cross-repo head `' + headRepo.owner + ':' +
+        headBranch + '` via `gh api` (' + ((err && err.message) || 'gh failure / unauthenticated') +
+        ') — failing closed (HARD-01: an unresolvable --head denies).'
+    );
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new FailClosed(
+      'CHD-03: the cross-repo head commit response for `' + headRepo.owner + ':' + headBranch +
+        '` was not parseable JSON — failing closed (HARD-01).'
+    );
+  }
+  const sha = parsed && typeof parsed.sha === 'string' ? parsed.sha : null;
+  if (!sha || !/^[0-9a-f]{7,64}$/i.test(sha)) {
+    throw new FailClosed(
+      'CHD-03: the cross-repo head commit for `' + headRepo.owner + ':' + headBranch +
+        '` had no valid sha — failing closed (HARD-01).'
+    );
+  }
+  return sha;
+}
+
+/**
  * Default ENF-18 reader of the AUTHORITATIVE CI result for the head SHA.
  *
  * Reads the REAL check-runs via `gh api repos/<owner>/<repo>/commits/<sha>/check-runs`
@@ -564,7 +766,7 @@ function resolveHeadSha(root) {
  * @param {string} headSha the resolved head commit SHA.
  * @returns {{headSha:string, testsRan:boolean, allRequiredGreen:boolean, conclusions:Array}}
  */
-function defaultReadCheckRuns(root, headSha) {
+function defaultReadCheckRuns(root, headSha, targetRepo) {
   const { execFileSync } = require('node:child_process');
   if (typeof headSha !== 'string' || !headSha) {
     throw new FailClosed('ENF-18: no head SHA to read check-runs for — failing closed');
@@ -572,19 +774,27 @@ function defaultReadCheckRuns(root, headSha) {
   const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] };
   if (root) opts.cwd = root;
 
-  // Derive owner/repo from the worktree's origin remote (array arg → no shell).
+  // Resolve owner/repo. WR-01: when the command carries an EXPLICIT -R/GH_REPO target, read the
+  // check-runs from THAT repo (the repo the command targets), not the worktree origin — so an
+  // upstream red commit cannot hide behind a fork origin. The target's owner/repo were already
+  // SAFE-char-validated by parseOwnerRepo (case-folded). Otherwise derive owner/repo from the
+  // worktree's origin remote (array arg → no shell — unchanged).
   let slug;
-  try {
-    const url = execFileSync('git', ['remote', 'get-url', 'origin'], opts).trim();
-    slug = ownerRepoFromRemote(url);
-  } catch (err) {
-    throw new FailClosed(
-      'ENF-18: could not resolve owner/repo from the worktree origin remote (' +
-        ((err && err.message) || 'git failure') + ') — failing closed (HARD-01)'
-    );
-  }
-  if (!slug) {
-    throw new FailClosed('ENF-18: could not parse owner/repo from origin remote — failing closed');
+  if (targetRepo && targetRepo.owner && targetRepo.repo) {
+    slug = { owner: targetRepo.owner, repo: targetRepo.repo };
+  } else {
+    try {
+      const url = execFileSync('git', ['remote', 'get-url', 'origin'], opts).trim();
+      slug = ownerRepoFromRemote(url);
+    } catch (err) {
+      throw new FailClosed(
+        'ENF-18: could not resolve owner/repo from the worktree origin remote (' +
+          ((err && err.message) || 'git failure') + ') — failing closed (HARD-01)'
+      );
+    }
+    if (!slug) {
+      throw new FailClosed('ENF-18: could not parse owner/repo from origin remote — failing closed');
+    }
   }
 
   // Read the AUTHORITATIVE check-runs for THIS sha. gh exits nonzero on unauth / API
@@ -662,9 +872,12 @@ function normalizeCheckRuns(headSha, runs) {
  *
  * @param {string} root absolute worktree root (cwd for the `gh` read).
  * @param {string} branch the head branch name.
+ * @param {{owner:string,repo:string}} [targetRepo] WR-01: when present, list the OPEN PRs from
+ *   this explicitly-targeted repo (via `-R owner/repo`) instead of the worktree origin — so an
+ *   upstream open PR cannot hide behind a fork origin and masquerade as a first create.
  * @returns {Array} the open PRs for the head branch (possibly empty).
  */
-function defaultListPrsForHead(root, branch) {
+function defaultListPrsForHead(root, branch, targetRepo) {
   const { execFileSync } = require('node:child_process');
   if (typeof branch !== 'string' || !branch) {
     throw new FailClosed('ROB-02: no head branch to list open PRs for — failing closed (HARD-01)');
@@ -673,14 +886,15 @@ function defaultListPrsForHead(root, branch) {
   if (root) opts.cwd = root;
 
   // gh exits nonzero on unauth / API failure → execFileSync throws → fail closed. The branch
-  // is a fixed array element (no shell), so a crafted branch name cannot inject (T-25-02-04).
+  // (and the WR-01 `-R owner/repo`) are fixed array elements (no shell), so a crafted branch
+  // name cannot inject (T-25-02-04). The target's owner/repo were SAFE-char-validated upstream.
+  const args = ['pr', 'list', '--head', branch, '--json', 'number', '--state', 'open'];
+  if (targetRepo && targetRepo.owner && targetRepo.repo) {
+    args.push('-R', targetRepo.owner + '/' + targetRepo.repo);
+  }
   let raw;
   try {
-    raw = execFileSync(
-      'gh',
-      ['pr', 'list', '--head', branch, '--json', 'number', '--state', 'open'],
-      opts
-    );
+    raw = execFileSync('gh', args, opts);
   } catch (err) {
     throw new FailClosed(
       'ROB-02: could not read the open PRs for head branch `' + branch + '` via `gh pr list` (' +
@@ -708,39 +922,80 @@ function defaultListPrsForHead(root, branch) {
 }
 
 /**
- * Parse owner/repo from a git remote URL (https or ssh form). Returns {owner,repo} or
- * null. Strips a trailing `.git`.
+ * Parse owner/repo from a git remote URL (https or ssh form). Routes the parse through the
+ * unified parseOwnerRepo normalizer (CHD-01 / WR-03 — case-fold + port-strip + `.git`/scheme/
+ * user normalization), then RE-APPLIES the IN-02 SAFE-character validation so the existing
+ * security fail-closed is preserved verbatim. Returns {owner,repo} (LOWER-cased — parseOwnerRepo
+ * normalizes case; GitHub routes owner/repo case-insensitively so the `gh api
+ * repos/<owner>/<repo>/...` path is unaffected) or null. Keeps the {owner,repo}|null shape the
+ * defaultReadCheckRuns consumer depends on (Hyrum preserved).
  * @param {string} url
  * @returns {{owner:string, repo:string}|null}
  */
 function ownerRepoFromRemote(url) {
-  if (typeof url !== 'string' || !url) return null;
-  let s = url.trim();
-  // ssh: git@github.com:owner/repo(.git)
-  const sshMatch = /^[^@]+@[^:]+:(.+)$/.exec(s);
-  if (sshMatch) {
-    s = sshMatch[1];
-  } else {
-    // https://github.com/owner/repo(.git) — strip scheme + host.
-    const schemeIdx = s.indexOf('://');
-    if (schemeIdx !== -1) {
-      const after = s.slice(schemeIdx + 3);
-      const slash = after.indexOf('/');
-      s = slash === -1 ? '' : after.slice(slash + 1);
-    }
-  }
-  s = s.replace(/\.git$/i, '');
-  const parts = s.split('/').filter((p) => p.length > 0);
-  if (parts.length < 2) return null;
-  const owner = parts[parts.length - 2];
-  const repo = parts[parts.length - 1];
+  const r = parseOwnerRepo(url);
+  if (!r) return null;
   // IN-02: owner/repo are interpolated into the `gh api repos/<owner>/<repo>/...` path. The call
   // uses execFileSync with an array arg (no shell) today, so this is hardening — validate both
   // against a conservative safe-character set so a future shell-based refactor cannot become
   // injectable, and an odd remote fails CLOSED (return null → caller throws FailClosed → deny).
   const SAFE = /^[A-Za-z0-9._-]+$/;
-  if (!SAFE.test(owner) || !SAFE.test(repo)) return null;
-  return { owner, repo };
+  if (!SAFE.test(r.owner) || !SAFE.test(r.repo)) return null;
+  return { owner: r.owner, repo: r.repo };
+}
+
+/**
+ * WR-01: resolve the command's EXPLICIT owner/repo target from the parsed argv — `gh`'s native
+ * `--repo`/`-R` flag or a leading `GH_REPO=<spec>` env-assignment token — via the unified
+ * parseOwnerRepo normalizer. This is the SAME extraction shape commandTargetsGsdCore uses for the
+ * gate's targeting decision, so the repo the ENF-18 readers read FROM cannot diverge from the repo
+ * the gate classifies (the seed's single-source anti-divergence requirement — confirmed in ONE
+ * place).
+ *
+ * Three outcomes (mirroring CHD-01's three-way):
+ *   - no explicit -R/--repo/GH_REPO present → null (the readers fall back to the worktree origin,
+ *     unchanged — preserves every existing ENF-18 / ROB-02 test).
+ *   - an explicit target that parseOwnerRepo resolves → {owner, repo} (case-folded; the readers
+ *     read THAT repo).
+ *   - an explicit target present but un-enumerable by parseOwnerRepo → THROW FailClosed (deny);
+ *     a GitHub-ish-but-unparseable explicit target is a containment bypass, never a silent
+ *     origin-fallback ALLOW.
+ *
+ * The GH_REPO env token is read from the LEADING `NAME=VALUE` run of seg.tokens (stopping at the
+ * program) exactly like commandTargetsGsdCore — so a post-program `-f title=x` field is never
+ * mistaken for an env assignment (HARD-04).
+ *
+ * @param {{ok?:boolean, segments?:Array}} parsed result of parseCommand(command)
+ * @returns {{owner:string, repo:string}|null}
+ */
+function resolveExplicitTarget(parsed) {
+  if (!parsed || parsed.ok !== true || !Array.isArray(parsed.segments)) return null;
+  let spec = null;
+  for (const seg of parsed.segments) {
+    if (!seg) continue;
+    const flags = seg.flags || {};
+    const shortFlags = seg.shortFlags || {};
+    if (typeof flags.repo === 'string') { spec = flags.repo; break; }
+    if (typeof shortFlags.R === 'string') { spec = shortFlags.R; break; }
+    const tokens = Array.isArray(seg.tokens) ? seg.tokens : [];
+    for (const tok of tokens) {
+      if (typeof tok !== 'string') break;
+      const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(tok);
+      if (!m) break; // first non-assignment token = the program → stop scanning
+      if (m[1] === 'GH_REPO') { spec = m[2]; break; }
+    }
+    if (spec != null) break;
+  }
+  if (spec == null) return null; // no explicit target → origin fallback (unchanged)
+  const r = parseOwnerRepo(spec);
+  if (!r) {
+    throw new FailClosed(
+      'WR-01: an explicit -R/--repo/GH_REPO target (`' + spec + '`) was given but could not be ' +
+        'resolved to an owner/repo by the enumerated forms — failing closed (no silent ' +
+        'origin-fallback ALLOW; a GitHub-ish-but-unparseable explicit target is a containment bypass).'
+    );
+  }
+  return { owner: r.owner, repo: r.repo };
 }
 
 
@@ -764,11 +1019,15 @@ module.exports = {
   gate,
   resolveBody,
   resolveBase,
+  resolveHead,
+  splitHead,
+  resolveHeadRepo,
   normalizeBody,
   evaluateCiResult,
   resolveHeadSha,
   normalizeCheckRuns,
   ownerRepoFromRemote,
+  resolveExplicitTarget,
   LINKED_ISSUE_RE,
   BRANCH_NAME_RE,
 };

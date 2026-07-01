@@ -282,6 +282,212 @@ test('commandTargetsGsdCore: an unparseable / empty / null parse result → fals
   assert.strictEqual(res.commandTargetsGsdCore(parseCommand('')), false);
 });
 
+// --- parseOwnerRepo: the SINGLE enumerated owner/repo normalizer (CHD-01, Task 1) ---
+// Postel-inversion (binding): the accepted forms are ENUMERATED; an un-enumerated /
+// GitHub-ish-but-unparseable input returns null (the explicit "unparseable" signal the
+// three-way commandTargetsGsdCore caller treats as fail-closed). Owner/repo are LOWER-cased
+// (GitHub routes them case-insensitively — CR-01). host is lowercased too.
+
+test('parseOwnerRepo: bare owner/repo → lowercased {owner,repo,host:github.com}', () => {
+  assert.deepStrictEqual(res.parseOwnerRepo('open-gsd/gsd-core'), {
+    owner: 'open-gsd',
+    repo: 'gsd-core',
+    host: 'github.com',
+  });
+});
+
+test('parseOwnerRepo: case-variant bare owner/repo → lowercased (CR-01)', () => {
+  assert.deepStrictEqual(res.parseOwnerRepo('Open-GSD/GSD-Core'), {
+    owner: 'open-gsd',
+    repo: 'gsd-core',
+    host: 'github.com',
+  });
+});
+
+test('parseOwnerRepo: https URL with trailing .git → owner/repo', () => {
+  assert.deepStrictEqual(res.parseOwnerRepo('https://github.com/open-gsd/gsd-core.git'), {
+    owner: 'open-gsd',
+    repo: 'gsd-core',
+    host: 'github.com',
+  });
+});
+
+test('parseOwnerRepo: https URL with an explicit :port → port stripped from host', () => {
+  assert.deepStrictEqual(res.parseOwnerRepo('https://github.com:443/open-gsd/gsd-core'), {
+    owner: 'open-gsd',
+    repo: 'gsd-core',
+    host: 'github.com',
+  });
+});
+
+test('parseOwnerRepo: ssh git@host:owner/repo.git → owner/repo + host', () => {
+  assert.deepStrictEqual(res.parseOwnerRepo('git@github.com:open-gsd/gsd-core.git'), {
+    owner: 'open-gsd',
+    repo: 'gsd-core',
+    host: 'github.com',
+  });
+});
+
+test('parseOwnerRepo: gh:owner/repo shorthand → owner/repo', () => {
+  assert.deepStrictEqual(res.parseOwnerRepo('gh:open-gsd/gsd-core'), {
+    owner: 'open-gsd',
+    repo: 'gsd-core',
+    host: 'github.com',
+  });
+});
+
+test('parseOwnerRepo: GH_HOST-qualified enterprise host is retained (lowercased)', () => {
+  assert.deepStrictEqual(res.parseOwnerRepo('https://ghe.example.com/open-gsd/gsd-core'), {
+    owner: 'open-gsd',
+    repo: 'gsd-core',
+    host: 'ghe.example.com',
+  });
+});
+
+test('parseOwnerRepo: a GitHub-ish-but-unparseable input → null (fail-closed signal)', () => {
+  assert.strictEqual(res.parseOwnerRepo('weird::garbage'), null);
+  assert.strictEqual(res.parseOwnerRepo(':::bad'), null);
+  assert.strictEqual(res.parseOwnerRepo('foo'), null); // single bare word, <2 segments
+  assert.strictEqual(res.parseOwnerRepo(''), null);
+  assert.strictEqual(res.parseOwnerRepo('   '), null);
+  assert.strictEqual(res.parseOwnerRepo(null), null);
+  assert.strictEqual(res.parseOwnerRepo(undefined), null);
+  assert.strictEqual(res.parseOwnerRepo(42), null);
+});
+
+// --- repoSpecTargetsGsdCore: rerouted through parseOwnerRepo (case-fold) ---
+
+test('repoSpecTargetsGsdCore: Open-GSD/GSD-Core (case-variant) → true (CR-01)', () => {
+  assert.strictEqual(res.repoSpecTargetsGsdCore('Open-GSD/GSD-Core'), true);
+});
+
+test('repoSpecTargetsGsdCore: open-gsd/gsd-core → true', () => {
+  assert.strictEqual(res.repoSpecTargetsGsdCore('open-gsd/gsd-core'), true);
+});
+
+test('repoSpecTargetsGsdCore: dave/gsd-core-fork → false (no false-deny)', () => {
+  assert.strictEqual(res.repoSpecTargetsGsdCore('dave/gsd-core-fork'), false);
+});
+
+test('repoSpecTargetsGsdCore: dave/gsd-core (wrong owner) → false', () => {
+  assert.strictEqual(res.repoSpecTargetsGsdCore('dave/gsd-core'), false);
+});
+
+test('repoSpecTargetsGsdCore: a non-string / empty → false', () => {
+  assert.strictEqual(res.repoSpecTargetsGsdCore(''), false);
+  assert.strictEqual(res.repoSpecTargetsGsdCore(true), false);
+  assert.strictEqual(res.repoSpecTargetsGsdCore(undefined), false);
+});
+
+// --- tokenTargetsGsdCoreApi: rerouted; closes the api.github.com:443 port-slip ---
+
+test('tokenTargetsGsdCoreApi: api.github.com/repos/open-gsd/gsd-core/issues → true', () => {
+  assert.strictEqual(
+    res.tokenTargetsGsdCoreApi('https://api.github.com/repos/open-gsd/gsd-core/issues'),
+    true
+  );
+});
+
+test('tokenTargetsGsdCoreApi: api.github.com:443/... (port stripped) → true', () => {
+  assert.strictEqual(
+    res.tokenTargetsGsdCoreApi('https://api.github.com:443/repos/open-gsd/gsd-core/pulls'),
+    true
+  );
+});
+
+test('tokenTargetsGsdCoreApi: a bare repos/<owner>/<repo> path positional → true', () => {
+  assert.strictEqual(res.tokenTargetsGsdCoreApi('repos/open-gsd/gsd-core/issues'), true);
+});
+
+test('tokenTargetsGsdCoreApi: case-variant repos/Open-GSD/GSD-Core → true (CR-01)', () => {
+  assert.strictEqual(res.tokenTargetsGsdCoreApi('repos/Open-GSD/GSD-Core/issues'), true);
+});
+
+test('tokenTargetsGsdCoreApi: a fork repos/dave/gsd-core-fork/issues → false', () => {
+  assert.strictEqual(res.tokenTargetsGsdCoreApi('repos/dave/gsd-core-fork/issues'), false);
+});
+
+test('tokenTargetsGsdCoreApi: a non-repos/ path does NOT match → false', () => {
+  assert.strictEqual(res.tokenTargetsGsdCoreApi('open-gsd/gsd-core'), false);
+  assert.strictEqual(res.tokenTargetsGsdCoreApi('user/repos/open-gsd/gsd-core'), false);
+});
+
+// --- commandTargetsGsdCore: GH_REPO-aware + three-way discriminator (CHD-01, Task 2) ---
+// Three-way (binding [Postel + Leaky Abstractions]):
+//   clearly-not-targeting (no repo-spec intent) → false (ROB-01 passthrough preserved)
+//   explicit spec that parses as open-gsd/gsd-core → true (DENY)
+//   explicit spec that is GitHub-ish but parseOwnerRepo CANNOT resolve → true (fail-closed DENY)
+//   explicit spec that parses as a clearly-non-upstream fork → false (no false-deny)
+
+test('commandTargetsGsdCore: case-variant -R Open-GSD/GSD-Core → true (CR-01 via Task-1 reroute)', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('gh issue create -R Open-GSD/GSD-Core --title x')),
+    true
+  );
+});
+
+test('commandTargetsGsdCore: GH_REPO=open-gsd/gsd-core env token → true (CR-02)', () => {
+  const parsed = parseCommand('GH_REPO=open-gsd/gsd-core gh issue create --title x');
+  // Goodhart: assert the env token actually drove the classification — argv keeps the
+  // leading NAME=VALUE in seg.tokens (not seg.program, which is `gh`).
+  assert.strictEqual(parsed.segments[0].program, 'gh');
+  assert.strictEqual(parsed.segments[0].tokens[0], 'GH_REPO=open-gsd/gsd-core');
+  assert.strictEqual(res.commandTargetsGsdCore(parsed), true);
+});
+
+test('commandTargetsGsdCore: case-variant GH_REPO=Open-GSD/GSD-Core env token → true', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('GH_REPO=Open-GSD/GSD-Core gh pr create --base next')),
+    true
+  );
+});
+
+test('commandTargetsGsdCore: GH_HOST + GH_REPO env tokens → true (host-qualified)', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(
+      parseCommand('GH_HOST=github.com GH_REPO=open-gsd/gsd-core gh issue create --title x')
+    ),
+    true
+  );
+});
+
+test('commandTargetsGsdCore: GH_REPO=dave/gsd-core-fork (fork env token) → false (no false-deny)', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('GH_REPO=dave/gsd-core-fork gh issue create --title x')),
+    false
+  );
+});
+
+test('commandTargetsGsdCore: explicit -R weird::garbage (githubish-unparseable) → true (fail-closed)', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('gh issue create -R weird::garbage --title x')),
+    true
+  );
+});
+
+test('commandTargetsGsdCore: explicit GH_REPO=:::bad (githubish-unparseable) → true (fail-closed)', () => {
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('GH_REPO=:::bad gh issue create --title x')),
+    true
+  );
+});
+
+test('commandTargetsGsdCore: a lowercase NAME=VALUE (not GH_REPO) leading token is ignored → false', () => {
+  // `gh_repo=...` (lowercase) is NOT the GH_REPO env var; must not trigger targeting.
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('gh issue list')),
+    false
+  );
+});
+
+test('commandTargetsGsdCore: a -f title=x field token is NOT mistaken for an env assignment → false', () => {
+  // The `title=x` token follows the program; it is not a leading env assignment.
+  assert.strictEqual(
+    res.commandTargetsGsdCore(parseCommand('gh api repos/dave/gsd-core-fork/issues -f title=x')),
+    false
+  );
+});
+
 // --- Integration against the REAL gsd-core checkout when present ---
 const REAL_GSD_CORE = '/home/dave/repos/gsd-core';
 const hasRealCore =

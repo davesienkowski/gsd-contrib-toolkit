@@ -36,7 +36,7 @@
 
 const { parseCommand } = require('./lib/argv.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
-const { resolveGsdCoreRoot, commandStartDir, ScriptResolveError } = require('./lib/resolve.cjs');
+const { resolveGsdCoreRoot, commandStartDir, ScriptResolveError, parseOwnerRepo } = require('./lib/resolve.cjs');
 
 // FailClosed/safeCommand: shared IN-03 helpers from failclosed.cjs.
 
@@ -76,28 +76,20 @@ function isToolkitArtifact(p) {
 }
 
 /**
- * Does this remote URL point at the UPSTREAM open-gsd/gsd-core (ENF-07)? Recognizes both
- * https and ssh forms; the owner MUST be `open-gsd` and the repo `gsd-core` — a personal
- * fork (`dave/gsd-core-fork`, `dave/gsd-core`) is NOT upstream.
+ * Does this remote URL point at the UPSTREAM open-gsd/gsd-core (ENF-07)? Routes through the
+ * unified parseOwnerRepo normalizer (CHD-01 / WR-03) so it case-folds (CR-01) and port-strips
+ * exactly like the resolve.cjs classifiers — recognizes https/http (+ optional `:port`) and ssh
+ * forms; the owner MUST be `open-gsd` and the repo `gsd-core`. A personal fork
+ * (`dave/gsd-core-fork`, `dave/gsd-core`) is NOT upstream (no false-deny). Behavior-preserving
+ * reroute: keeps the boolean shape the gate() consumer (:330) depends on, only ADDING the
+ * case-fold + port handling the hand-rolled body lacked.
  *
  * @param {string} url
  * @returns {boolean}
  */
 function isUpstreamRemote(url) {
-  if (typeof url !== 'string' || url.length === 0) return false;
-  // Normalize: strip scheme/user, unify ':' (ssh) and '/' separators after the host.
-  let s = url.trim();
-  s = s.replace(/^[a-z]+:\/\//i, ''); // https:// , ssh://
-  s = s.replace(/^[^@]+@/, ''); // git@
-  // Now host[:/]owner/repo(.git)? — split host from the path on the first ':' or '/'.
-  const m = /^([^:/]+)[:/](.+)$/.exec(s);
-  if (!m) return false;
-  let pathPart = m[2].replace(/\.git$/i, '');
-  const segs = pathPart.split('/').filter((x) => x.length > 0);
-  if (segs.length < 2) return false;
-  const owner = segs[segs.length - 2];
-  const repo = segs[segs.length - 1];
-  return owner === 'open-gsd' && repo === 'gsd-core';
+  const r = parseOwnerRepo(url);
+  return !!r && r.owner === 'open-gsd' && r.repo === 'gsd-core';
 }
 
 /**
@@ -113,27 +105,39 @@ function isContributionBranch(branch) {
 }
 
 /**
- * Detect the git action + its relevant args from a parsed segment. argv records the
+ * Detect EVERY relevant git action across a parsed command's segments. argv records the
  * non-dash args after the subcommand as further `subcommands` entries, so for `git push
  * origin main` → subcommands = ['push','origin','main']; for `git add .planning/x sdk/y` →
  * ['add','.planning/x','sdk/y'].
  *
+ * A single Bash invocation may CHAIN several git actions (`git add -A && git commit -m x &&
+ * git push origin main`) — one PreToolUse call. This collects ALL of them so gate() can
+ * evaluate each, instead of returning on the FIRST match (the CHD-02 leak: a chained
+ * `commit && push origin main` would only gate the add and skip ENF-07 on the push).
+ *
+ * Shape (CHD-02, Hyrum-audited): returns an ORDERED ARRAY of `{kind, args, seg}` — one entry
+ * per matching git segment — replacing the prior single `{kind,args,seg}` object. The empty
+ * array is the new no-op signal (was `{kind:'other'}`). Each entry carries its OWN seg so
+ * pushRemote(seg)/explicitAddPaths(args) operate on the right segment. The only in-tree
+ * consumers are gate() (below) and hooks/containment.test.cjs, both updated atomically.
+ *
  * @param {Object} parsed argv.parseCommand result (ok:true)
- * @returns {{kind:'add'|'commit'|'push'|'other', args:string[]}}
+ * @returns {Array<{kind:'add'|'commit'|'push', args:string[], seg:Object}>}
  */
 function detectGit(parsed) {
   const segs = Array.isArray(parsed.segments) && parsed.segments.length > 0
     ? parsed.segments
     : [parsed];
+  const actions = [];
   for (const seg of segs) {
     if (seg.program !== 'git') continue;
     const sub = seg.subcommands || [];
     const verb = sub[0];
-    if (verb === 'add') return { kind: 'add', args: sub.slice(1), seg };
-    if (verb === 'commit') return { kind: 'commit', args: sub.slice(1), seg };
-    if (verb === 'push') return { kind: 'push', args: sub.slice(1), seg };
+    if (verb === 'add') actions.push({ kind: 'add', args: sub.slice(1), seg });
+    else if (verb === 'commit') actions.push({ kind: 'commit', args: sub.slice(1), seg });
+    else if (verb === 'push') actions.push({ kind: 'push', args: sub.slice(1), seg });
   }
-  return { kind: 'other', args: [], seg: segs[0] };
+  return actions;
 }
 
 /**
@@ -276,56 +280,107 @@ function pushRemote(seg) {
 }
 
 /**
- * The pure gate decision with all impure deps injected.
+ * Containment A for a single add/commit action: DENY if any path being staged/committed is a
+ * toolkit / `.planning` artifact (ENF-06). An `add` evaluates its explicit path operands (or
+ * the cached set for a bare `git add .`/`-A`/`-u`); a `commit` evaluates the cached set.
  *
- * @param {string} stdinString raw PreToolUse JSON
- * @param {Object} deps
- * @param {string} deps.gsdCoreRoot worktree root
- * @param {(root:string)=>string[]} deps.stagedPaths cached-set reader (A fallback)
- * @param {(root:string, remote:string)=>string} deps.remoteUrl remote URL resolver (B)
- * @param {(root:string)=>string} deps.currentBranch branch resolver (B)
- * @param {{checkOverride:Function, writeReceipt:Function}} deps.overrideImpl the override
- *   module (B origin-only consult): checkOverride(root) reads GSD_CONTRIB_OVERRIDE,
- *   writeReceipt(root, record) appends the per-worktree audit receipt.
+ * @param {{kind:'add'|'commit', args:string[]}} action one detectGit action
+ * @param {Object} deps gate deps (gsdCoreRoot, stagedPaths)
  * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
  */
-function gate(stdinString, deps) {
-  const input = readHookInput(stdinString);
-  const command = (input.tool_input && input.tool_input.command) || '';
+function gateContainmentA(action, deps) {
+  let paths;
+  if (action.kind === 'add') {
+    const explicit = explicitAddPaths(action.args);
+    // Explicit path operands are evaluated directly; a bare `git add .`/`-A`/`-u` has no
+    // operand → fall back to what would actually be staged (the cached set).
+    paths = explicit.length > 0 ? explicit : deps.stagedPaths(deps.gsdCoreRoot);
+  } else {
+    // bare commit → the cached set is what is about to be committed.
+    paths = deps.stagedPaths(deps.gsdCoreRoot);
+  }
+  const offenders = (paths || []).filter(isToolkitArtifact);
+  if (offenders.length > 0) {
+    return deny(
+      'Containment breach blocked (ENF-06): these toolkit / `.planning` artifacts must ' +
+        'NOT enter the gsd-core repo:\n' +
+        offenders.map((p) => '  - ' + p).join('\n') + '\n' +
+        'They belong in the private gsd-contrib-toolkit repo only. Unstage them ' +
+        '(`git restore --staged <path>`) before committing.'
+    );
+  }
+  return allow();
+}
 
-  const parsed = parseCommand(command);
-  if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
+/**
+ * Is a `git push` target a URL (a repository location) rather than a configured remote NAME?
+ * A URL target contains a scheme (`://`) OR matches the scp-style ssh `user@host:owner/repo`
+ * form. A bare word with no `://` and no scp-`@host:` (`origin`, `fork`, `upstream`, or a
+ * relative path like `.` / `../x`) is a configured remote NAME (or a path) → false.
+ *
+ * This discriminator is the CHD-04 (WR-02) fix seam: a URL target must be classified DIRECTLY
+ * via isUpstreamRemote — never routed through `git remote get-url <url>` (remoteUrlLive), which
+ * THROWS FailClosed on a non-remote-name and is then flipped to ALLOW+receipt by the GENERAL
+ * runGate override (failclosed.cjs:155-181), bypassing ROB-03's origin-only conjunction. The
+ * scp regex mirrors parseOwnerRepo's own ssh-form matcher (Kerckhoffs: no new obscure URL
+ * parser). It is deliberately conservative toward NAME: a bare remote name must NOT be
+ * misread as a URL, or `origin`/`upstream` would skip the remoteUrl classification.
+ *
+ * @param {string} target the pushRemote(seg) value (the <repository> positional)
+ * @returns {boolean}
+ */
+function isUrlTarget(target) {
+  if (typeof target !== 'string' || target.length === 0) return false;
+  if (target.includes('://')) return true; // any scheme:// form (https/http/ssh/git)
+  if (/^[^@/\s]+@[^@:/\s]+:/.test(target)) return true; // scp-style ssh `git@host:owner/repo`
+  return false;
+}
 
-  const git = detectGit(parsed);
-  if (git.kind === 'other') return allow(); // not add/commit/push → no-op
+/**
+ * Containment B for a single push action: DENY if the target remote resolves to upstream
+ * open-gsd/gsd-core (ENF-07), honoring the ROB-03 origin-only logged override. Each push
+ * carries its OWN seg, so a chained / multi-push command resolves each remote independently.
+ * A failure to read the remote URL or branch THROWS → propagates to runGate → fails closed
+ * (the ROB-03 origin-only override + the thrown-path general override are unchanged).
+ *
+ * CHD-04 (WR-02): BEFORE consulting `deps.remoteUrl(root, remote)`, discriminate a URL target
+ * from a configured remote NAME (isUrlTarget). A URL target is classified DIRECTLY via
+ * isUpstreamRemote — a URL is by definition NOT the named `origin`, so an upstream URL push is
+ * a RETURNED policy deny with the override INERT (failclosed.cjs:150-156), never the thrown
+ * `git remote get-url <url>` that the general override would rescue. A fork URL allows. Only a
+ * configured remote NAME falls through to the existing remoteUrl path, so a genuinely transient
+ * git error on a NAMED remote still throws → override-rescuable (unchanged). The fix is
+ * gate-local to ENF-07: no runGate/failclosed.cjs edit, no new try/rescue (Kerckhoffs).
+ *
+ * @param {{kind:'push', seg:Object}} action one detectGit push action
+ * @param {string} command the full raw command (recorded in the override receipt)
+ * @param {Object} deps gate deps (gsdCoreRoot, remoteUrl, currentBranch, overrideImpl)
+ * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
+ */
+function gateContainmentB(action, command, deps) {
+  const remote = pushRemote(action.seg);
 
-  // ---- Containment A: git add / git commit ----
-  if (git.kind === 'add' || git.kind === 'commit') {
-    let paths;
-    if (git.kind === 'add') {
-      const explicit = explicitAddPaths(git.args);
-      // Explicit path operands are evaluated directly; a bare `git add .`/`-A`/`-u` has no
-      // operand → fall back to what would actually be staged (the cached set).
-      paths = explicit.length > 0 ? explicit : deps.stagedPaths(deps.gsdCoreRoot);
-    } else {
-      // bare commit → the cached set is what is about to be committed.
-      paths = deps.stagedPaths(deps.gsdCoreRoot);
+  // CHD-04 URL-vs-remote-name discriminator (before any `git remote get-url`). A URL target
+  // is classified directly — never through the throw→general-override path (WR-02).
+  if (isUrlTarget(remote)) {
+    if (!isUpstreamRemote(remote)) {
+      return allow(); // a fork URL (or a path remote) push is fine — not upstream
     }
-    const offenders = (paths || []).filter(isToolkitArtifact);
-    if (offenders.length > 0) {
-      return deny(
-        'Containment breach blocked (ENF-06): these toolkit / `.planning` artifacts must ' +
-          'NOT enter the gsd-core repo:\n' +
-          offenders.map((p) => '  - ' + p).join('\n') + '\n' +
-          'They belong in the private gsd-contrib-toolkit repo only. Unstage them ' +
-          '(`git restore --staged <path>`) before committing.'
-      );
-    }
-    return allow();
+    // Upstream open-gsd/gsd-core named by a URL. A URL is NOT the named `origin`, so the
+    // origin-only override is INERT here: RETURN the policy deny (which the general runGate
+    // override never rescues) and — like the non-origin NAMED path — do NOT advertise the
+    // override (advertising an inert escape is the spoof, T-25-03-05 / T-26-05-01).
+    const branch = deps.currentBranch(deps.gsdCoreRoot); // may throw → fail closed
+    return deny(
+      'Containment breach blocked (ENF-07): `' + remote + '` is a URL that resolves to the ' +
+        'UPSTREAM open-gsd/gsd-core. Pushing private work to upstream from branch `' + branch +
+        '` leaks it. A bare URL target is physically contained: a deliberate maintainer push ' +
+        'is only possible to the named `origin` remote (the same-repo flow), not to a URL. ' +
+        'Push to a fork (`git push fork ' + branch + '`) and open a PR, or use your `!` shell ' +
+        'channel.'
+    );
   }
 
-  // ---- Containment B: git push ----
-  const remote = pushRemote(git.seg);
   const url = deps.remoteUrl(deps.gsdCoreRoot, remote); // may throw → fail closed
   if (!isUpstreamRemote(url)) {
     return allow(); // pushing to a fork / non-upstream remote is fine
@@ -383,6 +438,46 @@ function gate(stdinString, deps) {
       'possible to `origin` (the same-repo flow), not to `' + remote + '`. Push to a fork ' +
       '(`git push fork ' + branch + '`) and open a PR, or use your `!` shell channel.'
   );
+}
+
+/**
+ * The pure gate decision with all impure deps injected.
+ *
+ * Evaluates EVERY git action in the (possibly chained) command in order: Containment A for
+ * each add/commit, Containment B for each push. DENIES on the FIRST action that fails
+ * (fail-closed — a denied command is blocked regardless of later actions); allows only if
+ * every action passes. A single-action command collapses to a one-element loop and reproduces
+ * the prior decision + reason byte-for-byte (CHD-02).
+ *
+ * @param {string} stdinString raw PreToolUse JSON
+ * @param {Object} deps
+ * @param {string} deps.gsdCoreRoot worktree root
+ * @param {(root:string)=>string[]} deps.stagedPaths cached-set reader (A fallback)
+ * @param {(root:string, remote:string)=>string} deps.remoteUrl remote URL resolver (B)
+ * @param {(root:string)=>string} deps.currentBranch branch resolver (B)
+ * @param {{checkOverride:Function, writeReceipt:Function}} deps.overrideImpl the override
+ *   module (B origin-only consult): checkOverride(root) reads GSD_CONTRIB_OVERRIDE,
+ *   writeReceipt(root, record) appends the per-worktree audit receipt.
+ * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
+ */
+function gate(stdinString, deps) {
+  const input = readHookInput(stdinString);
+  const command = (input.tool_input && input.tool_input.command) || '';
+
+  const parsed = parseCommand(command);
+  if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
+
+  const actions = detectGit(parsed);
+  if (actions.length === 0) return allow(); // no add/commit/push → no-op
+
+  for (const action of actions) {
+    const decision = action.kind === 'push'
+      ? gateContainmentB(action, command, deps)
+      : gateContainmentA(action, deps);
+    // Deny on the FIRST failing action — a denied command is blocked regardless of the rest.
+    if (decision && decision.permissionDecision === 'deny') return decision;
+  }
+  return allow();
 }
 
 /**
@@ -449,6 +544,7 @@ module.exports = {
   isContributionBranch,
   detectGit,
   pushRemote,
+  isUrlTarget,
   explicitAddPaths,
   stagedPathsLive,
   remoteUrlLive,

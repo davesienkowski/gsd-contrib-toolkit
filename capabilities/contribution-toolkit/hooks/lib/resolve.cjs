@@ -167,40 +167,99 @@ function resolveRootForCommand(command, baseCwd) {
 const GSD_CORE_OWNER = 'open-gsd';
 const GSD_CORE_REPO = 'gsd-core';
 
+// A GitHub-safe owner/repo segment: alnum, dot, dash, underscore. Anything else
+// (a stray `:`, whitespace, a second path separator that survived normalization) means
+// the input did NOT resolve to an enumerated owner/repo → null (fail-closed signal).
+const OWNER_REPO_SEG = /^[A-Za-z0-9._-]+$/;
+
 /**
- * Does an explicit `-R/--repo` VALUE name the upstream open-gsd/gsd-core repo?
+ * parseOwnerRepo — the SINGLE owner/repo normalizer (CHD-01, WR-03: fix the class, not the
+ * instance). It DELIBERATELY ENUMERATES the accepted input forms (Postel-inversion, binding
+ * [Postel + Leaky Abstractions]): a containment-boundary parser must fail CLOSED on a form
+ * it does not recognize — never silently treat an un-enumerated target as a non-match.
  *
- * Accepts a bare `owner/repo`, a host-qualified `github.com/owner/repo`, an ssh
- * `git@github.com:owner/repo`, an https URL, and a trailing `.git`. The owner/repo are
- * the LAST two path segments after host/scheme/user normalization (the shape proven in
- * containment.cjs isUpstreamRemote) — so a fork (`dave/gsd-core-fork`) or a wrong-owner
- * same-name repo (`dave/gsd-core`) does NOT match.
+ * Enumerated forms:
+ *   - `gh:owner/repo`                       (gh CLI shorthand scheme → host github.com)
+ *   - `https://host[:port]/owner/repo[.git]`  (http/https, optional user@, optional :port)
+ *   - `ssh://git@host[:port]/owner/repo[.git]` (any scheme:// form, user@ + host stripped)
+ *   - `git@host:owner/repo[.git]`           (scp-style ssh; host before the `:`)
+ *   - `host/owner/repo` or bare `owner/repo`  (LAST two path segments are owner/repo)
+ *   - GH_HOST-qualified enterprise hosts (`ghe.example.com/...`) — host retained.
+ *
+ * Returns `{ owner, repo, host }` with owner/repo/host LOWER-cased (GitHub routes
+ * owner/repo case-insensitively — CR-01), or `null` when the input does not resolve to an
+ * enumerated form / >=2 path segments / GitHub-safe owner+repo. Pure (string in,
+ * object|null out); operates on already-structured argv values (HARD-04-safe — never a
+ * raw-command regex).
+ *
+ * @param {*} urlOrSpec
+ * @returns {{owner:string, repo:string, host:string}|null}
+ */
+function parseOwnerRepo(urlOrSpec) {
+  if (typeof urlOrSpec !== 'string') return null;
+  const raw = urlOrSpec.trim();
+  if (raw.length === 0) return null;
+
+  let host = null;
+  let rest = raw;
+
+  if (/^gh:/i.test(rest)) {
+    // gh CLI shorthand `gh:owner/repo` → github.com.
+    host = 'github.com';
+    rest = rest.slice(3);
+  } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(rest)) {
+    // scheme:// form (https, http, ssh, git, …): strip scheme, optional user@, then the
+    // host[:port] up to the first slash.
+    rest = rest.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+    rest = rest.replace(/^[^@/]+@/, ''); // strip user@ (before any path slash)
+    const slash = rest.indexOf('/');
+    if (slash === -1) return null; // host with no path → not an owner/repo
+    host = rest.slice(0, slash).replace(/:\d+$/, '').toLowerCase(); // strip :port
+    rest = rest.slice(slash + 1);
+  } else if (/^[^@/\s]+@[^@:/\s]+:/.test(rest)) {
+    // scp-style ssh `git@host:owner/repo` → host is between `@` and `:`.
+    rest = rest.replace(/^[^@]+@/, ''); // strip user@
+    const colon = rest.indexOf(':');
+    host = rest.slice(0, colon).replace(/:\d+$/, '').toLowerCase();
+    rest = rest.slice(colon + 1);
+  }
+  // else: bare `owner/repo` or `host/owner/repo` — host stays the github.com default.
+
+  rest = rest.replace(/^\/+/, '').replace(/\.git$/i, '');
+  const segs = rest.split('/').filter((x) => x.length > 0);
+  if (segs.length < 2) return null;
+  const owner = segs[segs.length - 2];
+  const repo = segs[segs.length - 1];
+  if (!OWNER_REPO_SEG.test(owner) || !OWNER_REPO_SEG.test(repo)) return null;
+  return {
+    owner: owner.toLowerCase(),
+    repo: repo.toLowerCase(),
+    host: (host || 'github.com').toLowerCase(),
+  };
+}
+
+/**
+ * Does an explicit `-R/--repo` VALUE name the upstream open-gsd/gsd-core repo? Routes
+ * through the unified parseOwnerRepo normalizer (CR-01 case-fold) — so a fork
+ * (`dave/gsd-core-fork`) or a wrong-owner same-name repo (`dave/gsd-core`) does NOT match,
+ * but a case-variant `Open-GSD/GSD-Core` DOES.
  *
  * @param {*} value the flag value (only strings can match)
  * @returns {boolean}
  */
 function repoSpecTargetsGsdCore(value) {
-  if (typeof value !== 'string' || value.length === 0) return false;
-  let s = value.trim();
-  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, ''); // strip scheme (https:// , ssh://)
-  s = s.replace(/^[^@/]+@/, ''); // strip git@ user (before any path slash)
-  s = s.replace(/\.git$/i, '');
-  s = s.replace(/^\/+/, '');
-  // ssh `host:owner/repo` → unify the host separator to '/'.
-  s = s.replace(/^([^:/]+):/, '$1/');
-  const segs = s.split('/').filter((x) => x.length > 0);
-  if (segs.length < 2) return false;
-  const owner = segs[segs.length - 2];
-  const repo = segs[segs.length - 1];
-  return owner === GSD_CORE_OWNER && repo === GSD_CORE_REPO;
+  const r = parseOwnerRepo(value);
+  return !!r && r.owner === GSD_CORE_OWNER && r.repo === GSD_CORE_REPO;
 }
 
 /**
  * Does a single token name the upstream gsd-core repo via a REST path — a gh-api path
  * positional (`repos/open-gsd/gsd-core/...`) or a curl URL token
- * (`https://api.github.com/repos/open-gsd/gsd-core/...`)? The token is normalized
- * (scheme + api.github.com host + leading slash + `.git` stripped) then matched against
- * the `repos/<owner>/<repo>` prefix so only the upstream owner/repo pair counts.
+ * (`https://api.github.com[:port]/repos/open-gsd/gsd-core/...`)? The token is normalized
+ * (scheme + `api.github.com` host WITH an optional `:port` — closing the `:443` slip —
+ * + leading slash stripped); the leading `repos/` prefix is REQUIRED (a non-`repos/` path
+ * does not match), and the FIRST two segments after it are resolved via parseOwnerRepo so
+ * only the upstream owner/repo pair counts (case-folded).
  *
  * @param {*} token
  * @returns {boolean}
@@ -209,11 +268,14 @@ function tokenTargetsGsdCoreApi(token) {
   if (typeof token !== 'string' || token.length === 0) return false;
   let s = token.trim();
   s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, ''); // strip scheme
-  s = s.replace(/^api\.github\.com/i, ''); // strip the GitHub REST host
+  s = s.replace(/^api\.github\.com(?::\d+)?/i, ''); // strip REST host + optional :port (close :443 slip)
   s = s.replace(/^\/+/, ''); // strip leading slashes
-  s = s.replace(/\.git$/i, '');
-  const re = new RegExp('^repos/' + GSD_CORE_OWNER + '/' + GSD_CORE_REPO + '(?:/|$)', 'i');
-  return re.test(s);
+  const m = /^repos\/(.+)$/i.exec(s); // the `repos/` prefix is required
+  if (!m) return false;
+  const after = m[1].split('/').filter((x) => x.length > 0);
+  if (after.length < 2) return false;
+  const r = parseOwnerRepo(after[0] + '/' + after[1]); // owner/repo are the FIRST two segments after repos/
+  return !!r && r.owner === GSD_CORE_OWNER && r.repo === GSD_CORE_REPO;
 }
 
 /**
@@ -229,7 +291,22 @@ function tokenTargetsGsdCoreApi(token) {
  * (HARD-02 — never reach for a possibly-stale runtime root).
  *
  * Reads STRUCTURED argv only (parsed.segments flags/shortFlags/tokens) — never a
- * raw-string re-parse (HARD-04). A fork or a non-gh command returns false.
+ * raw-string re-parse (HARD-04). It is THREE-way (binding [Postel + Leaky Abstractions]):
+ *   - NO repo-spec intent (no -R/--repo, no GH_REPO token, no upstream api/curl token)
+ *     → false (ROB-01 passthrough preserved — a clearly-non-upstream command passes through).
+ *   - an explicit repo-spec (flags.repo / shortFlags.R / a leading GH_REPO=… env token)
+ *     that parses as open-gsd/gsd-core, OR a gh-api/curl `repos/open-gsd/gsd-core` token
+ *     → true (targeting → DENY).
+ *   - an explicit repo-spec that parseOwnerRepo CANNOT resolve (GitHub-ish but unparseable)
+ *     → true (fail-closed targeting — an un-enumerated explicit target is a containment
+ *     bypass, never a silent non-upstream ALLOW; the Postel-inversion).
+ *   - an explicit repo-spec that parses as a clearly-non-upstream fork → that source is NOT
+ *     targeting (a fork must still passthrough — no false-deny).
+ *
+ * The GH_REPO/GH_HOST env target is read from the LEADING `NAME=VALUE` tokens argv keeps in
+ * seg.tokens (CR-02): argv normalizes a leading env-assignment OUT of seg.program but RETAINS
+ * it as a leading seg.tokens entry — so an ordinary `--flag=value` or a post-program
+ * `-f title=x` field is never mistaken for an env assignment.
  *
  * @param {{ok?:boolean, segments?:Array}} parsed result of parseCommand(command)
  * @returns {boolean}
@@ -240,11 +317,39 @@ function commandTargetsGsdCore(parsed) {
     if (!seg) continue;
     const flags = seg.flags || {};
     const shortFlags = seg.shortFlags || {};
-    // gh native explicit target: --repo <v> / --repo=<v> / -R <v> / -R<v>.
-    if (repoSpecTargetsGsdCore(flags.repo)) return true;
-    if (repoSpecTargetsGsdCore(shortFlags.R)) return true;
-    // gh-api path positional / curl api.github.com URL token.
     const tokens = Array.isArray(seg.tokens) ? seg.tokens : [];
+
+    // Collect every EXPLICIT repo-spec source for this segment:
+    //   gh native --repo <v> / --repo=<v> / -R <v> / -R<v>, and a leading GH_REPO=… env token.
+    const explicitSpecs = [];
+    if (typeof flags.repo === 'string') explicitSpecs.push(flags.repo);
+    if (typeof shortFlags.R === 'string') explicitSpecs.push(shortFlags.R);
+
+    // Scan the LEADING run of `NAME=VALUE` env-assignment tokens (they precede the program
+    // per argv's normalization). Stop at the first non-assignment token (the program) so a
+    // post-program `title=x` / `--flag=value` is never read as an env assignment.
+    for (const tok of tokens) {
+      if (typeof tok !== 'string') break;
+      const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(tok);
+      if (!m) break; // first non-assignment token = the program → stop scanning
+      if (m[1] === 'GH_REPO') explicitSpecs.push(m[2]);
+      // GH_HOST is recognized as part of the env-target shape but the gate keys on
+      // owner/repo (host is advisory), so its value does not itself drive classification.
+    }
+
+    // Three-way over each explicit repo-spec source.
+    for (const spec of explicitSpecs) {
+      const r = parseOwnerRepo(spec);
+      if (r) {
+        if (r.owner === GSD_CORE_OWNER && r.repo === GSD_CORE_REPO) return true; // upstream → DENY
+        // else: parses as a clearly-non-upstream fork → not targeting via this source (continue).
+      } else {
+        // explicit spec present but unparseable (GitHub-ish but unparseable) → fail-closed.
+        return true;
+      }
+    }
+
+    // gh-api path positional / curl api.github.com URL token (upstream match).
     for (const tok of tokens) {
       if (tokenTargetsGsdCoreApi(tok)) return true;
     }
@@ -306,4 +411,7 @@ module.exports = {
   expandHome,
   resolveRootForCommand,
   commandTargetsGsdCore,
+  parseOwnerRepo,
+  repoSpecTargetsGsdCore,
+  tokenTargetsGsdCoreApi,
 };
