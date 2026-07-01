@@ -29,6 +29,14 @@
  * or non-string `file_path`, or any thrown error FAILS CLOSED (deny) — escapable only by
  * a deliberate, logged GSD_CONTRIB_OVERRIDE.
  *
+ * TOOL_NAME SELF-FILTER (defense-in-depth layer 2): this gate governs ONLY `Write` and `Edit`.
+ * The canonical `settings.snippet.json`/manifest matcher scopes it to `Write|Edit`, but if it is
+ * ever installed CATCH-ALL (no matcher), it also receives `Bash`/`Read`/etc. payloads that
+ * legitimately carry no `file_path`. Those must short-circuit to ALLOW *before* the file_path
+ * check — otherwise every Bash call trips the Write/Edit HARD-01 fail-closed and blocks all work.
+ * The HARD-01 fail-closed is UNWEAKENED for the tools this gate actually governs: a Write/Edit
+ * with an absent/non-string file_path still DENIES.
+ *
  * @module hooks/binlib-edit
  */
 
@@ -98,6 +106,15 @@ function binLibDenyReason(filePath) {
  */
 function gate(stdinString) {
   const input = readHookInput(stdinString); // throws on malformed JSON → fail closed
+
+  // SELF-FILTER (defense-in-depth): this gate governs ONLY Write|Edit. Any other tool (Bash,
+  // Read, …) has no bin/lib file_path to evaluate — short-circuit to ALLOW before the file_path
+  // check so a catch-all install can never trip the Write/Edit HARD-01 on a Bash payload.
+  const toolName = input.tool_name;
+  if (toolName !== 'Write' && toolName !== 'Edit') {
+    return allow();
+  }
+
   const toolInput = input.tool_input || {};
   const filePath = toolInput.file_path;
 
