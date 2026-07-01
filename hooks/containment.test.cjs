@@ -382,6 +382,62 @@ test('transient git error on a legitimate NAMED remote + override → still RESC
   assert.strictEqual(receipts.length, 1, 'a NAMED remote whose remoteUrl throws is still override-rescued (receipt written)');
 });
 
+// ---- CHD-04 adversarial-evasion fixtures (KERCKHOFFS — the bundle is published) ----
+// The URL forms are assumed known to an adversary. Each enumerated upstream URL form, pushed
+// with the override set, must DENY with the override INERT (no receipt). These are DURABLE
+// guards — do not delete them; they are the published-system evasion boundary. Reuse of the
+// unified parseOwnerRepo normalizer (via isUpstreamRemote) is what case/port/trailing-folds
+// them all, so an added form is a fixture here, never a second hand-rolled parser.
+
+const URL_EVASIONS = [
+  ['mixed-case scheme + host + owner/repo', 'HTTPS://GitHub.com/Open-GSD/GSD-Core.git'],
+  ['trailing-slash, no .git', 'https://github.com/open-gsd/gsd-core/'],
+  ['no .git suffix', 'https://github.com/open-gsd/gsd-core'],
+  ['ssh scp form (git@host:)', 'git@github.com:open-gsd/gsd-core.git'],
+  ['ssh:// scheme form', 'ssh://git@github.com/open-gsd/gsd-core.git'],
+  ['port-qualified host', 'https://github.com:443/open-gsd/gsd-core.git'],
+];
+
+for (const [label, urlForm] of URL_EVASIONS) {
+  test('KERCKHOFFS evasion: URL-form upstream push (' + label + ') + override → DENY, override inert [CHD-04]', () => {
+    const receipts = [];
+    const d = runContainmentGate(
+      input('git push ' + urlForm + ' main'),
+      deps({ remoteUrl: throwingRemoteUrl, currentBranch: () => 'main', overrideImpl: rescueOverride(receipts) })
+    );
+    assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+    assert.strictEqual(receipts.length, 0, 'override inert — no receipt for a returned policy deny');
+    assert.match(d.permissionDecisionReason, /ENF-07/);
+  });
+}
+
+// CHD-02 × CHD-04 INTERACTION (binding): a chain ending in a URL-form upstream push must DENY
+// via Containment B ON THE PUSH — proving the CHD-02 multi-action gate() loop reaches the CHD-04
+// URL-classification path. This case can only pass with BOTH 26-03 (multi-action loop) and this
+// plan in; that is why it lives here (CHD-04 depends_on 26-03).
+
+test('CHAINED add && commit && push <URL-upstream> main (override set) → DENY via Containment B on the PUSH [Goodhart, CHD-02×CHD-04]', () => {
+  const receipts = [];
+  const d = runContainmentGate(
+    input('git add -A && git commit -m x && git push ' + URL_UPSTREAM + ' main'),
+    deps({
+      // legitimate staged source → Containment A on add/commit must NOT be the denier, so the
+      // only thing that can DENY is Containment B on the URL push.
+      stagedPaths: () => ['sdk/src/query/decisions.ts'],
+      // a URL target must never reach remoteUrl (it is classified directly) — throwing proves it.
+      remoteUrl: throwingRemoteUrl,
+      currentBranch: () => 'main',
+      overrideImpl: rescueOverride(receipts),
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  // Goodhart — prove the deny is the CHD-04 URL Containment B path, not the add (ENF-06) and not
+  // an override-rescued throw:
+  assert.strictEqual(receipts.length, 0, 'override inert — the URL push is a returned policy deny, not a rescued throw');
+  assert.match(d.permissionDecisionReason, /ENF-07/);
+  assert.doesNotMatch(d.permissionDecisionReason, /ENF-06/);
+});
+
 // ---- CHAINED commands: per-action containment over one PreToolUse call (CHD-02 / CR-03) ----
 // A single Bash invocation may chain add+commit+push. gate() must evaluate EVERY action, not
 // just the first — the exact leak CR-03 closes: `commit && push origin main` to upstream must
