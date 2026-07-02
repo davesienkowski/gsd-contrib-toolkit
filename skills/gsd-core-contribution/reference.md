@@ -184,11 +184,12 @@ N/A — engine-internal (`src/<file>.cts`)
 - Relates to #<umbrella>; precedents #<a>/#<b>. (Security: filed public per #751/#1406.)
 ```
 
-Labels at `gh issue create`: `bug,confirmed-bug,area: <X>,priority: <low|medium|high>` (+ `security` if applicable). Then:
+Labels at `gh issue create`: `bug,confirmed-bug,area: <X>,priority: <low|medium|high>` (+ `security` if applicable) — applied **alongside** the bot's `needs-triage` auto-tag, which you must **NOT** remove:
 ```bash
 gh issue create --repo open-gsd/gsd-core --title "<type>(<area>): <imperative>" --body-file BODY.md \
   --label "bug,confirmed-bug,area: core,priority: medium"
-gh api -X DELETE "repos/open-gsd/gsd-core/issues/<#>/labels/needs-triage"   # bot auto-adds it
+# DO NOT delete needs-triage (or any bot auto-tag). trek-e's triage process catches new issues
+# by needs-triage; removing it drops the issue from his queue and he skips it (maintainer directive, 2026-07-02).
 ```
 
 ## Fix PR body skeleton (required headings — pr-template-policy enforces them)
@@ -259,7 +260,8 @@ Children: `<type>(<area>): <scoped task> (epic #<N>)`. File children incremental
 
 ## Submission gotchas (verified live)
 
-- `gh issue edit` / `gh pr edit` GraphQL is **broken** on open-gsd → use `gh api -X PATCH …/{issues,pulls}/<#> -f body="$(cat BODY.md)"` and `gh api -X DELETE …/labels/<l>`.
+- `gh issue edit` / `gh pr edit` GraphQL is **broken** on open-gsd → use `gh api -X PATCH …/{issues,pulls}/<#> -f body="$(cat BODY.md)"` and `gh api -X DELETE …/labels/<l>` (for labels you legitimately change — NOT for auto-tags; see next).
+- **NEVER remove `needs-triage` / bot auto-tags** (maintainer directive, trek-e 2026-07-02: *"don't remove auto-tags if you want me to catch it… when you remove the needs-triage, my process breaks and I skip it"*). His triage *catches* new issues by `needs-triage`; stripping it drops the issue from his queue. Apply your labels alongside the auto-tags; leave the auto-tags in place.
 - `version-exempt` label **does not exist** — a valid `### GSD Version` is the only bypass.
 - `lint:ci` runs `lint-allow-test-rule-refs` → any new `// allow-test-rule: <reason>` MUST carry `see #NNN` (ADR-456).
 - A **changeset-only commit can skip the Tests workflow** → the head shows green meta-checks while a prior commit's Tests FAILED. Always read check-runs on the head SHA and confirm Tests ran there.

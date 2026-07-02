@@ -56,7 +56,7 @@ When this skill activates, **your FIRST action — before any Read, Bash, `gh`, 
 [ ] P3d Full relevant suites + `npm run lint:ci` + the QA-matrix-by-surface checklist for parser / FS-write / CLI / security (KNOW-01, see reference.md)   [GATE: all green, lint exit 0]
 [ ] P4a Issue body: ### GSD Version + user-impact + template shape + cross-links + precedents
 [ ] P4b version-gate on the EXACT body                                           [GATE: valid-version]
-[ ] P4c gh issue create with labels; remove needs-triage via REST
+[ ] P4c gh issue create with labels; LEAVE needs-triage + every bot auto-tag in place (NEVER remove — trek-e's triage catch keys off them; removing = he skips the issue)
 [ ] P5a Branch fix/<issue#>-slug → base next; fix-template body + Fixes #<issue#>
 [ ] P5b pr-template-policy on the EXACT body                                      [GATE: valid:true, template:fix]
 [ ] P5c gh pr create with `area:` (+ security/runtime/no-changelog) label; add changeset
@@ -91,7 +91,7 @@ Read before authoring: `CONTRIBUTING.md`, the matching **issue** template, the m
 **Author with the `tdd` skill (Matt Pocock; ALIGN-02)** — the red/green/refactor discipline for this path. Worktree off `origin/next`; rewire hooks; symlink `node_modules`; `build:lib` (see [reference.md](reference.md) for exact commands — fresh worktrees have no deps and `bin/lib` is gitignored). **Regression test FIRST, watch it fail** (if you wrote the fix first, stash it, build, watch RED, restore). Then GREEN. **Run the FULL relevant suites AND `npm run lint:ci`** — not just the module's own tests (a deleted call can break a *structural/count* test elsewhere; `lint:ci` composes ~10 linters `eslint` alone doesn't). **Cover the `CONTRIBUTING` QA matrix for every surface your diff touches — `parser` / `FS-write` / `CLI` / `security` — as a per-surface checklist, not a single "is it tested?" box (KNOW-01): see the `## QA matrix by surface` table in [reference.md](reference.md) for the concrete checks each surface requires.** And **the test bar depends on the contribution type — `fix` (a regression test that fails-before/passes-after) vs `enhancement` (new-capability behavior + no-regression) vs `feature` (full coverage of the new surface) (KNOW-02): see `## Test bar by contribution type` in [reference.md](reference.md).** These checklists **supplement** the RED-before-GREEN `[GATE]` below — they do not replace it.
 
 ### Phase 4 — File the issue (validate gate first)
-Body = template shape + a **`### GSD Version`** heading (`1.6.0-rc.1 (next @ <sha>)`) + a **user-impact statement** (what the user/agent/CI would *notice*, not just the mechanism) + Summary / Root-cause / Repro / Fix + cross-links to umbrellas and cited precedents. **Run the version-gate locally on the exact body** → must be `valid-version`. Labels: `bug`→`confirmed-bug` + `area: X` + `priority: X` (+ `security`). Then **remove the bot-added `needs-triage` via REST** (`gh issue edit` GraphQL is broken on this repo).
+Body = template shape + a **`### GSD Version`** heading (`1.6.0-rc.1 (next @ <sha>)`) + a **user-impact statement** (what the user/agent/CI would *notice*, not just the mechanism) + Summary / Root-cause / Repro / Fix + cross-links to umbrellas and cited precedents. **Run the version-gate locally on the exact body** → must be `valid-version`. Labels: `bug`→`confirmed-bug` + `area: X` + `priority: X` (+ `security`) — applied **alongside** the bot auto-tags, never instead of them. **Do NOT remove `needs-triage` or any bot auto-tag.** trek-e's triage process *catches new issues by* `needs-triage`; stripping it removes the issue from his queue and he skips it (maintainer directive, 2026-07-02). Add your labels; leave the auto-tags for his process to consume.
 
 ### Phase 5 — Open the PR (validate gate first)
 Branch `fix/<issue#>-slug` → base `next`. **Push target:** if you have push access to the repo (CODEOWNER / member / collaborator) push the branch to **`origin`** and open a same-repo PR — the maintainer-style flow; only push to a **fork** and open a cross-fork PR if you're an external contributor without push access. (Check once with `gh api repos/open-gsd/gsd-core -q .permissions.push`.) Body = the **fix** template with **every** required heading + `Fixes #<issue#>`. **Run pr-template-policy locally on the exact body** → `valid:true,template:fix`. Conventional commits; **one concern per PR**; a stale-test correction lands as its own `test:`/`fix:` commit (never under `docs:` — the hotfix cherry-pick filter routes by prefix). Add a **changeset** (`Fixed`/`Security` don't trigger docs-lint). **Label the PR** to mirror the issue: `area: X` (always), `security`/`runtime: X` if applicable, `no-changelog` only if there's no changeset — NOT the issue-only `bug`/`confirmed-bug`/`priority:` labels, and not the maintainer/bot `review:`/`needs rebase` labels. The repo has no auto-labeler; an unlabeled PR is a gap.
@@ -111,13 +111,14 @@ Umbrellas use the **enhancement** template, labels `enhancement, approved-enhanc
 | pr-template | `PR_BODY=… AUTHOR_ASSOCIATION=MEMBER node scripts/pr-template-policy.cjs` | `valid:true, template:fix` |
 | lint (full) | `npm run lint:ci` | exit 0 (≠ `eslint .`) |
 | changeset | `npm run changeset -- --type Fixed --pr <PR#> --body "…"` | fragment written |
-| label cleanup | `gh api -X DELETE repos/open-gsd/gsd-core/issues/<#>/labels/needs-triage` | removed |
+| keep auto-tags | do NOT `DELETE` `needs-triage` / any bot auto-tag — apply your labels alongside them | auto-tags intact (trek-e's triage keys off them) |
 
 Exact snippets, body skeletons, label sets, and worktree setup → **[reference.md](reference.md)**.
 
 ## Gotchas (verified live)
 
-- **`gh pr edit` / `gh issue edit` GraphQL is broken** on open-gsd (Projects-classic) — body/label edits silently fail. Use REST: `gh api -X PATCH repos/open-gsd/gsd-core/{pulls,issues}/<#> -f body=…` and `-X DELETE …/labels/<l>`.
+- **`gh pr edit` / `gh issue edit` GraphQL is broken** on open-gsd (Projects-classic) — body/label edits silently fail. Use REST: `gh api -X PATCH repos/open-gsd/gsd-core/{pulls,issues}/<#> -f body=…` and `-X DELETE …/labels/<l>`. (This `-X DELETE` is for labels you legitimately need to change — **never** apply it to `needs-triage` or a bot auto-tag; see next bullet.)
+- **NEVER remove `needs-triage` / bot auto-tags** (maintainer directive, trek-e 2026-07-02): his triage process *catches* new issues by `needs-triage`; strip it and the issue drops out of his queue → he skips it. Apply your `confirmed-bug`/`approved-*`/`area:`/`priority:` labels **alongside** the auto-tags, and leave the auto-tags alone.
 - **`version-exempt` label does not exist** — the only version-gate bypass is a valid `### GSD Version` value.
 - **`lint:ci` ≠ `eslint .`** — it runs skill-deps, test-file-count, command-contract, legacy-name, regression-names, windows-portability, **allow-test-rule-refs (needs `see #NNN` per ADR-456)**, resolution-provenance. Reproduce lint in a **clean worktree** (a stray untracked `gsd-core/bin/lib/*.cjs` poisons `eslint .`).
 - **`bin/lib/*.cjs` is generated** (ADR-457) — edit `src/*.cts`, never the compiled output; `build:lib` before `node --test`.
@@ -136,6 +137,7 @@ Exact snippets, body skeletons, label sets, and worktree setup → **[reference.
 | "CI shows green on the PR" | Meta-checks aren't Tests; a changeset-only commit can skip Tests and hide a stale FAIL (#1532). Read real check-runs on the head SHA. |
 | "`eslint` is clean" | `lint:ci` runs 10 linters eslint doesn't (#1532 allow-test-rule-refs). |
 | "I'll just `gh issue edit` the body" | GraphQL is broken here — it silently no-ops. Use REST. |
+| "I'll strip `needs-triage` so my labels look clean" | trek-e's triage *catches* issues by `needs-triage` — remove it and he never sees the issue (maintainer directive, 2026-07-02). Apply labels alongside the auto-tags; never remove them. |
 | "It's engine-internal, skip the user impact" | Every issue states what the user/agent/CI notices. Translate the mechanism. |
 | "Bundle the test fix into the docs commit" | The hotfix picker routes by prefix; test fix = its own `test:` commit. |
 
