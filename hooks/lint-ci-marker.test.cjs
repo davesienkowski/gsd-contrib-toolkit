@@ -353,3 +353,44 @@ test('lint-ci-marker: a non-governed command (git status) ALLOWs without reachin
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
   assert.strictEqual(resolverTouched, false, 'short-circuit must fire before any resolve/deps access');
 });
+
+// ---- CF-05: any-governed-segment trigger — a governed push hidden after a benign commit ----
+// On pre-CF-05 code classifyAction returns the FIRST actionable segment (`commit`), so
+// `git commit && git push` fails the push/pr-create TRIGGER check and silently allows —
+// the marker + dirty-tree + test:affected gates never run on the push. These prove the
+// chained push now REACHES the ENF-05/17 logic (marker deny + Tier-1 affected) while a
+// truly non-governed chain still allows (must-reach-push AND must-still-allow, D-01).
+
+test('CF-05: git commit && git push with NO marker → deny (chained push reaches the marker gate)', () => {
+  const d = runLintCiMarkerGate(
+    input('git commit -m x && git push origin main'),
+    deps({ readMarkerExists: () => false })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /lint-ci-stamp/);
+  assert.match(d.permissionDecisionReason, /ENF-05/);
+});
+
+test('CF-05: git commit && git push with a clean marker → runAffectedTier IS called (push-in-chain Tier-1)', () => {
+  let called = false;
+  const d = runLintCiMarkerGate(
+    input('git commit -m x && git push origin main'),
+    deps({
+      runAffectedTier: () => {
+        called = true;
+      },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.strictEqual(called, true, 'a push anywhere in the chain must run the Tier-1 test:affected');
+});
+
+test('CF-05: git status && ls (no governed segment) → allow (must-still-allow)', () => {
+  const d = runLintCiMarkerGate(input('git status && ls'), deps({ readMarkerExists: () => false }));
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('CF-05: echo hi && git log (read-only chain) → allow (must-still-allow)', () => {
+  const d = runLintCiMarkerGate(input('echo hi && git log'), deps({ readMarkerExists: () => false }));
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});

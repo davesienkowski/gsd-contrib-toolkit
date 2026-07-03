@@ -207,3 +207,46 @@ test('scan-gate: a non-governed command (git status) ALLOWs without reaching the
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
   assert.strictEqual(resolverTouched, false, 'short-circuit must fire before any resolve/deps access');
 });
+
+// ---- CF-05: any-governed-segment trigger — a governed push hidden after a benign commit ----
+// On pre-CF-05 code classifyAction returns the FIRST actionable segment (`commit`), so
+// `git commit && git push` fails the push-only TRIGGER check and silently allows without
+// ever running the scans. These prove the chained push now REACHES the ENF-09 scans while a
+// truly non-governed chain still allows (must-reach-push AND must-still-allow, D-01).
+
+test('CF-05: git commit && git push runs the scans → deny on a hit (chained push reached)', () => {
+  const ran = [];
+  const d = runScanGate(
+    input('git commit -m x && git push origin main'),
+    deps({ runScans: stubRunner({ 'scripts/secret-scan.sh': 'leaked AWS key AKIA…' }, ran) })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', 'the chained push must reach the scans, not silently allow');
+  assert.match(d.permissionDecisionReason, /secret-scan\.sh/);
+  assert.match(d.permissionDecisionReason, /ENF-09/);
+  assert.ok(ran.length > 0, 'the scans must actually run on the chained push');
+});
+
+test('CF-05: git commit && git push with clean scans → allow, but the scans DID run (not a first-segment skip)', () => {
+  const ran = [];
+  const d = runScanGate(input('git commit -m x && git push'), deps({ runScans: stubRunner({}, ran) }));
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.deepStrictEqual(
+    ran.sort(),
+    ['scripts/base64-scan.sh', 'scripts/prompt-injection-scan.sh', 'scripts/secret-scan.sh'].sort(),
+    'a clean allow must still have RUN all three scans on the chained push'
+  );
+});
+
+test('CF-05: git status && ls (no governed segment) → allow, no scans run (must-still-allow)', () => {
+  const ran = [];
+  const d = runScanGate(input('git status && ls'), deps({ runScans: stubRunner({}, ran) }));
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.deepStrictEqual(ran, []);
+});
+
+test('CF-05: echo hi && git log (read-only chain) → allow, no scans run (must-still-allow)', () => {
+  const ran = [];
+  const d = runScanGate(input('echo hi && git log'), deps({ runScans: stubRunner({}, ran) }));
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.deepStrictEqual(ran, []);
+});
