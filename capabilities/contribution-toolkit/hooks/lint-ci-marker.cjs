@@ -46,7 +46,7 @@
  */
 
 const { parseCommand } = require('./lib/argv.cjs');
-const { classifyAction } = require('./lib/classify.cjs');
+const { classifyAction, isNonGovernedCommand } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const {
   resolveGsdCoreRoot,
@@ -166,6 +166,14 @@ function runLintCiMarkerGate(stdinString, deps = {}) {
   };
 
   return runGate(() => {
+    // RES-01 (D-07 uniformity): classify the governed action FIRST (pure parse→classify,
+    // no filesystem) and short-circuit a confidently non-governed command to allow() BEFORE
+    // resolveGsdCoreRoot ever walks the tree — so a missing/renamed LIVE script under a
+    // resolved root can never collateral-deny an unrelated `ls`/`grep`/`git status`. The
+    // shared isNonGovernedCommand narrows-not-weakens: an unparseable/failClosed/governed
+    // command returns false and falls through to the unchanged resolve→gate path below.
+    if (isNonGovernedCommand(parseCommand(ctx.command), TRIGGER_ACTIONS)) return allow();
+
     const resolved = Object.assign({}, deps);
     // WR-05: needsRoot must cover EVERY LIVE-backed dep that defaults to a root-bound wrapper.
     // runAffectedTier (defaulted below at requireLiveScript(root, ...)) is one of them — if a

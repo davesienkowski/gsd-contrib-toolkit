@@ -35,7 +35,7 @@
  */
 
 const { parseCommand } = require('./lib/argv.cjs');
-const { classifyAction, findActionSegment } = require('./lib/classify.cjs');
+const { classifyAction, findActionSegment, isNonGovernedCommand } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand, requireLiveScript } = require('./lib/resolve.cjs');
 
@@ -281,6 +281,15 @@ function runDedupeGate(stdinString, deps = {}) {
   };
 
   return runGate(() => {
+    // RES-01 action-first short-circuit: classify the governed action (pure
+    // parse→classify, NO filesystem) BEFORE resolveRootForCommand/requireLiveScript, so a
+    // confidently non-governed command allows without loading the LIVE dedupe scorer (no
+    // collateral deny when that script is missing). Governed create (HARD-02), unparseable
+    // (HARD-04), and ENF-15 synonyms all return false here and fall through unchanged.
+    if (isNonGovernedCommand(parseCommand(ctx.command), ['issue-create'])) {
+      return allow();
+    }
+
     const resolved = Object.assign({}, deps);
     if (!resolved.liveScorer) {
       const root = resolved.worktreeRoot || resolveRootForCommand(ctx.command, process.cwd());

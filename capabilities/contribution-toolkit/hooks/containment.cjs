@@ -497,6 +497,20 @@ function runContainmentGate(stdinString, deps = {}) {
   };
 
   return runGate(() => {
+    // RES-01 (D-07 uniformity — SPECIAL CASE, not the shared isNonGovernedCommand guard):
+    // containment governs `git add` / `commit` / `push`, but classifyAction (which
+    // isNonGovernedCommand keys on) does NOT surface `add` — it only maps commit/push. Feeding
+    // this gate through isNonGovernedCommand would therefore be LOSSY: a `git add .planning/x`
+    // classifies as 'other', so the shared guard would wrongly short-circuit it to allow() and
+    // silently WEAKEN Containment-A (staging a toolkit/.planning artifact into gsd-core). So we
+    // reorder this gate's OWN pure classifier (detectGit — structured argv only, no filesystem)
+    // ahead of resolveGsdCoreRoot instead. A command with NO governed git action short-circuits
+    // to allow() before any tree walk. narrows-not-weakens: an unparseable command (!parsed.ok)
+    // is NOT short-circuited — it falls through to gate() which throws FailClosed → DENY (HARD-04);
+    // and detectGit's empty-array no-op mirrors gate()'s own `actions.length === 0` allow exactly.
+    const preParsed = parseCommand(ctx.command);
+    if (preParsed.ok && detectGit(preParsed).length === 0) return allow();
+
     const resolved = Object.assign({}, deps);
     if (!resolved.gsdCoreRoot) {
       try {

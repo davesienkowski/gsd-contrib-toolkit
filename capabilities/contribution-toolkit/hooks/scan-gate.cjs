@@ -28,7 +28,7 @@
  */
 
 const { parseCommand } = require('./lib/argv.cjs');
-const { classifyAction } = require('./lib/classify.cjs');
+const { classifyAction, isNonGovernedCommand } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand } = require('./lib/resolve.cjs');
 
@@ -164,6 +164,13 @@ function runScanGate(stdinString, deps = {}) {
   };
 
   return runGate(() => {
+    // RES-01 (D-07 uniformity): classify the governed action FIRST (pure parse→classify,
+    // no filesystem) and short-circuit a confidently non-governed command to allow() BEFORE
+    // resolveRootForCommand walks the tree — a non-push command no longer pays a filesystem
+    // walk. isNonGovernedCommand narrows-not-weakens: unparseable/failClosed/`push` fall
+    // through to the unchanged resolve→gate path below.
+    if (isNonGovernedCommand(parseCommand(ctx.command), TRIGGER_ACTIONS)) return allow();
+
     const resolved = Object.assign({}, deps);
     if (!resolved.gsdCoreRoot) {
       resolved.gsdCoreRoot = resolveRootForCommand(ctx.command, process.cwd());

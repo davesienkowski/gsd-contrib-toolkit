@@ -48,7 +48,37 @@ class ScriptResolveError extends Error {
 }
 
 /**
- * Does this directory have the gsd-core sentinel layout (scripts/ + gsd-core/bin/lib/)?
+ * LIVE gsd-core policy-script BASENAMES that positively identify a real gsd-core checkout
+ * (RES-02). The `~/.claude` runtime INSTALL root also carries `scripts/` +
+ * `gsd-core/bin/lib/` (the install creates both), so those two directory checks alone
+ * false-match it as a checkout — every Bash command run from under `~/.claude` then
+ * false-resolves there. This identity set adds a third, positive signal: at least ONE of
+ * these live policy scripts must exist under `<dir>/scripts/`.
+ *
+ * Re-declared locally rather than imported from `hooks/lib/sandbox.cjs` SANDBOX_SCRIPTS —
+ * sandbox.cjs requires resolve.cjs, so importing back here would create a require cycle.
+ *
+ * This is a DISJUNCTION (see hasSentinel: `.some`, not `.every`) — load-bearing per D-05:
+ * keying on ANY-one-of-many, not the single script a given gate happens to need, means an
+ * upstream rename of one script does NOT false-negative a real checkout. A real checkout
+ * missing one identity script still resolves as a checkout, so its governed action still
+ * reaches requireLiveScript and still fails closed there (HARD-02 preserved, not weakened).
+ */
+const GSD_CORE_IDENTITY_SCRIPTS = Object.freeze([
+  'issue-version-gate.cjs',
+  'pr-target-policy.cjs',
+  'pr-template-policy.cjs',
+  'issue-dedupe.cjs',
+]);
+
+/**
+ * Does this directory have the gsd-core sentinel layout (scripts/ + gsd-core/bin/lib/ +
+ * at least one live gsd-core policy script under scripts/ — the RES-02 identity signal)?
+ *
+ * Pure and cheap: fs.existsSync/statSync only, never require()s a resolved script — the
+ * identity probe must not execute anything during sentinel detection (see the threat
+ * register's Tampering disposition).
+ *
  * @param {string} dir
  * @returns {boolean}
  */
@@ -56,7 +86,10 @@ function hasSentinel(dir) {
   try {
     return (
       fs.statSync(path.join(dir, 'scripts')).isDirectory() &&
-      fs.statSync(path.join(dir, 'gsd-core', 'bin', 'lib')).isDirectory()
+      fs.statSync(path.join(dir, 'gsd-core', 'bin', 'lib')).isDirectory() &&
+      GSD_CORE_IDENTITY_SCRIPTS.some((basename) =>
+        fs.existsSync(path.join(dir, 'scripts', basename))
+      )
     );
   } catch (_) {
     return false;
@@ -407,6 +440,7 @@ module.exports = {
   resolveGsdCoreRoot,
   requireLiveScript,
   hasSentinel,
+  GSD_CORE_IDENTITY_SCRIPTS,
   commandStartDir,
   expandHome,
   resolveRootForCommand,

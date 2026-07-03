@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { parseCommand } = require('./argv.cjs');
-const { classifyAction, findActionSegment } = require('./classify.cjs');
+const { classifyAction, findActionSegment, isNonGovernedCommand } = require('./classify.cjs');
 
 const cls = (cmd) => classifyAction(parseCommand(cmd));
 
@@ -567,4 +567,73 @@ test('findActionSegment on a single-segment parse returns that segment regardles
   const seg = findActionSegment(parsed, 'commit');
   const expected = parsed.segments && parsed.segments.length > 0 ? parsed.segments[0] : parsed;
   assert.strictEqual(seg, expected);
+});
+
+// ---------------------------------------------------------------------------
+// RES-01: isNonGovernedCommand — the action-first short-circuit guard
+//
+// Returns true ONLY when a command is CONFIDENTLY a non-governed action, so a
+// gate may short-circuit to allow() BEFORE resolving/requiring its LIVE script.
+// In every other case (parse not ok, classifyAction.failClosed, or the action IS
+// governed) it returns false → the caller falls through to its unchanged
+// resolve→requireLiveScript→gate path (preserving HARD-04, ENF-15, HARD-02).
+// Pure: no filesystem access.
+// ---------------------------------------------------------------------------
+
+test('isNonGovernedCommand: confidently non-governed (git status) → true', () => {
+  assert.strictEqual(
+    isNonGovernedCommand(parseCommand('git status'), ['issue-create']),
+    true
+  );
+});
+
+test('isNonGovernedCommand: governed native action (gh issue create) → false', () => {
+  assert.strictEqual(
+    isNonGovernedCommand(parseCommand('gh issue create --title x'), ['issue-create']),
+    false
+  );
+});
+
+test('isNonGovernedCommand: unparseable (ok:false parse) → false (HARD-04 fall-through)', () => {
+  assert.strictEqual(
+    isNonGovernedCommand(parseCommand('gh issue create --title "unterminated'), ['issue-create']),
+    false
+  );
+});
+
+test('isNonGovernedCommand: unclassifiable mutating gh-api synonym (failClosed) → false (ENF-15 fall-through)', () => {
+  assert.strictEqual(
+    isNonGovernedCommand(parseCommand('gh api -X POST repos/o/r/issues/weird/path'), ['issue-create']),
+    false
+  );
+});
+
+test('isNonGovernedCommand: governed gh-api synonym create → false (do NOT short-circuit)', () => {
+  assert.strictEqual(
+    isNonGovernedCommand(parseCommand('gh api -X POST repos/o/r/issues -f title=x'), ['issue-create']),
+    false
+  );
+});
+
+test('isNonGovernedCommand: accepts a Set of governed actions (gh-edit two-action set)', () => {
+  const editSet = new Set(['issue-edit', 'pr-edit']);
+  // governed → false
+  assert.strictEqual(isNonGovernedCommand(parseCommand('gh issue edit 12 --body y'), editSet), false);
+  assert.strictEqual(isNonGovernedCommand(parseCommand('gh pr edit 12 --body y'), editSet), false);
+  // non-governed → true
+  assert.strictEqual(isNonGovernedCommand(parseCommand('git status'), editSet), true);
+});
+
+test('isNonGovernedCommand: an action governed by a DIFFERENT gate is non-governed here → true', () => {
+  // gh issue create is governed by the issue gate but NOT by the pr-create gate,
+  // so from the pr gate's perspective it is a non-governed command.
+  assert.strictEqual(
+    isNonGovernedCommand(parseCommand('gh issue create --title x'), ['pr-create']),
+    true
+  );
+});
+
+test('isNonGovernedCommand: null/garbage parse → false (fail-through)', () => {
+  assert.strictEqual(isNonGovernedCommand(null, ['issue-create']), false);
+  assert.strictEqual(isNonGovernedCommand({}, ['issue-create']), false);
 });

@@ -25,6 +25,11 @@ const { parseCommand } = require('./argv.cjs');
 /**
  * Build a fixture tree shaped like a gsd-core checkout:
  *   <root>/scripts/probe.cjs
+ *   <root>/scripts/pr-target-policy.cjs  (the RES-02 identity script — a trivial stub is
+ *                                          sufficient for a presence-based hasSentinel; NOT
+ *                                          issue-version-gate.cjs, which the pre-existing
+ *                                          "NEVER falls back to a vendored copy" test below
+ *                                          asserts is ABSENT from this fixture)
  *   <root>/gsd-core/bin/lib/.keep
  *   <root>/a/b/c/   (a nested cwd to resolve up from)
  */
@@ -36,6 +41,10 @@ function makeFixtureRoot() {
     path.join(root, 'scripts', 'probe.cjs'),
     "module.exports = { ping: () => 'pong', VALUE: 42 };\n"
   );
+  // The RES-02 identity script — hasSentinel now requires at least one
+  // GSD_CORE_IDENTITY_SCRIPTS basename present under scripts/ (D-05: every existing
+  // makeFixtureRoot-based test must keep hasSentinel-matching — no new false-negative).
+  fs.writeFileSync(path.join(root, 'scripts', 'pr-target-policy.cjs'), 'module.exports = {};\n');
   fs.mkdirSync(path.join(root, 'a', 'b', 'c'), { recursive: true });
   return root;
 }
@@ -100,6 +109,50 @@ test('requireLiveScript: a module that throws at require-time → ScriptResolveE
     "throw new Error('module init failed');\n"
   );
   assert.throws(() => res.requireLiveScript(root, 'scripts/boom.cjs'), res.ScriptResolveError);
+});
+
+// --- RES-02: the ~/.claude install-root false-checkout tightening (D-03/D-05 guardrails) ---
+// hasSentinel now additionally requires a GSD_CORE_IDENTITY_SCRIPTS basename under scripts/
+// (a disjunction — .some, not .every). Proven both directions: the install-root shape
+// (scripts/ + gsd-core/bin/lib/ but NO live policy script) is rejected; a real checkout
+// missing ONE identity script (three of four present) still resolves (HARD-02 preserved).
+
+test('hasSentinel identity: a ~/.claude install-root shape (scripts/ + gsd-core/bin/lib/, NO identity script) is REJECTED', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-install-root-'));
+  fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'gsd-core', 'bin', 'lib'), { recursive: true });
+  // A non-policy script under scripts/ — present in the real ~/.claude install, but not one
+  // of the GSD_CORE_IDENTITY_SCRIPTS basenames, so it must NOT satisfy the identity check.
+  fs.writeFileSync(
+    path.join(root, 'scripts', 'fix-slash-commands.cjs'),
+    'module.exports = {};\n'
+  );
+
+  assert.strictEqual(res.hasSentinel(root), false);
+  assert.throws(() => res.resolveGsdCoreRoot(root), res.ScriptResolveError);
+  assert.strictEqual(res.resolveRootForCommand('ls -R', root), null);
+});
+
+test('hasSentinel identity disjunction: a real checkout missing ONE identity script (3 of 4 present) STILL resolves', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'checkout-one-renamed-'));
+  fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'gsd-core', 'bin', 'lib'), { recursive: true });
+  // Three of GSD_CORE_IDENTITY_SCRIPTS present; issue-version-gate.cjs deliberately absent
+  // (simulates an upstream single-script rename) — the disjunction must still match.
+  const present = res.GSD_CORE_IDENTITY_SCRIPTS.filter((name) => name !== 'issue-version-gate.cjs');
+  assert.strictEqual(present.length, 3);
+  for (const name of present) {
+    fs.writeFileSync(path.join(root, 'scripts', name), 'module.exports = {};\n');
+  }
+
+  assert.strictEqual(res.hasSentinel(root), true);
+  assert.strictEqual(fs.realpathSync(res.resolveGsdCoreRoot(root)), fs.realpathSync(root));
+});
+
+test('hasSentinel identity: the updated makeFixtureRoot fixture still resolves (no new false-negative, D-05)', () => {
+  const root = makeFixtureRoot();
+  assert.strictEqual(res.hasSentinel(root), true);
+  assert.strictEqual(fs.realpathSync(res.resolveGsdCoreRoot(root)), fs.realpathSync(root));
 });
 
 // --- commandStartDir: derive the effective cwd from a `cd ... && git ...` command ---

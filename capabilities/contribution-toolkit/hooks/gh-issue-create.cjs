@@ -38,7 +38,7 @@
 
 const path = require('node:path');
 const { parseCommand } = require('./lib/argv.cjs');
-const { classifyAction, findActionSegment } = require('./lib/classify.cjs');
+const { classifyAction, findActionSegment, isNonGovernedCommand } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand, requireLiveScript, commandTargetsGsdCore } = require('./lib/resolve.cjs');
 
@@ -342,6 +342,17 @@ function runIssueGate(stdinString, deps = {}) {
   };
 
   return runGate(() => {
+    // RES-01 action-first short-circuit: classify the governed action (pure
+    // parse→classify, NO filesystem) BEFORE any resolveRootForCommand/requireLiveScript.
+    // A confidently non-governed command (e.g. `git status`, `ls -R`) allows here, so a
+    // missing/renamed LIVE issue-version-gate can no longer collateral-deny it. Only fires
+    // when the command is NOT issue-create AND parses AND is not failClosed — so governed
+    // create (HARD-02), unparseable (HARD-04), and ENF-15 synonyms all fall through
+    // untouched to the unchanged resolve+gate path below.
+    if (isNonGovernedCommand(parseCommand(ctx.command), ['issue-create'])) {
+      return allow();
+    }
+
     const resolved = Object.assign({}, deps);
     if (!resolved.liveVersionGate) {
       const root = resolved.worktreeRoot || resolveRootForCommand(ctx.command, process.cwd());

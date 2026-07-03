@@ -33,7 +33,7 @@
  */
 
 const { parseCommand } = require('./lib/argv.cjs');
-const { classifyAction } = require('./lib/classify.cjs');
+const { classifyAction, isNonGovernedCommand } = require('./lib/classify.cjs');
 const { hasFlag } = require('./lib/flags.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand } = require('./lib/resolve.cjs');
@@ -109,6 +109,14 @@ function runGithooksGate(stdinString, deps = {}) {
   };
 
   return runGate(() => {
+    // RES-01 (D-07 uniformity): classify the governed action FIRST (pure parse→classify,
+    // no filesystem) and short-circuit a confidently non-governed command to allow() BEFORE
+    // resolveRootForCommand walks the tree — a non-commit/non-push command no longer pays a
+    // filesystem walk. The governed set is SEALED_ACTIONS (commit/push); isNonGovernedCommand
+    // narrows-not-weakens: unparseable/failClosed/commit/push fall through to the unchanged
+    // resolve→gate path below (a governed commit/push still runs the ENF-12/ENF-13 seal).
+    if (isNonGovernedCommand(parseCommand(ctx.command), SEALED_ACTIONS)) return allow();
+
     const resolved = Object.assign({}, deps);
     if (!resolved.readHooksPath) {
       const root = resolved.worktreeRoot || resolveRootForCommand(ctx.command, process.cwd());
