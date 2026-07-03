@@ -47,7 +47,7 @@
 
 const path = require('node:path');
 const { parseCommand } = require('./lib/argv.cjs');
-const { classifyAction, findActionSegment } = require('./lib/classify.cjs');
+const { classifyAction, findActionSegment, isNonGovernedCommand } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand, requireLiveScript, commandTargetsGsdCore, parseOwnerRepo } = require('./lib/resolve.cjs');
 
@@ -528,6 +528,18 @@ function runPrGate(stdinString, deps = {}) {
   };
 
   return runGate(() => {
+    // RES-01 action-first short-circuit: classify the governed action (pure
+    // parse→classify, NO filesystem) at the VERY TOP — ABOVE resolveExplicitTarget — so a
+    // confidently non-governed command allows without loading any LIVE pr-template/pr-target
+    // policy AND without being subjected to the -R/--repo extraction (a non-pr-create command
+    // carrying an odd -R must not be spuriously fail-closed by explicit-target resolution — a
+    // correctness improvement, not just a cost saving). Governed pr-create (HARD-02),
+    // unparseable (HARD-04), and ENF-15 synonyms all return false here and fall through
+    // unchanged to the resolve+gate path below.
+    if (isNonGovernedCommand(parseCommand(ctx.command), ['pr-create'])) {
+      return allow();
+    }
+
     const resolved = Object.assign({}, deps);
     // WR-01: resolve the command's EXPLICIT -R/--repo/GH_REPO target ONCE from the parsed command
     // (the SAME extraction the gate's targeting decision uses — single source so the reader repo

@@ -499,6 +499,45 @@ test('ROB-01: out-of-tree pr create -R to a FORK (dave/gsd-core-fork) → ALLOW 
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
 });
 
+// --- RES-01: action-first short-circuit fires BEFORE resolveExplicitTarget + resolve ---
+// D-09(a): a NON-governed command against a worktreeRoot whose LIVE pr-template/pr-target
+// policies are missing (no liveTemplate/liveTarget injected) must ALLOW — proving the
+// classify-first guard short-circuits before requireLiveScript is ever reached.
+test('RES-01: non-governed command (git status) with a MISSING live-policy root → ALLOW (short-circuit before resolve)', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-noscript-nongov-'));
+  const d = runPrGate(
+    input('git status'),
+    Object.assign({ worktreeRoot: root }, robDenyingOverride)
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+// D-09(b), HARD-02: the SAME missing-policy root with a GOVERNED pr-create STILL DENIES —
+// requireLiveScript throws → fail closed. Opposite verdict, same root, decided purely by
+// whether the action is governed. Proves the short-circuit does not weaken HARD-02.
+test('RES-01/HARD-02: governed pr-create with a MISSING live-policy root → DENY', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-noscript-gov-'));
+  const d = runPrGate(
+    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    Object.assign({ worktreeRoot: root }, robDenyingOverride)
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+});
+
+// Correctness improvement: a non-pr-create command carrying an odd -R must NOT be
+// spuriously fail-closed by resolveExplicitTarget (the guard sits ABOVE it). `gh issue
+// list -R <unparseable>` is non-governed by the pr gate → ALLOW despite the -R.
+test('RES-01: non-governed command with an odd -R is NOT fail-closed by explicit-target extraction', () => {
+  const d = runPrGate(input('gh issue list -R not a valid repo spec'), robDenyingOverride);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
 // --- ROB-02: first `gh pr create` relaxation (no open PR for the head branch) ---
 // gsd-core's test.yml runs CI on `pull_request`, so a green check-run precondition is
 // UNSATISFIABLE before the PR exists — the first create was blocked every time during the

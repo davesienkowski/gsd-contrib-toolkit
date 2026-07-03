@@ -161,3 +161,48 @@ test('a thrown live gate WITH a logged override → allow (HARD-03)', () => {
   );
   assert.strictEqual(d.permissionDecision, 'allow');
 });
+
+// --- RES-01: action-first short-circuit fires BEFORE the LIVE-script resolve ---
+// Override-only deps (NO live scripts injected) so the real resolve+requireLiveScript path
+// runs; the worktreeRoot points at a temp dir lacking scripts/*.cjs.
+const editDenyingOverride = {
+  overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
+};
+
+// D-09(a): a NON-governed command against the missing-script root must ALLOW — proving the
+// classify-first guard short-circuits before requireLiveScript is ever reached.
+test('RES-01: non-governed command (git status) with a MISSING live-script root → ALLOW (short-circuit before resolve)', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edit-noscript-nongov-'));
+  const d = runEditGate(
+    input('git status'),
+    Object.assign({ worktreeRoot: root }, editDenyingOverride)
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+// D-09(b), HARD-02: the SAME missing-script root with a GOVERNED body edit STILL DENIES —
+// requireLiveScript throws → fail closed. Opposite verdict, same root, decided purely by
+// whether the action is a governed EDIT_ACTION.
+test('RES-01/HARD-02: governed issue-edit (body rewrite) with a MISSING live-script root → DENY', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edit-noscript-gov-'));
+  const d = runEditGate(
+    input(`gh issue edit 7 --body "${BAD_ISSUE_BODY}"`),
+    Object.assign({ worktreeRoot: root }, editDenyingOverride)
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+});
+
+// A benign label-only governed edit stays governed (not short-circuited) and its bodyless
+// allow is unchanged — proving the guard does NOT over-allow governed edits (it only fires
+// for NON-governed commands; a label-only edit is still issue-edit → governed → resolves →
+// gate() allows a bodyless edit). Default deps() injects the live scripts so resolve is a no-op.
+test('RES-01: label-only governed edit still ALLOWs via the unchanged gate() bodyless path', () => {
+  const d = runEditGate(input('gh issue edit 7 --add-label triage'), deps());
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});

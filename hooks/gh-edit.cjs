@@ -30,7 +30,7 @@
 
 const path = require('node:path');
 const { parseCommand } = require('./lib/argv.cjs');
-const { classifyAction } = require('./lib/classify.cjs');
+const { classifyAction, isNonGovernedCommand } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand, requireLiveScript } = require('./lib/resolve.cjs');
 
@@ -279,6 +279,16 @@ function runEditGate(stdinString, deps = {}) {
   };
 
   return runGate(() => {
+    // RES-01 action-first short-circuit: classify the governed action (pure
+    // parse→classify, NO filesystem) BEFORE resolveRootForCommand/requireLiveScript, so a
+    // confidently non-governed command allows without loading the LIVE issue-version-gate /
+    // pr-template policy (no collateral deny when a script is missing). EDIT_ACTIONS
+    // (issue-edit / pr-edit) governed edits (HARD-02), unparseable (HARD-04), and ENF-15
+    // synonyms all return false here and fall through unchanged to the resolve+gate path.
+    if (isNonGovernedCommand(parseCommand(ctx.command), EDIT_ACTIONS)) {
+      return allow();
+    }
+
     const resolved = Object.assign({}, deps);
     // Resolve from the command's own cwd (may `cd` into a worktree); null = not a
     // gsd-core checkout → allow (not our concern).
