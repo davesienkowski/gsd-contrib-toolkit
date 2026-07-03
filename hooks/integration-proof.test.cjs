@@ -28,6 +28,7 @@ const os = require('node:os');
 const fs = require('node:fs');
 
 const { classifyDecision, spawnHook } = require('./lib/proof-harness.cjs');
+const { makeSandbox, removeScript } = require('./lib/sandbox.cjs');
 
 // ── Task 1: classifyDecision invariants (the security core) ────────────────────
 
@@ -381,5 +382,115 @@ test('PROOF security: a hook that emits EMPTY stdout (exit 0) is INCONCLUSIVE, n
     assert.notEqual(r.decision, 'allow', 'silence is NEVER coerced to allow');
   } finally {
     fs.rmSync(tmp, { force: true });
+  }
+});
+
+// ── RES-03 (27-04): the consolidated both-directions + ~/.claude false-root regression ──────────
+//
+// This ONE discoverable block proves the whole Phase 27 guarantee end-to-end, on the real gate
+// entrypoints, asserting the emitted permissionDecision VALUE (never a stdout substring / source
+// grep). It covers the three D-09 fixture classes:
+//
+//   (a) a NON-governed in-tree command in a checkout whose SPECIFIC live script was removed → ALLOW
+//       (the 27-01/27-02 action-first reorder short-circuits BEFORE requireLiveScript) — mirrored
+//       for both gh-issue-create (issue-version-gate.cjs) and issue-dedupe (issue-dedupe.cjs).
+//   (b) a GOVERNED in-tree action (gh issue create) in that SAME script-removed checkout → DENY
+//       (HARD-02 — fail-closed is NARROWED to the governed action, never weakened; the sandbox
+//       still hasSentinel-matches via its three remaining identity scripts, so the root resolves
+//       and the missing specific script fails closed).
+//   (c) an effective cwd under a ~/.claude-shape INSTALL root (scripts/ + gsd-core/bin/lib/ but NO
+//       identity script) + a non-governed command → ALLOW (RES-02 hasSentinel now REJECTS the
+//       install-root shape, so it no longer false-resolves as a checkout — the exact permanent
+//       trigger observed live 2026-07-02 when `ls -R`/`grep` under ~/.claude/skills/... was denied
+//       by issue-dedupe's requireLiveScript).
+//
+// Cases (a)/(b) copy the four LIVE identity scripts from the real checkout (makeSandbox), so they
+// SKIP-with-note when none is reachable (env limit) — never a fabricated layout. Case (c) builds a
+// synthetic install-root shape (no real scripts needed) and never skips.
+
+const RES03_SKIP = GSD_CORE_CWD
+  ? false
+  : 'no gsd-core checkout reachable (set GSD_CORE_ROOT) — RES-03 sandbox regression skipped (env limit)';
+
+test('RES-03(a): non-governed command + a checkout whose LIVE script was removed → ALLOW (gh-issue-create, issue-version-gate.cjs removed)', { skip: RES03_SKIP }, () => {
+  const sb = makeSandbox({ sourceRoot: GSD_CORE_CWD });
+  try {
+    // Remove gh-issue-create's specific LIVE script. The sandbox still hasSentinel-matches via its
+    // three remaining identity scripts, so it resolves as a real checkout.
+    removeScript(sb.root, 'scripts/issue-version-gate.cjs');
+    const r = spawnHook(abs('gh-issue-create'), { stdin: bash('git status'), cwd: sb.root });
+    assert.equal(r.conclusive, true, `inconclusive (crash/empty?): ${r.reason}\nstderr: ${r.rawStderr}`);
+    assert.equal(
+      r.decision,
+      'allow',
+      `a NON-governed command must ALLOW despite the missing LIVE script — the action-first reorder short-circuits before requireLiveScript\nstdout: ${r.rawStdout}`
+    );
+  } finally {
+    sb.dispose();
+  }
+});
+
+test('RES-03(a mirror): non-governed command + a checkout whose LIVE script was removed → ALLOW (issue-dedupe, issue-dedupe.cjs removed)', { skip: RES03_SKIP }, () => {
+  const sb = makeSandbox({ sourceRoot: GSD_CORE_CWD });
+  try {
+    // Remove issue-dedupe's specific LIVE script; the sandbox still resolves via the other three.
+    removeScript(sb.root, 'scripts/issue-dedupe.cjs');
+    const r = spawnHook(abs('issue-dedupe'), { stdin: bash('ls -R'), cwd: sb.root });
+    assert.equal(r.conclusive, true, `inconclusive (crash/empty?): ${r.reason}\nstderr: ${r.rawStderr}`);
+    assert.equal(
+      r.decision,
+      'allow',
+      `a NON-governed command must ALLOW despite the missing LIVE script — the action-first reorder short-circuits before requireLiveScript\nstdout: ${r.rawStdout}`
+    );
+  } finally {
+    sb.dispose();
+  }
+});
+
+test('RES-03(b): GOVERNED gh issue create + the SAME script-removed checkout → DENY (HARD-02, fail-closed narrowed-not-weakened)', { skip: RES03_SKIP }, () => {
+  const sb = makeSandbox({ sourceRoot: GSD_CORE_CWD });
+  try {
+    // Same removal as (a) — but now the command IS the governed action. The gate resolves the
+    // sandbox root (still hasSentinel via the 3 remaining identity scripts), reaches
+    // requireLiveScript for the missing issue-version-gate.cjs, and MUST fail closed.
+    removeScript(sb.root, 'scripts/issue-version-gate.cjs');
+    // A body that would otherwise PASS the version gate — proving the deny is CAUSED by the missing
+    // LIVE script (fail-closed), not by a policy rejection.
+    const cmd = 'gh issue create --label bug --title x --body "### GSD Version\\n1.18.0"';
+    const r = spawnHook(abs('gh-issue-create'), { stdin: bash(cmd), cwd: sb.root });
+    assert.equal(r.conclusive, true, `inconclusive (crash/empty?): ${r.reason}\nstderr: ${r.rawStderr}`);
+    assert.equal(
+      r.decision,
+      'deny',
+      `a GOVERNED action with a missing LIVE script must STILL fail closed (HARD-02) — v2.6 narrows fail-closed's scope, it does not weaken it\nstdout: ${r.rawStdout}`
+    );
+  } finally {
+    sb.dispose();
+  }
+});
+
+test('RES-03(c): a ~/.claude-shape install root (scripts/ + gsd-core/bin/lib/, NO identity script) + non-governed command → ALLOW (the live 2026-07-02 permanent-trigger case)', () => {
+  // Reproduce the ~/.claude INSTALL layout: the two DIRECTORY sentinels the PRE-RES-02 hasSentinel
+  // matched on, but NO live gsd-core policy script under scripts/ (only a non-policy file). Post
+  // RES-02 this shape is REJECTED — it no longer false-resolves as a checkout.
+  const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-claude-shape-'));
+  try {
+    fs.mkdirSync(path.join(fakeRoot, 'scripts'), { recursive: true });
+    fs.mkdirSync(path.join(fakeRoot, 'gsd-core', 'bin', 'lib'), { recursive: true });
+    fs.writeFileSync(
+      path.join(fakeRoot, 'scripts', 'some-installed-helper.cjs'),
+      '// an installed runtime file — NOT a gsd-core policy script (no identity match)\n'
+    );
+    // issue-dedupe is the gate that fired in the live incident; assert its real entrypoint now
+    // ALLOWs a non-governed command run from under this install-shape root.
+    const r = spawnHook(abs('issue-dedupe'), { stdin: bash('ls -R'), cwd: fakeRoot });
+    assert.equal(r.conclusive, true, `inconclusive (crash/empty?): ${r.reason}\nstderr: ${r.rawStderr}`);
+    assert.equal(
+      r.decision,
+      'allow',
+      `a ~/.claude-shape install root must no longer be a false checkout — a non-governed command there must ALLOW (RES-02 sentinel + RES-01 reorder)\nstdout: ${r.rawStdout}`
+    );
+  } finally {
+    fs.rmSync(fakeRoot, { recursive: true, force: true });
   }
 });
