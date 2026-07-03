@@ -327,6 +327,9 @@ function makeE2ESandbox(sourceRoot) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-e2e-skills-'));
   fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
   fs.mkdirSync(path.join(root, 'gsd-core', 'bin'), { recursive: true });
+  // Post-RES-02, hasSentinel additionally requires a LIVE gsd-core identity script under scripts/
+  // (D-05: a faithful checkout fixture still resolves) — an empty stub suffices (existence-only probe).
+  fs.writeFileSync(path.join(root, 'scripts', 'issue-version-gate.cjs'), '// gsd-core identity stub (RES-02 sentinel)\n', 'utf8');
   fs.symlinkSync(path.join(sourceRoot, ENGINE_LIB_REL), path.join(root, ENGINE_LIB_REL), 'dir');
 
   const settingsPath = path.join(root, SETTINGS_REL);

@@ -160,6 +160,10 @@ function makeCapSandbox(sourceRoot) {
   // Sentinel layout so resolveGsdCoreRoot(root) === root (never walks up to the real checkout).
   fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
   fs.mkdirSync(path.join(root, 'gsd-core', 'bin'), { recursive: true });
+  // Post-RES-02, hasSentinel additionally requires a LIVE gsd-core identity script under scripts/
+  // (so a ~/.claude install root no longer false-resolves). A faithful checkout fixture must carry
+  // one (D-05: a real checkout still resolves) — an empty stub suffices (existence-only probe).
+  fs.writeFileSync(path.join(root, 'scripts', 'issue-version-gate.cjs'), '// gsd-core identity stub (RES-02 sentinel)\n', 'utf8');
   // Symlink the LIVE engine lib — requireLiveScript(root, 'gsd-core/bin/lib/...') loads the REAL
   // engine (read-only require; the engine modules are NEVER written). This is the disposable-sandbox
   // discipline 12-01/12-02 used: the engine is LIVE, the state targets are sandboxed.
