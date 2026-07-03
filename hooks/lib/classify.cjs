@@ -526,9 +526,60 @@ function findActionSegment(parsed, targetAction) {
   return segs[0];
 }
 
+/**
+ * RES-01: the single-source, PURE action-first guard. Tells a Bash gate whether a
+ * command is CONFIDENTLY a non-governed action, so the gate may short-circuit to
+ * allow() BEFORE it ever resolves/requires its LIVE policy script (which narrows the
+ * fail-closed blast radius: a missing LIVE script can no longer collateral-deny an
+ * unrelated `ls`/`grep`/`git status`).
+ *
+ * Returns `true` ONLY when ALL of these hold:
+ *   1. `parsed && parsed.ok === true`      — a confident parse (HARD-04: !ok → false)
+ *   2. `classifyAction(parsed).failClosed !== true` — not an unclassifiable mutating
+ *      github synonym (ENF-15: failClosed → false)
+ *   3. the resolved `action.action` is NOT in `governedActions`
+ *
+ * In EVERY other case it returns `false`, so the caller falls through to its existing
+ * resolve→requireLiveScript→gate path — preserving HARD-04, ENF-15, and HARD-02
+ * (governed action + missing LIVE script → still DENY).
+ *
+ * PURE: reads only argv/classify (no fs / no path resolve / no require of a script).
+ * This purity is exactly what lets a gate run it BEFORE any filesystem resolve (D-01).
+ * Does NOT mutate classifyAction.
+ *
+ * @param {Object} parsed          result of argv.parseCommand
+ * @param {string[]|Set<string>} governedActions action names this gate governs
+ *   (array or Set — e.g. ['issue-create'] or new Set(['issue-edit','pr-edit']))
+ * @returns {boolean} true iff the command is confidently non-governed (safe to allow)
+ */
+function isNonGovernedCommand(parsed, governedActions) {
+  // 1. Confident parse only — an unparseable/failed parse must fall through to the
+  //    caller's fail-closed path (HARD-04), never be treated as "non-governed".
+  if (!parsed || typeof parsed !== 'object' || parsed.ok !== true) {
+    return false;
+  }
+
+  // 2. Classify the action (pure parse→classify, no filesystem). A failClosed result
+  //    (unclassifiable mutating github synonym) must fall through too (ENF-15).
+  const action = classifyAction(parsed);
+  if (!action || action.failClosed === true) {
+    return false;
+  }
+
+  // 3. Governed action → do NOT short-circuit (HARD-02: let it resolve + require the
+  //    LIVE script + deny on missing). Normalize governedActions to a Set for O(1)
+  //    membership regardless of whether an array or a Set was passed.
+  const governed = governedActions instanceof Set
+    ? governedActions
+    : new Set(Array.isArray(governedActions) ? governedActions : []);
+
+  return !governed.has(action.action);
+}
+
 module.exports = {
   classifyAction,
   findActionSegment,
+  isNonGovernedCommand,
   // exported for unit-level reuse / testing
   classifyGithubPath,
   hostOf,
