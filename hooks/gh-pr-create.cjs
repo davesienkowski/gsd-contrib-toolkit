@@ -449,6 +449,11 @@ function extractLinkedIssues(body, targetRepo) {
  *   relaxed; non-empty → existing PR → check-run gate engages; throws → fail-closed)
  * @param {(number:number, targetRepo:{owner:string,repo:string})=>string[]} deps.readIssueLabels
  *   CF-02 injectable read of a linked issue's label names (throws → fail-closed deny for enh/feat)
+ * @param {{evaluateLint:Function, readFragmentsFromDisk:Function}} deps.liveDocsLint
+ *   CF-03 LIVE lint-docs-required export (call, never fork — D-01/D-06); missing script → deny
+ * @param {(root:string, base:string)=>string[]} deps.readChangedFiles
+ *   CF-03 injectable read of the PR's changed files (default `git diff --name-only
+ *   origin/<base>...HEAD`); a throw → fail-closed deny (HARD-01: an unreadable diff denies)
  * @param {{owner:string,repo:string}|null} [deps.targetRepo] the command's explicit -R/GH_REPO target
  * @param {string} [deps.headSha] inject the head SHA directly (else resolved from deps.root)
  * @param {string} [deps.root] worktree root the ENF-18 head-SHA resolution reads from
@@ -608,6 +613,42 @@ function gate(stdinString, deps) {
     }
   }
 
+  // (CF-03) docs-required mirror — REUSE gsd-core's LIVE lint-docs-required (evaluateLint +
+  // readFragmentsFromDisk), NEVER a forked policy (D-01/D-06/HARD-02). gsd-core's
+  // docs-required.yml (#3213) fails a PR whose changeset introduces new/changed/removed behavior
+  // (`.changeset/*.md` fragments of type Added/Changed/Deprecated/Removed) without a corresponding
+  // `docs/` change; we surface that DENY BEFORE the push. The require-issue-link HALF of CF-03 is
+  // ALREADY satisfied by the toolkit-owned LINKED_ISSUE_RE check above (#3) — no new code for it.
+  //
+  // We read the PR's changed files via the injected deps.readChangedFiles(root, base) (default:
+  // `git diff --name-only origin/<base>...HEAD`) — a throw propagates to runGate → fail-closed
+  // deny (HARD-01: an unreadable diff cannot confirm docs). The LIVE readFragmentsFromDisk parses
+  // each touched `.changeset/*.md` from the SAME resolved worktree root, then the LIVE evaluateLint
+  // renders the verdict. labels:[] pre-PR — the `no-docs` opt-out is a maintainer-applied LABEL a
+  // contributor cannot self-apply before the PR exists (documented narrowing, T-30-03-04); the
+  // per-fragment `<!-- docs-exempt: reason -->` opt-out is STILL honored via the LIVE parse. A
+  // non-ok verdict (FAIL_DOCS_MISSING / FAIL_MALFORMED_FRAGMENT — the latter fails closed,
+  // T-30-03-02) DENIES with the LIVE verdict.reason + triggering fragment paths.
+  const changedFiles = deps.readChangedFiles(deps.root, base); // throw → fail-closed deny (HARD-01)
+  const { fragments, malformed } = deps.liveDocsLint.readFragmentsFromDisk(changedFiles, deps.root);
+  const docsVerdict = deps.liveDocsLint.evaluateLint({ changedFiles, fragments, labels: [], malformed });
+  if (!docsVerdict || docsVerdict.ok !== true) {
+    const trig =
+      Array.isArray(docsVerdict && docsVerdict.triggering) && docsVerdict.triggering.length
+        ? ' (triggering: ' + docsVerdict.triggering.join(', ') + ')'
+        : '';
+    return deny(
+      'PR blocked by the LIVE docs-required lint (CF-03 — mirrors gsd-core `docs-required.yml` ' +
+        '#3213): ' +
+        ((docsVerdict && docsVerdict.reason) || 'docs-required verdict not ok') +
+        trig +
+        '. An Added/Changed/Deprecated/Removed changeset needs a corresponding `docs/` change or a ' +
+        'per-fragment `<!-- docs-exempt: <reason> -->` marker (fix the fragment frontmatter if it ' +
+        'is malformed). This CALLS gsd-core’s LIVE lint (evaluateLint), never a forked policy ' +
+        '(D-01/D-06/HARD-02).'
+    );
+  }
+
   // (5) ENF-18 Tier-2 — TOOLKIT-OWNED read of the AUTHORITATIVE CI result for the head
   // SHA. The four checks above gate FIRST and unchanged; this is an ADDITIONAL condition
   // on the pr-create path. We resolve the head SHA from the SAME worktree root the gate
@@ -719,7 +760,7 @@ function runPrGate(stdinString, deps = {}) {
     // head branch is read from that same root so a cross-repo session reads the worktree's
     // branch, not the session repo's.
     let root = resolved.worktreeRoot || null;
-    if (!root && (!resolved.liveTemplate || !resolved.liveTarget || !resolved.liveTitle || !resolved.branch)) {
+    if (!root && (!resolved.liveTemplate || !resolved.liveTarget || !resolved.liveTitle || !resolved.liveDocsLint || !resolved.branch)) {
       root = resolveRootForCommand(ctx.command, process.cwd());
       if (!root) {
         // ROB-01 locked discriminator (same seam as gh-issue-create): an out-of-tree command
@@ -752,6 +793,12 @@ function runPrGate(stdinString, deps = {}) {
       // (HARD-02) for a gsd-core-targeting create — no vendored fallback, no forked regex (D-06).
       resolved.liveTitle = requireLiveScript(root, 'scripts/release-notes/conventional-title.cjs');
     }
+    if (!resolved.liveDocsLint) {
+      // CF-03: load gsd-core's LIVE docs-required lint the SAME way as the other policies. A
+      // missing/reshaped script throws ScriptResolveError → runGate fail-closed deny (HARD-02)
+      // for a gsd-core-targeting create — no vendored fallback, no forked lint (D-01/D-06).
+      resolved.liveDocsLint = requireLiveScript(root, 'scripts/lint-docs-required.cjs');
+    }
     if (!resolved.branch) {
       resolved.branch = currentBranch(root);
     }
@@ -777,6 +824,13 @@ function runPrGate(stdinString, deps = {}) {
       // no origin) fails closed → an enh/feat PR whose approval cannot be confirmed DENIES (D-04),
       // never a silent allow. liveTitle (CF-01) is already wired above and reused for classifyBucket.
       resolved.readIssueLabels = (n, tr) => defaultReadIssueLabels(resolved.root, n, tr);
+    }
+    if (!resolved.readChangedFiles) {
+      // CF-03: default the PR-diff reader from the SAME resolved root the rest of the gate uses.
+      // A throw (not a git repo / missing origin/<base>) fails closed → a create whose docs
+      // coverage cannot be confirmed DENIES (HARD-01), never a silent allow. liveDocsLint is
+      // wired above and reused for readFragmentsFromDisk + evaluateLint.
+      resolved.readChangedFiles = (root, base) => defaultReadChangedFiles(root, base);
     }
     if (!resolved.readBodyFile) {
       const fs = require('node:fs');
@@ -1132,6 +1186,43 @@ function defaultReadIssueLabels(root, number, targetRepo) {
 }
 
 /**
+ * CF-03 default reader of the PR's changed files — `git diff --name-only origin/<base>...HEAD`
+ * via execFileSync (array args, no shell, cwd = the resolved worktree root), mirroring the LIVE
+ * lint-docs-required CLI's own diff form. The `base` is a FIXED argv element (interpolated only
+ * into the ref-spec `origin/<base>...HEAD`, which git's own ref-name validator rejects if it
+ * carries metacharacters — no shell to inject into). Splits on newlines and drops empties. An
+ * absent/empty base cannot form a diff spec → THROW before any spawn. ANY spawn failure (not a
+ * git repo, missing origin/<base>) THROWS FailClosed so runGate fails closed (HARD-01): an
+ * unreadable diff cannot confirm docs-required, so it DENIES (fetch origin/<base> first).
+ *
+ * @param {string} root absolute worktree root (cwd for the `git diff`).
+ * @param {string} base the PR base branch name.
+ * @returns {string[]} the changed file paths (possibly empty).
+ */
+function defaultReadChangedFiles(root, base) {
+  const { execFileSync } = require('node:child_process');
+  if (typeof base !== 'string' || !base) {
+    throw new FailClosed(
+      'CF-03: no base branch to compute the PR diff against — failing closed (cannot confirm ' +
+        'docs-required without the diff).'
+    );
+  }
+  const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] };
+  if (root) opts.cwd = root;
+  let raw;
+  try {
+    raw = execFileSync('git', ['diff', '--name-only', 'origin/' + base + '...HEAD'], opts);
+  } catch (err) {
+    throw new FailClosed(
+      'CF-03: could not compute the PR diff `git diff --name-only origin/' + base + '...HEAD` (' +
+        ((err && err.message) || 'git failure') + ') — failing closed (fetch origin/' + base +
+        ' first; an unreadable diff cannot confirm the docs-required lint).'
+    );
+  }
+  return raw.split('\n').filter(Boolean);
+}
+
+/**
  * ROB-02 default first-create detector: list the OPEN PRs for the head branch.
  *
  * Reads `gh pr list --head <branch> --json number --state open` via execFileSync (no shell,
@@ -1299,6 +1390,7 @@ module.exports = {
   resolveHeadSha,
   normalizeCheckRuns,
   defaultReadIssueLabels,
+  defaultReadChangedFiles,
   ownerRepoFromRemote,
   resolveExplicitTarget,
   LINKED_ISSUE_RE,
