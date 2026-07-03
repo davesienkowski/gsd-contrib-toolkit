@@ -515,6 +515,79 @@ test('CHAINED add .planning/x && push fork branch → DENY via Containment A (pe
   assert.match(d.permissionDecisionReason, /\.planning/);
 });
 
+// ---- CF-04 (wrapper-blind git detection): normalize `sudo/command/env git` (D-02) ----
+// containment.detectGit keyed on seg.program === 'git', so a wrapper prefix
+// (`sudo`/`command`/`env`) disguised the program → detectGit returned [] → the gate
+// short-circuited to ALLOW, letting a wrapped upstream push (ENF-07) or a wrapped staging
+// of a toolkit/.planning artifact (ENF-06) slip through. The fix reuses the EXISTING
+// resolveProgram(seg) from classify.cjs (D-02 — no re-implemented wrapper stripping).
+// RED-before-GREEN (D-01): the DENY cases below FAIL on the un-fixed detectGit (they ALLOW
+// today); the must-still-allow cases pass both before and after (narrows-not-weakens).
+
+// -- must-DENY: wrapped git reaches ENF-06 / ENF-07 --
+
+test('sudo git push origin main (upstream) → DENY (ENF-07 through the wrapper) [CF-04]', () => {
+  const d = runContainmentGate(
+    input('sudo git push origin main'),
+    deps({ remoteUrl: () => UPSTREAM, currentBranch: () => 'main' })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-07/);
+});
+
+test('command git push origin main (upstream) → DENY (ENF-07 through the wrapper) [CF-04]', () => {
+  const d = runContainmentGate(
+    input('command git push origin main'),
+    deps({ remoteUrl: () => UPSTREAM, currentBranch: () => 'main' })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-07/);
+});
+
+test('command git add .planning/STATE.md → DENY (ENF-06 through the wrapper) [CF-04]', () => {
+  const d = runContainmentGate(input('command git add .planning/STATE.md'), deps());
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /\.planning/);
+});
+
+test('env FOO=bar git add settings.snippet.json → DENY (ENF-06 through env-prefix) [CF-04]', () => {
+  const d = runContainmentGate(input('env FOO=bar git add settings.snippet.json'), deps());
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-06/);
+});
+
+// -- must-still-ALLOW: a genuinely non-governed wrapped command (narrows-not-weakens, D-01) --
+
+test('sudo ls → allow (no git action; wrapper is non-governed) [CF-04]', () => {
+  assert.strictEqual(runContainmentGate(input('sudo ls'), deps()).permissionDecision, 'allow');
+});
+
+test('command grep foo hooks/ → allow (non-governed wrapped command) [CF-04]', () => {
+  assert.strictEqual(
+    runContainmentGate(input('command grep foo hooks/'), deps()).permissionDecision,
+    'allow'
+  );
+});
+
+test('direct git status → allow (status is not add/commit/push) [CF-04]', () => {
+  assert.strictEqual(runContainmentGate(input('git status'), deps()).permissionDecision, 'allow');
+});
+
+test('sudo git status → allow (wrapped, but status is non-governed) [CF-04]', () => {
+  assert.strictEqual(
+    runContainmentGate(input('sudo git status'), deps()).permissionDecision,
+    'allow'
+  );
+});
+
+// -- detectGit seam: the normalization is observable at the pure function --
+
+test('detectGit(parseCommand("sudo git push origin main")) → one push action [CF-04 seam]', () => {
+  const actions = detectGit(parseCommand('sudo git push origin main'));
+  assert.strictEqual(actions.length, 1);
+  assert.strictEqual(actions[0].kind, 'push');
+});
+
 // ---- fail-closed parse / input ----
 
 test('malformed stdin JSON → FAIL CLOSED deny (HARD-01)', () => {

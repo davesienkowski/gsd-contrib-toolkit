@@ -580,6 +580,10 @@ module.exports = {
   classifyAction,
   findActionSegment,
   isNonGovernedCommand,
+  // exported for cross-gate reuse (CF-04): containment.detectGit normalizes each
+  // segment's program via resolveProgram so wrapped git (`sudo/command/env git`)
+  // resolves to `git` — do NOT re-implement wrapper stripping in the gate.
+  resolveProgram,
   // exported for unit-level reuse / testing
   classifyGithubPath,
   hostOf,
