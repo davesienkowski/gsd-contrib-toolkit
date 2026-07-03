@@ -54,7 +54,7 @@
 
 const path = require('node:path');
 const { parseCommand } = require('./lib/argv.cjs');
-const { classifyAction, findActionSegment } = require('./lib/classify.cjs');
+const { classifyAction, findActionSegment, isNonGovernedCommand } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveGsdCoreRoot, commandStartDir, ScriptResolveError } = require('./lib/resolve.cjs');
 
@@ -278,6 +278,14 @@ function runCommitConventionGate(stdinString, deps = {}) {
   };
 
   return runGate(() => {
+    // RES-01 (D-07 uniformity): classify the governed action FIRST (pure parse→classify,
+    // no filesystem) and short-circuit a confidently non-governed command to allow() BEFORE
+    // resolveGsdCoreRoot walks the tree. A non-commit command no longer pays a filesystem
+    // walk, and a missing LIVE script under a resolved root cannot collateral-deny it. The
+    // shared isNonGovernedCommand narrows-not-weakens: unparseable/failClosed/`commit`
+    // fall through to the unchanged resolve→gate path below (a governed commit still DENIES).
+    if (isNonGovernedCommand(parseCommand(ctx.command), TRIGGER_ACTIONS)) return allow();
+
     const resolved = Object.assign({}, deps);
 
     // Resolve the gsd-core root from the command's OWN cwd (it may `cd` into a worktree).
