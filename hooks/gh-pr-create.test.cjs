@@ -109,21 +109,21 @@ test('non-pr command (gh repo view) → allow', () => {
 
 test('clean templated PR to next, Fixes #N, conforming branch → allow', () => {
   const d = runPrGate(
-    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps()
   );
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
 });
 
 test('missing/empty body → template invalid → DENY (ENF-02)', () => {
-  const d = runPrGate(input('gh pr create --base next --title x --body ""'), deps());
+  const d = runPrGate(input('gh pr create --base next --title "fix(#12): x" --body ""'), deps());
   assert.strictEqual(d.permissionDecision, 'deny');
   assert.match(d.permissionDecisionReason, /template/i);
 });
 
 test('wrong-template body → DENY (ENF-02)', () => {
   const d = runPrGate(
-    input('gh pr create --base next --title x --body "just some prose, no template"'),
+    input('gh pr create --base next --title "fix(#12): x" --body "just some prose, no template"'),
     deps()
   );
   assert.strictEqual(d.permissionDecision, 'deny');
@@ -132,7 +132,7 @@ test('wrong-template body → DENY (ENF-02)', () => {
 
 test('base main from a non-allowed head → classifyPrTarget blocked → DENY (ENF-10)', () => {
   const d = runPrGate(
-    input(`gh pr create --base main --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create --base main --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({ branch: 'fix/12-the-thing' })
   );
   assert.strictEqual(d.permissionDecision, 'deny');
@@ -141,7 +141,7 @@ test('base main from a non-allowed head → classifyPrTarget blocked → DENY (E
 
 test('unusual base → DENY (conservative contribution stance)', () => {
   const d = runPrGate(
-    input(`gh pr create --base some-random-branch --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create --base some-random-branch --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps()
   );
   assert.strictEqual(d.permissionDecision, 'deny');
@@ -150,7 +150,7 @@ test('unusual base → DENY (conservative contribution stance)', () => {
 
 test('body lacks Fixes #N (toolkit-owned link check) → DENY, worded as ours', () => {
   const d = runPrGate(
-    input(`gh pr create --base next --title x --body "${escapeNl(NO_LINK_BODY)}"`),
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(NO_LINK_BODY)}"`),
     deps()
   );
   assert.strictEqual(d.permissionDecision, 'deny');
@@ -162,7 +162,7 @@ test('body lacks Fixes #N (toolkit-owned link check) → DENY, worded as ours', 
 test('Closes #N is also accepted as a link', () => {
   const body = GOOD_PR_BODY.replace('Fixes #12', 'Closes #34');
   const d = runPrGate(
-    input(`gh pr create --base next --title x --body "${escapeNl(body)}"`),
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(body)}"`),
     deps()
   );
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
@@ -170,7 +170,7 @@ test('Closes #N is also accepted as a link', () => {
 
 test('branch not matching fix|docs|feat/<n>- (toolkit-owned) → DENY, worded as ours', () => {
   const d = runPrGate(
-    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({ branch: 'my-random-branch' })
   );
   assert.strictEqual(d.permissionDecision, 'deny');
@@ -179,13 +179,13 @@ test('branch not matching fix|docs|feat/<n>- (toolkit-owned) → DENY, worded as
 });
 
 test('gh api POST pulls synonym, bad template → DENY (ENF-15)', () => {
-  const cmd = `gh api -X POST repos/o/r/pulls -f title=x -f body='no template here' -f base=next`;
+  const cmd = `gh api -X POST repos/o/r/pulls -f title='fix(#12): x' -f body='no template here' -f base=next`;
   const d = runPrGate(input(cmd), deps());
   assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
 });
 
 test('gh api POST pulls synonym, full clean → allow (ENF-15)', () => {
-  const cmd = `gh api -X POST repos/o/r/pulls -f title=x -f base=next -f body='${escapeSingle(GOOD_PR_BODY)}'`;
+  const cmd = `gh api -X POST repos/o/r/pulls -f title='fix(#12): x' -f base=next -f body='${escapeSingle(GOOD_PR_BODY)}'`;
   const d = runPrGate(input(cmd), deps());
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
 });
@@ -202,7 +202,7 @@ test('--body-file - (stdin) → FAIL CLOSED deny (HARD-04)', () => {
 
 test('a thrown live target (reshaped script) → FAIL CLOSED deny (HARD-01)', () => {
   const d = runPrGate(
-    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
       liveTarget: {
         classifyPrTarget() {
@@ -216,7 +216,7 @@ test('a thrown live target (reshaped script) → FAIL CLOSED deny (HARD-01)', ()
 
 test('a thrown live target WITH a logged override → allow (HARD-03)', () => {
   const d = runPrGate(
-    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
       liveTarget: {
         classifyPrTarget() {
@@ -252,7 +252,7 @@ function ci(over = {}) {
 
 test('ENF-18: green check-runs (Tests ran + all success) → allow', () => {
   const d = runPrGate(
-    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({ listPrsForHead: () => EXISTING_PR, readCheckRuns: () => ci() })
   );
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
@@ -260,7 +260,7 @@ test('ENF-18: green check-runs (Tests ran + all success) → allow', () => {
 
 test('ENF-18: a not-green conclusion (failure) → DENY naming the CI check-run + head SHA', () => {
   const d = runPrGate(
-    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
       listPrsForHead: () => EXISTING_PR,
       readCheckRuns: () =>
@@ -276,7 +276,7 @@ test('ENF-18: a not-green conclusion (failure) → DENY naming the CI check-run 
 
 test('ENF-18: Tests did NOT run on the head SHA (changeset-only, #1532) → DENY', () => {
   const d = runPrGate(
-    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
       listPrsForHead: () => EXISTING_PR,
       readCheckRuns: () => ci({ testsRan: false, allRequiredGreen: false, conclusions: [] }),
@@ -288,7 +288,7 @@ test('ENF-18: Tests did NOT run on the head SHA (changeset-only, #1532) → DENY
 
 test('ENF-18: a throwing readCheckRuns (gh unauth / unparseable) → FAIL CLOSED deny (HARD-01)', () => {
   const d = runPrGate(
-    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
       listPrsForHead: () => EXISTING_PR,
       readCheckRuns: () => {
@@ -301,7 +301,7 @@ test('ENF-18: a throwing readCheckRuns (gh unauth / unparseable) → FAIL CLOSED
 
 test('ENF-18: the four existing checks gate FIRST — bad template denies before the CI read runs', () => {
   let ciCalled = false;
-  const d = runPrGate(input('gh pr create --base next --title x --body ""'), deps({
+  const d = runPrGate(input('gh pr create --base next --title "fix(#12): x" --body ""'), deps({
     listPrsForHead: () => EXISTING_PR,
     readCheckRuns: () => {
       ciCalled = true;
@@ -314,13 +314,13 @@ test('ENF-18: the four existing checks gate FIRST — bad template denies before
 });
 
 test('ENF-18 synonym: gh api POST pulls, green CI → allow', () => {
-  const cmd = `gh api -X POST repos/o/r/pulls -f title=x -f base=next -f body='${escapeSingle(GOOD_PR_BODY)}'`;
+  const cmd = `gh api -X POST repos/o/r/pulls -f title='fix(#12): x' -f base=next -f body='${escapeSingle(GOOD_PR_BODY)}'`;
   const d = runPrGate(input(cmd), deps({ listPrsForHead: () => EXISTING_PR, readCheckRuns: () => ci() }));
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
 });
 
 test('ENF-18 synonym: gh api POST pulls, not-green CI → DENY', () => {
-  const cmd = `gh api -X POST repos/o/r/pulls -f title=x -f base=next -f body='${escapeSingle(GOOD_PR_BODY)}'`;
+  const cmd = `gh api -X POST repos/o/r/pulls -f title='fix(#12): x' -f base=next -f body='${escapeSingle(GOOD_PR_BODY)}'`;
   const d = runPrGate(
     input(cmd),
     deps({
@@ -334,14 +334,14 @@ test('ENF-18 synonym: gh api POST pulls, not-green CI → DENY', () => {
 });
 
 test('ENF-18 synonym: curl POST pulls, green CI → allow', () => {
-  const payload = JSON.stringify({ title: 'x', base: 'next', body: GOOD_PR_BODY });
+  const payload = JSON.stringify({ title: 'fix(#12): x', base: 'next', body: GOOD_PR_BODY });
   const cmd = `curl -X POST https://api.github.com/repos/o/r/pulls -d '${payload.replace(/'/g, "'\\''")}'`;
   const d = runPrGate(input(cmd), deps({ listPrsForHead: () => EXISTING_PR, readCheckRuns: () => ci() }));
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
 });
 
 test('ENF-18 synonym: curl POST pulls, not-green CI → DENY', () => {
-  const payload = JSON.stringify({ title: 'x', base: 'next', body: GOOD_PR_BODY });
+  const payload = JSON.stringify({ title: 'fix(#12): x', base: 'next', body: GOOD_PR_BODY });
   const cmd = `curl -X POST https://api.github.com/repos/o/r/pulls -d '${payload.replace(/'/g, "'\\''")}'`;
   const d = runPrGate(
     input(cmd),
@@ -399,7 +399,7 @@ test('WR-04: gh pr create --web → DENY with the un-observability reason', () =
 
 test('WR-04 no-regression: a body-bearing command that fails the template STILL denies for template', () => {
   const d = runPrGate(
-    input('gh pr create --base next --title x --body "just some prose, no template"'),
+    input('gh pr create --base next --title "fix(#12): x" --body "just some prose, no template"'),
     deps()
   );
   assert.strictEqual(d.permissionDecision, 'deny');
@@ -410,7 +410,7 @@ test('WR-04 no-regression: a body-bearing command that fails the template STILL 
 
 test('WR-04 no-regression: a fully-valid --body PR still ALLOWS', () => {
   const d = runPrGate(
-    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps()
   );
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
@@ -419,7 +419,7 @@ test('WR-04 no-regression: a fully-valid --body PR still ALLOWS', () => {
 // ── IN-01: the ENF-18 CI deny reason states the all-runs-must-conclude-success stance ──
 test('IN-01: ENF-18 deny reason prominently states EVERY check-run must conclude success', () => {
   const d = runPrGate(
-    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
       listPrsForHead: () => EXISTING_PR,
       readCheckRuns: () =>
@@ -489,7 +489,7 @@ test('ROB-01: out-of-tree, NON-targeting command (cd /tmp && gh pr list) → ALL
 
 test('ROB-01: out-of-tree pr create targeting open-gsd/gsd-core via -R → DENY (fail-closed)', () => {
   const d = runPrGate(
-    input('cd /tmp && gh pr create -R open-gsd/gsd-core --base next --title x --body "b"'),
+    input('cd /tmp && gh pr create -R open-gsd/gsd-core --base next --title "fix(#12): x" --body "b"'),
     robDenyingOverride
   );
   assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
@@ -498,7 +498,7 @@ test('ROB-01: out-of-tree pr create targeting open-gsd/gsd-core via -R → DENY 
 
 test('ROB-01: out-of-tree pr create -R to a FORK (dave/gsd-core-fork) → ALLOW (no false deny)', () => {
   const d = runPrGate(
-    input('cd /tmp && gh pr create -R dave/gsd-core-fork --base next --title x --body "b"'),
+    input('cd /tmp && gh pr create -R dave/gsd-core-fork --base next --title "fix(#12): x" --body "b"'),
     robDenyingOverride
   );
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
@@ -529,7 +529,7 @@ test('RES-01/HARD-02: governed pr-create with a MISSING live-policy root → DEN
   const path = require('node:path');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-noscript-gov-'));
   const d = runPrGate(
-    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     Object.assign({ worktreeRoot: root }, robDenyingOverride)
   );
   assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
@@ -552,7 +552,7 @@ test('RES-01: non-governed command with an odd -R is NOT fail-closed by explicit
 
 test('ROB-02: first create (empty open-PR list) + otherwise-valid PR → ALLOW (CI read SKIPPED)', () => {
   const d = runPrGate(
-    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
       listPrsForHead: () => [], // no open PR for the head branch → first create
       // Prove the relaxation actually SKIPS the check-run read: were it consulted this would
@@ -567,7 +567,7 @@ test('ROB-02: first create (empty open-PR list) + otherwise-valid PR → ALLOW (
 
 test('ROB-02: existing PR + a failure check-run → DENY (green-gate intact)', () => {
   const d = runPrGate(
-    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
       listPrsForHead: () => EXISTING_PR, // an open PR exists → run the unchanged ENF-18 gate
       readCheckRuns: () =>
@@ -583,7 +583,7 @@ test('ROB-02: existing PR + a failure check-run → DENY (green-gate intact)', (
 
 test('ROB-02: existing PR + green check-runs → ALLOW (unchanged existing-PR behavior)', () => {
   const d = runPrGate(
-    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({ listPrsForHead: () => EXISTING_PR, readCheckRuns: () => ci() })
   );
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
@@ -591,7 +591,7 @@ test('ROB-02: existing PR + green check-runs → ALLOW (unchanged existing-PR be
 
 test('ROB-02: an unreadable listPrsForHead (gh unauth, throws) → FAIL CLOSED deny (HARD-01)', () => {
   const d = runPrGate(
-    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
       listPrsForHead: () => {
         throw new Error('gh: not authenticated');
@@ -605,7 +605,7 @@ test('ROB-02: an unreadable listPrsForHead (gh unauth, throws) → FAIL CLOSED d
 
 test('ROB-02: first create still DENIES a non-CI precondition (missing Fixes #N)', () => {
   const d = runPrGate(
-    input(`gh pr create --base next --title x --body "${escapeNl(NO_LINK_BODY)}"`),
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(NO_LINK_BODY)}"`),
     deps({
       listPrsForHead: () => [], // first create — but the link precondition still applies
       // Prove it is the link check (step 3, BEFORE ENF-18) that denies: a thrown CI read would
@@ -621,7 +621,7 @@ test('ROB-02: first create still DENIES a non-CI precondition (missing Fixes #N)
 
 test('ROB-02: first create still DENIES a disallowed base (ENF-10) before the relaxation', () => {
   const d = runPrGate(
-    input(`gh pr create --base main --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create --base main --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
       listPrsForHead: () => [],
       readCheckRuns: () => {
@@ -635,7 +635,7 @@ test('ROB-02: first create still DENIES a disallowed base (ENF-10) before the re
 
 test('ROB-02: first create still DENIES a bad branch name (toolkit-owned) before the relaxation', () => {
   const d = runPrGate(
-    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
       branch: 'my-random-branch',
       listPrsForHead: () => [],
@@ -657,7 +657,7 @@ test('ROB-02: first create still DENIES a bad branch name (toolkit-owned) before
 test('WR-01: -R upstream target while origin is a fork → readers read upstream; red PR → DENY', () => {
   let listTarget; let ciTarget;
   const d = runPrGate(
-    input(`gh pr create -R open-gsd/gsd-core --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create -R open-gsd/gsd-core --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
       listPrsForHead: (head, target) => {
         listTarget = target;
@@ -679,7 +679,7 @@ test('WR-01: -R upstream target while origin is a fork → readers read upstream
 test('WR-01: case-variant -R Open-GSD/GSD-Core target → readers read the case-folded upstream', () => {
   let listTarget;
   const d = runPrGate(
-    input(`gh pr create -R Open-GSD/GSD-Core --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create -R Open-GSD/GSD-Core --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
       listPrsForHead: (head, target) => { listTarget = target; return []; }, // first create
       readCheckRuns: () => ci(),
@@ -692,7 +692,7 @@ test('WR-01: case-variant -R Open-GSD/GSD-Core target → readers read the case-
 test('WR-01: GH_REPO=open-gsd/gsd-core env target → readers read upstream', () => {
   let listTarget;
   const d = runPrGate(
-    input(`GH_REPO=open-gsd/gsd-core gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`GH_REPO=open-gsd/gsd-core gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
       listPrsForHead: (head, target) => { listTarget = target; return []; },
       readCheckRuns: () => ci(),
@@ -705,7 +705,7 @@ test('WR-01: GH_REPO=open-gsd/gsd-core env target → readers read upstream', ()
 test('WR-01: NO explicit -R/GH_REPO target → readers fall back to origin (target is null)', () => {
   let listTarget = 'UNSET'; let ciTarget = 'UNSET';
   const d = runPrGate(
-    input(`gh pr create --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
       listPrsForHead: (head, target) => { listTarget = target; return EXISTING_PR; },
       readCheckRuns: (sha, target) => { ciTarget = target; return ci(); },
@@ -718,7 +718,7 @@ test('WR-01: NO explicit -R/GH_REPO target → readers fall back to origin (targ
 
 test('WR-01: an explicit -R target unparseable by the enumerated forms → FAIL CLOSED deny', () => {
   const d = runPrGate(
-    input(`gh pr create -R weird::garbage --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create -R weird::garbage --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     // Were the explicit target ignored, the empty open-PR list would be a first-create ALLOW;
     // the unparseable explicit target must instead fail closed (no silent origin-fallback ALLOW).
     deps({ listPrsForHead: () => [] })
@@ -734,7 +734,7 @@ test('WR-01: an explicit -R target unparseable by the enumerated forms → FAIL 
 test('CHD-03: `-H <conforming>` with an existing red-CI PR on that branch → DENY (CI gate on the --head branch; Goodhart)', () => {
   let listBranch = 'UNSET';
   const d = runPrGate(
-    input(`gh pr create -H fix/99-red --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create -H fix/99-red --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
       branch: 'fix/12-the-thing', // the CURRENT branch — must NOT be what the gate evaluates
       listPrsForHead: (branch) => { listBranch = branch; return EXISTING_PR; },
@@ -752,7 +752,7 @@ test('CHD-03: `-H <conforming>` with an existing red-CI PR on that branch → DE
 test('CHD-03: `-H <conforming>` first-create (empty PR list) → ALLOW; listPrsForHead keyed on the --head branch', () => {
   let listBranch = 'UNSET';
   const d = runPrGate(
-    input(`gh pr create -H fix/77-x --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create -H fix/77-x --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
       branch: 'fix/12-the-thing',
       listPrsForHead: (branch) => { listBranch = branch; return []; }, // first create on the --head branch
@@ -765,7 +765,7 @@ test('CHD-03: `-H <conforming>` first-create (empty PR list) → ALLOW; listPrsF
 
 test('CHD-03: `-H bad_branch_name` → DENY via ENF-10 branch-name on the --head branch (not the current branch)', () => {
   const d = runPrGate(
-    input(`gh pr create -H bad_branch_name --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create -H bad_branch_name --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({ branch: 'fix/12-the-thing' }) // current branch IS conforming — the deny must come from --head
   );
   assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
@@ -776,7 +776,7 @@ test('CHD-03: `-H bad_branch_name` → DENY via ENF-10 branch-name on the --head
 
 test('CHD-03: an unresolvable `--head` (CI read for the resolved head throws) → FAIL CLOSED deny', () => {
   const d = runPrGate(
-    input(`gh pr create -H fix/55-x --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create -H fix/55-x --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
       branch: 'fix/12-the-thing',
       listPrsForHead: () => EXISTING_PR,
@@ -789,7 +789,7 @@ test('CHD-03: an unresolvable `--head` (CI read for the resolved head throws) �
 test('CHD-03: `--head owner:branch` → branch-name uses the branch portion; check-runs read the HEAD owner repo; PR-list reads the base repo', () => {
   let listBranch = 'UNSET'; let listTarget = 'UNSET'; let ciTarget = 'UNSET';
   const d = runPrGate(
-    input(`gh pr create -R open-gsd/gsd-core --head dave:fix/3-y --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create -R open-gsd/gsd-core --head dave:fix/3-y --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
       branch: 'fix/12-the-thing',
       listPrsForHead: (branch, target) => { listBranch = branch; listTarget = target; return EXISTING_PR; },
@@ -808,7 +808,7 @@ test('CHD-03: `--head owner:branch` → branch-name uses the branch portion; che
 test('CHD-03: `--head owner:branch` with a red check-run in the HEAD owner repo → DENY (head repo CI)', () => {
   let ciTarget = 'UNSET';
   const d = runPrGate(
-    input(`gh pr create -R open-gsd/gsd-core --head dave:fix/3-y --base next --title x --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create -R open-gsd/gsd-core --head dave:fix/3-y --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({
       branch: 'fix/12-the-thing',
       listPrsForHead: () => EXISTING_PR,
@@ -829,39 +829,39 @@ test('CHD-03: `--head owner:branch` with a red check-run in the HEAD owner repo 
 // route ONLY. On the gh-api / curl routes the head travels via `-f head=` / JSON, never `-H`.
 
 test('CHD-03 resolveHead: native `-H <branch>` → the branch', () => {
-  const { seg, route } = headCtx('gh pr create -H fix/99-red --base next --title x --body b');
+  const { seg, route } = headCtx('gh pr create -H fix/99-red --base next --title "fix(#12): x" --body b');
   assert.strictEqual(route, 'native');
   assert.strictEqual(resolveHead(seg, route), 'fix/99-red');
 });
 
 test('CHD-03 resolveHead: native `-Hfix/99-red` (value-attached) → the branch', () => {
-  const { seg, route } = headCtx('gh pr create -Hfix/99-red --base next --title x --body b');
+  const { seg, route } = headCtx('gh pr create -Hfix/99-red --base next --title "fix(#12): x" --body b');
   assert.strictEqual(resolveHead(seg, route), 'fix/99-red');
 });
 
 test('CHD-03 resolveHead: native `--head=<branch>` → the branch', () => {
-  const { seg, route } = headCtx('gh pr create --head=feat/9-x --base next --title x --body b');
+  const { seg, route } = headCtx('gh pr create --head=feat/9-x --base next --title "fix(#12): x" --body b');
   assert.strictEqual(resolveHead(seg, route), 'feat/9-x');
 });
 
 test('CHD-03 resolveHead: native `--head <branch>` (space) → the branch', () => {
-  const { seg, route } = headCtx('gh pr create --head fix/12-y --base next --title x --body b');
+  const { seg, route } = headCtx('gh pr create --head fix/12-y --base next --title "fix(#12): x" --body b');
   assert.strictEqual(resolveHead(seg, route), 'fix/12-y');
 });
 
 test('CHD-03 resolveHead: native `--head <owner:branch>` → the raw owner:branch form', () => {
-  const { seg, route } = headCtx('gh pr create --head dave:fix/3-y --base next --title x --body b');
+  const { seg, route } = headCtx('gh pr create --head dave:fix/3-y --base next --title "fix(#12): x" --body b');
   assert.strictEqual(resolveHead(seg, route), 'dave:fix/3-y');
 });
 
 test('CHD-03 resolveHead: native with NO --head/-H → null (gate falls back to deps.branch)', () => {
-  const { seg, route } = headCtx('gh pr create --base next --title x --body b');
+  const { seg, route } = headCtx('gh pr create --base next --title "fix(#12): x" --body b');
   assert.strictEqual(resolveHead(seg, route), null);
 });
 
 test('CHD-03 resolveHead: gh-api `-H Accept: …` is NOT read as head (route-scoping) → null', () => {
   const { seg, route } = headCtx(
-    `gh api -X POST repos/o/r/pulls -H 'Accept: application/vnd.github+json' -f base=next -f title=x`
+    `gh api -X POST repos/o/r/pulls -H 'Accept: application/vnd.github+json' -f base=next -f title='fix(#12): x'`
   );
   assert.strictEqual(route, 'gh-api');
   assert.strictEqual(resolveHead(seg, route), null);
@@ -900,7 +900,7 @@ test('CHD-03 resolveHead: curl with NO head field → null', () => {
 
 test('CF-01: conforming native title fix(#12): x → allow (reaches the existing checks)', () => {
   const d = runPrGate(
-    input(`gh pr create --base next --title 'fix(#12): x' --body "${escapeNl(GOOD_PR_BODY)}"`),
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps()
   );
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);

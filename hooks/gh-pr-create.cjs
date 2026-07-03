@@ -244,6 +244,44 @@ function resolveBase(seg, route) {
 }
 
 /**
+ * CF-01: resolve the PR TITLE across native / gh-api / curl routes (mirrors hooks/issue-dedupe.cjs
+ * resolveTitle). Native reads `--title`/`-t`; gh-api reads the `-f title=` / `--field title=` pair
+ * via the file's existing scanFieldPairs; curl reads the JSON `title` from the -d/--data payload
+ * via jsonField. Returns '' when no title is asserted — the caller denies an UNOBSERVABLE title
+ * (a PreToolUse hook cannot confirm a convention it cannot read, HARD-04), never a silent allow.
+ *
+ * @param {Object} seg
+ * @param {string} route 'native' | 'gh-api' | 'curl'
+ * @returns {string}
+ */
+function resolveTitle(seg, route) {
+  const flags = (seg && seg.flags) || {};
+  const shortFlags = (seg && seg.shortFlags) || {};
+
+  if (route === 'native') {
+    if (typeof flags.title === 'string') return flags.title;
+    if (typeof shortFlags.t === 'string') return shortFlags.t;
+    return '';
+  }
+
+  if (route === 'gh-api') {
+    let title = '';
+    scanFieldPairs(seg, (k, v) => {
+      if (k === 'title') title = v;
+    });
+    return title;
+  }
+
+  // curl: the title travels inside the JSON -d/--data payload.
+  const payload = typeof flags.data === 'string' ? flags.data : shortFlags.d;
+  if (typeof payload === 'string') {
+    const fromJson = jsonField(payload, 'title');
+    if (fromJson != null) return fromJson;
+  }
+  return '';
+}
+
+/**
  * Resolve the HEAD branch the PR actually opens FROM across routes — honoring an explicit
  * `--head`/`-H <branch>` (incl. the cross-repo `owner:branch` form) when present, else null
  * so the caller falls back to the current branch (deps.branch).
@@ -333,6 +371,7 @@ function jsonField(payload, key) {
  * @param {Object} deps
  * @param {{evaluatePrTemplate:Function}} deps.liveTemplate LIVE pr-template-policy export
  * @param {{classifyPrTarget:Function}} deps.liveTarget LIVE pr-target-policy export
+ * @param {{evaluatePrTitle:Function}} deps.liveTitle LIVE conventional-title export (CF-01)
  * @param {string} deps.branch current head branch name
  * @param {string[]} [deps.changedFiles] changed files (for the template tooling carve-out)
  * @param {string} [deps.authorAssociation] e.g. 'OWNER'
@@ -422,6 +461,30 @@ function gate(stdinString, deps) {
         '` is ' +
         ((target && target.decision) || 'not allowed') +
         ' per the LIVE pr-target-policy (ENF-10). Contributions target `next`.'
+    );
+  }
+
+  // (CF-01) LIVE conventional-title check — CALL gsd-core's LIVE evaluatePrTitle, NEVER a forked
+  // regex (D-01/D-06/HARD-02). Sits BETWEEN the ENF-10 base check and the toolkit-owned
+  // linked-issue check. gsd-core's pr-title-validator.yml is WARN_ONLY:false, so a `(<area>)`-only
+  // or leading-tag title fails the REQUIRED check on the cut; this surfaces that failure BEFORE
+  // the PR is opened (#1549). An empty/unobservable title cannot be confirmed → deny asking for an
+  // explicit --title (HARD-04). A non-conforming title denies with the LIVE matcher's OWN message.
+  const title = resolveTitle(seg, route);
+  if (typeof title !== 'string' || title.trim() === '') {
+    return deny(
+      'PR title is not observable (no --title/-t was given), so the required ' +
+        '`<type>(#<issue>): summary` convention cannot be confirmed — provide an explicit ' +
+        '--title/-t (CF-01 — gsd-core LIVE conventional-title / #1549; ' +
+        'pr-title-validator.yml is WARN_ONLY:false).'
+    );
+  }
+  const titleRes = deps.liveTitle.evaluatePrTitle({ title });
+  if (!titleRes || titleRes.valid !== true) {
+    return deny(
+      (titleRes && titleRes.message ? titleRes.message : 'PR title is not conventional') +
+        ' (CF-01 — gsd-core LIVE conventional-title / #1549; ' +
+        'pr-title-validator.yml is WARN_ONLY:false).'
     );
   }
 
@@ -1031,6 +1094,7 @@ module.exports = {
   gate,
   resolveBody,
   resolveBase,
+  resolveTitle,
   resolveHead,
   splitHead,
   resolveHeadRepo,
