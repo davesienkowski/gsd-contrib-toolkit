@@ -1,0 +1,17 @@
+{
+  "hook": "cf05-chained-push-reaches-gate",
+  "case": "deny",
+  "fixture": "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git commit -m x && git push\"}}",
+  "expected": "deny",
+  "verdict": "pass",
+  "decision": "deny",
+  "exitCode": 0,
+  "reason": "parsed permissionDecision:deny",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "permissionDecisionReason": "Working tree is DIRTY — the Tier-1-green marker is keyed to the STAGED tree (`git write-tree`), but unstaged/untracked changes mean the pushed content will differ from what was proven green. Stage all changes and re-stamp: `lint-ci-stamp`. (ENF-05/ENF-17 EP-4)"
+    }
+  }
+}

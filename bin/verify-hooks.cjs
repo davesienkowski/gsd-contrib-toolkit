@@ -171,6 +171,21 @@ const PROOF_TABLE = [
   { name: 'gh-pr-create-title', hook: 'gh-pr-create', kind: 'deny', needsLive: true,
     bad: bash(`gh pr create --base next --title 'fix(core): x' --body "${CF01_VALID_FIX_BODY}"`),
     clean: bash('gh repo view o/r') },
+  // ── CF-04 / CF-05 / CF-06 (Phase 31): consolidated enforcement-bypass-closure regression ──
+  // The three closed bypass FORMS, proven end-to-end (mirrored from hooks/integration-proof.test.cjs
+  // DENY_GATES, the sync SOURCE). CF-06 is ENVIRONMENT-INDEPENDENT: it denies an out-of-tree
+  // open-gsd/gsd-core-targeting edit with NO live checkout (needsLive:false + a scratch cwd), so it
+  // proves the SHIPPED runner fails closed even where no checkout resolves — the highest-value
+  // mirror. CF-04 (wrapped push) and CF-05 (chained push) resolve LIVE scripts (needsLive).
+  { name: 'cf06-gh-edit-out-of-tree', hook: 'gh-edit', kind: 'deny', needsLive: false, cwd: os.tmpdir(),
+    bad: bash('gh api -X PATCH repos/open-gsd/gsd-core/issues/1 -f body=hi'),
+    clean: bash('gh api -X PATCH repos/dave/gsd-core-fork/issues/1 -f body=hi') },
+  { name: 'cf04-containment-wrapped-push', hook: 'containment', kind: 'deny', needsLive: true,
+    bad: bash('sudo git push origin main'),
+    clean: bash('git status') },
+  { name: 'cf05-chained-push-reaches-gate', hook: 'lint-ci-marker', kind: 'deny', needsLive: true,
+    bad: bash('git commit -m x && git push'),
+    clean: bash('git status && ls') },
   // ── binlib-edit (Write|Edit gate): command-only, no live resolution ──
   { name: 'binlib-edit', kind: 'deny', needsLive: false,
     bad: edit('/g/gsd-core/bin/lib/decisions.cjs'),
@@ -296,7 +311,9 @@ function runVerify(opts = {}) {
       continue;
     }
 
-    const cwd = entry.needsLive ? liveCwd : process.cwd();
+    // An explicit `cwd` override (e.g. the CF-06 environment-independent row spawns from a scratch
+    // dir with no gsd-core ancestor) takes precedence; otherwise needsLive picks the live checkout.
+    const cwd = entry.cwd || (entry.needsLive ? liveCwd : process.cwd());
 
     if (entry.kind === 'advisory') {
       // INJECT case: surfaces advisory content; NONE case: stays quiet. BOTH: no permissionDecision.

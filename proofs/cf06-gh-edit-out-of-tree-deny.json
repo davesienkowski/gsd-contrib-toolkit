@@ -1,0 +1,17 @@
+{
+  "hook": "cf06-gh-edit-out-of-tree",
+  "case": "deny",
+  "fixture": "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gh api -X PATCH repos/open-gsd/gsd-core/issues/1 -f body=hi\"}}",
+  "expected": "deny",
+  "verdict": "pass",
+  "decision": "deny",
+  "exitCode": 0,
+  "reason": "parsed permissionDecision:deny",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "permissionDecisionReason": "out-of-tree command targets upstream open-gsd/gsd-core (-R/--repo / gh-api / curl) but no local gsd-core checkout is reachable from its cwd — cannot load the LIVE issue-version-gate / pr-template policy to verify the rewritten body (HARD-02: no runtime-root fallback) → failing closed."
+    }
+  }
+}

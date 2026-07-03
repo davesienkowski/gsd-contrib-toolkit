@@ -1,0 +1,16 @@
+{
+  "hook": "cf06-gh-edit-out-of-tree",
+  "case": "allow",
+  "fixture": "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gh api -X PATCH repos/dave/gsd-core-fork/issues/1 -f body=hi\"}}",
+  "expected": "allow",
+  "verdict": "pass",
+  "decision": "allow",
+  "exitCode": 0,
+  "reason": "parsed permissionDecision:allow",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "allow"
+    }
+  }
+}

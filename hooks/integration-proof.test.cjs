@@ -302,10 +302,44 @@ const DENY_GATES = [
     clean: bash('gh repo view o/r'),
     needsLive: true,
   },
+  // ── CF-04 / CF-05 / CF-06 (Phase 31): consolidated enforcement-bypass-closure regression ──
+  // The three pre-existing gate-logic bypasses, proven END-TO-END through the REAL entrypoints
+  // (this file is the sync SOURCE for bin/verify-hooks.cjs PROOF_TABLE). Each row asserts BOTH
+  // the closed bypass FORM (deny) AND its narrows-not-weakens must-still-allow counterpart.
+  {
+    name: 'cf06-gh-edit-out-of-tree', hook: 'gh-edit',
+    // CF-06 (31-02): ENVIRONMENT-INDEPENDENT. An out-of-tree `gh api -X PATCH` targeting upstream
+    // open-gsd/gsd-core fails closed (DENY) via the ROB-01 commandTargetsGsdCore discriminator —
+    // null-root, NO live checkout needed (cwd is a scratch dir with no gsd-core ancestor). The
+    // fork-targeting edit stays a passthrough (ALLOW). Asserted UNCONDITIONALLY (needsLive:false).
+    bad: bash('gh api -X PATCH repos/open-gsd/gsd-core/issues/1 -f body=hi'),
+    clean: bash('gh api -X PATCH repos/dave/gsd-core-fork/issues/1 -f body=hi'),
+    needsLive: false,
+    cwd: os.tmpdir(),
+  },
+  {
+    name: 'cf04-containment-wrapped-push', hook: 'containment',
+    // CF-04 (31-01): a WRAPPED upstream push (`sudo git push origin main`) now normalizes via the
+    // shared resolveProgram and reaches ENF-07 → DENY under a live checkout (before the fix the
+    // wrapper made it a non-git no-op that slipped the gate). clean = a non-governed read.
+    bad: bash('sudo git push origin main'),
+    clean: bash('git status'),
+    needsLive: true,
+  },
+  {
+    name: 'cf05-chained-push-reaches-gate', hook: 'lint-ci-marker',
+    // CF-05 (31-03): a chain-collapsed `git commit -m x && git push` now reaches the push logic via
+    // hasGovernedSegment → lint-ci-marker DENIES on the missing lint-green marker under a live
+    // checkout (before the fix it collapsed to its benign `commit` first segment and never
+    // evaluated the push). clean = a truly non-governed chain (`git status && ls`) still ALLOWS.
+    bad: bash('git commit -m x && git push'),
+    clean: bash('git status && ls'),
+    needsLive: true,
+  },
 ];
 
 for (const g of DENY_GATES) {
-  const cwd = g.needsLive ? GSD_CORE_CWD : process.cwd();
+  const cwd = g.cwd || (g.needsLive ? GSD_CORE_CWD : process.cwd());
   const skip =
     g.needsLive && !GSD_CORE_CWD
       ? 'no gsd-core checkout reachable (set GSD_CORE_ROOT) — LIVE-resolving case skipped (env limit)'
