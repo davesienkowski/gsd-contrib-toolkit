@@ -19,6 +19,7 @@ const {
   resolveHead,
   extractLinkedIssues,
   defaultReadIssueLabels,
+  defaultReadChangedFiles,
 } = require('./gh-pr-create.cjs');
 const { parseCommand: _parseCmd } = require('./lib/argv.cjs');
 const { classifyAction: _classifyAction, findActionSegment: _findActionSegment } = require('./lib/classify.cjs');
@@ -38,6 +39,10 @@ const liveTarget = require('/home/dave/repos/gsd-core/scripts/pr-target-policy.c
 // title gate is exercised hermetically — the SAME single-source script the production runPrGate
 // resolves via requireLiveScript (D-01/D-06/HARD-02: never a forked regex).
 const liveTitle = require('/home/dave/repos/gsd-core/scripts/release-notes/conventional-title.cjs');
+// CF-03: the LIVE docs-required lint (evaluateLint / readFragmentsFromDisk) injected into every
+// test so the docs-required mirror is exercised against the REAL upstream verdict — the SAME
+// single-source script production resolves via requireLiveScript (D-01/D-06/HARD-02: never forked).
+const liveDocsLint = require('/home/dave/repos/gsd-core/scripts/lint-docs-required.cjs');
 
 function input(command) {
   return JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
@@ -103,6 +108,12 @@ function deps(over = {}) {
       // condition. CF-02 tests inject `readIssueLabels: () => []` (or a throwing stub) to
       // exercise the deny / fail-closed paths.
       readIssueLabels: () => ['approved-feature', 'approved-enhancement'],
+      // CF-03: default to the LIVE docs-required lint + an EMPTY changed-file list so the
+      // pre-existing tests (no changeset fragments touched) resolve to OK_NO_TRIGGERING_FRAGMENTS
+      // → allow — unperturbed by the new docs-required condition. CF-03 tests override
+      // `worktreeRoot` (a temp .changeset/ root) + `readChangedFiles` to exercise the deny paths.
+      liveDocsLint,
+      readChangedFiles: () => [],
       overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
     },
     over
@@ -1144,11 +1155,188 @@ test('CF-02 Task 2: with NO injected readIssueLabels, an unreadable label read f
       branch: 'fix/12-the-thing',
       changedFiles: ['src/index.cts'],
       authorAssociation: 'OWNER',
+      // CF-03: inject the LIVE docs lint + an empty diff so the setup-phase requireLiveScript for
+      // lint-docs-required does NOT throw on this non-gsd-core temp root — keeping the deny
+      // provably from the label read (CF-02 runs BEFORE the CF-03 docs check).
+      liveDocsLint,
+      readChangedFiles: () => [],
       // readIssueLabels intentionally NOT injected → defaultReadIssueLabels runs.
       overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
     }
   );
   assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+});
+
+// ── CF-03: the docs-required mirror (LIVE lint-docs-required reuse — D-01/D-06/HARD-02) ──
+// gsd-core's docs-required.yml fails a PR whose changeset introduces Added/Changed/Deprecated/
+// Removed behavior without a docs/ change. The toolkit REUSES the LIVE evaluateLint +
+// readFragmentsFromDisk exports (never a forked policy) over the PR's changed files (read via an
+// injected readChangedFiles, defaulting to `git diff --name-only origin/<base>...HEAD`). Pre-PR,
+// labels are passed as [] (the maintainer-applied `no-docs` label cannot be self-applied at open);
+// the per-fragment `<!-- docs-exempt: reason -->` opt-out is still honored via the LIVE parse.
+// CF-03's require-issue-link half is ALREADY covered by the existing LINKED_ISSUE_RE check (no new
+// code). The label read is hermetic: readChangedFiles is injected and the LIVE lint runs against a
+// temp .changeset/ root the test controls.
+
+// Build a temp root carrying the given fixture files, returning its absolute path.
+function changesetRoot(files) {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-cf03-'));
+  fs.mkdirSync(path.join(root, '.changeset'), { recursive: true });
+  for (const [rel, content] of Object.entries(files)) {
+    const abs = path.join(root, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content);
+  }
+  return root;
+}
+
+// A well-formed changeset fragment of the given type (parse.cjs needs `type:` + `pr:` + a body).
+function fragment(type, body) {
+  return `---\ntype: ${type}\npr: 100\n---\n${body}\n`;
+}
+
+const CF03_CREATE = `gh pr create --base next --title 'fix(#12): x' --body "${escapeNl(GOOD_PR_BODY)}"`;
+
+test('CF-03: an Added changeset with NO docs/ change → DENY (FAIL_DOCS_MISSING)', () => {
+  const root = changesetRoot({ '.changeset/x.md': fragment('Added', 'a new capability') });
+  const d = runPrGate(
+    input(CF03_CREATE),
+    deps({ worktreeRoot: root, readChangedFiles: () => ['.changeset/x.md'] })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /fail_docs_missing/i);
+  // mirrors docs-required.yml (#3213) and names the triggering fragment.
+  assert.match(d.permissionDecisionReason, /docs-required|#3213/i);
+  assert.match(d.permissionDecisionReason, /\.changeset\/x\.md/);
+});
+
+test('CF-03: an Added changeset WITH a docs/ change → allow (OK_DOCS_UPDATED)', () => {
+  const root = changesetRoot({ '.changeset/x.md': fragment('Added', 'a new capability') });
+  const d = runPrGate(
+    input(CF03_CREATE),
+    deps({ worktreeRoot: root, readChangedFiles: () => ['.changeset/x.md', 'docs/foo.md'] })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('CF-03: a Fixed changeset with no docs → allow (non-triggering type)', () => {
+  const root = changesetRoot({ '.changeset/x.md': fragment('Fixed', 'a bug fix') });
+  const d = runPrGate(
+    input(CF03_CREATE),
+    deps({ worktreeRoot: root, readChangedFiles: () => ['.changeset/x.md'] })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('CF-03: a Security changeset with no docs → allow (non-triggering type)', () => {
+  const root = changesetRoot({ '.changeset/x.md': fragment('Security', 'a vuln fix') });
+  const d = runPrGate(
+    input(CF03_CREATE),
+    deps({ worktreeRoot: root, readChangedFiles: () => ['.changeset/x.md'] })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('CF-03: a malformed .changeset/*.md fragment → DENY (FAIL_MALFORMED_FRAGMENT)', () => {
+  const root = changesetRoot({ '.changeset/x.md': 'this fragment has no frontmatter at all' });
+  const d = runPrGate(
+    input(CF03_CREATE),
+    deps({ worktreeRoot: root, readChangedFiles: () => ['.changeset/x.md'] })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /fail_malformed_fragment/i);
+});
+
+test('CF-03: no changeset fragments at all → allow (OK_NO_TRIGGERING_FRAGMENTS)', () => {
+  const root = changesetRoot({});
+  const d = runPrGate(
+    input(CF03_CREATE),
+    deps({ worktreeRoot: root, readChangedFiles: () => ['src/index.cts', 'README.md'] })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('CF-03: readChangedFiles THROWS (diff unavailable) → FAIL CLOSED deny (HARD-01)', () => {
+  const root = changesetRoot({});
+  const d = runPrGate(
+    input(CF03_CREATE),
+    deps({
+      worktreeRoot: root,
+      readChangedFiles: () => { throw new Error('git: no upstream ref origin/next'); },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+});
+
+test('CF-03: a per-fragment `<!-- docs-exempt: reason -->` allows even with labels:[] pre-PR', () => {
+  const root = changesetRoot({
+    '.changeset/x.md': fragment('Added', 'a new capability\n\n<!-- docs-exempt: internal-only refactor -->'),
+  });
+  const d = runPrGate(
+    input(CF03_CREATE),
+    deps({ worktreeRoot: root, readChangedFiles: () => ['.changeset/x.md'] })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+// D-05 regression fixture: keep BOTH a docs-missing deny AND a docs-updated allow committed so a
+// future regression that weakens the CF-03 docs gate is caught.
+test('CF-03 regression (D-05): an Added-no-docs denies AND an Added-with-docs allows', () => {
+  const root = changesetRoot({ '.changeset/x.md': fragment('Changed', 'changed behavior') });
+  const denied = runPrGate(
+    input(CF03_CREATE),
+    deps({ worktreeRoot: root, readChangedFiles: () => ['.changeset/x.md'] })
+  );
+  assert.strictEqual(denied.permissionDecision, 'deny', denied.permissionDecisionReason);
+  const allowed = runPrGate(
+    input(CF03_CREATE),
+    deps({ worktreeRoot: root, readChangedFiles: () => ['.changeset/x.md', 'docs/api.md'] })
+  );
+  assert.strictEqual(allowed.permissionDecision, 'allow', allowed.permissionDecisionReason);
+});
+
+// Task 2: the default reader is WIRED in runPrGate. With NO injected readChangedFiles, a
+// gsd-core-targeting create whose PR diff is unreadable (defaultReadChangedFiles runs a `git diff`
+// on a non-git temp root → throws) fails closed. liveDocsLint is injected so the setup-phase
+// requireLiveScript does not mask the diff-read throw.
+test('CF-03 Task 2: with NO injected readChangedFiles, an unreadable diff fails closed (deny)', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-cf03-diff-'));
+  const d = runPrGate(
+    input(CF03_CREATE),
+    {
+      worktreeRoot: root,
+      liveTemplate,
+      liveTarget,
+      liveTitle,
+      liveDocsLint,
+      branch: 'fix/12-the-thing',
+      changedFiles: ['src/index.cts'],
+      authorAssociation: 'OWNER',
+      readIssueLabels: () => ['approved-feature'],
+      // readChangedFiles intentionally NOT injected → defaultReadChangedFiles runs (git diff on a
+      // non-git temp root throws → fail closed).
+      overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
+    }
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+});
+
+// defaultReadChangedFiles input hardening: a non-git root (or missing origin/<base>) makes the
+// underlying `git diff` throw → the reader fails closed (an unreadable diff source denies).
+test('CF-03: defaultReadChangedFiles throws on an unreadable diff source (fail-closed)', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-cf03-drc-'));
+  assert.throws(() => defaultReadChangedFiles(root, 'next'));
+  // an absent/empty base cannot form a diff spec → fail closed before any spawn.
+  assert.throws(() => defaultReadChangedFiles(root, ''));
 });
 
 // Helpers. A real `gh pr create --body "..."` command carries REAL newlines inside the
