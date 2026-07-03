@@ -17,6 +17,8 @@ const {
   evaluateCiResult,
   ownerRepoFromRemote,
   resolveHead,
+  extractLinkedIssues,
+  defaultReadIssueLabels,
 } = require('./gh-pr-create.cjs');
 const { parseCommand: _parseCmd } = require('./lib/argv.cjs');
 const { classifyAction: _classifyAction, findActionSegment: _findActionSegment } = require('./lib/classify.cjs');
@@ -96,6 +98,11 @@ function deps(over = {}) {
       // the PR exists; the first create relaxes ONLY the CI-green step. Tests that exercise
       // the existing-PR check-run gate inject `listPrsForHead: () => EXISTING_PR`.
       listPrsForHead: () => [],
+      // CF-02: default to an APPROVED linked issue so pre-existing enhancement/feature title
+      // tests (e.g. feat(#39)!: x) stay green — they are not perturbed by the new approval-label
+      // condition. CF-02 tests inject `readIssueLabels: () => []` (or a throwing stub) to
+      // exercise the deny / fail-closed paths.
+      readIssueLabels: () => ['approved-feature', 'approved-enhancement'],
       overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
     },
     over
@@ -986,6 +993,158 @@ test('CF-01/HARD-02: governed pr-create with a missing LIVE conventional-title s
       liveTarget,
       branch: 'fix/12-the-thing',
       // liveTitle deliberately NOT injected → requireLiveScript(root, conventional-title) throws.
+      overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
+    }
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+});
+
+// ── CF-02: the approval-ordering pre-check (auto-close-unsolicited-prs, replicated H-A) ──
+// For a Feature/Enhancement bucket (LIVE classifyBucket — D-01 reuse, never a forked
+// discriminator), the PR's linked issue must carry a maintainer-applied
+// approved-feature/approved-enhancement label, else DENY before the PR opens (pre-empting the
+// CI auto-close). Fix-bucket PRs are UNAFFECTED (D-04); an unreadable label read fails closed
+// (D-04). The label reader is INJECTED for hermeticity — no real network.
+
+// A GOOD_PR_BODY variant whose linked issue is `ref` instead of #12.
+function bodyLinking(ref) {
+  return GOOD_PR_BODY.replace('Fixes #12', 'Fixes #' + ref);
+}
+
+test('CF-02: feat PR (Feature) whose linked issue lacks an approval label → DENY (toolkit-owned)', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'feat(#39)!: x' --body "${escapeNl(bodyLinking(39))}"`),
+    deps({ readIssueLabels: () => [] })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  // H-A: phrased as the toolkit's OWN check (replicated from the CI workflow), naming the labels.
+  assert.match(d.permissionDecisionReason, /toolkit|our own|replicat/i);
+  assert.match(d.permissionDecisionReason, /approved-feature|approved-enhancement/);
+});
+
+test('CF-02: enhance PR (Enhancement) whose linked issue lacks approval → DENY', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'enhance(#1549): x' --body "${escapeNl(bodyLinking(1549))}"`),
+    deps({ readIssueLabels: () => [] })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /approved-feature|approved-enhancement/);
+});
+
+test('CF-02: feat PR whose linked issue carries approved-feature → allow', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'feat(#39): x' --body "${escapeNl(bodyLinking(39))}"`),
+    deps({ readIssueLabels: (n) => (n === 39 ? ['approved-feature'] : []) })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('CF-02: enhance PR whose linked issue carries approved-enhancement → allow', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'enhance(#1549): x' --body "${escapeNl(bodyLinking(1549))}"`),
+    deps({ readIssueLabels: (n) => (n === 1549 ? ['approved-enhancement'] : []) })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('CF-02: fix PR (Fix bucket) with an unapproved linked issue → ALLOW (unaffected, D-04)', () => {
+  let read = false;
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'fix(#12): x' --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({ readIssueLabels: () => { read = true; return []; } })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.strictEqual(read, false, 'the approval-label read must be SKIPPED for a fix-bucket PR');
+});
+
+test('CF-02: an unreadable label read (throws) for a feat PR → FAIL CLOSED deny (D-04)', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'feat(#39): x' --body "${escapeNl(bodyLinking(39))}"`),
+    deps({ readIssueLabels: () => { throw new Error('gh: not authenticated'); } })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+});
+
+test('CF-02: two linked issues, only one carries an approval label → allow (any-approved)', () => {
+  const body = bodyLinking(39).replace('Fixes #39', 'Fixes #39, Closes #40');
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'feat(#39): x' --body "${escapeNl(body)}"`),
+    deps({ readIssueLabels: (n) => (n === 40 ? ['approved-enhancement'] : []) })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+// D-05 regression fixture: keep BOTH an unapproved-enh deny AND an approved-enh allow committed
+// so a future regression that weakens the CF-02 gate is caught.
+test('CF-02 regression (D-05): an unapproved enhancement denies AND an approved enhancement allows', () => {
+  const denied = runPrGate(
+    input(`gh pr create --base next --title 'enhance(#1549): add x' --body "${escapeNl(bodyLinking(1549))}"`),
+    deps({ readIssueLabels: () => [] })
+  );
+  assert.strictEqual(denied.permissionDecision, 'deny', denied.permissionDecisionReason);
+  const allowed = runPrGate(
+    input(`gh pr create --base next --title 'enhance(#1549): add x' --body "${escapeNl(bodyLinking(1549))}"`),
+    deps({ readIssueLabels: () => ['approved-enhancement'] })
+  );
+  assert.strictEqual(allowed.permissionDecision, 'allow', allowed.permissionDecisionReason);
+});
+
+// extractLinkedIssues — the same-repo closing-keyword number extraction (mirrors the LIVE
+// workflow's ref semantics).
+test('CF-02 extractLinkedIssues: bare #N with a closing keyword; dedups; ignores code fences', () => {
+  assert.deepStrictEqual(extractLinkedIssues('Fixes #12 and Closes #12 and Resolves #34'), [12, 34]);
+  assert.deepStrictEqual(extractLinkedIssues('```\nFixes #99\n```\nFixes #7'), [7]);
+  assert.deepStrictEqual(extractLinkedIssues('a bare #55 with no keyword is ignored'), []);
+  assert.deepStrictEqual(extractLinkedIssues('no refs here'), []);
+});
+
+test('CF-02 extractLinkedIssues: cross-repo / URL refs count ONLY for the target repo (T-30-02-01)', () => {
+  const tr = { owner: 'open-gsd', repo: 'gsd-core' };
+  assert.deepStrictEqual(extractLinkedIssues('Fixes open-gsd/gsd-core#5', tr), [5]);
+  assert.deepStrictEqual(
+    extractLinkedIssues('Closes https://github.com/open-gsd/gsd-core/issues/8', tr),
+    [8]
+  );
+  assert.deepStrictEqual(extractLinkedIssues('Fixes other/repo#5', tr), []);
+  // No target repo → cross-repo refs cannot be confirmed same-repo → excluded (bare #N still counts).
+  assert.deepStrictEqual(extractLinkedIssues('Fixes other/repo#5 and Closes #9'), [9]);
+});
+
+test('CF-02 extractLinkedIssues: caps the read fan-out at 20 (DoS bound, T-30-02-03)', () => {
+  const body = Array.from({ length: 30 }, (_, i) => 'Fixes #' + (i + 1)).join('\n');
+  assert.strictEqual(extractLinkedIssues(body).length, 20);
+});
+
+// defaultReadIssueLabels — the default gh-api reader's input hardening (T-30-02-02): a
+// non-positive-integer issue number is rejected BEFORE any spawn, so a crafted number cannot be
+// interpolated into the gh api path.
+test('CF-02: defaultReadIssueLabels rejects a non-positive-integer issue number before any spawn (T-30-02-02)', () => {
+  assert.throws(() => defaultReadIssueLabels('/tmp', 'not-a-number', { owner: 'o', repo: 'r' }));
+  assert.throws(() => defaultReadIssueLabels('/tmp', 0, { owner: 'o', repo: 'r' }));
+  assert.throws(() => defaultReadIssueLabels('/tmp', -3, { owner: 'o', repo: 'r' }));
+  assert.throws(() => defaultReadIssueLabels('/tmp', 1.5, { owner: 'o', repo: 'r' }));
+});
+
+// Task 2: the default reader is WIRED in runPrGate. With NO injected readIssueLabels, an
+// enh/feat gsd-core-targeting create whose label read is unreadable fails closed (deny). Here a
+// non-git temp root makes the default reader's origin resolution throw → runGate fail-closed
+// deny; liveTitle/template/target are injected so the deny provably comes from the label read.
+test('CF-02 Task 2: with NO injected readIssueLabels, an unreadable label read fails closed (deny)', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-cf02-labels-'));
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'feat(#12): x' --body "${escapeNl(GOOD_PR_BODY)}"`),
+    {
+      worktreeRoot: root,
+      liveTemplate,
+      liveTarget,
+      liveTitle,
+      branch: 'fix/12-the-thing',
+      changedFiles: ['src/index.cts'],
+      authorAssociation: 'OWNER',
+      // readIssueLabels intentionally NOT injected → defaultReadIssueLabels runs.
       overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
     }
   );
