@@ -46,7 +46,7 @@
  */
 
 const { parseCommand } = require('./lib/argv.cjs');
-const { classifyAction, isNonGovernedCommand } = require('./lib/classify.cjs');
+const { classifyAction, isNonGovernedCommand, hasGovernedSegment } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const {
   resolveGsdCoreRoot,
@@ -93,12 +93,16 @@ function gate(stdinString, deps) {
   if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
 
   const action = classifyAction(parsed);
-  // An unmappable mutating github synonym must not slip through (T-04-02-SYNONYM).
+  // An unmappable mutating github synonym must not slip through (T-04-02-SYNONYM). This
+  // single-segment failClosed throw is preserved UNCHANGED (CF-05 does not weaken it).
   if (action && action.failClosed) {
     throw new FailClosed('unclassifiable mutating github call — failing closed (HARD-04)');
   }
-  // Only push / pr-create are gated. Anything else (git reads, commit, non-git) → no-op allow.
-  if (!action || !TRIGGER_ACTIONS.has(action.action)) return allow();
+  // CF-05: only push / pr-create are gated, and a governed action ANYWHERE in the chain
+  // counts — `git commit && git push` must reach the marker/dirty/affected gates, not
+  // collapse to its benign first segment (mirrors CHD-02's all-segments detectGit). Anything
+  // with no governed segment (git reads, a lone commit, non-git) → no-op allow.
+  if (!hasGovernedSegment(parsed, TRIGGER_ACTIONS)) return allow();
 
   // (1) EP-4 — a dirty working tree invalidates the marker even when the staged-tree SHA
   // has one, because the pushed content would differ. May throw → fail closed (HARD-01).
@@ -136,7 +140,9 @@ function gate(stdinString, deps) {
   // fail-closed DENY (HARD-01, T-07-02-FAILOPEN). Gating this behind the marker/dirty fast
   // checks keeps the already-stamped common case from re-running the suite unnecessarily
   // (T-07-02-PERF). pr-create skips this dimension (its Tier-2 lives in 07-03).
-  if (action.action === 'push' && typeof deps.runAffectedTier === 'function') {
+  // CF-05: a push ANYWHERE in the chain runs the Tier-1 test:affected (not just a first-segment
+  // push) — `git commit && git push` reaches this tier.
+  if (hasGovernedSegment(parsed, new Set(['push'])) && typeof deps.runAffectedTier === 'function') {
     deps.runAffectedTier(deps.worktreeRoot);
   }
 

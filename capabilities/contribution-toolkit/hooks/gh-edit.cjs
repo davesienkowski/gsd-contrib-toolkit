@@ -32,7 +32,7 @@ const path = require('node:path');
 const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction, isNonGovernedCommand } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
-const { resolveRootForCommand, requireLiveScript } = require('./lib/resolve.cjs');
+const { resolveRootForCommand, requireLiveScript, commandTargetsGsdCore } = require('./lib/resolve.cjs');
 
 // FailClosed/safeCommand: shared IN-03 helpers from failclosed.cjs.
 
@@ -295,7 +295,23 @@ function runEditGate(stdinString, deps = {}) {
     let root = resolved.worktreeRoot || null;
     if (!root && (!resolved.liveVersionGate || !resolved.liveTemplate)) {
       root = resolveRootForCommand(ctx.command, process.cwd());
-      if (!root) return allow();
+      if (!root) {
+        // ROB-01 locked discriminator (same seam as gh-issue-create / gh-pr-create): an
+        // out-of-tree command (null root) passes through (ALLOW) ONLY when it does NOT target
+        // upstream open-gsd/gsd-core. A -R/--repo / gh-api `repos/…` / curl edit that DOES
+        // target it is a real body rewrite we cannot verify without a checkout → fail closed
+        // (HARD-02: never reach for a possibly-stale runtime root). The throw is still escapable
+        // by a deliberate, logged override (acceptable maintainer behavior).
+        if (commandTargetsGsdCore(parseCommand(ctx.command))) {
+          throw new FailClosed(
+            'out-of-tree command targets upstream open-gsd/gsd-core (-R/--repo / gh-api / curl) ' +
+              'but no local gsd-core checkout is reachable from its cwd — cannot load the LIVE ' +
+              'issue-version-gate / pr-template policy to verify the rewritten body (HARD-02: no ' +
+              'runtime-root fallback) → failing closed.'
+          );
+        }
+        return allow();
+      }
       ctx.worktreeRoot = ctx.worktreeRoot || root;
     }
     if (!resolved.liveVersionGate) {

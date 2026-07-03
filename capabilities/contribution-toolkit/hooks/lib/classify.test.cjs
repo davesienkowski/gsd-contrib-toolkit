@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { parseCommand } = require('./argv.cjs');
-const { classifyAction, findActionSegment, isNonGovernedCommand } = require('./classify.cjs');
+const { classifyAction, findActionSegment, isNonGovernedCommand, hasGovernedSegment } = require('./classify.cjs');
 
 const cls = (cmd) => classifyAction(parseCommand(cmd));
 
@@ -636,4 +636,91 @@ test('isNonGovernedCommand: an action governed by a DIFFERENT gate is non-govern
 test('isNonGovernedCommand: null/garbage parse → false (fail-through)', () => {
   assert.strictEqual(isNonGovernedCommand(null, ['issue-create']), false);
   assert.strictEqual(isNonGovernedCommand({}, ['issue-create']), false);
+});
+
+// ---------------------------------------------------------------------------
+// CF-05: hasGovernedSegment — the any-governed-segment multi-segment predicate
+//
+// classifyAction returns the FIRST actionable segment, so `git commit && git push`
+// collapses to `commit` and a governed push in a LATER segment escapes a first-segment
+// trigger. hasGovernedSegment scans ALL segments and returns true iff ANY segment
+// classifies to a governed action. It is the shared chokepoint that both push-governing
+// gates (scan-gate, lint-ci-marker) trigger on, and the narrows-not-weakens basis for
+// isNonGovernedCommand (short-circuit ALLOW only when NO segment is governed).
+// Pure: no filesystem access. Mirrors CHD-02's all-segments detectGit.
+// ---------------------------------------------------------------------------
+
+test('hasGovernedSegment: git commit && git push, governed {push} → true (later segment governed)', () => {
+  assert.strictEqual(
+    hasGovernedSegment(parseCommand('git commit -m x && git push'), new Set(['push'])),
+    true
+  );
+});
+
+test('hasGovernedSegment: git status && ls, governed {push} → false (no governed segment)', () => {
+  assert.strictEqual(
+    hasGovernedSegment(parseCommand('git status && ls'), new Set(['push'])),
+    false
+  );
+});
+
+test('hasGovernedSegment: echo hi && git log, governed {push,pr-create} → false (read-only chain)', () => {
+  assert.strictEqual(
+    hasGovernedSegment(parseCommand('echo hi && git log'), new Set(['push', 'pr-create'])),
+    false
+  );
+});
+
+test('hasGovernedSegment: single governed segment (git push) → true', () => {
+  assert.strictEqual(hasGovernedSegment(parseCommand('git push origin main'), new Set(['push'])), true);
+});
+
+test('hasGovernedSegment: accepts an array of governed actions (mirrors normalization)', () => {
+  assert.strictEqual(hasGovernedSegment(parseCommand('git commit -m x && git push'), ['push']), true);
+  assert.strictEqual(hasGovernedSegment(parseCommand('git status && ls'), ['push']), false);
+});
+
+test('hasGovernedSegment: non-ok / absent parse → false', () => {
+  assert.strictEqual(hasGovernedSegment({ ok: false }, ['push']), false);
+  assert.strictEqual(hasGovernedSegment(null, ['push']), false);
+});
+
+// ---------------------------------------------------------------------------
+// CF-05: isNonGovernedCommand is now multi-segment aware — it may allow-short-circuit
+// ONLY when NO segment is governed (D-03 narrows-not-weakens). The RED baseline below
+// FAILS on the pre-CF-05 first-segment code (which returns true because the first
+// action `commit` is non-governed for a push gate), while every prior row still holds.
+// ---------------------------------------------------------------------------
+
+test('isNonGovernedCommand: git commit && git push, {push} → false (later segment governed — RED baseline)', () => {
+  assert.strictEqual(
+    isNonGovernedCommand(parseCommand('git commit -m x && git push'), new Set(['push'])),
+    false
+  );
+});
+
+test('isNonGovernedCommand: git status && ls, {push} → true (no governed segment still ALLOWS)', () => {
+  assert.strictEqual(
+    isNonGovernedCommand(parseCommand('git status && ls'), ['push']),
+    true
+  );
+});
+
+test('isNonGovernedCommand: echo hi && git log, {push} → true (read-only chain still ALLOWS)', () => {
+  assert.strictEqual(
+    isNonGovernedCommand(parseCommand('echo hi && git log'), ['push']),
+    true
+  );
+});
+
+test('isNonGovernedCommand: git status, {push} → true (narrows-not-weakens, unchanged)', () => {
+  assert.strictEqual(isNonGovernedCommand(parseCommand('git status'), ['push']), true);
+});
+
+test('isNonGovernedCommand: git push, {push} → false (governed single segment, unchanged)', () => {
+  assert.strictEqual(isNonGovernedCommand(parseCommand('git push'), ['push']), false);
+});
+
+test('isNonGovernedCommand: {ok:false}, {push} → false (HARD-04, unchanged)', () => {
+  assert.strictEqual(isNonGovernedCommand({ ok: false }, ['push']), false);
 });
