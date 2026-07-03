@@ -210,3 +210,24 @@ test('WR-03: both quoting forms of an equivalently-typed subject yield the same 
   assert.strictEqual(dq.permissionDecision, sq.permissionDecision, 'quoting must not change the verdict');
   assert.strictEqual(dq.permissionDecision, 'allow', 'a valid feat: prefix passes regardless of quoting');
 });
+
+// ---- RES-01 (D-07 uniformity): action-first short-circuit fires BEFORE any resolve/deps ----
+// A non-commit command must ALLOW without the runGate callback ever reaching
+// `Object.assign({}, deps)` (which precedes resolveGsdCoreRoot). A throwing getter on a
+// resolver-dependent dep key proves the ordering: the short-circuit returns allow() before the
+// Object.assign that would trigger it. On pre-27-03 code that getter throws inside runGate →
+// deny, so this is a genuine regression.
+test('git-commit-convention: a non-governed command (git status) ALLOWs without reaching the resolver (RES-01 uniformity)', () => {
+  let resolverTouched = false;
+  const trap = {};
+  Object.defineProperty(trap, 'readMessageFile', {
+    enumerable: true,
+    get() {
+      resolverTouched = true;
+      throw new Error('resolver/deps must not be reached for a non-governed command');
+    },
+  });
+  const d = runCommitConventionGate(input('git status'), trap);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.strictEqual(resolverTouched, false, 'short-circuit must fire before any resolve/deps access');
+});

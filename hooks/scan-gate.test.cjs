@@ -186,3 +186,24 @@ test('SCANS is EXACTLY the three LIVE shell scans; TRIGGER_ACTIONS is push-only'
   }
   assert.deepStrictEqual([...TRIGGER_ACTIONS].sort(), ['push']);
 });
+
+// ---- RES-01 (D-07 uniformity): action-first short-circuit fires BEFORE any resolve/deps ----
+// A non-push command must ALLOW without the runGate callback ever reaching
+// `Object.assign({}, deps)` (which precedes resolveRootForCommand). A throwing getter on a
+// resolver-dependent dep key (`gsdCoreRoot`) proves the ordering: the short-circuit returns
+// allow() before the Object.assign that would trigger it. On pre-27-03 code that getter throws
+// inside runGate → deny, so this is a genuine regression.
+test('scan-gate: a non-governed command (git status) ALLOWs without reaching the resolver (RES-01 uniformity)', () => {
+  let resolverTouched = false;
+  const trap = {};
+  Object.defineProperty(trap, 'gsdCoreRoot', {
+    enumerable: true,
+    get() {
+      resolverTouched = true;
+      throw new Error('resolver/deps must not be reached for a non-governed command');
+    },
+  });
+  const d = runScanGate(input('git status'), trap);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.strictEqual(resolverTouched, false, 'short-circuit must fire before any resolve/deps access');
+});

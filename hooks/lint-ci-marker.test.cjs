@@ -332,3 +332,24 @@ test('pure gate() denies a no-marker push without touching real git', () => {
   assert.strictEqual(d.permissionDecision, 'deny');
   assert.match(d.permissionDecisionReason, /lint-ci-stamp/);
 });
+
+// ---- RES-01 (D-07 uniformity): action-first short-circuit fires BEFORE any resolve/deps ----
+// A confidently non-governed command must ALLOW without the runGate callback ever reaching
+// `Object.assign({}, deps)` (which precedes resolveGsdCoreRoot). We prove the ordering with a
+// throwing getter on a resolver-dependent dep key: the short-circuit returns allow() before the
+// Object.assign that would trigger it. On pre-27-03 code (no short-circuit) that getter throws
+// inside runGate → deny, so this is a genuine regression, not a tautology.
+test('lint-ci-marker: a non-governed command (git status) ALLOWs without reaching the resolver (RES-01 uniformity)', () => {
+  let resolverTouched = false;
+  const trap = {};
+  Object.defineProperty(trap, 'readTreeSha', {
+    enumerable: true,
+    get() {
+      resolverTouched = true;
+      throw new Error('resolver/deps must not be reached for a non-governed command');
+    },
+  });
+  const d = runLintCiMarkerGate(input('git status'), trap);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.strictEqual(resolverTouched, false, 'short-circuit must fire before any resolve/deps access');
+});
