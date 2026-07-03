@@ -28,7 +28,7 @@
  */
 
 const { parseCommand } = require('./lib/argv.cjs');
-const { classifyAction, isNonGovernedCommand } = require('./lib/classify.cjs');
+const { hasGovernedSegment, isNonGovernedCommand } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand } = require('./lib/resolve.cjs');
 
@@ -125,12 +125,14 @@ function gate(stdinString, deps) {
   const parsed = parseCommand(command);
   if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
 
-  const action = classifyAction(parsed);
-  // A non-push command is out of scope — allow without running the scans. We do NOT
-  // fail-closed on action.failClosed here: an unclassifiable mutating github call is the
-  // filing gates' concern (03-03), not the scan gate's; this gate only ADDS the pre-push
-  // scans on `git push`.
-  if (!TRIGGER_ACTIONS.has(action.action)) return allow();
+  // CF-05: trigger on ANY governed segment in the chain, not just the first actionable one.
+  // classifyAction collapses `git commit && git push` to `commit`, so a first-segment trigger
+  // let the push escape the scans; hasGovernedSegment scans ALL segments (mirrors CHD-02's
+  // all-segments detectGit). A command with no governed (push) segment is out of scope → allow
+  // without running the scans. We do NOT fail-closed on an unclassifiable synonym here: that is
+  // the filing gates' concern (03-03), not the scan gate's; this gate only ADDS the pre-push
+  // scans on a `git push` anywhere in the chain.
+  if (!hasGovernedSegment(parsed, TRIGGER_ACTIONS)) return allow();
 
   const results = deps.runScans(deps.gsdCoreRoot, SCANS); // may throw → fail closed
   const failed = (results || []).filter((r) => r && r.ok === false);
