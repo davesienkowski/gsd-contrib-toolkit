@@ -140,3 +140,38 @@ test('a thrown live scorer (reshaped script) → FAIL CLOSED deny (HARD-01)', ()
   );
   assert.strictEqual(d.permissionDecision, 'deny');
 });
+
+// --- RES-01: action-first short-circuit fires BEFORE the LIVE-script resolve ---
+const denyingOverride = {
+  overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
+};
+
+// D-09(b), HARD-02: a GOVERNED issue-create whose LIVE dedupe scorer is genuinely
+// missing (worktreeRoot present but lacking scripts/issue-dedupe.cjs, no liveScorer
+// injected) STILL DENIES — requireLiveScript throws → fail closed. This is the
+// direction the short-circuit must NOT weaken.
+test('RES-01/HARD-02: governed issue-create with a MISSING live scorer → DENY', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dedupe-noscript-gov-'));
+  const d = runDedupeGate(
+    input('gh issue create --title "some new subject" --body x'),
+    Object.assign({ worktreeRoot: root }, denyingOverride)
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+});
+
+// D-09(a): a NON-governed command against the SAME missing-scorer root must ALLOW —
+// proving the classify-first guard short-circuits before requireLiveScript is reached.
+test('RES-01: non-governed (git status) with a MISSING live scorer → ALLOW (short-circuit before resolve)', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dedupe-noscript-nongov-'));
+  const d = runDedupeGate(
+    input('git status'),
+    Object.assign({ worktreeRoot: root }, denyingOverride)
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});

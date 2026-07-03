@@ -184,6 +184,40 @@ test('ROB-01: in-tree root with a genuinely MISSING live version gate → DENY (
   assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
 });
 
+// --- RES-01: action-first short-circuit fires BEFORE the LIVE-script resolve ---
+// D-09(a): a NON-governed command whose LIVE-script resolution path WOULD fail closed
+// (worktreeRoot present but lacking scripts/issue-version-gate.cjs, no liveVersionGate
+// injected) must still ALLOW — proving the classify-first guard short-circuits before
+// requireLiveScript is ever reached (no collateral deny). Contrast with the
+// governed 'in-tree root with a genuinely MISSING live version gate → DENY' test above
+// (D-09(b), HARD-02): same missing-script root, opposite verdict, decided purely by
+// whether the action is governed.
+test('RES-01: non-governed command (git status) with a MISSING live-script root → ALLOW (short-circuit before resolve)', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'intree-noscript-nongov-'));
+  const d = runIssueGate(
+    input('git status'),
+    Object.assign({ worktreeRoot: root }, denyingOverride)
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('RES-01: non-governed (ls -R) with a resolver that would THROW if reached → ALLOW', () => {
+  // Inject nothing but the override; point at a missing-script root so requireLiveScript
+  // would throw → deny if the guard did not short-circuit first.
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'intree-noscript-lsr-'));
+  const d = runIssueGate(
+    input('ls -R'),
+    Object.assign({ worktreeRoot: root }, denyingOverride)
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
 test('a thrown live gate WITH a logged override → allow (HARD-03)', () => {
   const d = runIssueGate(
     input(`gh issue create --label bug --title x --body "${BAD_BODY}"`),
