@@ -62,6 +62,33 @@ const OWNED_NOTE =
   'This is the toolkit’s own check — a gsd-core CI-workflow policy ' +
   '(require-issue-link / branch-naming) replicated locally, not a callable repo script (ENF-10/H-A).';
 
+// CF-02 (H-A) — the toolkit-OWNED approval-ordering policy, replicated from gsd-core's
+// auto-close-unsolicited-prs.yml. A maintainer-applied approval label must live on a linked
+// issue for an enhancement/feature PR to open; only users with triage/write can apply labels,
+// so requiring one defeats a forged / self-opened "approval" issue. `confirmed-bug` (the fix
+// path) is deliberately NOT in this set — fix-bucket PRs are UNAFFECTED (D-04): the LIVE
+// enh/feat discriminator is classifyBucket (D-01 reuse), and the residual fix-PR case is still
+// caught server-side by the LIVE workflow (D-06: a NEW check, no existing deny surface weakened).
+const APPROVAL_LABELS = ['approved-feature', 'approved-enhancement'];
+
+// Bound the number of linked-issue label reads (mirrors the LIVE workflow's MAX_ISSUE_CHECKS)
+// so a body stuffed with hundreds of `#N` refs cannot fan out into unbounded gh api calls
+// (T-30-02-03 DoS).
+const MAX_ISSUE_CHECKS = 20;
+
+// Closing-keyword linked-issue ref matcher (mirrors auto-close-unsolicited-prs.yml): bare
+// `#N`, `owner/repo#N`, and `github.com/owner/repo/issues/N`. The cross-repo / URL forms are
+// honored ONLY when owner/repo === the target repo (T-30-02-01: a body cannot cite an
+// "approved" issue in a DIFFERENT repo to fake approval).
+const LINKED_ISSUE_REF_RE =
+  /\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\b[\s:]*(?:#(\d+)|([\w.-]+)\/([\w.-]+)#(\d+)|https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/issues\/(\d+))/gi;
+
+const APPROVAL_OWNED_NOTE =
+  'This is the toolkit’s own check — a gsd-core CI-workflow policy ' +
+  '(auto-close-unsolicited-prs) replicated locally, not a callable repo script: an ' +
+  'enhancement/feature PR must link an issue carrying a maintainer-applied ' +
+  '`approved-enhancement` / `approved-feature` label before it can open (CF-02 / D-02 / D-04 / D-06).';
+
 // ENF-18 Tier-2: which check-run name(s) carry the authoritative Tests verdict. A
 // changeset-only commit can skip Tests (#1532) — so "Tests ran" is asserted on the head
 // SHA's OWN check-runs, never inferred from a rollup.
@@ -365,6 +392,45 @@ function jsonField(payload, key) {
 }
 
 /**
+ * CF-02: collect the SAME-REPO issue numbers a PR body links with a GitHub closing keyword
+ * (Closes/Fixes/Resolves), mirroring auto-close-unsolicited-prs.yml's ref semantics. Fenced /
+ * inline code is stripped first so a documented example (e.g. a template's `Closes #123`) does
+ * not count as a link. Bare `#N` always counts; the `owner/repo#N` and
+ * `github.com/owner/repo/issues/N` cross-repo / URL forms count ONLY when owner/repo === the
+ * target repo (T-30-02-01 — an approving label must live on an issue in THIS repo). The result
+ * is a de-duplicated array of positive integers, capped at MAX_ISSUE_CHECKS (T-30-02-03 DoS).
+ *
+ * @param {string} body the PR body.
+ * @param {{owner?:string, repo?:string}} [targetRepo] the repo the PR targets (for cross-repo
+ *   ref matching); when absent, only bare `#N` refs are collected.
+ * @returns {number[]} de-duplicated linked issue numbers, capped at 20.
+ */
+function extractLinkedIssues(body, targetRepo) {
+  if (typeof body !== 'string' || !body) return [];
+  const scan = body.replace(/```[\s\S]*?```/g, '').replace(/`[^`]*`/g, '');
+  const owner = targetRepo && targetRepo.owner ? String(targetRepo.owner).toLowerCase() : null;
+  const repo = targetRepo && targetRepo.repo ? String(targetRepo.repo).toLowerCase() : null;
+  const seen = new Set();
+  const numbers = [];
+  const add = (raw) => {
+    const num = Number(raw);
+    if (!Number.isInteger(num) || num <= 0 || seen.has(num)) return;
+    seen.add(num);
+    numbers.push(num);
+  };
+  for (const m of scan.matchAll(LINKED_ISSUE_REF_RE)) {
+    if (m[1]) {
+      add(m[1]);
+    } else if (owner && repo && m[2] && m[3] && m[2].toLowerCase() === owner && m[3].toLowerCase() === repo) {
+      add(m[4]);
+    } else if (owner && repo && m[5] && m[6] && m[5].toLowerCase() === owner && m[6].toLowerCase() === repo) {
+      add(m[7]);
+    }
+  }
+  return numbers.slice(0, MAX_ISSUE_CHECKS);
+}
+
+/**
  * The pure PR gate decision with all impure deps injected.
  *
  * @param {string} stdinString raw PreToolUse JSON
@@ -381,6 +447,9 @@ function jsonField(payload, key) {
  * @param {(branch:string)=>Array} deps.listPrsForHead
  *   ROB-02 injectable read of the OPEN PRs for the head branch (empty → first create → CI-green
  *   relaxed; non-empty → existing PR → check-run gate engages; throws → fail-closed)
+ * @param {(number:number, targetRepo:{owner:string,repo:string})=>string[]} deps.readIssueLabels
+ *   CF-02 injectable read of a linked issue's label names (throws → fail-closed deny for enh/feat)
+ * @param {{owner:string,repo:string}|null} [deps.targetRepo] the command's explicit -R/GH_REPO target
  * @param {string} [deps.headSha] inject the head SHA directly (else resolved from deps.root)
  * @param {string} [deps.root] worktree root the ENF-18 head-SHA resolution reads from
  * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
@@ -504,6 +573,39 @@ function gate(stdinString, deps) {
         '` does not match the required `fix|docs|feat/<issue#>-slug` form. ' +
         OWNED_NOTE
     );
+  }
+
+  // (CF-02) Approval-ordering pre-check — TOOLKIT-OWNED (H-A), replicated from gsd-core's
+  // auto-close-unsolicited-prs.yml (which closes an enh/feat PR at open time when its linked
+  // issue lacks an approval label). We surface that DENY BEFORE the PR opens. The enh/feat
+  // discriminator is the LIVE classifyBucket (D-01 reuse — reusing the SAME title resolved for
+  // CF-01, never a forked regex). Fix-bucket PRs are UNAFFECTED (D-04): they fall through. For a
+  // Feature/Enhancement, at least one linked issue must carry a maintainer-applied
+  // `approved-feature` / `approved-enhancement` label; the labels are read via the injected
+  // deps.readIssueLabels(number, targetRepo) — a throw propagates to runGate → fail-closed deny
+  // (HARD-01), so an unreadable label set can never be presented as "approved" (D-04). This adds
+  // a NEW toolkit check and weakens no existing deny surface (D-06).
+  const bucket = deps.liveTitle.classifyBucket(title);
+  if (bucket !== 'Fix') {
+    const issues = extractLinkedIssues(body, deps.targetRepo);
+    let approved = false;
+    for (const number of issues) {
+      const labels = deps.readIssueLabels(number, deps.targetRepo); // may throw → fail-closed deny
+      if (Array.isArray(labels) && labels.some((l) => APPROVAL_LABELS.includes(l))) {
+        approved = true;
+        break;
+      }
+    }
+    if (!approved) {
+      return deny(
+        'This ' +
+          bucket.toLowerCase() +
+          ' PR cannot open: its linked issue does not carry a maintainer-applied ' +
+          '`approved-feature` / `approved-enhancement` label, so gsd-core would auto-close it at ' +
+          'open time (CF-02). ' +
+          APPROVAL_OWNED_NOTE
+      );
+    }
   }
 
   // (5) ENF-18 Tier-2 — TOOLKIT-OWNED read of the AUTHORITATIVE CI result for the head
@@ -1104,6 +1206,7 @@ module.exports = {
   resolveHead,
   splitHead,
   resolveHeadRepo,
+  extractLinkedIssues,
   normalizeBody,
   evaluateCiResult,
   resolveHeadSha,
