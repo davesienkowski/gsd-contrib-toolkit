@@ -533,6 +533,49 @@ function findActionSegment(parsed, targetAction) {
 }
 
 /**
+ * CF-05: the PURE any-governed-segment predicate — the multi-segment analog of CHD-02's
+ * all-segments detectGit. classifyAction returns only the FIRST actionable segment, so a
+ * chain like `git commit -m x && git push` collapses to `commit` and a governed push in a
+ * LATER segment escapes any first-segment trigger. hasGovernedSegment instead scans EVERY
+ * segment and returns true the moment ANY segment classifies to one of governedActions.
+ *
+ * This is the shared chokepoint both push-governing gates trigger on (scan-gate's ENF-09
+ * scans, lint-ci-marker's ENF-05/17 marker + test:affected) and the narrows-not-weakens
+ * basis for isNonGovernedCommand: allow-short-circuit ONLY when NO segment is governed.
+ *
+ * Declared as a hoisted function so isNonGovernedCommand (defined below) can call it
+ * regardless of source order. PURE: reads only argv/classify (no filesystem).
+ *
+ * @param {Object} parsed result of argv.parseCommand
+ * @param {string[]|Set<string>} governedActions action names this gate governs
+ * @returns {boolean} true iff ANY chained segment classifies to a governed action;
+ *   false for a non-ok / absent parse or a chain with no governed segment.
+ */
+function hasGovernedSegment(parsed, governedActions) {
+  // A non-ok / absent parse is not "governed" here — the caller's own fail-closed path
+  // (HARD-04) owns the unparseable case; this predicate only reports governed presence.
+  if (!parsed || typeof parsed !== 'object' || parsed.ok !== true) {
+    return false;
+  }
+
+  // Normalize governedActions to a Set for O(1) membership (mirror isNonGovernedCommand).
+  const governed = governedActions instanceof Set
+    ? governedActions
+    : new Set(Array.isArray(governedActions) ? governedActions : []);
+
+  // Same segment fan-out shape as findActionSegment: classify each segment in isolation
+  // (single-segment parse) and report the first governed hit.
+  const segs = Array.isArray(parsed.segments) && parsed.segments.length > 0
+    ? parsed.segments
+    : [parsed];
+  for (const seg of segs) {
+    const r = classifyAction({ ok: true, segments: [seg] });
+    if (r && governed.has(r.action)) return true;
+  }
+  return false;
+}
+
+/**
  * RES-01: the single-source, PURE action-first guard. Tells a Bash gate whether a
  * command is CONFIDENTLY a non-governed action, so the gate may short-circuit to
  * allow() BEFORE it ever resolves/requires its LIVE policy script (which narrows the
@@ -543,7 +586,9 @@ function findActionSegment(parsed, targetAction) {
  *   1. `parsed && parsed.ok === true`      — a confident parse (HARD-04: !ok → false)
  *   2. `classifyAction(parsed).failClosed !== true` — not an unclassifiable mutating
  *      github synonym (ENF-15: failClosed → false)
- *   3. the resolved `action.action` is NOT in `governedActions`
+ *   3. NO chained segment is governed (CF-05: `hasGovernedSegment(parsed, governedActions)`
+ *      is false — a governed action anywhere in the chain, even hidden after a benign
+ *      first segment like `git commit`, keeps the caller on its resolve→gate path)
  *
  * In EVERY other case it returns `false`, so the caller falls through to its existing
  * resolve→requireLiveScript→gate path — preserving HARD-04, ENF-15, and HARD-02
@@ -572,20 +617,23 @@ function isNonGovernedCommand(parsed, governedActions) {
     return false;
   }
 
-  // 3. Governed action → do NOT short-circuit (HARD-02: let it resolve + require the
-  //    LIVE script + deny on missing). Normalize governedActions to a Set for O(1)
-  //    membership regardless of whether an array or a Set was passed.
-  const governed = governedActions instanceof Set
-    ? governedActions
-    : new Set(Array.isArray(governedActions) ? governedActions : []);
-
-  return !governed.has(action.action);
+  // 3. Governed action ANYWHERE in the chain → do NOT short-circuit (HARD-02: let it
+  //    resolve + require the LIVE script + deny on missing). CF-05: hasGovernedSegment
+  //    scans ALL segments, so a governed push hidden after a benign `git commit` no longer
+  //    collapses to a non-governed first segment. This is strictly MORE conservative than
+  //    the prior first-segment `!governed.has(action.action)` (a subset of its `true`
+  //    results), so it can never introduce a NEW allow — narrows-not-weakens is preserved
+  //    for every caller (the four RES-01 create gates + the two push gates).
+  return !hasGovernedSegment(parsed, governedActions);
 }
 
 module.exports = {
   classifyAction,
   findActionSegment,
   isNonGovernedCommand,
+  // CF-05: exported so the push-governing gates (scan-gate, lint-ci-marker) trigger on ANY
+  // governed segment in a chain — `git commit && git push` reaches the push logic.
+  hasGovernedSegment,
   // exported for cross-gate reuse (CF-04): containment.detectGit normalizes each
   // segment's program via resolveProgram so wrapped git (`sudo/command/env git`)
   // resolves to `git` — do NOT re-implement wrapper stripping in the gate.
