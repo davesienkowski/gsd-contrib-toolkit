@@ -206,3 +206,63 @@ test('RES-01: label-only governed edit still ALLOWs via the unchanged gate() bod
   const d = runEditGate(input('gh issue edit 7 --add-label triage'), deps());
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
 });
+
+// --- CF-06 (D-04): out-of-tree null-root ROB-01 discriminator ------------------------------
+// These cases exercise gh-edit's null-root branch (runEditGate :295-300). To reach it the deps
+// MUST omit worktreeRoot AND the live policy deps, so resolveRootForCommand(cmd, process.cwd())
+// actually runs. The suite runs from the toolkit repo cwd — no gsd-core sentinel above it →
+// resolveRootForCommand returns null → the null-root branch is the decision point. The denying
+// override ensures a fail-closed throw surfaces as a real deny (not an override allow).
+// D-01: the three open-gsd/gsd-core-targeting cases are the RED baseline — today gh-edit.cjs:298
+// unconditionally ALLOWs them; after Task 2 they DENY. The fork / non-targeting cases assert the
+// must-still-allow passthrough (narrows-not-weakens) — they ALLOW before AND after.
+
+test('CF-06 RED: out-of-tree gh api PATCH targeting open-gsd/gsd-core issue → DENY (fail-closed)', () => {
+  const d = runEditGate(
+    input('gh api -X PATCH repos/open-gsd/gsd-core/issues/1 -f body=hi'),
+    editDenyingOverride
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+});
+
+test('CF-06 RED: out-of-tree gh issue edit -R open-gsd/gsd-core → DENY (fail-closed)', () => {
+  const d = runEditGate(
+    input('gh issue edit -R open-gsd/gsd-core 7 --body "prose"'),
+    editDenyingOverride
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+});
+
+test('CF-06 RED: out-of-tree gh pr edit -R open-gsd/gsd-core → DENY (fail-closed)', () => {
+  const d = runEditGate(
+    input('gh pr edit -R open-gsd/gsd-core 9 --body "prose"'),
+    editDenyingOverride
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+});
+
+// Must-still-allow (D-01 narrows-not-weakens): an out-of-tree edit targeting a FORK or a
+// non-targeting edit still passes through — ALLOW before AND after the fix.
+test('CF-06: out-of-tree gh api PATCH targeting a fork repo → ALLOW (passthrough preserved)', () => {
+  const d = runEditGate(
+    input('gh api -X PATCH repos/dave/gsd-core-fork/issues/1 -f body=hi'),
+    editDenyingOverride
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('CF-06: out-of-tree gh issue edit -R dave/gsd-core-fork → ALLOW (passthrough preserved)', () => {
+  const d = runEditGate(
+    input('gh issue edit -R dave/gsd-core-fork 7 --body "prose"'),
+    editDenyingOverride
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('CF-06: out-of-tree non-targeting label-only edit (no -R) → ALLOW (passthrough preserved)', () => {
+  const d = runEditGate(
+    input('gh issue edit 7 --add-label triage'),
+    editDenyingOverride
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
