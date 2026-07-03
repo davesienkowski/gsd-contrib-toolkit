@@ -83,6 +83,12 @@ function resolveProgram(seg) {
     // token starting with '-'; for `-u`/`-i` style we do not consume a value (the
     // wrapped program is the next non-flag token regardless).
     while (i < tokens.length && tokens[i].startsWith('-')) i += 1;
+    // Skip env-assignment tokens that FOLLOW the wrapper (e.g. `env FOO=bar git …`,
+    // `sudo BAR=1 git …`). The leading-assignment skip above only covers the
+    // no-wrapper `VAR=val cmd` form; without this a wrapped-with-assignment command
+    // would resolve to the `VAR=val` token as its program and evade classification
+    // (CF-04). The wrapped program is the first non-assignment, non-flag token.
+    while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i += 1;
     prog = path.basename(tokens[i] || '');
   }
 

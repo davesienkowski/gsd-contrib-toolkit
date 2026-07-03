@@ -37,6 +37,7 @@
 const { parseCommand } = require('./lib/argv.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveGsdCoreRoot, commandStartDir, ScriptResolveError, parseOwnerRepo } = require('./lib/resolve.cjs');
+const { resolveProgram } = require('./lib/classify.cjs');
 
 // FailClosed/safeCommand: shared IN-03 helpers from failclosed.cjs.
 
@@ -121,6 +122,17 @@ function isContributionBranch(branch) {
  * pushRemote(seg)/explicitAddPaths(args) operate on the right segment. The only in-tree
  * consumers are gate() (below) and hooks/containment.test.cjs, both updated atomically.
  *
+ * CF-04 (wrapper normalization): a segment's raw program may be a wrapper builtin
+ * (`sudo`/`command`/`env`/…), so keying directly on seg.program === 'git' let a wrapped
+ * git (`sudo git push`, `command git add`, `env FOO=bar git add`) escape as a non-git no-op
+ * and slip ENF-06/ENF-07. Each segment's effective program is now normalized through the
+ * EXISTING resolveProgram(seg) from classify.cjs (D-02 — reuse, do NOT re-implement wrapper
+ * stripping): it advances past the wrapper builtins and strips value-taking git global-option
+ * tokens, returning the resolved prog plus the ordered non-flag arg tokens. As a documented
+ * bonus, a value-taking global-option form (`git -C /p add …`) now also classifies because
+ * resolveProgram strips the `-C` value — strictly MORE deny coverage, never a new allow. Each
+ * entry still carries its RAW seg so pushRemote(seg) reads the untouched push tail unchanged.
+ *
  * @param {Object} parsed argv.parseCommand result (ok:true)
  * @returns {Array<{kind:'add'|'commit'|'push', args:string[], seg:Object}>}
  */
@@ -130,12 +142,12 @@ function detectGit(parsed) {
     : [parsed];
   const actions = [];
   for (const seg of segs) {
-    if (seg.program !== 'git') continue;
-    const sub = seg.subcommands || [];
-    const verb = sub[0];
-    if (verb === 'add') actions.push({ kind: 'add', args: sub.slice(1), seg });
-    else if (verb === 'commit') actions.push({ kind: 'commit', args: sub.slice(1), seg });
-    else if (verb === 'push') actions.push({ kind: 'push', args: sub.slice(1), seg });
+    const { prog, args } = resolveProgram(seg);
+    if (prog !== 'git') continue;
+    const verb = args[0];
+    if (verb === 'add') actions.push({ kind: 'add', args: args.slice(1), seg });
+    else if (verb === 'commit') actions.push({ kind: 'commit', args: args.slice(1), seg });
+    else if (verb === 'push') actions.push({ kind: 'push', args: args.slice(1), seg });
   }
   return actions;
 }
