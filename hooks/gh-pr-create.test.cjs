@@ -32,6 +32,10 @@ function headCtx(command) {
 
 const liveTemplate = require('/home/dave/repos/gsd-core/scripts/pr-template-policy.cjs');
 const liveTarget = require('/home/dave/repos/gsd-core/scripts/pr-target-policy.cjs');
+// CF-01: the LIVE conventional-title matcher (evaluatePrTitle) injected into every test so the
+// title gate is exercised hermetically — the SAME single-source script the production runPrGate
+// resolves via requireLiveScript (D-01/D-06/HARD-02: never a forked regex).
+const liveTitle = require('/home/dave/repos/gsd-core/scripts/release-notes/conventional-title.cjs');
 
 function input(command) {
   return JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
@@ -71,6 +75,7 @@ function deps(over = {}) {
     {
       liveTemplate,
       liveTarget,
+      liveTitle, // CF-01: the LIVE conventional-title matcher (evaluatePrTitle)
       branch: 'fix/12-the-thing',
       changedFiles: ['src/index.cts'], // non-tooling so template IS enforced
       authorAssociation: 'OWNER',
@@ -883,6 +888,85 @@ test('CHD-03 resolveHead: curl with NO head field → null', () => {
     `curl -X POST https://api.github.com/repos/o/r/pulls -d '${payload}'`
   );
   assert.strictEqual(resolveHead(seg, route), null);
+});
+
+// ── CF-01: the LIVE conventional-title PR-title gate ────────────────────────────
+// A `gh pr create` whose --title is not `<type>(#<issue>): summary` is DENIED before the PR
+// opens, by calling gsd-core's LIVE evaluatePrTitle (never a forked regex — D-01/D-06/HARD-02).
+// The check sits BETWEEN the ENF-10 base check and the toolkit-owned linked-issue check; a
+// conforming title passes through and the gate reaches its existing checks (allow on a
+// first-create). gsd-core's pr-title-validator.yml is WARN_ONLY:false, so this surfaces the
+// required-check failure BEFORE the PR is opened (#1549).
+
+test('CF-01: conforming native title fix(#12): x → allow (reaches the existing checks)', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'fix(#12): x' --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps()
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('CF-01: conforming breaking-change title feat(#39)!: x → allow', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'feat(#39)!: x' --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps()
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('CF-01: missing issue ref fix(core): x → DENY with the LIVE conventional-title format text', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'fix(core): x' --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps()
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  // The message came from the LIVE evaluatePrTitle (its REQUIRED_FORMAT_MESSAGE), not a fork.
+  assert.match(d.permissionDecisionReason, /type\(#<issue>\)|issue ref/i);
+  assert.match(d.permissionDecisionReason, /CF-01/);
+});
+
+test('CF-01: leading tag [security] fix(#12): x → DENY (bad-prefix) with the LIVE format text', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title '[security] fix(#12): x' --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps()
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /type\(#<issue>\)|leading tag/i);
+  assert.match(d.permissionDecisionReason, /CF-01/);
+});
+
+test('CF-01: empty/absent native title → DENY with a "provide --title" unobservable message', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps()
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /--title|-t\b|not observable|explicit/i);
+  assert.match(d.permissionDecisionReason, /CF-01/);
+});
+
+test('CF-01 gh-api route: -f title=conforming → allow; -f title=bad → DENY', () => {
+  const good = `gh api -X POST repos/o/r/pulls -f title='fix(#12): x' -f base=next -f body='${escapeSingle(GOOD_PR_BODY)}'`;
+  assert.strictEqual(runPrGate(input(good), deps()).permissionDecision, 'allow');
+  const bad = `gh api -X POST repos/o/r/pulls -f title='fix(core): x' -f base=next -f body='${escapeSingle(GOOD_PR_BODY)}'`;
+  const d = runPrGate(input(bad), deps());
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /CF-01/);
+});
+
+// D-05 regression fixture: keep BOTH a denying non-conforming title AND an allowing conforming
+// title in the committed suite so a future regression that weakens the gate is caught.
+test('CF-01 regression (D-05): non-conforming title denies, conforming title allows', () => {
+  const bad = runPrGate(
+    input(`gh pr create --base next --title 'nope' --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps()
+  );
+  assert.strictEqual(bad.permissionDecision, 'deny', bad.permissionDecisionReason);
+  const good = runPrGate(
+    input(`gh pr create --base next --title 'fix(#12): roadmap rollback' --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps()
+  );
+  assert.strictEqual(good.permissionDecision, 'allow', good.permissionDecisionReason);
 });
 
 // Helpers. A real `gh pr create --body "..."` command carries REAL newlines inside the
