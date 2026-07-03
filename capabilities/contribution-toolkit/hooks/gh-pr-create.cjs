@@ -62,6 +62,33 @@ const OWNED_NOTE =
   'This is the toolkit’s own check — a gsd-core CI-workflow policy ' +
   '(require-issue-link / branch-naming) replicated locally, not a callable repo script (ENF-10/H-A).';
 
+// CF-02 (H-A) — the toolkit-OWNED approval-ordering policy, replicated from gsd-core's
+// auto-close-unsolicited-prs.yml. A maintainer-applied approval label must live on a linked
+// issue for an enhancement/feature PR to open; only users with triage/write can apply labels,
+// so requiring one defeats a forged / self-opened "approval" issue. `confirmed-bug` (the fix
+// path) is deliberately NOT in this set — fix-bucket PRs are UNAFFECTED (D-04): the LIVE
+// enh/feat discriminator is classifyBucket (D-01 reuse), and the residual fix-PR case is still
+// caught server-side by the LIVE workflow (D-06: a NEW check, no existing deny surface weakened).
+const APPROVAL_LABELS = ['approved-feature', 'approved-enhancement'];
+
+// Bound the number of linked-issue label reads (mirrors the LIVE workflow's MAX_ISSUE_CHECKS)
+// so a body stuffed with hundreds of `#N` refs cannot fan out into unbounded gh api calls
+// (T-30-02-03 DoS).
+const MAX_ISSUE_CHECKS = 20;
+
+// Closing-keyword linked-issue ref matcher (mirrors auto-close-unsolicited-prs.yml): bare
+// `#N`, `owner/repo#N`, and `github.com/owner/repo/issues/N`. The cross-repo / URL forms are
+// honored ONLY when owner/repo === the target repo (T-30-02-01: a body cannot cite an
+// "approved" issue in a DIFFERENT repo to fake approval).
+const LINKED_ISSUE_REF_RE =
+  /\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\b[\s:]*(?:#(\d+)|([\w.-]+)\/([\w.-]+)#(\d+)|https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/issues\/(\d+))/gi;
+
+const APPROVAL_OWNED_NOTE =
+  'This is the toolkit’s own check — a gsd-core CI-workflow policy ' +
+  '(auto-close-unsolicited-prs) replicated locally, not a callable repo script: an ' +
+  'enhancement/feature PR must link an issue carrying a maintainer-applied ' +
+  '`approved-enhancement` / `approved-feature` label before it can open (CF-02 / D-02 / D-04 / D-06).';
+
 // ENF-18 Tier-2: which check-run name(s) carry the authoritative Tests verdict. A
 // changeset-only commit can skip Tests (#1532) — so "Tests ran" is asserted on the head
 // SHA's OWN check-runs, never inferred from a rollup.
@@ -244,6 +271,44 @@ function resolveBase(seg, route) {
 }
 
 /**
+ * CF-01: resolve the PR TITLE across native / gh-api / curl routes (mirrors hooks/issue-dedupe.cjs
+ * resolveTitle). Native reads `--title`/`-t`; gh-api reads the `-f title=` / `--field title=` pair
+ * via the file's existing scanFieldPairs; curl reads the JSON `title` from the -d/--data payload
+ * via jsonField. Returns '' when no title is asserted — the caller denies an UNOBSERVABLE title
+ * (a PreToolUse hook cannot confirm a convention it cannot read, HARD-04), never a silent allow.
+ *
+ * @param {Object} seg
+ * @param {string} route 'native' | 'gh-api' | 'curl'
+ * @returns {string}
+ */
+function resolveTitle(seg, route) {
+  const flags = (seg && seg.flags) || {};
+  const shortFlags = (seg && seg.shortFlags) || {};
+
+  if (route === 'native') {
+    if (typeof flags.title === 'string') return flags.title;
+    if (typeof shortFlags.t === 'string') return shortFlags.t;
+    return '';
+  }
+
+  if (route === 'gh-api') {
+    let title = '';
+    scanFieldPairs(seg, (k, v) => {
+      if (k === 'title') title = v;
+    });
+    return title;
+  }
+
+  // curl: the title travels inside the JSON -d/--data payload.
+  const payload = typeof flags.data === 'string' ? flags.data : shortFlags.d;
+  if (typeof payload === 'string') {
+    const fromJson = jsonField(payload, 'title');
+    if (fromJson != null) return fromJson;
+  }
+  return '';
+}
+
+/**
  * Resolve the HEAD branch the PR actually opens FROM across routes — honoring an explicit
  * `--head`/`-H <branch>` (incl. the cross-repo `owner:branch` form) when present, else null
  * so the caller falls back to the current branch (deps.branch).
@@ -327,12 +392,52 @@ function jsonField(payload, key) {
 }
 
 /**
+ * CF-02: collect the SAME-REPO issue numbers a PR body links with a GitHub closing keyword
+ * (Closes/Fixes/Resolves), mirroring auto-close-unsolicited-prs.yml's ref semantics. Fenced /
+ * inline code is stripped first so a documented example (e.g. a template's `Closes #123`) does
+ * not count as a link. Bare `#N` always counts; the `owner/repo#N` and
+ * `github.com/owner/repo/issues/N` cross-repo / URL forms count ONLY when owner/repo === the
+ * target repo (T-30-02-01 — an approving label must live on an issue in THIS repo). The result
+ * is a de-duplicated array of positive integers, capped at MAX_ISSUE_CHECKS (T-30-02-03 DoS).
+ *
+ * @param {string} body the PR body.
+ * @param {{owner?:string, repo?:string}} [targetRepo] the repo the PR targets (for cross-repo
+ *   ref matching); when absent, only bare `#N` refs are collected.
+ * @returns {number[]} de-duplicated linked issue numbers, capped at 20.
+ */
+function extractLinkedIssues(body, targetRepo) {
+  if (typeof body !== 'string' || !body) return [];
+  const scan = body.replace(/```[\s\S]*?```/g, '').replace(/`[^`]*`/g, '');
+  const owner = targetRepo && targetRepo.owner ? String(targetRepo.owner).toLowerCase() : null;
+  const repo = targetRepo && targetRepo.repo ? String(targetRepo.repo).toLowerCase() : null;
+  const seen = new Set();
+  const numbers = [];
+  const add = (raw) => {
+    const num = Number(raw);
+    if (!Number.isInteger(num) || num <= 0 || seen.has(num)) return;
+    seen.add(num);
+    numbers.push(num);
+  };
+  for (const m of scan.matchAll(LINKED_ISSUE_REF_RE)) {
+    if (m[1]) {
+      add(m[1]);
+    } else if (owner && repo && m[2] && m[3] && m[2].toLowerCase() === owner && m[3].toLowerCase() === repo) {
+      add(m[4]);
+    } else if (owner && repo && m[5] && m[6] && m[5].toLowerCase() === owner && m[6].toLowerCase() === repo) {
+      add(m[7]);
+    }
+  }
+  return numbers.slice(0, MAX_ISSUE_CHECKS);
+}
+
+/**
  * The pure PR gate decision with all impure deps injected.
  *
  * @param {string} stdinString raw PreToolUse JSON
  * @param {Object} deps
  * @param {{evaluatePrTemplate:Function}} deps.liveTemplate LIVE pr-template-policy export
  * @param {{classifyPrTarget:Function}} deps.liveTarget LIVE pr-target-policy export
+ * @param {{evaluatePrTitle:Function}} deps.liveTitle LIVE conventional-title export (CF-01)
  * @param {string} deps.branch current head branch name
  * @param {string[]} [deps.changedFiles] changed files (for the template tooling carve-out)
  * @param {string} [deps.authorAssociation] e.g. 'OWNER'
@@ -342,6 +447,14 @@ function jsonField(payload, key) {
  * @param {(branch:string)=>Array} deps.listPrsForHead
  *   ROB-02 injectable read of the OPEN PRs for the head branch (empty → first create → CI-green
  *   relaxed; non-empty → existing PR → check-run gate engages; throws → fail-closed)
+ * @param {(number:number, targetRepo:{owner:string,repo:string})=>string[]} deps.readIssueLabels
+ *   CF-02 injectable read of a linked issue's label names (throws → fail-closed deny for enh/feat)
+ * @param {{evaluateLint:Function, readFragmentsFromDisk:Function}} deps.liveDocsLint
+ *   CF-03 LIVE lint-docs-required export (call, never fork — D-01/D-06); missing script → deny
+ * @param {(root:string, base:string)=>string[]} deps.readChangedFiles
+ *   CF-03 injectable read of the PR's changed files (default `git diff --name-only
+ *   origin/<base>...HEAD`); a throw → fail-closed deny (HARD-01: an unreadable diff denies)
+ * @param {{owner:string,repo:string}|null} [deps.targetRepo] the command's explicit -R/GH_REPO target
  * @param {string} [deps.headSha] inject the head SHA directly (else resolved from deps.root)
  * @param {string} [deps.root] worktree root the ENF-18 head-SHA resolution reads from
  * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
@@ -425,6 +538,30 @@ function gate(stdinString, deps) {
     );
   }
 
+  // (CF-01) LIVE conventional-title check — CALL gsd-core's LIVE evaluatePrTitle, NEVER a forked
+  // regex (D-01/D-06/HARD-02). Sits BETWEEN the ENF-10 base check and the toolkit-owned
+  // linked-issue check. gsd-core's pr-title-validator.yml is WARN_ONLY:false, so a `(<area>)`-only
+  // or leading-tag title fails the REQUIRED check on the cut; this surfaces that failure BEFORE
+  // the PR is opened (#1549). An empty/unobservable title cannot be confirmed → deny asking for an
+  // explicit --title (HARD-04). A non-conforming title denies with the LIVE matcher's OWN message.
+  const title = resolveTitle(seg, route);
+  if (typeof title !== 'string' || title.trim() === '') {
+    return deny(
+      'PR title is not observable (no --title/-t was given), so the required ' +
+        '`<type>(#<issue>): summary` convention cannot be confirmed — provide an explicit ' +
+        '--title/-t (CF-01 — gsd-core LIVE conventional-title / #1549; ' +
+        'pr-title-validator.yml is WARN_ONLY:false).'
+    );
+  }
+  const titleRes = deps.liveTitle.evaluatePrTitle({ title });
+  if (!titleRes || titleRes.valid !== true) {
+    return deny(
+      (titleRes && titleRes.message ? titleRes.message : 'PR title is not conventional') +
+        ' (CF-01 — gsd-core LIVE conventional-title / #1549; ' +
+        'pr-title-validator.yml is WARN_ONLY:false).'
+    );
+  }
+
   // (3) ENF-10 — TOOLKIT-OWNED linked-issue check (H-A).
   if (!LINKED_ISSUE_RE.test(body)) {
     return deny(
@@ -440,6 +577,75 @@ function gate(stdinString, deps) {
         String(head) +
         '` does not match the required `fix|docs|feat/<issue#>-slug` form. ' +
         OWNED_NOTE
+    );
+  }
+
+  // (CF-02) Approval-ordering pre-check — TOOLKIT-OWNED (H-A), replicated from gsd-core's
+  // auto-close-unsolicited-prs.yml (which closes an enh/feat PR at open time when its linked
+  // issue lacks an approval label). We surface that DENY BEFORE the PR opens. The enh/feat
+  // discriminator is the LIVE classifyBucket (D-01 reuse — reusing the SAME title resolved for
+  // CF-01, never a forked regex). Fix-bucket PRs are UNAFFECTED (D-04): they fall through. For a
+  // Feature/Enhancement, at least one linked issue must carry a maintainer-applied
+  // `approved-feature` / `approved-enhancement` label; the labels are read via the injected
+  // deps.readIssueLabels(number, targetRepo) — a throw propagates to runGate → fail-closed deny
+  // (HARD-01), so an unreadable label set can never be presented as "approved" (D-04). This adds
+  // a NEW toolkit check and weakens no existing deny surface (D-06).
+  const bucket = deps.liveTitle.classifyBucket(title);
+  if (bucket !== 'Fix') {
+    const issues = extractLinkedIssues(body, deps.targetRepo);
+    let approved = false;
+    for (const number of issues) {
+      const labels = deps.readIssueLabels(number, deps.targetRepo); // may throw → fail-closed deny
+      if (Array.isArray(labels) && labels.some((l) => APPROVAL_LABELS.includes(l))) {
+        approved = true;
+        break;
+      }
+    }
+    if (!approved) {
+      return deny(
+        'This ' +
+          bucket.toLowerCase() +
+          ' PR cannot open: its linked issue does not carry a maintainer-applied ' +
+          '`approved-feature` / `approved-enhancement` label, so gsd-core would auto-close it at ' +
+          'open time (CF-02). ' +
+          APPROVAL_OWNED_NOTE
+      );
+    }
+  }
+
+  // (CF-03) docs-required mirror — REUSE gsd-core's LIVE lint-docs-required (evaluateLint +
+  // readFragmentsFromDisk), NEVER a forked policy (D-01/D-06/HARD-02). gsd-core's
+  // docs-required.yml (#3213) fails a PR whose changeset introduces new/changed/removed behavior
+  // (`.changeset/*.md` fragments of type Added/Changed/Deprecated/Removed) without a corresponding
+  // `docs/` change; we surface that DENY BEFORE the push. The require-issue-link HALF of CF-03 is
+  // ALREADY satisfied by the toolkit-owned LINKED_ISSUE_RE check above (#3) — no new code for it.
+  //
+  // We read the PR's changed files via the injected deps.readChangedFiles(root, base) (default:
+  // `git diff --name-only origin/<base>...HEAD`) — a throw propagates to runGate → fail-closed
+  // deny (HARD-01: an unreadable diff cannot confirm docs). The LIVE readFragmentsFromDisk parses
+  // each touched `.changeset/*.md` from the SAME resolved worktree root, then the LIVE evaluateLint
+  // renders the verdict. labels:[] pre-PR — the `no-docs` opt-out is a maintainer-applied LABEL a
+  // contributor cannot self-apply before the PR exists (documented narrowing, T-30-03-04); the
+  // per-fragment `<!-- docs-exempt: reason -->` opt-out is STILL honored via the LIVE parse. A
+  // non-ok verdict (FAIL_DOCS_MISSING / FAIL_MALFORMED_FRAGMENT — the latter fails closed,
+  // T-30-03-02) DENIES with the LIVE verdict.reason + triggering fragment paths.
+  const changedFiles = deps.readChangedFiles(deps.root, base); // throw → fail-closed deny (HARD-01)
+  const { fragments, malformed } = deps.liveDocsLint.readFragmentsFromDisk(changedFiles, deps.root);
+  const docsVerdict = deps.liveDocsLint.evaluateLint({ changedFiles, fragments, labels: [], malformed });
+  if (!docsVerdict || docsVerdict.ok !== true) {
+    const trig =
+      Array.isArray(docsVerdict && docsVerdict.triggering) && docsVerdict.triggering.length
+        ? ' (triggering: ' + docsVerdict.triggering.join(', ') + ')'
+        : '';
+    return deny(
+      'PR blocked by the LIVE docs-required lint (CF-03 — mirrors gsd-core `docs-required.yml` ' +
+        '#3213): ' +
+        ((docsVerdict && docsVerdict.reason) || 'docs-required verdict not ok') +
+        trig +
+        '. An Added/Changed/Deprecated/Removed changeset needs a corresponding `docs/` change or a ' +
+        'per-fragment `<!-- docs-exempt: <reason> -->` marker (fix the fragment frontmatter if it ' +
+        'is malformed). This CALLS gsd-core’s LIVE lint (evaluateLint), never a forked policy ' +
+        '(D-01/D-06/HARD-02).'
     );
   }
 
@@ -554,7 +760,7 @@ function runPrGate(stdinString, deps = {}) {
     // head branch is read from that same root so a cross-repo session reads the worktree's
     // branch, not the session repo's.
     let root = resolved.worktreeRoot || null;
-    if (!root && (!resolved.liveTemplate || !resolved.liveTarget || !resolved.branch)) {
+    if (!root && (!resolved.liveTemplate || !resolved.liveTarget || !resolved.liveTitle || !resolved.liveDocsLint || !resolved.branch)) {
       root = resolveRootForCommand(ctx.command, process.cwd());
       if (!root) {
         // ROB-01 locked discriminator (same seam as gh-issue-create): an out-of-tree command
@@ -581,6 +787,18 @@ function runPrGate(stdinString, deps = {}) {
     if (!resolved.liveTarget) {
       resolved.liveTarget = requireLiveScript(root, 'scripts/pr-target-policy.cjs');
     }
+    if (!resolved.liveTitle) {
+      // CF-01: load gsd-core's LIVE conventional-title matcher the SAME way as the template/target
+      // policies. A missing/reshaped script throws ScriptResolveError → runGate fail-closed deny
+      // (HARD-02) for a gsd-core-targeting create — no vendored fallback, no forked regex (D-06).
+      resolved.liveTitle = requireLiveScript(root, 'scripts/release-notes/conventional-title.cjs');
+    }
+    if (!resolved.liveDocsLint) {
+      // CF-03: load gsd-core's LIVE docs-required lint the SAME way as the other policies. A
+      // missing/reshaped script throws ScriptResolveError → runGate fail-closed deny (HARD-02)
+      // for a gsd-core-targeting create — no vendored fallback, no forked lint (D-01/D-06).
+      resolved.liveDocsLint = requireLiveScript(root, 'scripts/lint-docs-required.cjs');
+    }
     if (!resolved.branch) {
       resolved.branch = currentBranch(root);
     }
@@ -599,6 +817,20 @@ function runPrGate(stdinString, deps = {}) {
       // failure THROWS FailClosed (an unauth gh DENIES, never relaxes) — mirrors readCheckRuns.
       // WR-01: when an explicit -R/GH_REPO target is present it reads from THAT repo, not origin.
       resolved.listPrsForHead = (branch, targetRepo) => defaultListPrsForHead(resolved.root, branch, targetRepo);
+    }
+    if (!resolved.readIssueLabels) {
+      // CF-02: default the linked-issue label reader from the SAME resolved root + WR-01 explicit
+      // target the rest of the gate uses. A throw (invalid number / unauth gh / unparseable JSON /
+      // no origin) fails closed → an enh/feat PR whose approval cannot be confirmed DENIES (D-04),
+      // never a silent allow. liveTitle (CF-01) is already wired above and reused for classifyBucket.
+      resolved.readIssueLabels = (n, tr) => defaultReadIssueLabels(resolved.root, n, tr);
+    }
+    if (!resolved.readChangedFiles) {
+      // CF-03: default the PR-diff reader from the SAME resolved root the rest of the gate uses.
+      // A throw (not a git repo / missing origin/<base>) fails closed → a create whose docs
+      // coverage cannot be confirmed DENIES (HARD-01), never a silent allow. liveDocsLint is
+      // wired above and reused for readFragmentsFromDisk + evaluateLint.
+      resolved.readChangedFiles = (root, base) => defaultReadChangedFiles(root, base);
     }
     if (!resolved.readBodyFile) {
       const fs = require('node:fs');
@@ -874,6 +1106,123 @@ function normalizeCheckRuns(headSha, runs) {
 }
 
 /**
+ * CF-02 default reader of a linked issue's LABEL NAMES via `gh api
+ * repos/<owner>/<repo>/issues/<number>` (mirrors defaultReadCheckRuns). The `number` is
+ * validated as a POSITIVE INTEGER before use (T-30-02-02: a crafted number cannot be
+ * interpolated into the path), and owner/repo are resolved from the command's EXPLICIT
+ * -R/GH_REPO target (WR-01 single source) when present, else the worktree origin remote
+ * (SAFE-char-validated, case-folded via ownerRepoFromRemote). The path components are FIXED
+ * array args to execFile (no shell). ANY spawn/parse/auth failure THROWS FailClosed so an
+ * unauthenticated `gh` DENIES an enh/feat PR (never a silent allow — D-04 fail-closed).
+ *
+ * @param {string} root absolute worktree root (for owner/repo resolution + cwd).
+ * @param {number} number the linked issue number.
+ * @param {{owner:string,repo:string}} [targetRepo] the explicit -R/GH_REPO target, or null.
+ * @returns {string[]} the issue's label names.
+ */
+function defaultReadIssueLabels(root, number, targetRepo) {
+  const { execFileSync } = require('node:child_process');
+  if (typeof number !== 'number' || !Number.isInteger(number) || number <= 0) {
+    throw new FailClosed(
+      'CF-02: a linked issue number to read labels for must be a positive integer (got `' +
+        String(number) + '`) — failing closed (no path injection).'
+    );
+  }
+  const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] };
+  if (root) opts.cwd = root;
+
+  // Resolve owner/repo. WR-01: prefer the command's explicit target (already SAFE-char-validated
+  // + case-folded by parseOwnerRepo); else derive from the worktree origin remote.
+  let slug;
+  if (targetRepo && targetRepo.owner && targetRepo.repo) {
+    slug = { owner: targetRepo.owner, repo: targetRepo.repo };
+  } else {
+    try {
+      const url = execFileSync('git', ['remote', 'get-url', 'origin'], opts).trim();
+      slug = ownerRepoFromRemote(url);
+    } catch (err) {
+      throw new FailClosed(
+        'CF-02: could not resolve owner/repo from the worktree origin remote (' +
+          ((err && err.message) || 'git failure') + ') — failing closed (an unreadable label ' +
+          'source denies an enh/feat PR).'
+      );
+    }
+    if (!slug) {
+      throw new FailClosed('CF-02: could not parse owner/repo from origin remote — failing closed.');
+    }
+  }
+
+  let raw;
+  try {
+    raw = execFileSync(
+      'gh',
+      [
+        'api',
+        '-H', 'Accept: application/vnd.github+json',
+        'repos/' + slug.owner + '/' + slug.repo + '/issues/' + number,
+      ],
+      opts
+    );
+  } catch (err) {
+    throw new FailClosed(
+      'CF-02: could not read labels for issue #' + number + ' via `gh api` (' +
+        ((err && err.message) || 'gh failure / unauthenticated') +
+        ') — failing closed (an unauthenticated gh never approves an enh/feat PR).'
+    );
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new FailClosed(
+      'CF-02: the issue #' + number + ' response was not parseable JSON — failing closed.'
+    );
+  }
+  const labels = Array.isArray(parsed && parsed.labels) ? parsed.labels : [];
+  return labels
+    .map((l) => (typeof l === 'string' ? l : l && l.name))
+    .filter((n) => typeof n === 'string');
+}
+
+/**
+ * CF-03 default reader of the PR's changed files — `git diff --name-only origin/<base>...HEAD`
+ * via execFileSync (array args, no shell, cwd = the resolved worktree root), mirroring the LIVE
+ * lint-docs-required CLI's own diff form. The `base` is a FIXED argv element (interpolated only
+ * into the ref-spec `origin/<base>...HEAD`, which git's own ref-name validator rejects if it
+ * carries metacharacters — no shell to inject into). Splits on newlines and drops empties. An
+ * absent/empty base cannot form a diff spec → THROW before any spawn. ANY spawn failure (not a
+ * git repo, missing origin/<base>) THROWS FailClosed so runGate fails closed (HARD-01): an
+ * unreadable diff cannot confirm docs-required, so it DENIES (fetch origin/<base> first).
+ *
+ * @param {string} root absolute worktree root (cwd for the `git diff`).
+ * @param {string} base the PR base branch name.
+ * @returns {string[]} the changed file paths (possibly empty).
+ */
+function defaultReadChangedFiles(root, base) {
+  const { execFileSync } = require('node:child_process');
+  if (typeof base !== 'string' || !base) {
+    throw new FailClosed(
+      'CF-03: no base branch to compute the PR diff against — failing closed (cannot confirm ' +
+        'docs-required without the diff).'
+    );
+  }
+  const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] };
+  if (root) opts.cwd = root;
+  let raw;
+  try {
+    raw = execFileSync('git', ['diff', '--name-only', 'origin/' + base + '...HEAD'], opts);
+  } catch (err) {
+    throw new FailClosed(
+      'CF-03: could not compute the PR diff `git diff --name-only origin/' + base + '...HEAD` (' +
+        ((err && err.message) || 'git failure') + ') — failing closed (fetch origin/' + base +
+        ' first; an unreadable diff cannot confirm the docs-required lint).'
+    );
+  }
+  return raw.split('\n').filter(Boolean);
+}
+
+/**
  * ROB-02 default first-create detector: list the OPEN PRs for the head branch.
  *
  * Reads `gh pr list --head <branch> --json number --state open` via execFileSync (no shell,
@@ -1031,13 +1380,17 @@ module.exports = {
   gate,
   resolveBody,
   resolveBase,
+  resolveTitle,
   resolveHead,
   splitHead,
   resolveHeadRepo,
+  extractLinkedIssues,
   normalizeBody,
   evaluateCiResult,
   resolveHeadSha,
   normalizeCheckRuns,
+  defaultReadIssueLabels,
+  defaultReadChangedFiles,
   ownerRepoFromRemote,
   resolveExplicitTarget,
   LINKED_ISSUE_RE,
