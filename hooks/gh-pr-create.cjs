@@ -771,6 +771,13 @@ function runPrGate(stdinString, deps = {}) {
       // WR-01: when an explicit -R/GH_REPO target is present it reads from THAT repo, not origin.
       resolved.listPrsForHead = (branch, targetRepo) => defaultListPrsForHead(resolved.root, branch, targetRepo);
     }
+    if (!resolved.readIssueLabels) {
+      // CF-02: default the linked-issue label reader from the SAME resolved root + WR-01 explicit
+      // target the rest of the gate uses. A throw (invalid number / unauth gh / unparseable JSON /
+      // no origin) fails closed → an enh/feat PR whose approval cannot be confirmed DENIES (D-04),
+      // never a silent allow. liveTitle (CF-01) is already wired above and reused for classifyBucket.
+      resolved.readIssueLabels = (n, tr) => defaultReadIssueLabels(resolved.root, n, tr);
+    }
     if (!resolved.readBodyFile) {
       const fs = require('node:fs');
       resolved.readBodyFile = (p) => {
@@ -1045,6 +1052,86 @@ function normalizeCheckRuns(headSha, runs) {
 }
 
 /**
+ * CF-02 default reader of a linked issue's LABEL NAMES via `gh api
+ * repos/<owner>/<repo>/issues/<number>` (mirrors defaultReadCheckRuns). The `number` is
+ * validated as a POSITIVE INTEGER before use (T-30-02-02: a crafted number cannot be
+ * interpolated into the path), and owner/repo are resolved from the command's EXPLICIT
+ * -R/GH_REPO target (WR-01 single source) when present, else the worktree origin remote
+ * (SAFE-char-validated, case-folded via ownerRepoFromRemote). The path components are FIXED
+ * array args to execFile (no shell). ANY spawn/parse/auth failure THROWS FailClosed so an
+ * unauthenticated `gh` DENIES an enh/feat PR (never a silent allow — D-04 fail-closed).
+ *
+ * @param {string} root absolute worktree root (for owner/repo resolution + cwd).
+ * @param {number} number the linked issue number.
+ * @param {{owner:string,repo:string}} [targetRepo] the explicit -R/GH_REPO target, or null.
+ * @returns {string[]} the issue's label names.
+ */
+function defaultReadIssueLabels(root, number, targetRepo) {
+  const { execFileSync } = require('node:child_process');
+  if (typeof number !== 'number' || !Number.isInteger(number) || number <= 0) {
+    throw new FailClosed(
+      'CF-02: a linked issue number to read labels for must be a positive integer (got `' +
+        String(number) + '`) — failing closed (no path injection).'
+    );
+  }
+  const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] };
+  if (root) opts.cwd = root;
+
+  // Resolve owner/repo. WR-01: prefer the command's explicit target (already SAFE-char-validated
+  // + case-folded by parseOwnerRepo); else derive from the worktree origin remote.
+  let slug;
+  if (targetRepo && targetRepo.owner && targetRepo.repo) {
+    slug = { owner: targetRepo.owner, repo: targetRepo.repo };
+  } else {
+    try {
+      const url = execFileSync('git', ['remote', 'get-url', 'origin'], opts).trim();
+      slug = ownerRepoFromRemote(url);
+    } catch (err) {
+      throw new FailClosed(
+        'CF-02: could not resolve owner/repo from the worktree origin remote (' +
+          ((err && err.message) || 'git failure') + ') — failing closed (an unreadable label ' +
+          'source denies an enh/feat PR).'
+      );
+    }
+    if (!slug) {
+      throw new FailClosed('CF-02: could not parse owner/repo from origin remote — failing closed.');
+    }
+  }
+
+  let raw;
+  try {
+    raw = execFileSync(
+      'gh',
+      [
+        'api',
+        '-H', 'Accept: application/vnd.github+json',
+        'repos/' + slug.owner + '/' + slug.repo + '/issues/' + number,
+      ],
+      opts
+    );
+  } catch (err) {
+    throw new FailClosed(
+      'CF-02: could not read labels for issue #' + number + ' via `gh api` (' +
+        ((err && err.message) || 'gh failure / unauthenticated') +
+        ') — failing closed (an unauthenticated gh never approves an enh/feat PR).'
+    );
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new FailClosed(
+      'CF-02: the issue #' + number + ' response was not parseable JSON — failing closed.'
+    );
+  }
+  const labels = Array.isArray(parsed && parsed.labels) ? parsed.labels : [];
+  return labels
+    .map((l) => (typeof l === 'string' ? l : l && l.name))
+    .filter((n) => typeof n === 'string');
+}
+
+/**
  * ROB-02 default first-create detector: list the OPEN PRs for the head branch.
  *
  * Reads `gh pr list --head <branch> --json number --state open` via execFileSync (no shell,
@@ -1211,6 +1298,7 @@ module.exports = {
   evaluateCiResult,
   resolveHeadSha,
   normalizeCheckRuns,
+  defaultReadIssueLabels,
   ownerRepoFromRemote,
   resolveExplicitTarget,
   LINKED_ISSUE_RE,
