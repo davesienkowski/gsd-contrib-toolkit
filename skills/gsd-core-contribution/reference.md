@@ -218,9 +218,11 @@ Fixes #<issue#>
 <disclose any Hyrum's-Law behavior change from the artificer pass, else "None">
 ```
 
+**PR title convention (ENFORCED at open time — `pr-title-validator.yml`, `WARN_ONLY:false`):** the title MUST be `<type>(#<issue#>): <imperative>` — the linked issue ref lives **inside the scope**, not the subject. The live matcher is `scripts/release-notes/conventional-title.cjs` (`evaluatePrTitle`): a leading tag (`[security] …`) fails `bad-prefix`; a scope without `#<n>` (e.g. `fix(core): …`) fails `missing-issue-ref`. Valid: `fix(#1542): roadmap rollback`, `feat(#39)!: drop legacy flag`, `enhance(#1549): add PR-title validator`. You MAY add an area after the ref: `fix(#1542, core): …`. (Issue titles are NOT title-gated — the `<type>(<area>)` form above is fine for `gh issue create`; only PR titles are checked, because the changelog is built from them.)
+
 ```bash
 gh pr create --repo open-gsd/gsd-core --base next --head fix/<issue#>-<slug> \
-  --title "<type>(<area>): <imperative>" --body-file PR.md \
+  --title "<type>(#<issue#>): <imperative>" --body-file PR.md \
   --label "area: <X>"          # + "security" / "runtime: <X>" as applicable; "no-changelog" only if no changeset
 # If labels didn't take (GraphQL flakiness), apply via REST — a PR IS an issue in the REST API:
 gh api -X POST repos/open-gsd/gsd-core/issues/<PR#>/labels -f "labels[]=area: <X>"
@@ -256,7 +258,7 @@ Enhancement template; labels `enhancement, approved-enhancement, area: <X>`; tit
 ### Non-goals
 <table: finding → file:line → severity → child issue>
 ```
-Children: `<type>(<area>): <scoped task> (epic #<N>)`. File children incrementally as worked.
+Children: each is its own issue + PR. The child **PR title** follows the same enforced form — `<type>(#<child-issue#>): <scoped task>` (the child's OWN issue ref in the scope; do NOT put `(epic #<N>)` in the title subject — it fails `missing-issue-ref`). Reference the epic in the PR **body** instead (`Part of epic #<N>` / `Fixes #<child-issue#>`). File children incrementally as worked.
 
 ## Submission gotchas (verified live)
 
