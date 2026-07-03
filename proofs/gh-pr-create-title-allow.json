@@ -1,0 +1,16 @@
+{
+  "hook": "gh-pr-create-title",
+  "case": "allow",
+  "fixture": "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gh repo view o/r\"}}",
+  "expected": "allow",
+  "verdict": "pass",
+  "decision": "allow",
+  "exitCode": 0,
+  "reason": "parsed permissionDecision:allow",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "allow"
+    }
+  }
+}

@@ -113,6 +113,16 @@ const bash = (command) => JSON.stringify({ tool_name: 'Bash', tool_input: { comm
 // Build a PreToolUse[Write|Edit] stdin payload (binlib-edit reads tool_input.file_path).
 const edit = (file_path) => JSON.stringify({ tool_name: 'Edit', tool_input: { file_path } });
 
+// CF-01 (30-01): a COMPLETE valid `fix` PR-template body (WITH `Fixes #12`), so the title-deny
+// fixture passes template + base and denies on the missing issue-ref — hermetic. Joined with REAL
+// newlines (the NATIVE double-quoted `--body` route strips a backslash, so a `\n` sentinel would
+// collapse to `n`). Mirrors CF01_VALID_FIX_BODY in bin/verify-hooks.cjs (the sync target).
+const CF01_VALID_FIX_BODY = [
+  '## Fix PR', '', '## Linked Issue', 'Fixes #12', '', '## What was broken', 'the thing',
+  '', '## What this fix does', 'fixes the thing', '', '## Testing', 'node --test',
+  '', '## Checklist', '- [x] tests',
+].join('\n');
+
 /**
  * Resolve a directory that carries the gsd-core sentinel layout (scripts/ + gsd-core/bin/lib/)
  * so gates that resolve LIVE scripts find them. Mirrors the doctor's resolve-or-explain stance:
@@ -280,6 +290,15 @@ const DENY_GATES = [
     name: 'gh-pr-create-bypass-databinary', hook: 'gh-pr-create',
     // CR-04: `curl …/pulls --data-binary {}` now classifies as pr-create → ENF-18 CI gate denies.
     bad: bash('curl https://api.github.com/repos/o/r/pulls --data-binary {}'),
+    clean: bash('gh repo view o/r'),
+    needsLive: true,
+  },
+  {
+    name: 'gh-pr-create-title', hook: 'gh-pr-create',
+    // CF-01 (30-01): a valid fix template + base=next with a non-conforming title (`fix(core): x`,
+    // missing the `(#<issue>)` ref) → the LIVE conventional-title matcher (evaluatePrTitle) DENIES
+    // before the PR opens. Hermetic (the title check is pure, runs after template+base, before CI).
+    bad: bash(`gh pr create --base next --title 'fix(core): x' --body "${CF01_VALID_FIX_BODY}"`),
     clean: bash('gh repo view o/r'),
     needsLive: true,
   },

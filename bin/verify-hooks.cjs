@@ -37,6 +37,18 @@ const absHook = (name) => path.join(HOOKS_DIR, `${name}.cjs`);
 const bash = (command) => JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
 const edit = (file_path) => JSON.stringify({ tool_name: 'Edit', tool_input: { file_path } });
 
+// CF-01: a COMPLETE valid `fix` PR-template body (all required headings, WITH `Fixes #12`) so the
+// fixture passes the ENF-02 template + ENF-10 base checks and denies CONCLUSIVELY on the title's
+// missing-issue-ref — hermetic (the title check is pure and runs BEFORE any gh network step).
+// Joined with REAL newlines: on the NATIVE double-quoted `--body "..."` route argv strips a
+// backslash, so a `\n` sentinel would collapse to a literal `n` (only the single-quoted gh-api
+// route keeps the sentinel). Mirrors GOOD_PR_BODY in hooks/gh-pr-create.test.cjs.
+const CF01_VALID_FIX_BODY = [
+  '## Fix PR', '', '## Linked Issue', 'Fixes #12', '', '## What was broken', 'the thing',
+  '', '## What this fix does', 'fixes the thing', '', '## Testing', 'node --test',
+  '', '## Checklist', '- [x] tests',
+].join('\n');
+
 /**
  * Resolve a gsd-core checkout carrying the sentinel layout (scripts/ + gsd-core/bin/lib/) so
  * gates that resolve LIVE scripts find them. Mirrors hooks/integration-proof.test.cjs's
@@ -150,6 +162,14 @@ const PROOF_TABLE = [
     clean: bash('gh repo view o/r') },
   { name: 'gh-pr-create-bypass-databinary', hook: 'gh-pr-create', kind: 'deny', needsLive: true,
     bad: bash('curl https://api.github.com/repos/o/r/pulls --data-binary {}'),
+    clean: bash('gh repo view o/r') },
+  // CF-01 (30-01): a gsd-core-targeting `gh pr create` with a valid fix template + base=next but a
+  // non-conforming title (`fix(core): x` — missing the `(#<issue>)` ref) DENIES via the LIVE
+  // conventional-title matcher (evaluatePrTitle), BEFORE the PR opens. Hermetic: the title check is
+  // pure (no network) and fires after template+base and before link/branch/CI. Mirrored in
+  // hooks/integration-proof.test.cjs DENY_GATES (the sync source).
+  { name: 'gh-pr-create-title', hook: 'gh-pr-create', kind: 'deny', needsLive: true,
+    bad: bash(`gh pr create --base next --title 'fix(core): x' --body "${CF01_VALID_FIX_BODY}"`),
     clean: bash('gh repo view o/r') },
   // ── binlib-edit (Write|Edit gate): command-only, no live resolution ──
   { name: 'binlib-edit', kind: 'deny', needsLive: false,

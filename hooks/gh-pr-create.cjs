@@ -617,7 +617,7 @@ function runPrGate(stdinString, deps = {}) {
     // head branch is read from that same root so a cross-repo session reads the worktree's
     // branch, not the session repo's.
     let root = resolved.worktreeRoot || null;
-    if (!root && (!resolved.liveTemplate || !resolved.liveTarget || !resolved.branch)) {
+    if (!root && (!resolved.liveTemplate || !resolved.liveTarget || !resolved.liveTitle || !resolved.branch)) {
       root = resolveRootForCommand(ctx.command, process.cwd());
       if (!root) {
         // ROB-01 locked discriminator (same seam as gh-issue-create): an out-of-tree command
@@ -643,6 +643,12 @@ function runPrGate(stdinString, deps = {}) {
     }
     if (!resolved.liveTarget) {
       resolved.liveTarget = requireLiveScript(root, 'scripts/pr-target-policy.cjs');
+    }
+    if (!resolved.liveTitle) {
+      // CF-01: load gsd-core's LIVE conventional-title matcher the SAME way as the template/target
+      // policies. A missing/reshaped script throws ScriptResolveError → runGate fail-closed deny
+      // (HARD-02) for a gsd-core-targeting create — no vendored fallback, no forked regex (D-06).
+      resolved.liveTitle = requireLiveScript(root, 'scripts/release-notes/conventional-title.cjs');
     }
     if (!resolved.branch) {
       resolved.branch = currentBranch(root);

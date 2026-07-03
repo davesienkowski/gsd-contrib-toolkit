@@ -969,6 +969,29 @@ test('CF-01 regression (D-05): non-conforming title denies, conforming title all
   assert.strictEqual(good.permissionDecision, 'allow', good.permissionDecisionReason);
 });
 
+// CF-01 fail-closed (HARD-02): a gsd-core-targeting create whose LIVE conventional-title script
+// cannot load fails CLOSED — the same requireLiveScript discipline as the template/target scripts.
+// Inject working liveTemplate/liveTarget/branch but NOT liveTitle, with a root that lacks the
+// script, so the deny provably comes from the unresolvable title script (not template/target).
+test('CF-01/HARD-02: governed pr-create with a missing LIVE conventional-title script → DENY (fail closed)', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-notitle-'));
+  const d = runPrGate(
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
+    {
+      worktreeRoot: root,
+      liveTemplate,
+      liveTarget,
+      branch: 'fix/12-the-thing',
+      // liveTitle deliberately NOT injected → requireLiveScript(root, conventional-title) throws.
+      overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
+    }
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+});
+
 // Helpers. A real `gh pr create --body "..."` command carries REAL newlines inside the
 // double-quoted token (the harness passes the literal command string). argv preserves
 // real newlines verbatim; only escapes a backslash. So the native double-quoted body

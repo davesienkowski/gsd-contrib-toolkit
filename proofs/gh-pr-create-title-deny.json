@@ -1,0 +1,17 @@
+{
+  "hook": "gh-pr-create-title",
+  "case": "deny",
+  "fixture": "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gh pr create --base next --title 'fix(core): x' --body \\\"## Fix PR\\n\\n## Linked Issue\\nFixes #12\\n\\n## What was broken\\nthe thing\\n\\n## What this fix does\\nfixes the thing\\n\\n## Testing\\nnode --test\\n\\n## Checklist\\n- [x] tests\\\"\"}}",
+  "expected": "deny",
+  "verdict": "pass",
+  "decision": "deny",
+  "exitCode": 0,
+  "reason": "parsed permissionDecision:deny",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "permissionDecisionReason": "PR title must follow `type(#<issue>): summary`. The type must come first (no leading tags like `[security]`) and the scope must carry the linked issue ref so the release changelog links to it. Examples: `fix(#1542): roadmap rollback`, `feat(#39)!: drop legacy flag`, `enhance(#1549): add PR-title validator`. (CF-01 — gsd-core LIVE conventional-title / #1549; pr-title-validator.yml is WARN_ONLY:false)."
+    }
+  }
+}
