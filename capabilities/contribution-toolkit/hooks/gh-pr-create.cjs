@@ -47,7 +47,9 @@
 
 const path = require('node:path');
 const { parseCommand } = require('./lib/argv.cjs');
-const { classifyAction, findActionSegment, isNonGovernedCommand } = require('./lib/classify.cjs');
+const {
+  classifyAction, findActionSegment, isNonGovernedCommand, hasGovernedSegment, hasFailClosedSegment,
+} = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand, requireLiveScript, commandTargetsGsdCore, parseOwnerRepo } = require('./lib/resolve.cjs');
 
@@ -466,14 +468,22 @@ function gate(stdinString, deps) {
   const parsed = parseCommand(command);
   if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
 
-  const action = classifyAction(parsed);
-  if (action.failClosed) {
+  // CF-07 (← CR-01): decide gate/no-gate from the ALL-segments logic CF-05 introduced for
+  // the push gates — a governed pr-create hidden after a benign segment (`git commit && gh
+  // pr create …`) must reach this gate, not collapse to the FIRST actionable segment.
+  // (a) Scan ALL segments for a failClosed synonym FIRST (D-03) so a trailing `gh api -X
+  //     POST repos/.../issues/weird` after a benign pr-create still fails closed (ENF-15) —
+  //     never masked by a benign actionable neighbor.
+  if (hasFailClosedSegment(parsed)) {
     throw new FailClosed('unclassifiable mutating github call — failing closed (ENF-15)');
   }
-  if (action.action !== 'pr-create') return allow();
+  // (b) Gate when ANY segment is a pr-create; otherwise allow (narrows-not-weakens).
+  if (!hasGovernedSegment(parsed, new Set(['pr-create']))) return allow();
 
   const seg = findActionSegment(parsed, 'pr-create');
-  const route = action.route || 'native';
+  // (c) Derive the route from the FOUND pr-create segment (not the first-segment action),
+  //     so a synonym pr-create later in a chain routes correctly.
+  const route = classifyAction({ ok: true, segments: [seg] }).route || 'native';
 
   // (0) WR-04 — un-observable body. `gh pr create --fill` / `--fill-first` auto-populates the
   // body from commit messages, and `--web` opens the browser editor; in all three the body the

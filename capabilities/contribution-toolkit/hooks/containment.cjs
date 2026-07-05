@@ -142,7 +142,12 @@ function detectGit(parsed) {
     : [parsed];
   const actions = [];
   for (const seg of segs) {
-    const { prog, args } = resolveProgram(seg);
+    const { prog, args, ambiguous } = resolveProgram(seg);
+    // CF-08 (D-07): a value-taking wrapper flag left NO resolvable program
+    // (`env -S '<packed cmd>'`). This is NOT a no-op — a wrapped git/gh could be
+    // hiding inside the packed value — so surface a fail-closed action rather than
+    // `continue` (which would let the gate short-circuit to allow). gate() denies it.
+    if (ambiguous) { actions.push({ kind: 'ambiguous', seg }); continue; }
     if (prog !== 'git') continue;
     const verb = args[0];
     if (verb === 'add') actions.push({ kind: 'add', args: args.slice(1), seg });
@@ -483,9 +488,22 @@ function gate(stdinString, deps) {
   if (actions.length === 0) return allow(); // no add/commit/push → no-op
 
   for (const action of actions) {
-    const decision = action.kind === 'push'
-      ? gateContainmentB(action, command, deps)
-      : gateContainmentA(action, deps);
+    let decision;
+    if (action.kind === 'ambiguous') {
+      // CF-08 (D-07): an unresolvable value-flag wrapper form fails closed — a
+      // containment boundary must not silent-allow a wrapper it cannot parse.
+      decision = deny(
+        'Containment breach blocked (ENF-06/07, fail closed): a value-taking wrapper ' +
+          'flag left the wrapped program unresolvable (e.g. `env -S \'<packed command>\'`). ' +
+          'An unparseable wrapper form is treated as governed/unknown rather than silently ' +
+          'allowed (D-07). Re-run the git/gh command directly instead of packing it into a ' +
+          'wrapper flag value.'
+      );
+    } else if (action.kind === 'push') {
+      decision = gateContainmentB(action, command, deps);
+    } else {
+      decision = gateContainmentA(action, deps);
+    }
     // Deny on the FIRST failing action — a denied command is blocked regardless of the rest.
     if (decision && decision.permissionDecision === 'deny') return decision;
   }
