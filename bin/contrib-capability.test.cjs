@@ -449,6 +449,13 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 13 tagged,
       true,
       'install must set workflow.gsd_contrib_enforcement=true (install lands fully ON)'
     );
+    // 28-01 INST-02: install PROMOTED the bundle — the capDir resolves and every wired gate script
+    // points at a real file (no silent-inert dangling paths).
+    assert.ok(fs.existsSync(sandboxCapDir(sb)), 'install must promote the capDir (INST-02)');
+    assert.deepStrictEqual(
+      unresolvedWiredScripts(sb.settingsPath), [],
+      'every wired command script must resolve to a real file after install (INST-02)'
+    );
 
     // ── off: EXACTLY the 13 tagged entries stripped; the UNTAGGED user hook SURVIVES ──
     drv.runOff(Object.assign({}, opts, { reason: 'CAP-07 hermetic lifecycle proof: off' }));
@@ -471,6 +478,9 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 13 tagged,
     assert.strictEqual(cmds.delivered, 0, 'off must reclaim all 5 command links (full-surface toggle), leftover=' + cmds.delivered);
     skl = countDeliveredSkills(sb);
     assert.strictEqual(skl.delivered, 0, 'off must reclaim all 2 skill links (full-surface toggle), leftover=' + skl.delivered);
+    // 28-01 D-08: off PRESERVES the promoted bundle — the capDir survives off so a later on re-wire
+    // picks it up (off touches only gates/commands/skills/flag, never the promotion).
+    assert.ok(fs.existsSync(sandboxCapDir(sb)), 'off must PRESERVE the promoted capDir (D-08)');
 
     // ── on: the 13 tagged entries are restored (and the untagged user hook is still there) ──
     drv.runOn(opts);
@@ -491,6 +501,13 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 13 tagged,
     assert.strictEqual(cmds.delivered, 5, 'on must restore all 5 command links (off→on round-trip), got ' + cmds.delivered);
     skl = countDeliveredSkills(sb);
     assert.strictEqual(skl.delivered, 2, 'on must restore all 2 skill links (off→on round-trip), got ' + skl.delivered);
+    // 28-01 INST-02: on re-promotes/re-wires — the capDir resolves and the re-applied gates all point
+    // at real files (the off→on re-wire is not silent-inert).
+    assert.ok(fs.existsSync(sandboxCapDir(sb)), 'on must keep the promoted capDir resolving (INST-02)');
+    assert.deepStrictEqual(
+      unresolvedWiredScripts(sb.settingsPath), [],
+      'every wired command script must resolve to a real file after on (INST-02)'
+    );
 
     // ── remove: no ledger entry + no consent record for contribution-toolkit remain in the sandbox store ──
     drv.runRemove(Object.assign({}, opts, { reason: 'CAP-07 hermetic lifecycle proof: remove' }));

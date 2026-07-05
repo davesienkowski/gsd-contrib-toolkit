@@ -1057,6 +1057,19 @@ function runInstall(opts = {}) {
   });
   lines.push('[install] recorded project consent (contentHash=' + contentHash.slice(0, 16) + '...)');
 
+  // (2.5) PROMOTE the bundle so <liveRoot>/.gsd/capabilities/<CAP_ID> resolves to the real hooks BEFORE
+  // the LIVE strip→apply composes the wired command paths against it (INST-02, D-01/D-02). Without a
+  // resolvable capDir the LIVE confinedBundleScript realpaths an ABSENT dir and emits DANGLING command
+  // paths → enforcement silently INERT. INJECTABLE via opts.promoteBundle (default the real
+  // promoteBundle) exactly as loadLiveEngine reads opts.requireLiveScript — so 28-02's fail-loud test
+  // can inject a no-op to force the dangling-target state. The `|| {}` tolerates such a no-op (which
+  // returns undefined) so the log line never throws before the fail-loud check runs.
+  const promote = opts.promoteBundle || promoteBundle;
+  const promotionMode = resolvePromotionMode({ bundleDir });
+  const promotion = promote({ liveRoot, bundleDir, mode: promotionMode }) || {};
+  lines.push('[install] promoted bundle → ' + (promotion.capDir || capabilityInstallDir(liveRoot)) +
+    ' (' + (promotion.mode || promotionMode) + (promotion.action ? '/' + promotion.action : '') + ')');
+
   // (3) Ledger entry (LIVE recordInstall). The LIVE apply (step 4) returns the sharedEdits records;
   // record the ledger entry to OWN that one tagged set.
   //
@@ -1312,6 +1325,17 @@ function runOn(opts = {}) {
 
   const lines = [];
   lines.push('[on] gsd-core checkout: ' + liveRoot);
+
+  // PROMOTE the bundle BEFORE the strip→apply (INST-02, D-01/D-02) — the re-wire path re-applies the
+  // gates against the capDir, so it must resolve to the real hooks first (off PRESERVES the bundle per
+  // D-08, but a distributed/first-`on` path may still need to promote it). INJECTABLE via
+  // opts.promoteBundle exactly as in runInstall (default the real promoteBundle); the `|| {}` tolerates
+  // a no-op injection (28-02's fail-loud RED forces a dangling capDir this way).
+  const promote = opts.promoteBundle || promoteBundle;
+  const promotionMode = resolvePromotionMode({ bundleDir });
+  const promotion = promote({ liveRoot, bundleDir, mode: promotionMode }) || {};
+  lines.push('[on] promoted bundle → ' + (promotion.capDir || capabilityInstallDir(liveRoot)) +
+    ' (' + (promotion.mode || promotionMode) + (promotion.action ? '/' + promotion.action : '') + ')');
 
   // Strip→apply (the LIVE engine's own reapply discipline) so on re-applies EXACTLY one marker-tagged
   // set — no growth on a re-run, and untagged/other-capability hooks are never touched (CAP_MARKER scope).
