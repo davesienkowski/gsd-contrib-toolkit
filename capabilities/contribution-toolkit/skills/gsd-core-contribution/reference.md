@@ -109,6 +109,107 @@ For each flagged ADR, record:
 
 Then apply the firing `skills-from-the-artificer` law-lenses to the diff (Hyrum's Law, etc.) and also check the diff against the `docs/agents/*` contribution norms. **Surface any LOCKED-decision conflict before filing.** Honest scope: this is a rigorous *quoted-source* review (model-driven), not a deterministic guarantee for arbitrary ADRs — the mechanizable gate-enforced subset is POLICY-02 (Phase 3).
 
+## Intake reality (verified)
+
+> **Grounding:** every intake claim in this section is verified against the live `open-gsd/gsd-core` repo (`path:line` citations). The repo moves — **re-verify before trusting.** Last verified: 2026-07-02 against `origin/next`. This is the actual upstream intake reality every contribution must satisfy *by construction*; the reuse/methodology decisions it serves are the canonical ALIGN record (linked at the top of this file). Its verified-intake content was folded here (SYNC-01) so the intake facts travel WITH the skill to every runtime.
+
+The gates below are what a submission is measured against upstream. The pipeline's job is to pre-satisfy each one **locally, before the push** — correct by construction, not by retry (see the *Local gate ⇒ CI gate* table at the end of this section).
+
+### Issue-first — no code before approval
+`CONTRIBUTING.md:111-119` — *"## The Issue-First Rule — No Exceptions … No code before approval."*
+- **Fix:** open issue → maintainer applies **`confirmed-bug`** → then fix. `confirmed-bug` is the fix gate (`docs/agents/triage-labels.md:9,18`: *"the gate the fix workflow requires before any code is written"*).
+- **Enhancement:** a maintainer must label the issue **`approved-enhancement`** before you write a single line of code (`CONTRIBUTING.md:62`).
+- **Feature:** same with **`approved-feature`**; *"Incomplete specs are closed, not revised by maintainers."* (`CONTRIBUTING.md:74`).
+- **PR without an approved linked issue is auto-closed:** *"PRs without a linked issue are closed without review, no exceptions."* (`CONTRIBUTING.md:182`); link with a closing keyword (`Closes/Fixes/Resolves #N`, `:186`); **no draft PRs** (`:184`).
+
+(Route through the correct one of the six templates — see *Issue types (all six) (KNOW-04)* above; a `chore`/`docs_issue`/`config` change force-fit into `bug_report` trips the wrong gate.)
+
+### Triage automation — the label lifecycle (and why you NEVER strip an auto-tag)
+The label lifecycle is driven by GitHub Actions, not by CONTRIBUTING.md prose:
+
+| Automation (`.github/workflows/`) | Trigger | Effect |
+|---|---|---|
+| `auto-label-issues.yml` | issue opened | **adds `needs-triage` to EVERY new issue, unconditionally** (`:20-25`, verified) |
+| issue templates | on create | `bug_report`→`bug,needs-triage`; `chore`→`type: chore,needs-triage`; `enhancement`→`enhancement,needs-review`; `feature_request`→`feature-request,needs-review`; `docs_issue`→`documentation` |
+| `duplicate-check.yml` | issue opened | scores vs open issues (`scripts/issue-dedupe.cjs`); may add `possible-duplicate` + a 24h challenge comment |
+| `duplicate-sweep.yml` | daily 07:00 | auto-closes `possible-duplicate` as `duplicate` unless a human reply / 👎 vetoes |
+| `remove-duplicate-label.yml` | issue comment | a reply clears `possible-duplicate` → adds `needs-maintainer-review` |
+| `version-gate.yml` | issue opened | `scripts/issue-version-gate.cjs`; missing/invalid `### GSD Version` → adds `needs-version`, closes `not_planned` (the only bypass is a valid version — `version-exempt` does **not** exist, see *Submission gotchas* below) |
+| `auto-branch.yml` | issue labeled | creates a branch when label ∈ `bug, enhancement, priority: critical, type: chore, area: docs` |
+| `stale.yml` | weekly | 28d→stale, +14d→close; exempts `confirmed-bug`, `needs-reproduction`, `priority: critical`, `pinned`, … |
+
+**The verified mechanism behind "never strip `needs-triage`":** **no in-repo automation reads `needs-triage`.** `auto-label-issues.yml` *adds* it; `triage-labels.md:21` says it *"is removed when any other state label is applied."* trek-e's *surfacing* queue — the saved filter / GitHub Projects board he triages from — keys on `label:needs-triage` and lives **outside the repo**. So stripping it drops the issue off his board with **zero CI signal** that anything broke. Apply your `confirmed-bug`/`approved-*`/`area:`/`priority:` labels **alongside** the auto-tags; enhancement/feature issues carry both `needs-review` and `needs-triage` — leave both. (The operational "never remove it" directive is in *Submission gotchas* below and the SKILL Gotchas table; this is the mechanism that makes it load-bearing.)
+
+### PR-governance gates (all enforcing unless noted)
+| Workflow | Enforces |
+|---|---|
+| `require-issue-link.yml` | PR body must contain `(closes\|fixes\|resolves) #N` or `setFailed` (`:85`) |
+| `pr-title-validator.yml` | title `type(#issue): summary`; matcher loaded from the **base** branch so a PR can't edit its own ruler (`:60-64`); enforcing |
+| `pr-template-format.yml` | `scripts/pr-template-policy.cjs`; **warns** trusted contributors, **fails+comments** untrusted (`action=='close'`) |
+| `auto-close-unsolicited-prs.yml` | closes external PRs whose linked issue lacks `approved-feature,approved-enhancement,confirmed-bug` (`:50`); fails **open** on API error |
+| `close-draft-prs.yml` / `-sweep.yml` | closes non-maintainer draft PRs (per-PR + 6-hourly sweep) |
+| `pr-target-validator.yml` | branch model; **skips maintainers** (OWNER/MEMBER/COLLABORATOR) |
+| `branch-naming.yml` | valid prefix (`feat/ fix/ hotfix/ docs/ chore/ …`); **warn-only**, non-blocking |
+| `dismiss-unauthorized-pr-approvals.yml` | dismisses approvals from non-collaborators / a blocklist |
+
+(The three typed PR templates + the `pr-template-policy.cjs` required headings are captured as skeletons in *Fix PR body skeleton* below; escape hatch `<!-- pr-template-exempt: <reason> -->`.)
+
+### Changeset & docs gates
+- `changeset-required.yml` (`scripts/changeset/lint.cjs`): a PR touching `bin/ gsd-core/ agents/ commands/ hooks/ sdk/src/` **without** a `.changeset/*.md` fragment fails. Opt-out: `no-changelog` label (`CONTRIBUTING.md:206-208`).
+- `docs-required.yml` (`scripts/lint-docs-required.cjs`): a changeset typed `Added/Changed/Deprecated/Removed` **without** a `docs/` change fails. Opt-out: `no-docs` label or `<!-- docs-exempt: <reason> -->` (`:260,287`). `Fixed`/`Security` do **not** trip docs-lint.
+- Changelog is built from **PR titles** — do not edit `CHANGELOG.md` directly (`:195`).
+
+### CI test structure (the gates run as `node --test` suites inside `test.yml`)
+`test.yml` (`name: Tests`) is the aggregate gate. Scope is computed by `scripts/ci-test-scope.cjs`, then:
+- `lint-tests` → `npm run lint:ci` (ESLint + skill-deps + test-file-count + command-contract + PR-checks + legacy-name + regression-test-names + resolution-provenance + allow-test-rule-refs). **`lint:ci` ≠ `eslint .`.**
+- `test` matrix: **ubuntu-22** (targeted), **ubuntu-24** (full + coverage gate ≥70% on `gsd-core/bin/lib` + scripts floor ≥55% + integration/security/install/slow), **windows-24** (windows scope).
+- `test-full`: sharded parity — **windows-22 ×3, macos-22 ×3, macos-24 ×3** (`name: full test (<os>, <node>, shard N/3)`). Unit suite sharded `i/3`; integration+security on shard 1 only.
+- `required-tests` — the branch-protection aggregate.
+
+**Gates that live *inside* those test jobs (no standalone workflow):**
+- **workflow/agent size budget** — `tests/workflow-size-budget.test.cjs` (XL_CAP; `CONTRIBUTING.md:882-890`; ADR-1610). Update via `npm run size:baseline`.
+- **phase-6 capstone / loop-body ratchet** — `tests/phase6-capstone-conformance.test.cjs` (hardcoded `PRE_PHASE6` per-file byte ceilings; #1168/#1139). Runs in **shard 1/3** — a `plan-phase.md`/`execute-phase.md` growth over its frozen ceiling fails macOS/Windows shard-1/3 + ubuntu-24, *not* every shard.
+- **golden install parity** — `npm run test:install` / `tests/golden-install-parity.test.cjs` (16 runtime fixtures; regen with `UPDATE_GOLDEN=1`), gated on `full_matrix`.
+- **inventory manifest sync** — `tests/inventory-manifest-sync.test.cjs` (+ `docs/INVENTORY.md`).
+
+Separate workflows: `security-scan.yml` (dependency integrity + prompt-injection/base64/secret scans + `.planning/`-not-committed check), `install-smoke.yml` (tarball install + mode-644 class), `mutation.yml` (Stryker per changed module; required check *"Stryker mutation score (changed files only)"*).
+
+(Upstream testing norms — regression-test-first for a fix, no-source-grep, "CI green is not sufficient", generated `bin/lib`, the per-surface QA checklist — are in *QA matrix by surface (KNOW-01)* and *Test bar by contribution type (KNOW-02)* below plus the SKILL Gotchas; not re-pasted here.)
+
+### RULESET.* tokens (verified against gsd-core 2026-07-05)
+Trek-e's directives cite named `RULESET.*` tokens; the ones below are the ones **verified real against gsd-core** (source of the ✓/⚠/❌ verdicts: `.planning/notes/trek-e-directives-reconciliation-2026-07-05.md` — verified items only). They sharpen the classification + test-quality bar the toolkit's gates already partially enforce.
+
+**Classification gates (require the approval label before code — the token form of *Issue-first* above):**
+- `RULESET.CONTRIB.CLASSIFY.fix` — requires `confirmed-bug` before implementation
+- `RULESET.CONTRIB.CLASSIFY.enhancement` — requires `approved-enhancement` before implementation
+- `RULESET.CONTRIB.CLASSIFY.feature` — requires `approved-feature` before implementation
+- `CI.GATE.issue-link-required` — a PR missing a linked issue → request-changes / HALT (`CONTRIBUTING.md:468`; the enforcing workflow is `require-issue-link.yml`, above)
+- `META.RULE.canonical-source-precedence` — when sources disagree, precedence is `CONTRIBUTING.md > docs/adr/* > CONTEXT.md > agent memory` (`CONTRIBUTING.md:549`)
+
+**Test-quality ruleset (`RULESET.TESTS.*` — what a "good test" means upstream):**
+- `mutation-score` — Stryker incremental (`--since origin/next`), default **80% killed**; surviving mutants block merge (ADR-456 / `TESTING-STANDARDS.md:141`). Already covered by the toolkit's ENF-18 `mutation.yml` and the `mutation.yml` required check listed above.
+- `boundary-coverage` — exercise inputs at N ∈ {limit-1, limit, limit+1}, not a trivial-fit/overflow pair.
+- `no-timing-assertion` — no wall-clock elapsed assertions; use a clock-seam + `node:test` `mock.timers`.
+- `property-based-testing` — parsing / transformation / budget-limit / bijective modules need ≥1 `fast-check` property test.
+- `delete-bad-tests` — pass-always / vacuous-truth / source-grep / elapsed-time / real-race tests are **deleted and replaced in the same PR**, not left in place.
+- `no-source-grep` — assert typed/structured values, never `readFileSync` a `.cjs` and substring-match on it. In gsd-core this is the ESLint rule **`local/no-source-grep`** (`eslint-rules/no-source-grep.cjs`, run by `eslint .` ⊂ `lint:ci`; ADR-452 retired the old homegrown `scripts/lint-*` scanners in favour of it) — the toolkit already phrases it as this ESLint rule in the *QA matrix by surface* parser row above and the *Submission gotchas* below.
+
+The fix-type **regression-test-first** requirement (RED before the fix) is captured as prose in *Test bar by contribution type (KNOW-02)* below — it is not a distinct gsd-core `RULESET.TESTS.*` token, so it is cited there rather than minted as one here.
+
+### Local gate ⇒ CI gate (pre-satisfy each upstream gate before the push)
+| CI / triage gate (this section) | Skill step that pre-satisfies it locally |
+|---|---|
+| version-gate | P4b — run `issue-version-gate` on the exact body → `valid-version` |
+| pr-template-policy | P5b — run `pr-template-policy.cjs` on the exact body → `valid:true` |
+| require-issue-link / auto-close | P4/P5 — issue-first, `Fixes #N`, approval label present before PR |
+| pr-title-validator | conventional `type(#issue):` title |
+| changeset / docs | P5c — add `.changeset/` fragment; `Fixed`/`Security` skip docs-lint |
+| lint:ci + scans (ALIGN-04) | P3d — `ci-preflight` → green + stamp before push |
+| size-budget / phase-6 / golden / inventory | P3d — run the full relevant suites, not just the module's; regen goldens/baselines/INVENTORY when shipped paths move |
+| **never strip `needs-triage`** | P4c — apply labels **alongside** auto-tags; never `DELETE` them |
+
+**Do the gates locally, before the push — correct by construction, not by retry.**
+
 ## QA matrix by surface (KNOW-01)
 
 The `CONTRIBUTING` QA matrix is not a single "is it tested?" box — it has a **distinct checklist per surface**. Identify which surface(s) your diff touches and satisfy the row(s). This is the concrete content the Phase-3 one-liner points to.
