@@ -336,6 +336,49 @@ const DENY_GATES = [
     clean: bash('git status && ls'),
     needsLive: true,
   },
+  // ── CF-07 / CF-08 (Phase 32): consolidated enforcement-bypass-closure R2 regression ──
+  // The two CONFIRMED-BLOCKER bypasses the v2.6 CF-REVIEW found (CR-01 chain-collapse in the
+  // create/edit gates, CR-02 value-flag wrapper defeat of resolveProgram), proven END-TO-END
+  // through the REAL entrypoints (this file is the sync SOURCE for bin/verify-hooks.cjs
+  // PROOF_TABLE). Each row asserts BOTH the closed bypass FORM (deny) AND its
+  // narrows-not-weakens must-still-allow counterpart.
+  {
+    name: 'cf07-chained-create-reaches-gate', hook: 'gh-pr-create',
+    // CF-07 (32-02, ← CR-01): a chain-collapsed `git commit -m x && gh pr create …` now reaches the
+    // pr-create gate via hasGovernedSegment (any governed segment gates, not just the first) →
+    // CF-01 DENIES the non-conforming `fix(core): x` title (missing the `(#<issue>)` ref) under a
+    // live checkout. Before the fix the chain collapsed to its benign `commit` first segment and the
+    // governed pr-create was never evaluated. clean = a truly non-governed chain (`git status && ls`).
+    bad: bash(`git commit -m x && gh pr create --base next --title 'fix(core): x' --body "${CF01_VALID_FIX_BODY}"`),
+    clean: bash('git status && ls'),
+    needsLive: true,
+  },
+  {
+    name: 'cf07-trailing-failclosed-mask', hook: 'gh-pr-create',
+    // CF-07 (32-02, ← CR-01) — ENVIRONMENT-INDEPENDENT (the highest-value mirror, like cf06). A VALID
+    // `gh pr create --title 'fix(#12): x'` followed by a trailing mutating `gh api -X POST
+    // …/issues/weird` that classifies failClosed: hasFailClosedSegment scans ALL segments FIRST
+    // (before any live-script resolve, D-03), so the trailing failClosed synonym is UNMASKED and the
+    // gate DENIES from a scratch cwd with NO gsd-core checkout reachable. Pre-CF-07 classifyAction
+    // returned the valid pr-create first and masked the trailing synonym → allow. clean = the same
+    // valid pr-create with a benign non-mutating tail (`gh repo view o/r`) → ALLOW (passthrough,
+    // no failClosed segment, not gsd-core-targeting out of tree). needsLive:false, cwd=os.tmpdir().
+    bad: bash(`gh pr create --base next --title 'fix(#12): x' --body "${CF01_VALID_FIX_BODY}" && gh api -X POST repos/open-gsd/gsd-core/issues/weird`),
+    clean: bash(`gh pr create --base next --title 'fix(#12): x' --body "${CF01_VALID_FIX_BODY}" && gh repo view o/r`),
+    needsLive: false,
+    cwd: os.tmpdir(),
+  },
+  {
+    name: 'cf08-wrapped-value-flag-push', hook: 'containment',
+    // CF-08 (32-01, ← CR-02): a value-taking wrapper flag (`sudo -u user git push …`) previously
+    // resolved the program to the flag's VALUE (`user`) and slipped containment. The per-wrapper
+    // WRAPPER_VALUE_FLAGS allow-list now consumes the flag AND its value token, so resolveProgram
+    // yields `git` and the upstream push reaches ENF-07 → DENY under a live checkout. clean =
+    // `sudo -u user ls` (a non-governed value-flag-wrapped command) still ALLOWS (narrows-not-weakens).
+    bad: bash('sudo -u user git push origin main'),
+    clean: bash('sudo -u user ls'),
+    needsLive: true,
+  },
 ];
 
 for (const g of DENY_GATES) {

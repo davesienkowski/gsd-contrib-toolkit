@@ -1,0 +1,17 @@
+{
+  "hook": "cf07-trailing-failclosed-mask",
+  "case": "deny",
+  "fixture": "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gh pr create --base next --title 'fix(#12): x' --body \\\"## Fix PR\\n\\n## Linked Issue\\nFixes #12\\n\\n## What was broken\\nthe thing\\n\\n## What this fix does\\nfixes the thing\\n\\n## Testing\\nnode --test\\n\\n## Checklist\\n- [x] tests\\\" && gh api -X POST repos/open-gsd/gsd-core/issues/weird\"}}",
+  "expected": "deny",
+  "verdict": "pass",
+  "decision": "deny",
+  "exitCode": 0,
+  "reason": "parsed permissionDecision:deny",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "permissionDecisionReason": "out-of-tree command targets upstream open-gsd/gsd-core (-R/--repo / gh-api / curl) but no local gsd-core checkout is reachable from its cwd — cannot load the LIVE pr-template / pr-target policy to verify it (HARD-02: no runtime-root fallback) → failing closed."
+    }
+  }
+}

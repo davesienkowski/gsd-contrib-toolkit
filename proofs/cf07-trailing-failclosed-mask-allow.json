@@ -1,0 +1,16 @@
+{
+  "hook": "cf07-trailing-failclosed-mask",
+  "case": "allow",
+  "fixture": "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gh pr create --base next --title 'fix(#12): x' --body \\\"## Fix PR\\n\\n## Linked Issue\\nFixes #12\\n\\n## What was broken\\nthe thing\\n\\n## What this fix does\\nfixes the thing\\n\\n## Testing\\nnode --test\\n\\n## Checklist\\n- [x] tests\\\" && gh repo view o/r\"}}",
+  "expected": "allow",
+  "verdict": "pass",
+  "decision": "allow",
+  "exitCode": 0,
+  "reason": "parsed permissionDecision:allow",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "allow"
+    }
+  }
+}

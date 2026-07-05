@@ -1,0 +1,17 @@
+{
+  "hook": "cf08-wrapped-value-flag-push",
+  "case": "deny",
+  "fixture": "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"sudo -u user git push origin main\"}}",
+  "expected": "deny",
+  "verdict": "pass",
+  "decision": "deny",
+  "exitCode": 0,
+  "reason": "parsed permissionDecision:deny",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "permissionDecisionReason": "Containment breach blocked (ENF-07): `origin` resolves to the UPSTREAM open-gsd/gsd-core. Pushing private work to upstream from branch `next` leaks it. If this is a deliberate, accountable maintainer push to `origin`, set GSD_CONTRIB_OVERRIDE=\"<reason>\" and re-run — the push is then ALLOWED and a per-worktree override receipt is logged. Otherwise push to a fork (`git push fork next`) and open a PR, or use your `!` shell channel."
+    }
+  }
+}

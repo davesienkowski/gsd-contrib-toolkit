@@ -186,6 +186,24 @@ const PROOF_TABLE = [
   { name: 'cf05-chained-push-reaches-gate', hook: 'lint-ci-marker', kind: 'deny', needsLive: true,
     bad: bash('git commit -m x && git push'),
     clean: bash('git status && ls') },
+  // ── CF-07 / CF-08 (Phase 32): consolidated enforcement-bypass-closure R2 regression ──
+  // The two closed CONFIRMED-BLOCKER bypass FORMS (CR-01 chain-collapse in the create/edit gates,
+  // CR-02 value-flag wrapper defeat of resolveProgram), proven end-to-end (mirrored from
+  // hooks/integration-proof.test.cjs DENY_GATES, the sync SOURCE). CF-07's trailing-failClosed-mask
+  // is ENVIRONMENT-INDEPENDENT: hasFailClosedSegment scans all segments FIRST (before any live
+  // resolve), so it denies a trailing mutating synonym out-of-tree with NO checkout (needsLive:false
+  // + a scratch cwd) — the highest-value mirror (it proves the SHIPPED runner fails closed even
+  // where no checkout resolves). CF-07 chained-create (title deny) and CF-08 wrapped push resolve
+  // LIVE scripts (needsLive).
+  { name: 'cf07-chained-create-reaches-gate', hook: 'gh-pr-create', kind: 'deny', needsLive: true,
+    bad: bash(`git commit -m x && gh pr create --base next --title 'fix(core): x' --body "${CF01_VALID_FIX_BODY}"`),
+    clean: bash('git status && ls') },
+  { name: 'cf07-trailing-failclosed-mask', hook: 'gh-pr-create', kind: 'deny', needsLive: false, cwd: os.tmpdir(),
+    bad: bash(`gh pr create --base next --title 'fix(#12): x' --body "${CF01_VALID_FIX_BODY}" && gh api -X POST repos/open-gsd/gsd-core/issues/weird`),
+    clean: bash(`gh pr create --base next --title 'fix(#12): x' --body "${CF01_VALID_FIX_BODY}" && gh repo view o/r`) },
+  { name: 'cf08-wrapped-value-flag-push', hook: 'containment', kind: 'deny', needsLive: true,
+    bad: bash('sudo -u user git push origin main'),
+    clean: bash('sudo -u user ls') },
   // ── binlib-edit (Write|Edit gate): command-only, no live resolution ──
   { name: 'binlib-edit', kind: 'deny', needsLive: false,
     bad: edit('/g/gsd-core/bin/lib/decisions.cjs'),
