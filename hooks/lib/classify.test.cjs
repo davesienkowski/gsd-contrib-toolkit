@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { parseCommand } = require('./argv.cjs');
-const { classifyAction, findActionSegment, isNonGovernedCommand, hasGovernedSegment } = require('./classify.cjs');
+const { classifyAction, findActionSegment, isNonGovernedCommand, hasGovernedSegment, resolveProgram } = require('./classify.cjs');
 
 const cls = (cmd) => classifyAction(parseCommand(cmd));
 
@@ -723,4 +723,82 @@ test('isNonGovernedCommand: git push, {push} → false (governed single segment,
 
 test('isNonGovernedCommand: {ok:false}, {push} → false (HARD-04, unchanged)', () => {
   assert.strictEqual(isNonGovernedCommand({ ok: false }, ['push']), false);
+});
+
+// ---------------------------------------------------------------------------
+// CF-08 (← CR-02): value-taking wrapper flags must not resolve the program to the
+// flag's VALUE.
+//
+// The SHARED resolveProgram (consumed by containment.detectGit and classifySegment)
+// learned from CF-04 to skip BOOLEAN wrapper flags only: its wrapper loop advanced
+// past any '-'-prefixed token but never consumed a value-taking wrapper flag's VALUE
+// token. So a value flag resolved the program to that value: sudo -u user git → prog
+// 'user', nice -n 10 git → '10', env -u VAR git → 'VAR'. Wrapped git/gh then slipped
+// ENF-06/07 containment and ENF-15 classification (CF-REVIEW CR-02, file
+// .planning/phases/31-enforcement-bypass-closure/CF-REVIEW.md:117-165).
+//
+// The fix teaches the loop a per-wrapper WRAPPER_VALUE_FLAGS allow-list (D-06 — skip
+// the flag AND its value token) and, per D-07, emits an ambiguous signal when a value
+// flag consumes the token stream leaving no program (env -S '<packed cmd>') so callers
+// fail closed rather than trust the leftover value token as the program.
+//
+// RED-before-GREEN (D-08): every value-flag resolution below, the wrapped gh-api
+// classification, and the env -S ambiguous failClosed FAIL on the un-fixed source
+// (which resolves to the flag value / classifies wrapped forms as other). The
+// outcome-level narrows-not-weakens guardrails (classifyAction 'other', bare-wrapper
+// 'push') pass both before and after.
+// ---------------------------------------------------------------------------
+
+const prog0 = (cmd) => resolveProgram(parseCommand(cmd).segments[0]);
+
+// -- value-flag resolution: the wrapped program must survive the value token (RED) --
+
+test('CF-08: resolveProgram sudo -u user git push → prog git (not the -u value "user")', () => {
+  assert.strictEqual(prog0('sudo -u user git push origin main').prog, 'git');
+});
+
+test('CF-08: resolveProgram nice -n 10 git push → prog git (not the -n value "10")', () => {
+  assert.strictEqual(prog0('nice -n 10 git push origin main').prog, 'git');
+});
+
+test('CF-08: resolveProgram env -u VAR git add → prog git (not the -u value "VAR")', () => {
+  assert.strictEqual(prog0('env -u VAR git add .planning/x').prog, 'git');
+});
+
+// value-flag consumption is program-agnostic — it also corrects non-governed wrappers
+// so the resolved program is the real command (the outcome stays non-governed below).
+
+test('CF-08: resolveProgram sudo -u user ls → prog ls (value flag consumed, not "user")', () => {
+  assert.strictEqual(prog0('sudo -u user ls').prog, 'ls');
+});
+
+test('CF-08: resolveProgram nice -n 10 grep foo → prog grep (value flag consumed, not "10")', () => {
+  assert.strictEqual(prog0('nice -n 10 grep foo').prog, 'grep');
+});
+
+// -- wrapped mutating gh-api reaches ENF-15 classification (RED) --
+
+test('CF-08: nice -n 10 gh api -X POST .../issues -f title=x → issue-create (ENF-15 reached)', () => {
+  const r = cls('nice -n 10 gh api -X POST repos/open-gsd/gsd-core/issues -f title=x');
+  assert.strictEqual(r.action, 'issue-create', JSON.stringify(r));
+});
+
+// -- D-07 ambiguous: an unresolvable value-flag wrapper form fails closed (RED) --
+
+test('CF-08 D-07: env -S "<packed cmd>" → failClosed (unresolvable wrapper fails closed)', () => {
+  const r = cls("env -S 'git push origin main'");
+  assert.strictEqual(r.failClosed, true, JSON.stringify(r));
+  assert.strictEqual(r.action, 'unknown');
+});
+
+// -- narrows-not-weakens guardrails: outcome unchanged before AND after --
+
+test('CF-08 narrows-not-weakens: classifyAction sudo -u user ls → other, not failClosed', () => {
+  const r = cls('sudo -u user ls');
+  assert.strictEqual(r.action, 'other', JSON.stringify(r));
+  assert.notStrictEqual(r.failClosed, true);
+});
+
+test('CF-08 regression: bare-wrapper sudo git push (CF-04, no value flag) still → push', () => {
+  assert.strictEqual(cls('sudo git push origin main').action, 'push');
 });

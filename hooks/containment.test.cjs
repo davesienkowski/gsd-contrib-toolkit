@@ -588,6 +588,90 @@ test('detectGit(parseCommand("sudo git push origin main")) → one push action [
   assert.strictEqual(actions[0].kind, 'push');
 });
 
+// ---- CF-08 (← CR-02): value-taking wrapper flags defeat resolveProgram ----
+// detectGit consumes the SHARED resolveProgram; CF-04 taught it to skip BOOLEAN
+// wrapper flags only, so a value-taking wrapper flag resolved the program to the
+// flag's VALUE (sudo -u user git → 'user', nice -n 10 git → '10', env -u VAR git →
+// 'VAR') → detectGit returned [] → the gate short-circuited to ALLOW, so a wrapped
+// upstream push (ENF-07) or a wrapped staging of a .planning artifact (ENF-06)
+// slipped through (CF-REVIEW CR-02, file
+// .planning/phases/31-enforcement-bypass-closure/CF-REVIEW.md:117-165). Per D-07 an
+// unresolvable value-flag wrapper form (env -S '<packed cmd>') fails closed.
+// RED-before-GREEN (D-08): the DENY + ambiguous cases FAIL on the un-fixed detectGit
+// (they ALLOW today); the must-still-allow cases pass both before and after
+// (narrows-not-weakens).
+
+// -- must-DENY: value-flag wrapped git reaches ENF-06 / ENF-07 --
+
+test('sudo -u user git push origin main (upstream) → DENY (ENF-07 value-flag wrapper) [CF-08]', () => {
+  const d = runContainmentGate(
+    input('sudo -u user git push origin main'),
+    deps({ remoteUrl: () => UPSTREAM, currentBranch: () => 'main' })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-07/);
+});
+
+test('nice -n 10 git push origin main (upstream) → DENY (ENF-07 value-flag wrapper) [CF-08]', () => {
+  const d = runContainmentGate(
+    input('nice -n 10 git push origin main'),
+    deps({ remoteUrl: () => UPSTREAM, currentBranch: () => 'main' })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-07/);
+});
+
+test('env -u VAR git add .planning/STATE.md → DENY (ENF-06 value-flag wrapper) [CF-08]', () => {
+  const d = runContainmentGate(input('env -u VAR git add .planning/STATE.md'), deps());
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /\.planning/);
+});
+
+// -- D-07 ambiguous: an unresolvable wrapper form must not silent-allow --
+
+test('env -S "<packed cmd>" (upstream push packed into -S) → DENY (fail closed, D-07) [CF-08]', () => {
+  const d = runContainmentGate(
+    input("env -S 'git push origin main'"),
+    deps({ remoteUrl: () => UPSTREAM, currentBranch: () => 'main' })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+});
+
+// -- detectGit seam: the value-flag normalization is observable at the pure function --
+
+test('detectGit(parseCommand("sudo -u user git push origin main")) → one push action [CF-08 seam]', () => {
+  const actions = detectGit(parseCommand('sudo -u user git push origin main'));
+  assert.strictEqual(actions.length, 1);
+  assert.strictEqual(actions[0].kind, 'push');
+});
+
+test('CHD-02 × CF-08: command git commit && sudo -u user git push → [commit, push] [CF-08 seam]', () => {
+  const actions = detectGit(
+    parseCommand('command git commit -m x && sudo -u user git push origin main')
+  );
+  assert.deepStrictEqual(actions.map((a) => a.kind), ['commit', 'push']);
+});
+
+// -- must-still-ALLOW: a genuinely non-governed value-flag wrapped command (D-09) --
+
+test('sudo -u user ls → allow (non-governed value-flag wrapped command) [CF-08]', () => {
+  assert.strictEqual(runContainmentGate(input('sudo -u user ls'), deps()).permissionDecision, 'allow');
+});
+
+test('nice -n 10 grep foo hooks/ → allow (non-governed) [CF-08]', () => {
+  assert.strictEqual(
+    runContainmentGate(input('nice -n 10 grep foo hooks/'), deps()).permissionDecision,
+    'allow'
+  );
+});
+
+test('sudo -u user git status → allow (status is not add/commit/push) [CF-08]', () => {
+  assert.strictEqual(
+    runContainmentGate(input('sudo -u user git status'), deps()).permissionDecision,
+    'allow'
+  );
+});
+
 // ---- fail-closed parse / input ----
 
 test('malformed stdin JSON → FAIL CLOSED deny (HARD-01)', () => {
