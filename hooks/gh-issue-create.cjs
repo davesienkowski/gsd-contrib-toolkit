@@ -38,7 +38,9 @@
 
 const path = require('node:path');
 const { parseCommand } = require('./lib/argv.cjs');
-const { classifyAction, findActionSegment, isNonGovernedCommand } = require('./lib/classify.cjs');
+const {
+  classifyAction, findActionSegment, isNonGovernedCommand, hasGovernedSegment, hasFailClosedSegment,
+} = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand, requireLiveScript, commandTargetsGsdCore } = require('./lib/resolve.cjs');
 
@@ -297,16 +299,23 @@ function gate(stdinString, deps) {
     throw new FailClosed('unparseable command: ' + parsed.reason);
   }
 
-  const action = classifyAction(parsed);
-  if (action.failClosed) {
+  // CF-07 (← CR-01): decide gate/no-gate from the ALL-segments logic — a governed
+  // issue-create hidden after a benign segment (`git commit && gh issue create …`) must
+  // reach this gate, not collapse to the FIRST actionable segment. Scan ALL segments for a
+  // failClosed synonym FIRST (D-03) so a trailing `gh api -X POST repos/.../issues/weird`
+  // still fails closed (ENF-15), then gate when ANY segment is an issue-create; otherwise
+  // allow (narrows-not-weakens).
+  if (hasFailClosedSegment(parsed)) {
     throw new FailClosed('unclassifiable mutating github call — failing closed (ENF-15)');
   }
-  if (action.action !== 'issue-create') {
-    return allow(); // not our concern → no-op
+  if (!hasGovernedSegment(parsed, new Set(['issue-create']))) {
+    return allow(); // no issue-create segment → no-op
   }
 
   const seg = findActionSegment(parsed, 'issue-create');
-  const route = action.route || 'native';
+  // Derive the route from the FOUND issue-create segment (not the first-segment action), so
+  // a synonym issue-create later in a chain routes correctly.
+  const route = classifyAction({ ok: true, segments: [seg] }).route || 'native';
   const body = resolveBody(seg, route, deps.readBodyFile); // may throw FailClosed
   const labels = resolveLabelsForRoute(seg, route);
 

@@ -30,7 +30,9 @@
 
 const path = require('node:path');
 const { parseCommand } = require('./lib/argv.cjs');
-const { classifyAction, isNonGovernedCommand } = require('./lib/classify.cjs');
+const {
+  classifyAction, isNonGovernedCommand, hasGovernedSegment, hasFailClosedSegment,
+} = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand, requireLiveScript, commandTargetsGsdCore } = require('./lib/resolve.cjs');
 
@@ -217,11 +219,17 @@ function gate(stdinString, deps) {
   const parsed = parseCommand(command);
   if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
 
-  const action = classifyAction(parsed);
-  if (action.failClosed) {
+  // CF-07 (← CR-01): decide gate/no-gate from the ALL-segments logic — a governed edit
+  // hidden after a benign segment (`git commit && gh pr edit …`) must reach this gate, not
+  // collapse to the FIRST actionable segment. Scan ALL segments for a failClosed synonym
+  // FIRST (D-03) so a trailing unclassifiable mutating call still fails closed (ENF-15),
+  // then gate when ANY segment is an edit; otherwise allow (narrows-not-weakens). The
+  // route stays correct because findEditSegment already selects the edit segment
+  // across the chain and returns its route.
+  if (hasFailClosedSegment(parsed)) {
     throw new FailClosed('unclassifiable mutating github call — failing closed (ENF-15)');
   }
-  if (!EDIT_ACTIONS.has(action.action)) return allow(); // not an edit → not our concern
+  if (!hasGovernedSegment(parsed, EDIT_ACTIONS)) return allow(); // no edit segment → not ours
 
   const found = findEditSegment(parsed);
   if (!found) return allow();
