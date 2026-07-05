@@ -643,6 +643,47 @@ function hasGovernedSegment(parsed, governedActions) {
 }
 
 /**
+ * CF-07 (← CR-01): the PURE any-failClosed-segment predicate — the ENF-15 analog of
+ * hasGovernedSegment. classifyAction returns only the FIRST actionable segment, so a
+ * failClosed synonym (an unclassifiable mutating github call) placed AFTER a benign
+ * actionable segment (`gh pr create <valid> && gh api -X POST repos/.../issues/weird`)
+ * is masked from a gate's `if (action.failClosed)` guard and slips ENF-15.
+ * hasFailClosedSegment instead scans EVERY segment and returns true the moment ANY
+ * segment classifies failClosed — so the create/edit gates run it FIRST (before the
+ * governed check, D-03) and a failClosed segment ANYWHERE in the chain still fails
+ * closed regardless of position.
+ *
+ * This NEVER introduces a new allow — it only REPORTS failClosed presence; the caller
+ * owns the throw. A non-ok / absent parse is not "failClosed" here — the caller's own
+ * !parsed.ok fail-closed path (HARD-04) owns the unparseable case.
+ *
+ * Declared as a hoisted function so callers can reference it regardless of source order.
+ * PURE: reads only argv/classify (no filesystem).
+ *
+ * @param {Object} parsed result of argv.parseCommand
+ * @returns {boolean} true iff ANY chained segment classifies failClosed; false for a
+ *   non-ok / absent parse or a chain with no failClosed segment.
+ */
+function hasFailClosedSegment(parsed) {
+  // A non-ok / absent parse is not "failClosed" here — the caller's own fail-closed path
+  // (HARD-04) owns the unparseable case; this predicate only reports failClosed presence.
+  if (!parsed || typeof parsed !== 'object' || parsed.ok !== true) {
+    return false;
+  }
+
+  // Same segment fan-out shape as hasGovernedSegment / findActionSegment: classify each
+  // segment in isolation (single-segment parse) and report the first failClosed hit.
+  const segs = Array.isArray(parsed.segments) && parsed.segments.length > 0
+    ? parsed.segments
+    : [parsed];
+  for (const seg of segs) {
+    const r = classifyAction({ ok: true, segments: [seg] });
+    if (r && r.failClosed === true) return true;
+  }
+  return false;
+}
+
+/**
  * RES-01: the single-source, PURE action-first guard. Tells a Bash gate whether a
  * command is CONFIDENTLY a non-governed action, so the gate may short-circuit to
  * allow() BEFORE it ever resolves/requires its LIVE policy script (which narrows the
@@ -701,6 +742,10 @@ module.exports = {
   // CF-05: exported so the push-governing gates (scan-gate, lint-ci-marker) trigger on ANY
   // governed segment in a chain — `git commit && git push` reaches the push logic.
   hasGovernedSegment,
+  // CF-07: exported so the create/edit gates (gh-pr-create, gh-edit, gh-issue-create) scan
+  // ALL segments for a failClosed synonym (ENF-15) — a trailing `gh api -X POST .../weird`
+  // after a benign actionable segment still fails closed regardless of position (D-03).
+  hasFailClosedSegment,
   // exported for cross-gate reuse (CF-04): containment.detectGit normalizes each
   // segment's program via resolveProgram so wrapped git (`sudo/command/env git`)
   // resolves to `git` — do NOT re-implement wrapper stripping in the gate.
