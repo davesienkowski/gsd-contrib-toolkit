@@ -1198,6 +1198,20 @@ function runInstall(opts = {}) {
   const applied = Array.isArray(sharedEdits) ? sharedEdits.length : 0;
   lines.push('[install] applied + ledger-recorded marker-tagged shared edits across ' + applied + ' file(s)');
 
+  // (4.5) FAIL LOUD if any wired hook target does NOT resolve (INST-01, D-04). Runs immediately AFTER
+  // the LIVE apply (the most testable placement per the D-04 discretion) and BEFORE any command/skill
+  // delivery — so a dangling wire aborts the install BEFORE it reports any success. A missing/incomplete
+  // promoted bundle => a DANGLING command path => a LOUD DriverError naming the script(s) + the `install`
+  // remediation → runCli exits nonzero. Never a silent inert install. This is the SECOND half of the
+  // promotion wire (promoteBundle at 2.5 is the first): promote-then-PROVE. On a re-run this same check
+  // proves the repair (D-05) — a re-promoted + re-wired install verifies clean.
+  const verification = verifyWiredTargets({
+    liveRoot,
+    confinedSharedFile: lifecycle.confinedSharedFile,
+    capMarker: CAP_MARKER,
+  });
+  lines.push('[install] verified ' + verification.verified + ' wired hook target(s) resolve');
+
   // (5) DELIVER the bundled slash-commands into the runtime commands dir (mirrors install.sh) — AFTER
   // the LIVE consent/ledger/shared-edit install. Commands are AVAILABILITY (delivered by install,
   // reclaimed by remove), NOT enforcement: this is purely additive after the existing install steps
@@ -1450,6 +1464,17 @@ function runOn(opts = {}) {
   });
   const applied = Array.isArray(sharedEdits) ? sharedEdits.length : 0;
   lines.push('[on] applied the CAP_MARKER (' + CAP_MARKER + ')-tagged contrib gates across ' + applied + ' file(s)');
+
+  // FAIL LOUD if any re-wired hook target does NOT resolve (INST-01, D-04) — the re-wire path re-applies
+  // the gates against the capDir, so a dangling target here is the SAME silent-inert defect. Runs
+  // immediately after the LIVE apply, before command/skill delivery; a dangling wire aborts `on` before
+  // it reports success (mirrors runInstall's post-apply verification).
+  const verification = verifyWiredTargets({
+    liveRoot,
+    confinedSharedFile: lifecycle.confinedSharedFile,
+    capMarker: CAP_MARKER,
+  });
+  lines.push('[on] verified ' + verification.verified + ' wired hook target(s) resolve');
 
   // (21-02) on OWNS the full surface: after re-applying the gates, DELIVER the commands + skills so an
   // off→on round-trip restores everything off reclaimed. Commands/skills are ENFORCEMENT-coupled
