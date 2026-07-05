@@ -176,6 +176,26 @@ Separate workflows: `security-scan.yml` (dependency integrity + prompt-injection
 
 (Upstream testing norms — regression-test-first for a fix, no-source-grep, "CI green is not sufficient", generated `bin/lib`, the per-surface QA checklist — are in *QA matrix by surface (KNOW-01)* and *Test bar by contribution type (KNOW-02)* below plus the SKILL Gotchas; not re-pasted here.)
 
+### RULESET.* tokens (verified against gsd-core 2026-07-05)
+Trek-e's directives cite named `RULESET.*` tokens; the ones below are the ones **verified real against gsd-core** (source of the ✓/⚠/❌ verdicts: `.planning/notes/trek-e-directives-reconciliation-2026-07-05.md` — verified items only). They sharpen the classification + test-quality bar the toolkit's gates already partially enforce.
+
+**Classification gates (require the approval label before code — the token form of *Issue-first* above):**
+- `RULESET.CONTRIB.CLASSIFY.fix` — requires `confirmed-bug` before implementation
+- `RULESET.CONTRIB.CLASSIFY.enhancement` — requires `approved-enhancement` before implementation
+- `RULESET.CONTRIB.CLASSIFY.feature` — requires `approved-feature` before implementation
+- `CI.GATE.issue-link-required` — a PR missing a linked issue → request-changes / HALT (`CONTRIBUTING.md:468`; the enforcing workflow is `require-issue-link.yml`, above)
+- `META.RULE.canonical-source-precedence` — when sources disagree, precedence is `CONTRIBUTING.md > docs/adr/* > CONTEXT.md > agent memory` (`CONTRIBUTING.md:549`)
+
+**Test-quality ruleset (`RULESET.TESTS.*` — what a "good test" means upstream):**
+- `mutation-score` — Stryker incremental (`--since origin/next`), default **80% killed**; surviving mutants block merge (ADR-456 / `TESTING-STANDARDS.md:141`). Already covered by the toolkit's ENF-18 `mutation.yml` and the `mutation.yml` required check listed above.
+- `boundary-coverage` — exercise inputs at N ∈ {limit-1, limit, limit+1}, not a trivial-fit/overflow pair.
+- `no-timing-assertion` — no wall-clock elapsed assertions; use a clock-seam + `node:test` `mock.timers`.
+- `property-based-testing` — parsing / transformation / budget-limit / bijective modules need ≥1 `fast-check` property test.
+- `delete-bad-tests` — pass-always / vacuous-truth / source-grep / elapsed-time / real-race tests are **deleted and replaced in the same PR**, not left in place.
+- `no-source-grep` — assert typed/structured values, never `readFileSync` a `.cjs` and substring-match on it. In gsd-core this is the ESLint rule **`local/no-source-grep`** (`eslint-rules/no-source-grep.cjs`, run by `eslint .` ⊂ `lint:ci`; ADR-452 retired the old homegrown `scripts/lint-*` scanners in favour of it) — the toolkit already phrases it as this ESLint rule in the *QA matrix by surface* parser row above and the *Submission gotchas* below.
+
+The fix-type **regression-test-first** requirement (RED before the fix) is captured as prose in *Test bar by contribution type (KNOW-02)* below — it is not a distinct gsd-core `RULESET.TESTS.*` token, so it is cited there rather than minted as one here.
+
 ### Local gate ⇒ CI gate (pre-satisfy each upstream gate before the push)
 | CI / triage gate (this section) | Skill step that pre-satisfies it locally |
 |---|---|
