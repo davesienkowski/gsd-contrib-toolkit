@@ -35,6 +35,8 @@ const {
   plannedSkillFiles,
   readDisclosedCommandSet,
   plannedCommandFiles,
+  readLinkedDocs,
+  plannedDocFiles,
   SEMVER_RE,
 } = require('./build-capability.cjs');
 
@@ -106,6 +108,28 @@ function makeFixture(over = {}) {
   fs.writeFileSync(path.join(sourceCommandsDir, '.gitkeep'), '');
   fs.writeFileSync(path.join(sourceCommandsDir, 'README.md'), '# not a gsd command\n');
 
+  // A canonical docs/ source tree (SYNC-02) — the repo-root `docs/` a skill can LINK. The docs are
+  // written unconditionally, but by DEFAULT no skill file links any of them, so the default fixture
+  // projects ZERO docs (count-based tests stay stable). A caller opts a skill file into linking a doc
+  // via over.linkDocsFrom = { '<stem>/SKILL.md': ['../../docs/REUSE.md', 'docs/REUSE.md', ...] } — the
+  // link-FORM the docs-projection detects (D-04/D-06). Geometry mirrors the real tree: a fixture skill
+  // file sits at skills/<stem>/… (depth 2), so `../../docs/X` from it resolves to the repo-root docs/X.
+  const docsFiles = over.docsFiles || { 'REUSE.md': 'reuse methodology record\n', 'UNLINKED.md': 'not linked by any skill\n' };
+  const sourceDocsDir = path.join(dir, 'docs');
+  fs.mkdirSync(sourceDocsDir, { recursive: true });
+  for (const [rel, content] of Object.entries(docsFiles)) {
+    const p = path.join(sourceDocsDir, rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, content);
+  }
+  // Append markdown doc-links (link FORM) into the named skill files, AFTER the skill files exist.
+  const linkDocsFrom = over.linkDocsFrom || {};
+  for (const [skillRel, targets] of Object.entries(linkDocsFrom)) {
+    const p = path.join(sourceSkillsDir, skillRel.split('/').join(path.sep));
+    const linkLines = targets.map((t, i) => `See [doc ${i}](${t}) for details.`).join('\n');
+    fs.appendFileSync(p, '\n' + linkLines + '\n');
+  }
+
   // A manifest to stamp — skills[] declares the fixture stems (data-driven source for the bundle).
   const manifestPath = path.join(dir, 'capability.json');
   const manifest = Object.assign(
@@ -117,17 +141,20 @@ function makeFixture(over = {}) {
   const bundleHooksDir = path.join(dir, 'bundle', 'hooks');
   const bundleSkillsDir = path.join(dir, 'bundle', 'skills');
   const bundleCommandsDir = path.join(dir, 'bundle', 'commands');
+  const bundleDocsDir = path.join(dir, 'bundle', 'docs');
 
   return {
     dir,
     sourceHooksDir,
     sourceSkillsDir,
     sourceCommandsDir,
+    sourceDocsDir,
     snippetPath,
     manifestPath,
     bundleHooksDir,
     bundleSkillsDir,
     bundleCommandsDir,
+    bundleDocsDir,
     skillStems,
     commandStems,
     // The full declared command set (including any skipped stem) — for the missing-source seam.
@@ -135,7 +162,7 @@ function makeFixture(over = {}) {
   };
 }
 
-/** The full seam set to drive build/check against a fixture (all three trees). */
+/** The full seam set to drive build/check against a fixture (all FOUR trees). */
 function seams(fx) {
   return {
     sourceHooksDir: fx.sourceHooksDir,
@@ -144,9 +171,20 @@ function seams(fx) {
     bundleSkillsDir: fx.bundleSkillsDir,
     sourceCommandsDir: fx.sourceCommandsDir,
     bundleCommandsDir: fx.bundleCommandsDir,
+    sourceDocsDir: fx.sourceDocsDir,
+    bundleDocsDir: fx.bundleDocsDir,
     manifestPath: fx.manifestPath,
     snippetPath: fx.snippetPath,
   };
+}
+
+/** Extract every markdown-link target `](target)` from a string (test-side mirror for assertions). */
+function linkTargets(content) {
+  const out = [];
+  const re = /\]\(\s*([^)\s]+)/g;
+  let m;
+  while ((m = re.exec(content)) !== null) out.push(m[1]);
+  return out;
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -531,4 +569,97 @@ test('commands confinement: a command file resolving outside the bundle commands
   // A normal flat command path resolves under the commands root.
   const ok = confineUnder(fx.bundleCommandsDir, 'gsd-one.md');
   assert.ok(ok.startsWith(path.resolve(fx.bundleCommandsDir)));
+});
+
+// ── Docs projection (SYNC-02, D-04/D-05/D-06) ───────────────────────────────────
+// A bundled skill file at skills/<stem>/… links `../../docs/NAME` (or a bare `docs/NAME`), which
+// resolves in the SOURCE tree (skill is 2 levels under root) but DANGLES in the bundle unless the
+// generator PROJECTS the linked doc into <bundleRoot>/docs/NAME. build-capability detects the
+// markdown-LINK-form doc targets the bundled skill files reference, resolves each to the link-resolving
+// bundle path, and Buffer-copies the referenced doc there — scoped to what the skill LINKS (not a
+// vacuum of all of docs/), fail-loud on a missing source, and traversal-guarded.
+
+test('docs-projection: a skill-linked `../../docs/X` is projected byte-identical to <bundleRoot>/docs/X (D-04)', () => {
+  const fx = makeFixture({ linkDocsFrom: { 'skill-one/SKILL.md': ['../../docs/REUSE.md'] } });
+  const built = buildCapability(seams(fx));
+  // The projected doc is present in the returned file list, `docs/`-prefixed.
+  assert.ok(built.files.includes('docs/REUSE.md'), 'the projected doc is listed docs/-prefixed');
+  // The bundle doc lands at the link-resolving path, byte-identical to source.
+  const bundled = path.join(fx.bundleDocsDir, 'REUSE.md');
+  assert.ok(fs.existsSync(bundled), 'the linked doc is projected into the bundle docs dir');
+  const src = fs.readFileSync(path.join(fx.sourceDocsDir, 'REUSE.md'));
+  assert.ok(src.equals(fs.readFileSync(bundled)), 'the projected doc is byte-identical to the source doc');
+});
+
+test('docs-projection: both link forms `../../docs/X` and `docs/X` dedupe to one projection', () => {
+  const fx = makeFixture({ linkDocsFrom: { 'skill-one/SKILL.md': ['../../docs/REUSE.md', 'docs/REUSE.md'] } });
+  // readLinkedDocs dedupes the two forms to a single repo-relative doc path.
+  const linked = readLinkedDocs({ sourceSkillsDir: fx.sourceSkillsDir, manifestPath: fx.manifestPath });
+  assert.deepEqual(linked, ['docs/REUSE.md']);
+  const built = buildCapability(seams(fx));
+  const projected = built.files.filter((f) => f === 'docs/REUSE.md');
+  assert.equal(projected.length, 1, 'the doc is projected exactly once (deduped)');
+});
+
+test('docs-projection SCOPED (D-06): a docs/ file NOT linked by any skill is NOT projected', () => {
+  const fx = makeFixture({ linkDocsFrom: { 'skill-one/SKILL.md': ['../../docs/REUSE.md'] } });
+  buildCapability(seams(fx));
+  // UNLINKED.md exists in the source docs tree but no skill links it → it is never projected.
+  assert.ok(fs.existsSync(path.join(fx.sourceDocsDir, 'UNLINKED.md')), 'the unlinked doc exists in source');
+  assert.equal(fs.existsSync(path.join(fx.bundleDocsDir, 'UNLINKED.md')), false, 'an unlinked doc is NOT vacuumed into the bundle');
+});
+
+test('docs-projection missing-source: a skill link to a doc with no source file is a LOUD throw (no partial bundle)', () => {
+  const fx = makeFixture({ linkDocsFrom: { 'skill-one/SKILL.md': ['../../docs/MISSING.md'] } });
+  assert.throws(() => buildCapability(seams(fx)), /missing canonical (linked-)?doc source/i);
+  // No partial bundle was written (the throw precedes ALL mkdirSync calls of ANY tree).
+  assert.equal(fs.existsSync(fx.bundleHooksDir), false);
+  assert.equal(fs.existsSync(fx.bundleSkillsDir), false);
+  assert.equal(fs.existsSync(fx.bundleDocsDir), false, 'docs bundle dir must also be absent — the throw must precede any write');
+});
+
+test('docs-projection traversal-escape: a link resolving OUTSIDE the docs root is rejected (LOUD throw)', () => {
+  for (const badTarget of ['../../../etc/passwd', '../../secrets/x', '/etc/passwd']) {
+    const fx = makeFixture({ linkDocsFrom: { 'skill-one/SKILL.md': [badTarget] } });
+    assert.throws(
+      () => readLinkedDocs({ sourceSkillsDir: fx.sourceSkillsDir, manifestPath: fx.manifestPath }),
+      /escapes the docs root/,
+      `readLinkedDocs must throw for escaping target ${JSON.stringify(badTarget)}`
+    );
+    // buildCapability (which calls readLinkedDocs) must also throw — nothing read or projected.
+    assert.throws(() => buildCapability(seams(fx)), /escapes the docs root/);
+    assert.equal(fs.existsSync(fx.bundleDocsDir), false, 'no doc is projected for an escaping link');
+  }
+});
+
+test('docs-projection: internal (non-docs) links like `reference.md` are ignored (link-FORM docs scope only)', () => {
+  // A skill file whose only links are internal (reference.md) contributes ZERO projected docs.
+  const fx = makeFixture({ linkDocsFrom: { 'skill-one/SKILL.md': ['support.md', 'reference.md'] } });
+  const linked = readLinkedDocs({ sourceSkillsDir: fx.sourceSkillsDir, manifestPath: fx.manifestPath });
+  assert.deepEqual(linked, [], 'internal non-docs links are not docs targets');
+});
+
+test('docs-projection over the REAL skill files returns exactly the canonical linked doc', () => {
+  // Against the real skills/ + manifest defaults: gsd-core-contribution links
+  // ../../docs/REUSE-AND-METHODOLOGY.md; maintainer-review-sweep links only internal docs.
+  const linked = readLinkedDocs();
+  assert.deepEqual(linked, ['docs/REUSE-AND-METHODOLOGY.md']);
+});
+
+test('docs-projection NO REWRITE (D-05): the bundled skill link text is byte-identical to source', () => {
+  const fx = makeFixture({ linkDocsFrom: { 'skill-one/SKILL.md': ['../../docs/REUSE.md'] } });
+  buildCapability(seams(fx));
+  const src = fs.readFileSync(path.join(fx.sourceSkillsDir, 'skill-one', 'SKILL.md'));
+  const bundled = fs.readFileSync(path.join(fx.bundleSkillsDir, 'skill-one', 'SKILL.md'));
+  assert.ok(src.equals(bundled), 'the skill file (and its `../../docs/…` link text) is projected verbatim, NOT rewritten');
+  assert.ok(bundled.toString('utf8').includes('](../../docs/REUSE.md)'), 'the canonical link text survives projection');
+});
+
+test('plannedDocFiles: separates present linked docs from missing sources (fail-loud discipline)', () => {
+  const fx = makeFixture({ linkDocsFrom: { 'skill-one/SKILL.md': ['../../docs/REUSE.md', '../../docs/MISSING.md'] } });
+  const linked = readLinkedDocs({ sourceSkillsDir: fx.sourceSkillsDir, manifestPath: fx.manifestPath });
+  assert.deepEqual(linked, ['docs/MISSING.md', 'docs/REUSE.md']);
+  const plan = plannedDocFiles({ sourceDocsDir: fx.sourceDocsDir, linkedDocs: linked });
+  assert.deepEqual(plan.files, ['docs/REUSE.md']);
+  assert.deepEqual(plan.missingSources, ['docs/MISSING.md']);
 });
