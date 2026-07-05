@@ -1106,3 +1106,75 @@ test('promoteBundle rejects an invalid mode (LOUD-on-miss)', () => {
     fs.rmSync(liveRoot, { recursive: true, force: true });
   }
 });
+
+// ───────────────────────── 28-02 INST-01: fail-loud on dangling wired targets (D-04/D-05) ─────────────────────────
+
+/**
+ * Hand-write a settings.json under a temp liveRoot carrying ONE CAP_MARKER-tagged PreToolUse entry
+ * whose hooks[0].command points at `scriptPath` (single-quoted after `node `, mirroring the LIVE
+ * confinedBundleScript form). Returns the temp liveRoot (caller disposes).
+ */
+function seedTaggedSettings(scriptPath) {
+  const liveRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'verify-wired-'));
+  const sp = path.join(liveRoot, SETTINGS_REL);
+  fs.mkdirSync(path.dirname(sp), { recursive: true });
+  fs.writeFileSync(
+    sp,
+    JSON.stringify(
+      {
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: 'Write|Edit',
+              [CAP_MARKER]: CAP_ID,
+              hooks: [{ type: 'command', command: "node '" + scriptPath + "'" }],
+            },
+          ],
+        },
+      },
+      null,
+      2
+    ) + '\n',
+    'utf8'
+  );
+  return liveRoot;
+}
+
+test('verifyWiredTargets THROWS a DriverError naming the dangling script + the install remediation (INST-01 RED)', { skip: SKIP }, () => {
+  // The unit-level fail-loud proof (D-04): a CAP_MARKER-tagged entry wired to a NON-EXISTENT script is
+  // the exact silent-inert defect — the settings claim enforcement is on while the gate resolves to a
+  // dangling path. verifyWiredTargets must NAME the dangling script AND the `install` remediation, and
+  // FAIL LOUD (DriverError). This case FAILS on today's driver: verifyWiredTargets did not exist.
+  const confinedSharedFile = requireLiveScript(SOURCE_ROOT, 'gsd-core/bin/lib/capability-lifecycle.cjs').confinedSharedFile;
+  const dangling = path.join(os.tmpdir(), 'no-such-dir-' + Date.now(), 'hooks', 'gh-issue-create.cjs');
+  const liveRoot = seedTaggedSettings(dangling);
+  try {
+    assert.throws(
+      () => drv.verifyWiredTargets({ liveRoot, confinedSharedFile, capMarker: CAP_MARKER }),
+      (err) =>
+        (err instanceof drv.DriverError) &&
+        err.message.includes(dangling) &&
+        /re-run .*install/i.test(err.message),
+      'a dangling wired target must FAIL LOUD naming the missing script path + the install remediation'
+    );
+  } finally {
+    fs.rmSync(liveRoot, { recursive: true, force: true });
+  }
+});
+
+test('verifyWiredTargets returns { verified: N } when every wired target resolves (INST-01)', { skip: SKIP }, () => {
+  // The positive half: a settings whose one tagged entry points at a REAL file (a bundle hook that
+  // exists) verifies clean — { verified: 1 } and no throw.
+  const confinedSharedFile = requireLiveScript(SOURCE_ROOT, 'gsd-core/bin/lib/capability-lifecycle.cjs').confinedSharedFile;
+  const realHook = path.join(drv.BUNDLE_CAP_DIR, 'hooks', 'gh-issue-create.cjs');
+  assert.ok(fs.existsSync(realHook), 'precondition: the bundle hook exists to wire against');
+  const liveRoot = seedTaggedSettings(realHook);
+  try {
+    const res = drv.verifyWiredTargets({ liveRoot, confinedSharedFile, capMarker: CAP_MARKER });
+    assert.strictEqual(res.verified, 1, 'exactly one resolving target verified');
+    assert.strictEqual(res.targets.length, 1, 'the resolved target is reported');
+    assert.strictEqual(res.targets[0].scriptPath, realHook, 'the FULL script path is parsed (not just the basename)');
+  } finally {
+    fs.rmSync(liveRoot, { recursive: true, force: true });
+  }
+});
