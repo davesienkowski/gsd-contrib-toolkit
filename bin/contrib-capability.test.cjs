@@ -315,6 +315,40 @@ function countTagged(settingsPath) {
   return { total, byEvent };
 }
 
+/**
+ * Extract every CAP_MARKER-tagged hook command from the sandbox settings, parse out the wired script
+ * path (the single-quoted absolute path the LIVE confinedBundleScript writes after `node `), and return
+ * the list of commands whose script does NOT resolve to a real file. An EMPTY list proves the promoted
+ * capDir resolves the wired gates (INST-02); a NON-empty list is the exact dangling-path silent-inert
+ * defect — the settings point the gates at scripts that do not exist because the bundle was never promoted.
+ */
+function unresolvedWiredScripts(settingsPath) {
+  const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+  const hooks = settings && typeof settings.hooks === 'object' && !Array.isArray(settings.hooks)
+    ? settings.hooks
+    : {};
+  const bad = [];
+  for (const event of Object.keys(hooks)) {
+    if (!Array.isArray(hooks[event])) continue;
+    for (const e of hooks[event]) {
+      if (!(e && typeof e === 'object' && e[CAP_MARKER] === CAP_ID)) continue;
+      const inner = Array.isArray(e.hooks) ? e.hooks : [];
+      for (const h of inner) {
+        const cmd = h && typeof h.command === 'string' ? h.command : '';
+        const m = cmd.match(/'([^']+)'/); // the confined absolute script path is single-quoted
+        const scriptPath = m ? m[1] : '';
+        if (!scriptPath || !fs.existsSync(scriptPath)) bad.push(cmd);
+      }
+    }
+  }
+  return bad;
+}
+
+/** The promoted capDir the LIVE engine composes the wired command paths against. */
+function sandboxCapDir(sb) {
+  return path.join(sb.root, '.gsd', 'capabilities', CAP_ID);
+}
+
 /** True iff the pre-seeded UNTAGGED user hook still exists (proves a marker-scoped strip). */
 function userHookSurvives(settingsPath) {
   const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
@@ -508,6 +542,48 @@ test('double-install is idempotent: a second install keeps the tagged set at 13 
   } finally {
     sb.dispose();
   }
+  assertRealStateUnchanged(before);
+});
+
+// ───────────────────────── 28-01 INST-02: driver-owned bundle promotion (RED→GREEN) ─────────────────────────
+
+test('install PROMOTES the bundle so the capDir resolves + every wired command script is a real file (INST-02)', { skip: SKIP }, () => {
+  // INST-02 (D-01/D-02) RED→GREEN pivot. Today the driver "never calls resolveCapabilitySource" and
+  // ASSUMES a pre-promoted <liveRoot>/.gsd/capabilities/contribution-toolkit bundle already exists — it
+  // does NOT create it, so the LIVE apply realpaths an ABSENT capDir, falls into confinedBundleScript's
+  // lexical catch-branch, and emits DANGLING command paths → enforcement silently INERT. This test
+  // FAILS on the pre-promotion driver (capDir absent + wired scripts unresolved) and PASSES once
+  // promoteBundle is wired into runInstall (Task 2).
+  const before = snapshotRealState(SOURCE_ROOT);
+  const sb = makeCapSandbox(SOURCE_ROOT);
+  try {
+    const opts = sandboxOpts(sb);
+    drv.runInstall(opts);
+
+    // (a) the promoted capDir must RESOLVE (present) after install — the promotion the driver now OWNS.
+    const capDir = sandboxCapDir(sb);
+    assert.ok(
+      fs.existsSync(capDir),
+      'install must promote the bundle so <liveRoot>/.gsd/capabilities/' + CAP_ID + ' resolves (INST-02)'
+    );
+    // The promoted capDir's own hooks/ must resolve to real files (the wired gates point INTO it).
+    assert.ok(
+      fs.existsSync(path.join(capDir, 'hooks')),
+      'the promoted capDir must expose its hooks/ dir (the wired gates resolve INTO it)'
+    );
+
+    // (b) every CAP_MARKER-tagged wired command script must resolve to a real file — no dangling paths.
+    const unresolved = unresolvedWiredScripts(sb.settingsPath);
+    assert.deepStrictEqual(
+      unresolved,
+      [],
+      'every wired command script must resolve to a real file after promotion (no silent-inert dangling ' +
+        'paths); unresolved: ' + JSON.stringify(unresolved)
+    );
+  } finally {
+    sb.dispose();
+  }
+  // Hermeticity preserved: the promoted capDir lands INSIDE the sandbox — the real checkout is untouched.
   assertRealStateUnchanged(before);
 });
 
