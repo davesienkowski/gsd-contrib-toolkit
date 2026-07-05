@@ -107,6 +107,44 @@ test('pr edit rewriting body to a VALID template body → allow', () => {
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
 });
 
+// ---- CF-07 (← CR-01): chain-aware edit gate ------------------------------------------
+// The edit gate must decide gate/no-gate from ANY governed segment (hasGovernedSegment
+// over EDIT_ACTIONS), not the FIRST actionable segment. Pre-CF-07 these RED cases collapse
+// the chain to `issue-create` / `commit` and ALLOW; after the fix the edit gate is REACHED,
+// while non-governed chains and body-less (label-only) edits still ALLOW.
+
+test('CF-07: gh issue create && gh pr edit (non-template body) → REACHES pr-edit gate → DENY (ENF-04)', () => {
+  const d = runEditGate(
+    input('gh issue create --title t --body b && gh pr edit 5 --body "just prose, no template"'),
+    deps()
+  );
+  // pre-CF-07: collapses to `issue-create` (not an EDIT_ACTION) → allow. Post-CF-07: the
+  // pr-edit segment is found and the LIVE pr-template-policy denies.
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /template/i);
+});
+
+test('CF-07: git commit && gh issue edit (bad version body) → REACHES issue-edit gate → DENY (LIVE version-gate)', () => {
+  const d = runEditGate(
+    input(`git commit -m x && gh issue edit 7 --body "${BAD_ISSUE_BODY}"`),
+    deps()
+  );
+  // pre-CF-07: collapses to `commit` → allow. Post-CF-07: the issue-edit segment is found
+  // and the LIVE issue-version-gate denies.
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /version/i);
+});
+
+test('CF-07 narrows-not-weakens: git status && ls → allow (no governed segment)', () => {
+  const d = runEditGate(input('git status && ls'), deps());
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('CF-07 narrows-not-weakens: git commit && gh pr edit 5 --add-label x (label-only, no body) → allow (H-B)', () => {
+  const d = runEditGate(input('git commit -m x && gh pr edit 5 --add-label x'), deps());
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
 test('gh api PATCH issues/N synonym with a bad body → DENY (ENF-15)', () => {
   const cmd = `gh api -X PATCH repos/o/r/issues/7 -f body='${BAD_ISSUE_BODY}' -f labels=bug`;
   const d = runEditGate(input(cmd), deps());

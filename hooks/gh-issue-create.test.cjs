@@ -84,6 +84,38 @@ test('gh api POST issues synonym with a failing body → DENY (ENF-15)', () => {
   assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
 });
 
+// ---- CF-07 (← CR-01): chain-aware issue-create gate ----------------------------------
+// The gate must decide gate/no-gate from ANY governed segment (hasGovernedSegment), not the
+// FIRST actionable segment. Pre-CF-07 these RED cases collapse the chain to `commit` / a
+// benign issue-create and ALLOW; after the fix the issue-create gate is REACHED (and a
+// trailing failClosed synonym is unmasked), while non-governed chains still ALLOW.
+
+test('CF-07: git commit && gh issue create (bad version body) → REACHES gate → DENY (LIVE version-gate)', () => {
+  const d = runIssueGate(
+    input(`git commit -m x && gh issue create --label bug --title x --body "${BAD_BODY}"`),
+    deps()
+  );
+  // pre-CF-07: collapses to `commit` → allow. Post-CF-07: the issue-create segment is found
+  // and the LIVE issue-version-gate denies.
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /version/i);
+});
+
+test('CF-07: gh issue create <valid> && gh api POST issues/weird → DENY (trailing failClosed, ENF-15)', () => {
+  const cmd =
+    `gh issue create --label bug --title x --body '${GOOD_BODY}'` +
+    ` && gh api -X POST repos/open-gsd/gsd-core/issues/weird`;
+  const d = runIssueGate(input(cmd), deps());
+  // pre-CF-07: classifyAction returns issue-create first, masking the trailing unclassifiable
+  // mutating synonym → allow. Post-CF-07: hasFailClosedSegment scans all segments FIRST → deny.
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+});
+
+test('CF-07 narrows-not-weakens: git status && ls → allow (no governed segment)', () => {
+  const d = runIssueGate(input('git status && ls'), deps());
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
 test('gh api POST issues synonym with a passing body → allow (ENF-15)', () => {
   const cmd = `gh api -X POST repos/o/r/issues -f title=x -f body='${GOOD_BODY}'`;
   const d = runIssueGate(input(cmd), deps());
