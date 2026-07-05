@@ -1005,6 +1005,104 @@ function reconcileLegacyEntries(args) {
 }
 
 // ---------------------------------------------------------------------------
+// fail-loud wired-target verification (INST-01, D-04) — the second half of the
+// promotion wire: after the LIVE apply writes the marker-tagged entries, PROVE
+// every one resolves to a real file. A dangling target => a LOUD DriverError.
+// ---------------------------------------------------------------------------
+//
+// WHY (D-04, the "DECEPTIVE LOUD-on-miss" concern at loadLiveEngine :863-868 made REAL): the driver
+// writes the marker-tagged PreToolUse entries into gsd-core/.claude/settings.json pointing at the
+// promoted capDir's hooks/*.cjs. When the promoted bundle is absent the LIVE confinedBundleScript
+// falls into its lexical catch-branch and emits DANGLING command paths — enforcement is silently
+// INERT and a re-run does not repair it. That silent-inert install is the exact failure mode the
+// toolkit's own thesis forbids (LOUD-on-miss over silent success). verifyWiredTargets closes it:
+// it re-reads the SAME resolved settings the wiring wrote (via the LIVE confinedSharedFile), extracts
+// EVERY CAP_MARKER-tagged entry's hooks[0].command script path (reusing the runStatus extraction, but
+// keeping the FULL path, not just the basename), stats each, and THROWS naming the dangling script(s)
+// + the `install` remediation on ANY miss. An install that cannot prove its gates resolve is NEVER
+// reported success. Wired post-apply into runInstall + runOn (never off/remove — D-08).
+
+/**
+ * PROVE every CAP_MARKER-tagged wired hook target in the resolved settings.json resolves to a real
+ * file (INST-01, D-04). Runs immediately AFTER a successful LIVE apply. Any dangling target => a LOUD
+ * DriverError naming the dangling script path(s) + the `install` remediation (nonzero exit via runCli).
+ *
+ * @param {object} args
+ * @param {string} args.liveRoot            resolved gsd-core runtimeDir (the wiring + promotion root).
+ * @param {Function} args.confinedSharedFile LIVE lifecycle.confinedSharedFile (resolves the SAME settings path the wiring wrote).
+ * @param {string} [args.capMarker]         CAP_MARKER value (defaults to the LIVE '_gsdCapability').
+ * @returns {{verified:number, targets:Array<{event:string, command:string, scriptPath:string}>}}
+ */
+function verifyWiredTargets(args = {}) {
+  const { liveRoot, confinedSharedFile, capMarker } = args;
+  if (typeof liveRoot !== 'string' || liveRoot.length === 0) {
+    throw new DriverError('verifyWiredTargets requires a non-empty liveRoot string');
+  }
+  if (typeof confinedSharedFile !== 'function') {
+    throw new DriverError('verifyWiredTargets requires the LIVE lifecycle.confinedSharedFile function');
+  }
+  const marker = typeof capMarker === 'string' && capMarker.length > 0 ? capMarker : '_gsdCapability';
+
+  const file = confinedSharedFile(liveRoot, SHARED_SETTINGS_REL);
+  if (file === null) {
+    // The caller only invokes this AFTER a successful apply — an unresolvable/escaping settings path
+    // here means the wiring target vanished or escaped confinement. That is itself a LOUD condition
+    // (no false "nothing wired" pass): an install that cannot even resolve its settings to verify its
+    // gates is never reported success (D-04).
+    throw new DriverError(
+      'verifyWiredTargets could not resolve a confined settings path for ' + SHARED_SETTINGS_REL +
+        ' under ' + liveRoot + ' — this runs immediately after a successful apply, so an unresolvable ' +
+        'settings file means the wired target escaped confinement or vanished; re-run ' +
+        '`node bin/contrib-capability.cjs install` to re-promote + re-wire (LOUD-on-miss)'
+    );
+  }
+
+  let settings;
+  try {
+    settings = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (err) {
+    throw new DriverError(
+      'verifyWiredTargets could not read/parse the wired settings ' + file + ': ' + (err && err.message) +
+        ' — the apply just wrote it, so an unreadable settings file is a LOUD failure, never a silent pass'
+    );
+  }
+
+  const hooks = settings && typeof settings.hooks === 'object' && !Array.isArray(settings.hooks)
+    ? settings.hooks
+    : {};
+  const targets = [];
+  const dangling = [];
+  for (const event of Object.keys(hooks)) {
+    if (!Array.isArray(hooks[event])) continue;
+    for (const e of hooks[event]) {
+      // The SAME CAP_MARKER match runStatus uses (e[capMarker] === CAP_ID) — verify ONLY the entries
+      // this capability owns (untagged/foreign hooks are never our concern).
+      if (!(e && typeof e === 'object' && e[marker] === CAP_ID)) continue;
+      const inner = Array.isArray(e.hooks) ? e.hooks : [];
+      const cmd = inner[0] && inner[0].command ? String(inner[0].command) : '';
+      // Parse out the FULL script path: strip a leading `node ` and any surrounding quotes (reuse the
+      // runStatus `cmd.replace(/['"]/g, '')` quote-strip shape, but keep the WHOLE path — runStatus
+      // reduces to basename; verifyWiredTargets must stat the real absolute path).
+      const scriptPath = cmd.replace(/^node\s+/, '').replace(/['"]/g, '').trim();
+      targets.push({ event, command: cmd, scriptPath });
+      if (!scriptPath || !fs.existsSync(scriptPath)) {
+        dangling.push(scriptPath || cmd);
+      }
+    }
+  }
+
+  if (dangling.length > 0) {
+    throw new DriverError(
+      'wired hook target(s) do NOT resolve to a real file — enforcement would be silently INERT: ' +
+        dangling.join(', ') + ' — the promoted bundle at ' + capabilityInstallDir(liveRoot) +
+        ' is missing/incomplete; re-run `node bin/contrib-capability.cjs install` to re-promote + ' +
+        're-wire (an install that cannot prove its gates resolve is NEVER reported success — LOUD-on-miss)'
+    );
+  }
+  return { verified: targets.length, targets };
+}
+
+// ---------------------------------------------------------------------------
 // install
 // ---------------------------------------------------------------------------
 
@@ -1781,6 +1879,7 @@ module.exports = {
   readManifest,
   manifestHookBasenames,
   reconcileLegacyEntries,
+  verifyWiredTargets,
   ledgerSharedEdits,
   countStripped,
   requireReason,
