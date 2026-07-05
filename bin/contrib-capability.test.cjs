@@ -1178,3 +1178,113 @@ test('verifyWiredTargets returns { verified: N } when every wired target resolve
     fs.rmSync(liveRoot, { recursive: true, force: true });
   }
 });
+
+test('install with promotion suppressed (no-op promoteBundle) FAILS LOUD through runInstall — never silent inert (INST-01 D-04)', { skip: SKIP }, () => {
+  // The fail-loud-THROUGH-the-real-entrypoint proof (D-04). Inject a NO-OP promoteBundle (returns a stub,
+  // does NOT create the capDir), so the LIVE apply composes DANGLING command paths against the absent
+  // capDir — the exact 2026-06-30 silent-inert defect. verifyWiredTargets (wired post-apply into
+  // runInstall) must catch it and THROW a DriverError naming the dangling script + the install
+  // remediation → runCli exits nonzero. RED on the pre-wire driver: runInstall COMPLETED SILENTLY with
+  // dangling gates. Contrast: the SAME install WITHOUT the no-op (real promotion) succeeds + logs the
+  // verified count.
+  const before = snapshotRealState(SOURCE_ROOT);
+  const sb = makeCapSandbox(SOURCE_ROOT);
+  try {
+    const opts = sandboxOpts(sb);
+    assert.throws(
+      () => drv.runInstall(Object.assign({}, opts, { promoteBundle: () => ({}) })),
+      (err) =>
+        (err instanceof drv.DriverError) &&
+        /do NOT resolve|silently INERT/i.test(err.message) &&
+        /re-run .*install/i.test(err.message) &&
+        new RegExp(CAP_ID).test(err.message),
+      'a dangling wired target must FAIL LOUD naming the missing script + the install remediation'
+    );
+    // The failed install is NEVER reported success: the capDir is absent and the wired targets dangle.
+    assert.ok(!fs.existsSync(sandboxCapDir(sb)), 'the no-op promote left the capDir ABSENT (dangling install)');
+    assert.notDeepStrictEqual(
+      unresolvedWiredScripts(sb.settingsPath), [],
+      'the fail-loud install left DANGLING wired targets (proving the check caught a real defect)'
+    );
+
+    // Contrast: a healthy install (real promotion) succeeds, resolves every target, and logs verified N.
+    const sb2 = makeCapSandbox(SOURCE_ROOT);
+    try {
+      const res = drv.runInstall(sandboxOpts(sb2));
+      assert.deepStrictEqual(unresolvedWiredScripts(sb2.settingsPath), [], 'a real-promotion install wires only resolving targets');
+      assert.ok(
+        res.lines.some((l) => /\[install\] verified \d+ wired hook target\(s\) resolve/.test(l)),
+        'a healthy install logs the verified target count'
+      );
+    } finally {
+      sb2.dispose();
+    }
+  } finally {
+    sb.dispose();
+  }
+  assertRealStateUnchanged(before);
+});
+
+test('on with promotion suppressed (no-op promoteBundle) FAILS LOUD through runOn (INST-01 D-04)', { skip: SKIP }, () => {
+  // runOn rides the SAME post-apply verifyWiredTargets. Install healthy first (so ledger/consent exist),
+  // then run `on` with a no-op promote AFTER breaking the capDir so the re-wire dangles → on must FAIL
+  // LOUD too. RED pre-wiring: runOn completed silently.
+  const before = snapshotRealState(SOURCE_ROOT);
+  const sb = makeCapSandbox(SOURCE_ROOT);
+  try {
+    const opts = sandboxOpts(sb);
+    drv.runInstall(opts);
+    // Remove the promoted capDir symlink so a re-wire with a no-op promote points at an absent capDir.
+    fs.rmSync(sandboxCapDir(sb), { force: true, recursive: true });
+    assert.throws(
+      () => drv.runOn(Object.assign({}, opts, { promoteBundle: () => ({}) })),
+      (err) => (err instanceof drv.DriverError) && /do NOT resolve|silently INERT/i.test(err.message) && /re-run .*install/i.test(err.message),
+      'on that re-wires against an absent capDir must FAIL LOUD (verifyWiredTargets rides runOn too)'
+    );
+  } finally {
+    sb.dispose();
+  }
+  assertRealStateUnchanged(before);
+});
+
+test('a re-run of install REPAIRS a dangling install: broken (bundle-absent) install → re-run re-promotes + re-wires + re-verifies (INST-01 D-05)', { skip: SKIP }, () => {
+  // The idempotent-repair proof (D-05). The driver is the SOLE repair entrypoint since install.sh was
+  // retired (v2.3). (1) A BROKEN install: promotion suppressed (no-op) so the apply composes dangling
+  // paths; verifyWiredTargets FAILS LOUD post-apply — but the dangling settings are already written to
+  // disk (verify runs after apply), so the broken install PERSISTS on disk exactly like the real defect.
+  // (2) RE-RUN install normally → promoteBundle re-creates the capDir, the strip→apply re-wires, and
+  // verifyWiredTargets passes: every wired target resolves again, no manual step.
+  const before = snapshotRealState(SOURCE_ROOT);
+  const sb = makeCapSandbox(SOURCE_ROOT);
+  try {
+    const opts = sandboxOpts(sb);
+
+    // (1) BREAK: a bundle-absent install fails loud but leaves the dangling settings on disk.
+    assert.throws(
+      () => drv.runInstall(Object.assign({}, opts, { promoteBundle: () => ({}) })),
+      (err) => (err instanceof drv.DriverError) && /re-run .*install/i.test(err.message),
+      'the broken (bundle-absent) install must FAIL LOUD'
+    );
+    assert.ok(!fs.existsSync(sandboxCapDir(sb)), 'broken state: capDir absent');
+    assert.notDeepStrictEqual(unresolvedWiredScripts(sb.settingsPath), [], 'broken state: wired targets dangle');
+
+    // (2) REPAIR: a normal re-run of install (the sole repair entrypoint).
+    const res = drv.runInstall(opts);
+
+    // Repaired: capDir re-promoted, every wired target resolves, exactly 13 tagged (idempotent), logged.
+    assert.ok(fs.existsSync(sandboxCapDir(sb)), 're-run must re-promote the capDir (D-05)');
+    assert.deepStrictEqual(
+      unresolvedWiredScripts(sb.settingsPath), [],
+      're-run must re-wire so EVERY wired target resolves again (D-05 repair)'
+    );
+    assert.strictEqual(countTagged(sb.settingsPath).total, 13, 're-run keeps EXACTLY 13 tagged (idempotent, no growth)');
+    assert.strictEqual(userHookSurvives(sb.settingsPath), true, 'the pre-seeded untagged user hook survives the repair');
+    assert.ok(
+      res.lines.some((l) => /\[install\] verified \d+ wired hook target\(s\) resolve/.test(l)),
+      'the repaired install logs the verified target count'
+    );
+  } finally {
+    sb.dispose();
+  }
+  assertRealStateUnchanged(before);
+});
