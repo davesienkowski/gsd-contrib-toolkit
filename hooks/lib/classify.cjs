@@ -36,7 +36,30 @@ const GITHUB_API_HOSTS = new Set(['api.github.com']);
 // `env git …`, `sudo git …`). We advance past the wrapper (and any wrapper flags)
 // to the wrapped program. Toolkit-OWNED rule (no LIVE shared classifier exists to
 // delegate to; repoint per #1549 if gsd-core extracts one).
-const WRAPPER_BUILTINS = new Set(['command', 'env', 'exec', 'sudo', 'nice']);
+// CF-08: extended with timeout/stdbuf/ionice — all common value-flag-carrying
+// wrappers that would otherwise disguise a wrapped git/gh (CF-REVIEW CR-02).
+const WRAPPER_BUILTINS = new Set([
+  'command', 'env', 'exec', 'sudo', 'nice', 'timeout', 'stdbuf', 'ionice',
+]);
+
+// CF-08 (← CR-02): per-wrapper allow-list of value-taking flags — those that consume
+// the FOLLOWING token as their value. The CF-04 wrapper loop skipped any '-'-prefixed
+// token but never its value token, so a value flag resolved the wrapped program to the
+// flag's VALUE (`sudo -u user git` → 'user', `nice -n 10 git` → '10', `env -u VAR git`
+// → 'VAR'), letting wrapped git/gh slip ENF-06/07 containment + ENF-15 classification.
+// Keyed by wrapper name so `sudo -n` (boolean) and `nice -n <N>` (value) stay distinct.
+// D-06 primary fix; D-07 fail-closed fallback covers any value flag NOT enumerated here
+// (an unrecognized flag is skipped as boolean, and if that leaves no program the caller
+// fails closed on the `ambiguous` signal). Attached forms (`--unset=VAR`, `-uuser`)
+// carry their own value and need no separate-token skip. Toolkit-OWNED (CR-02).
+const WRAPPER_VALUE_FLAGS = Object.freeze({
+  sudo: new Set(['-u', '-g', '-U', '-C', '-h', '-p', '-r', '-t']),
+  nice: new Set(['-n', '--adjustment']),
+  env: new Set(['-u', '--unset', '-C', '-S']),
+  stdbuf: new Set(['-i', '-o', '-e']),
+  ionice: new Set(['-c', '-n']),
+  timeout: new Set(['-s', '--signal', '-k', '--kill-after']),
+});
 
 // CR-01: git GLOBAL options that take a VALUE (the following token). When skipping
 // the global-option run to find the verb, these consume one extra token. Boolean
@@ -57,8 +80,15 @@ const GIT_GLOBAL_VALUE_SHORT = new Set(['C', 'c']);
  * builtin (`command`/`env`/`sudo`/…) the wrapped program is read from the first
  * non-flag token after the wrapper and basenamed.
  *
+ * CF-08 (← CR-02): a value-taking WRAPPER flag (`sudo -u user`, `nice -n 10`, `env -u
+ * VAR`) consumes BOTH the flag AND its separate value token per WRAPPER_VALUE_FLAGS, so
+ * the wrapped program is no longer mis-resolved to the flag's value. When a value flag
+ * consumes the token stream such that NO wrapped program remains (`env -S '<packed
+ * command>'`, `sudo -u` at end), the result carries `ambiguous:true` so callers fail
+ * closed (D-07) rather than trust a leftover value token as the program.
+ *
  * @param {Object} seg structured segment from argv.parseCommand
- * @returns {{prog:string, args:string[], wrapped:boolean}}
+ * @returns {{prog:string, args:string[], wrapped:boolean, ambiguous:boolean}}
  */
 function resolveProgram(seg) {
   const tokens = Array.isArray(seg.tokens) ? seg.tokens : [];
@@ -71,6 +101,7 @@ function resolveProgram(seg) {
 
   let prog = path.basename(tokens[i] || '');
   let wrapped = false;
+  let ambiguous = false;
 
   // Advance past wrapper builtins (and their flags) to the wrapped program.
   // Guard against runaway loops with a small bound.
@@ -78,11 +109,36 @@ function resolveProgram(seg) {
   while (WRAPPER_BUILTINS.has(prog) && guard < 8) {
     wrapped = true;
     guard += 1;
+    const wrapperName = prog; // the wrapper we are advancing past this iteration
+    const valueFlags = WRAPPER_VALUE_FLAGS[wrapperName] || null;
     i += 1;
-    // Skip wrapper flags (e.g. `env -i`, `sudo -u user`). Conservatively skip any
-    // token starting with '-'; for `-u`/`-i` style we do not consume a value (the
-    // wrapped program is the next non-flag token regardless).
-    while (i < tokens.length && tokens[i].startsWith('-')) i += 1;
+    // Skip wrapper flags. CF-08: a value-taking wrapper flag given as a SEPARATE token
+    // consumes BOTH the flag AND its value; the CF-04 boolean-only skip left the value
+    // as the next non-flag token, so the program resolved to it (CR-02). Attached forms
+    // (`--unset=VAR`, `-uuser`) carry their own value and are skipped as a single token.
+    let sawValueFlag = false;
+    while (i < tokens.length && tokens[i].startsWith('-') && tokens[i] !== '-') {
+      const flag = tokens[i];
+      const attachedLong = flag.startsWith('--') && flag.includes('=');
+      i += 1;
+      if (!attachedLong && valueFlags && valueFlags.has(flag)) {
+        // Value-taking wrapper flag as a SEPARATE token → also consume its value token.
+        if (i >= tokens.length) {
+          // The flag has no value token at all (`sudo -u` at end) → no program → fail
+          // closed (D-07).
+          ambiguous = true;
+          break;
+        }
+        i += 1; // consume the value token
+        sawValueFlag = true;
+      }
+    }
+    // `timeout` takes a leading positional DURATION (`timeout 10 git push`) before the
+    // wrapped command; consume it so the duration is not read as the program (CF-08).
+    if (wrapperName === 'timeout' && i < tokens.length &&
+        !tokens[i].startsWith('-') && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) {
+      i += 1;
+    }
     // Skip env-assignment tokens that FOLLOW the wrapper (e.g. `env FOO=bar git …`,
     // `sudo BAR=1 git …`). The leading-assignment skip above only covers the
     // no-wrapper `VAR=val cmd` form; without this a wrapped-with-assignment command
@@ -90,6 +146,12 @@ function resolveProgram(seg) {
     // (CF-04). The wrapped program is the first non-assignment, non-flag token.
     while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i += 1;
     prog = path.basename(tokens[i] || '');
+    // D-07: a value-taking wrapper flag consumed the stream such that NO program token
+    // remains — cannot confidently resolve → fail closed. A BARE wrapper with no program
+    // and no value flag (`env` used to print the environment) is NOT ambiguous: it stays
+    // a non-git no-op (narrows-not-weakens — do not over-block).
+    if (prog === '' && sawValueFlag) ambiguous = true;
+    if (ambiguous) break;
   }
 
   // Collect the ordered non-flag argument tokens AFTER the (wrapped) program,
@@ -133,7 +195,7 @@ function resolveProgram(seg) {
     args.push(tok);
   }
 
-  return { prog, args, wrapped };
+  return { prog, args, wrapped, ambiguous };
 }
 
 const FAIL_CLOSED = Object.freeze({ action: 'unknown', failClosed: true });
@@ -314,7 +376,12 @@ function classifySegment(seg) {
   // CR-01/CR-03: resolve the effective program (basename, past wrapper builtins)
   // and the ordered non-flag verb candidates (past git global options). Reading the
   // STRUCTURED token list only — never re-tokenizing the raw string (EP-2).
-  const { prog, args, wrapped } = resolveProgram(seg);
+  const { prog, args, wrapped, ambiguous } = resolveProgram(seg);
+
+  // CF-08 (D-07): a wrapped form whose value-taking flag left NO resolvable program
+  // (`env -S '<packed cmd>'`) is an unclassifiable-mutating case — fail closed (ENF-15),
+  // never a silent `other`. A containment boundary must not trust a leftover value token.
+  if (ambiguous) return FAIL_CLOSED;
 
   // ---- git ----
   if (prog === 'git') {
