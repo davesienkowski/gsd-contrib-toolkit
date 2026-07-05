@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { parseCommand } = require('./argv.cjs');
-const { classifyAction, findActionSegment, isNonGovernedCommand, hasGovernedSegment, resolveProgram } = require('./classify.cjs');
+const { classifyAction, findActionSegment, isNonGovernedCommand, hasGovernedSegment, hasFailClosedSegment, resolveProgram } = require('./classify.cjs');
 
 const cls = (cmd) => classifyAction(parseCommand(cmd));
 
@@ -683,6 +683,43 @@ test('hasGovernedSegment: accepts an array of governed actions (mirrors normaliz
 test('hasGovernedSegment: non-ok / absent parse → false', () => {
   assert.strictEqual(hasGovernedSegment({ ok: false }, ['push']), false);
   assert.strictEqual(hasGovernedSegment(null, ['push']), false);
+});
+
+// ---------------------------------------------------------------------------
+// CF-07 (← CR-01): hasFailClosedSegment — the any-segment failClosed scan, the ENF-15
+// analog of hasGovernedSegment.
+//
+// classifyAction returns the FIRST actionable segment, so a `failClosed` synonym placed
+// AFTER a benign actionable segment (`gh pr create <valid> && gh api -X POST
+// repos/.../issues/weird`) is masked from the gate's `if (action.failClosed)` guard and
+// slips ENF-15. hasFailClosedSegment scans EVERY segment and returns true iff ANY segment
+// classifies failClosed — so the create/edit gates can run it FIRST (before the governed
+// check) and never let a trailing failClosed synonym escape. Pure: no filesystem access.
+// ---------------------------------------------------------------------------
+
+test('hasFailClosedSegment: pr-create <valid> && gh api POST issues/weird → true (trailing failClosed unmasked)', () => {
+  assert.strictEqual(
+    hasFailClosedSegment(
+      parseCommand('gh pr create --title t --body b && gh api -X POST repos/open-gsd/gsd-core/issues/weird')
+    ),
+    true
+  );
+});
+
+test('hasFailClosedSegment: git commit && gh pr create → false (no failClosed segment)', () => {
+  assert.strictEqual(
+    hasFailClosedSegment(parseCommand('git commit -m x && gh pr create --title t --body b')),
+    false
+  );
+});
+
+test('hasFailClosedSegment: git status && ls → false (read-only chain)', () => {
+  assert.strictEqual(hasFailClosedSegment(parseCommand('git status && ls')), false);
+});
+
+test('hasFailClosedSegment: non-ok / absent parse → false (caller owns HARD-04)', () => {
+  assert.strictEqual(hasFailClosedSegment({ ok: false }), false);
+  assert.strictEqual(hasFailClosedSegment(null), false);
 });
 
 // ---------------------------------------------------------------------------

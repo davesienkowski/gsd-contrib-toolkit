@@ -208,6 +208,51 @@ test('gh api POST pulls synonym, full clean → allow (ENF-15)', () => {
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
 });
 
+// ---- CF-07 (← CR-01): chain-aware pr-create gate --------------------------------------
+// The gate must decide gate/no-gate from ANY governed segment (hasGovernedSegment), not the
+// FIRST actionable segment (classifyAction). Pre-CF-07 these RED cases collapse the chain to
+// `commit` / a benign pr-create and ALLOW; after the fix the pr-create gate is REACHED (and a
+// trailing failClosed synonym is unmasked), while non-governed chains still ALLOW.
+
+test('CF-07: git commit && gh pr create (non-conforming title) → REACHES gate → DENY (CF-01)', () => {
+  const d = runPrGate(
+    input(`git commit -m x && gh pr create --base next --title "fix(core): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps()
+  );
+  // pre-CF-07: collapses to `commit` → allow. Post-CF-07: gate reached, CF-01 denies the
+  // missing-issue-ref title (`fix(core)` has no `#N`).
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /title|conventional|CF-01/i);
+});
+
+test('CF-07: gh pr create <valid> && gh api POST issues/weird → DENY (trailing failClosed, ENF-15)', () => {
+  const cmd =
+    `gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"` +
+    ` && gh api -X POST repos/open-gsd/gsd-core/issues/weird`;
+  const d = runPrGate(input(cmd), deps());
+  // pre-CF-07: classifyAction returns pr-create first, masking the trailing unclassifiable
+  // mutating synonym → allow. Post-CF-07: hasFailClosedSegment scans all segments FIRST → deny.
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+});
+
+test('CF-07 narrows-not-weakens: git status && ls → allow (no governed segment)', () => {
+  const d = runPrGate(input('git status && ls'), deps());
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('CF-07 narrows-not-weakens: echo hi && gh repo view o/r → allow (no governed segment)', () => {
+  const d = runPrGate(input('echo hi && gh repo view o/r'), deps());
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('CF-07: bare gh pr create <valid> (single segment) → allow (decision unchanged)', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps()
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
 test('unparseable command → FAIL CLOSED deny (HARD-04)', () => {
   const d = runPrGate(input('gh pr create --base next --body "unterminated'), deps());
   assert.strictEqual(d.permissionDecision, 'deny');
