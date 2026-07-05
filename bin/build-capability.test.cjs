@@ -663,3 +663,87 @@ test('plannedDocFiles: separates present linked docs from missing sources (fail-
   assert.deepEqual(plan.files, ['docs/REUSE.md']);
   assert.deepEqual(plan.missingSources, ['docs/MISSING.md']);
 });
+
+// ── Docs in --check parity (SYNC-02, D-10 — the RED-on-regression backstop) ──────
+// checkBundleFresh byte-parity-COVERS the projected docs tree exactly like the skills/commands trees,
+// so REMOVING the projection (or a dropped/corrupt/extra projected doc) makes `build --check` go RED —
+// the dangling link returns. verify-capability REUSES this single function, so it inherits docs
+// coverage for free (no verify-capability edit).
+
+test('docs in --check parity (fresh): a clean build with a linked doc is fresh and checked counts the doc', () => {
+  const fx = makeFixture({ linkDocsFrom: { 'skill-one/SKILL.md': ['../../docs/REUSE.md'] } });
+  buildCapability(seams(fx));
+  const check = checkBundleFresh(seams(fx));
+  assert.equal(check.fresh, true);
+  assert.deepEqual(check.staleFiles, []);
+  // checked now covers the projected doc too (10 base + 1 projected).
+  assert.equal(check.checked, FIXTURE_TOTAL_FILES + 1);
+});
+
+test('docs remove-projection → STALE (D-10): deleting the projected bundle doc makes check stale "missing from bundle"', () => {
+  const fx = makeFixture({ linkDocsFrom: { 'skill-one/SKILL.md': ['../../docs/REUSE.md'] } });
+  buildCapability(seams(fx));
+  // Remove the projected doc — this is exactly "the dangling link returns".
+  fs.rmSync(path.join(fx.bundleDocsDir, 'REUSE.md'));
+
+  const check = checkBundleFresh(seams(fx));
+  assert.equal(check.fresh, false, 'a removed projection is NEVER reported fresh — build --check must go RED');
+  const named = check.staleFiles.find((s) => s.path === 'docs/REUSE.md');
+  assert.ok(named, 'the dropped projected doc is named with a docs/ prefix');
+  assert.match(named.reason, /missing from bundle/);
+});
+
+test('docs-drift corrupt: mutating the projected bundle doc => not-fresh, naming it "differs"', () => {
+  const fx = makeFixture({ linkDocsFrom: { 'skill-one/SKILL.md': ['../../docs/REUSE.md'] } });
+  buildCapability(seams(fx));
+  fs.appendFileSync(path.join(fx.bundleDocsDir, 'REUSE.md'), '\ndrift\n');
+
+  const check = checkBundleFresh(seams(fx));
+  assert.equal(check.fresh, false);
+  const named = check.staleFiles.find((s) => s.path === 'docs/REUSE.md');
+  assert.ok(named, 'the corrupted projected doc is named with a docs/ prefix');
+  assert.match(named.reason, /differs from canonical source/);
+});
+
+test('docs-drift extra (WR-04 symmetry): planting an undeclared file under bundle docs/ => not-fresh, naming it "extra"', () => {
+  const fx = makeFixture({ linkDocsFrom: { 'skill-one/SKILL.md': ['../../docs/REUSE.md'] } });
+  buildCapability(seams(fx));
+  // Plant an undeclared file under the bundle docs tree (a doc the skills never link).
+  fs.writeFileSync(path.join(fx.bundleDocsDir, 'PLANTED.md'), 'not in the planned docs set\n');
+
+  const check = checkBundleFresh(seams(fx));
+  assert.equal(check.fresh, false, 'an augmented docs tree is NEVER reported fresh (WR-04 symmetry)');
+  const named = check.staleFiles.find((s) => s.path === 'docs/PLANTED.md');
+  assert.ok(named, 'the planted doc is named with a docs/ prefix');
+  assert.match(named.reason, /extra file in bundle/);
+});
+
+test('docs missing-source on CHECK path: a linked doc with no source surfaces as "canonical source missing" (not a throw)', () => {
+  const fx = makeFixture({ linkDocsFrom: { 'skill-one/SKILL.md': ['../../docs/MISSING.md'] } });
+  // checkBundleFresh must NOT throw for a missing linked-doc source — it surfaces it as staleness.
+  const check = checkBundleFresh(seams(fx));
+  assert.equal(check.fresh, false);
+  const named = check.staleFiles.find((s) => s.path === 'docs/MISSING.md');
+  assert.ok(named, 'the missing linked-doc source is named with a docs/ prefix');
+  assert.match(named.reason, /canonical source missing/);
+});
+
+test('docs LINK RESOLVES (D-10): after build, every bundled-skill `../../docs/…` link points at a real bundle file', () => {
+  const fx = makeFixture({ linkDocsFrom: { 'skill-one/SKILL.md': ['../../docs/REUSE.md'] } });
+  buildCapability(seams(fx));
+  // For each bundled skill file, resolve each `](../../docs/…)` link relative to the bundled skill
+  // file and assert the target EXISTS as a real bundle file (the dangling link is closed).
+  const skillFiles = plannedSkillFiles({ sourceSkillsDir: fx.sourceSkillsDir, skillSet: fx.skillStems }).files;
+  let checkedLinks = 0;
+  for (const rel of skillFiles) {
+    const bundledSkillFile = path.join(fx.bundleSkillsDir, rel);
+    const content = fs.readFileSync(bundledSkillFile, 'utf8');
+    for (const target of linkTargets(content)) {
+      if (!/(^|\/)docs\//.test(target)) continue; // only the docs-form links
+      const resolved = path.resolve(path.dirname(bundledSkillFile), target);
+      assert.ok(fs.existsSync(resolved), `bundled link ${target} resolves to a real bundle file ${resolved}`);
+      checkedLinks++;
+    }
+  }
+  assert.ok(checkedLinks > 0, 'at least one bundled `../../docs/…` link was resolved and verified');
+});
