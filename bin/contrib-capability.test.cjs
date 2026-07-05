@@ -951,3 +951,141 @@ test('removeBundledSkills returns {removed:0} on a vanished bundle skills/ dir (
     fs.rmSync(sb, { recursive: true, force: true });
   }
 });
+
+// ───────────────────────── 28-01 promotion primitives (INST-02, D-01/D-02/D-03) ─────────────────────────
+//
+// The promotion helpers own making <liveRoot>/.gsd/capabilities/contribution-toolkit resolve to the real
+// bundle (symlink-for-local / copy-for-distributed), mirroring deliverBundledSkills' never-clobber +
+// idempotency shape. These are pure fs unit probes (no LIVE engine), so they run unconditionally (no SKIP).
+
+test('capabilityInstallDir derives <liveRoot>/.gsd/capabilities/contribution-toolkit from liveRoot (never hardcoded)', () => {
+  assert.strictEqual(
+    drv.capabilityInstallDir('/some/live/root'),
+    path.join('/some/live/root', '.gsd', 'capabilities', CAP_ID),
+    'capDir is derived from the resolved liveRoot (T-12-01-PATH / T-28-01)'
+  );
+  assert.throws(() => drv.capabilityInstallDir(''), /liveRoot/, 'an empty liveRoot FAILS LOUD (no hardcoded fallback)');
+});
+
+test('resolvePromotionMode: symlink for the in-repo repo-backed bundle, copy for an out-of-repo/ephemeral bundleDir', () => {
+  // The in-repo BUNDLE_CAP_DIR resolves under REPO_ROOT (which carries a .git) => local => symlink.
+  assert.strictEqual(
+    drv.resolvePromotionMode({ bundleDir: drv.BUNDLE_CAP_DIR }),
+    'symlink',
+    'the in-repo repo-backed bundle is the local source-of-truth case => symlink (D-02)'
+  );
+  // A bundleDir OUTSIDE the repo is treated as distributed/ephemeral => copy.
+  const ephemeral = fs.mkdtempSync(path.join(os.tmpdir(), 'ephem-bundle-'));
+  try {
+    assert.strictEqual(
+      drv.resolvePromotionMode({ bundleDir: ephemeral }),
+      'copy',
+      'a bundleDir not under REPO_ROOT is distributed/ephemeral => copy (D-02/D-03)'
+    );
+  } finally {
+    fs.rmSync(ephemeral, { recursive: true, force: true });
+  }
+  assert.throws(() => drv.resolvePromotionMode({}), /bundleDir/, 'a missing bundleDir FAILS LOUD');
+});
+
+test('promoteBundle symlink mode: absolute dir-symlink capDir→bundleDir whose hooks/*.cjs resolve; idempotent; re-points stale', () => {
+  const liveRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'promote-sym-'));
+  try {
+    const r = drv.promoteBundle({ liveRoot, bundleDir: drv.BUNDLE_CAP_DIR, mode: 'symlink' });
+    const capDir = drv.capabilityInstallDir(liveRoot);
+    assert.strictEqual(r.action, 'linked', 'first promote links the capDir');
+    assert.strictEqual(r.capDir, capDir, 'result carries the derived capDir');
+    const st = fs.lstatSync(capDir);
+    assert.ok(st.isSymbolicLink(), 'capDir must be a symlink');
+    assert.strictEqual(fs.readlinkSync(capDir), path.resolve(drv.BUNDLE_CAP_DIR), 'symlink points at the absolute bundle source');
+    // The wired hooks resolve THROUGH the symlink to real files.
+    const oneHook = path.join(capDir, 'hooks', 'gh-issue-create.cjs');
+    assert.ok(fs.existsSync(oneHook), 'a bundle hook resolves through the promoted capDir symlink');
+    assert.ok(fs.statSync(capDir).isDirectory(), 'the followed symlink is a directory');
+
+    // Idempotent: a second promote at the correct source is a no-op ('already'), no throw/growth.
+    const r2 = drv.promoteBundle({ liveRoot, bundleDir: drv.BUNDLE_CAP_DIR, mode: 'symlink' });
+    assert.strictEqual(r2.action, 'already', 'a re-promote at the correct source is idempotent');
+    assert.strictEqual(fs.readlinkSync(capDir), path.resolve(drv.BUNDLE_CAP_DIR), 'the symlink is unchanged');
+
+    // A stale symlink (points elsewhere) is RE-POINTED, not errored.
+    const elsewhere = path.join(liveRoot, 'elsewhere');
+    fs.mkdirSync(elsewhere);
+    fs.rmSync(capDir, { force: true });
+    fs.symlinkSync(elsewhere, capDir, 'dir');
+    const r3 = drv.promoteBundle({ liveRoot, bundleDir: drv.BUNDLE_CAP_DIR, mode: 'symlink' });
+    assert.strictEqual(r3.action, 'relinked', 're-pointing a stale symlink counts as relinked');
+    assert.strictEqual(fs.readlinkSync(capDir), path.resolve(drv.BUNDLE_CAP_DIR), 're-pointed at the bundle source');
+  } finally {
+    fs.rmSync(liveRoot, { recursive: true, force: true });
+  }
+});
+
+test('promoteBundle symlink mode NEVER clobbers a REAL dir at capDir (T-28-01, DriverError names remediation)', () => {
+  const liveRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'promote-sym-clobber-'));
+  try {
+    const capDir = drv.capabilityInstallDir(liveRoot);
+    fs.mkdirSync(capDir, { recursive: true });
+    const REAL = '# a REAL dir at the capDir — must NEVER be clobbered\n';
+    fs.writeFileSync(path.join(capDir, 'user-file.txt'), REAL, 'utf8');
+    assert.throws(
+      () => drv.promoteBundle({ liveRoot, bundleDir: drv.BUNDLE_CAP_DIR, mode: 'symlink' }),
+      (err) => (err instanceof drv.DriverError) && /refusing to overwrite/i.test(err.message) && /re-run `install`/.test(err.message),
+      'a real dir at capDir is refused with a DriverError naming the remediation (never clobbered)'
+    );
+    assert.strictEqual(fs.lstatSync(capDir).isSymbolicLink(), false, 'the real dir must NOT have become a symlink');
+    assert.strictEqual(fs.readFileSync(path.join(capDir, 'user-file.txt'), 'utf8'), REAL, 'the real content is byte-intact');
+  } finally {
+    fs.rmSync(liveRoot, { recursive: true, force: true });
+  }
+});
+
+test('promoteBundle copy mode: real capDir tree with the same hooks; idempotent re-copy; never clobbers a FOREIGN real dir', () => {
+  const liveRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'promote-copy-'));
+  try {
+    const capDir = drv.capabilityInstallDir(liveRoot);
+    const r = drv.promoteBundle({ liveRoot, bundleDir: drv.BUNDLE_CAP_DIR, mode: 'copy' });
+    assert.strictEqual(r.action, 'copied', 'first copy promotes via a fresh recursive copy');
+    assert.strictEqual(fs.lstatSync(capDir).isSymbolicLink(), false, 'copy mode produces a REAL dir (not a symlink)');
+    const oneHook = path.join(capDir, 'hooks', 'gh-issue-create.cjs');
+    assert.ok(fs.existsSync(oneHook) && !fs.lstatSync(oneHook).isSymbolicLink(), 'the copied capDir carries the real hooks/*.cjs');
+
+    // Idempotent: a second copy refreshes OUR OWN prior promotion (marker present) — no throw, no growth.
+    const r2 = drv.promoteBundle({ liveRoot, bundleDir: drv.BUNDLE_CAP_DIR, mode: 'copy' });
+    assert.strictEqual(r2.action, 'recopied', 'a re-copy of our own prior promotion is idempotent (recopied)');
+    assert.ok(fs.existsSync(oneHook), 'the hook still resolves after the idempotent re-copy');
+  } finally {
+    fs.rmSync(liveRoot, { recursive: true, force: true });
+  }
+});
+
+test('promoteBundle copy mode NEVER clobbers a FOREIGN real dir (no promotion marker) at capDir (T-28-01)', () => {
+  const liveRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'promote-copy-foreign-'));
+  try {
+    const capDir = drv.capabilityInstallDir(liveRoot);
+    fs.mkdirSync(capDir, { recursive: true });
+    const REAL = '# foreign real dir at capDir (no promotion marker) — remove must leave it\n';
+    fs.writeFileSync(path.join(capDir, 'foreign.txt'), REAL, 'utf8');
+    assert.throws(
+      () => drv.promoteBundle({ liveRoot, bundleDir: drv.BUNDLE_CAP_DIR, mode: 'copy' }),
+      (err) => (err instanceof drv.DriverError) && /refusing to overwrite/i.test(err.message),
+      'a real dir WITHOUT our promotion marker is refused (never clobber unrelated content)'
+    );
+    assert.strictEqual(fs.readFileSync(path.join(capDir, 'foreign.txt'), 'utf8'), REAL, 'the foreign content is byte-intact');
+  } finally {
+    fs.rmSync(liveRoot, { recursive: true, force: true });
+  }
+});
+
+test('promoteBundle rejects an invalid mode (LOUD-on-miss)', () => {
+  const liveRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'promote-badmode-'));
+  try {
+    assert.throws(
+      () => drv.promoteBundle({ liveRoot, bundleDir: drv.BUNDLE_CAP_DIR, mode: 'bogus' }),
+      (err) => (err instanceof drv.DriverError) && /symlink.*copy/i.test(err.message),
+      'an invalid mode FAILS LOUD naming the valid forms'
+    );
+  } finally {
+    fs.rmSync(liveRoot, { recursive: true, force: true });
+  }
+});

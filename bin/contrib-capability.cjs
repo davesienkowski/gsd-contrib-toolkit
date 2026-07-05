@@ -131,6 +131,20 @@ const ENFORCEMENT_FLAG = 'workflow.gsd_contrib_enforcement';
 // confinedSharedFile() resolves this against runtimeDir and rejects any escape (T-12-01-PATH).
 const SHARED_SETTINGS_REL = path.join('.claude', 'settings.json');
 
+// The runtime capabilities root, relative to the gsd-core runtimeDir — MIRRORS the LIVE
+// capability-lifecycle.capDir() layout (`<runtimeDir>/.gsd/capabilities/<id>`, lifecycle.cjs L49-53).
+// Re-declared LOCALLY (never imported) so the driver composes the promotion target from the resolved
+// liveRoot, never a hardcoded path (T-12-01-PATH / T-28-01) — the same LOCAL-re-declaration discipline
+// the driver already uses for SHARED_SETTINGS_REL rather than importing a LIVE constant.
+const CAPABILITIES_REL = path.join('.gsd', 'capabilities');
+
+// A hidden ownership marker written at the ROOT of a COPY-mode promotion (never inside a symlink
+// promotion, whose ownership is self-evident from its link target). It lets promoteBundle distinguish
+// OUR prior copy promotion (safe to refresh idempotently) from a FOREIGN real dir a user placed at the
+// capDir (NEVER clobbered — T-28-01, mirrors deliverBundledSkills T-17-02-CLOBBER). Inert to the LIVE
+// engine (it reads capability.json + hooks/*, never this dotfile).
+const PROMOTION_MARKER = '.gsd-contrib-promotion';
+
 // The agent-facing slash-command set the install DELIVERS into the runtime commands dir. The set is
 // DATA-DRIVEN from the BUNDLE's commands/ dir on disk via the SAME /^gsd-.*\.md$/ filter
 // build-capability.cjs readDisclosedCommandSet + verify-capability.cjs readShippedCommands use — so
@@ -604,6 +618,187 @@ function removeBundledSkills(args = {}) {
     removed += 1;
   }
   return { removed, names };
+}
+
+// ---------------------------------------------------------------------------
+// bundle promotion (INST-02, D-01/D-02/D-03) — the driver OWNS making the LIVE
+// engine's capDir resolve to the real bundle BEFORE the shared-edit apply
+// composes the wired command paths against it.
+// ---------------------------------------------------------------------------
+//
+// WHY THE DRIVER OWNS THIS (D-01, grounded in gsd-core ADR-1239 #1679/#1681): the LIVE engine's own
+// stager (assertDestWithinConfigHome) REJECTS staging into `<gsd-core>/.gsd/` — that path is inside the
+// checkout but OUTSIDE the `~/.claude` configHome the confined writer allows. So the engine can never
+// promote the bundle there itself; the driver must. Without a resolvable capDir the LIVE
+// applyCapabilitySharedEdits → confinedBundleScript realpaths an ABSENT dir, falls into its lexical
+// catch-branch (capability-lifecycle.cjs L326-334), and emits DANGLING command paths — enforcement
+// silently INERT. promoteBundle is the first half of that wire; the fail-loud check (28-02) is the second.
+//
+// FORM (D-02/D-03): a LOCAL repo-backed source (the toolkit repo — the source-of-truth case matching the
+// "symlinks back to the repo" containment philosophy + the 2026-06-30 manual `ln -s` reference repair)
+// promotes via an ABSOLUTE directory symlink; a DISTRIBUTED/ephemeral source promotes via a recursive
+// copy. Both mirror deliverBundledSkills' idempotent leave-if-correct / re-point / NEVER-clobber-a-real-dir
+// safety (T-17-02-CLOBBER → T-28-01).
+
+/**
+ * The capDir the LIVE engine composes the wired command paths against:
+ * `<liveRoot>/.gsd/capabilities/<CAP_ID>`. DERIVED from the resolved liveRoot (never a hardcoded path —
+ * T-12-01-PATH / T-28-01), mirroring the LIVE capability-lifecycle.capDir() layout without importing it.
+ *
+ * @param {string} liveRoot the resolved gsd-core runtimeDir.
+ * @returns {string} absolute capDir path.
+ */
+function capabilityInstallDir(liveRoot) {
+  if (typeof liveRoot !== 'string' || liveRoot.length === 0) {
+    throw new DriverError('capabilityInstallDir requires a non-empty liveRoot string');
+  }
+  return path.join(liveRoot, CAPABILITIES_REL, CAP_ID);
+}
+
+/**
+ * D-03 discriminator: is this a LOCAL repo-backed source (→ 'symlink') or a DISTRIBUTED/ephemeral one
+ * (→ 'copy')? The local, source-of-truth case is the toolkit repo itself — detected by REPO_ROOT
+ * carrying a `.git` AND the bundleDir resolving UNDER REPO_ROOT (so a bundle copied out to a packaged/
+ * ephemeral location, or any tree not under the repo, is treated as distributed → copy). This is the
+ * least-surprising, TESTABLE discriminator: a test injects an out-of-repo bundleDir to exercise 'copy'
+ * and the in-repo BUNDLE_CAP_DIR to exercise 'symlink'.
+ *
+ * @param {object} args
+ * @param {string} args.bundleDir the bundle root being promoted.
+ * @returns {'symlink'|'copy'}
+ */
+function resolvePromotionMode(args = {}) {
+  const { bundleDir } = args;
+  if (typeof bundleDir !== 'string' || bundleDir.length === 0) {
+    throw new DriverError('resolvePromotionMode requires a { bundleDir } string path');
+  }
+  let repoBacked = false;
+  try {
+    // .git is a DIR in a normal clone and a FILE in a git worktree — existsSync covers both.
+    repoBacked = fs.existsSync(path.join(REPO_ROOT, '.git'));
+  } catch (_) {
+    repoBacked = false;
+  }
+  const absBundle = path.resolve(bundleDir);
+  const underRepo = absBundle === REPO_ROOT || absBundle.startsWith(REPO_ROOT + path.sep);
+  return repoBacked && underRepo ? 'symlink' : 'copy';
+}
+
+/**
+ * PROMOTE the bundle so `<liveRoot>/.gsd/capabilities/<CAP_ID>` (the capDir) resolves to the real bundle
+ * BEFORE the LIVE shared-edit apply composes the wired command paths against it (INST-02, D-01/D-02).
+ * mkdir the `.gsd/capabilities` parent first, then per mode:
+ *
+ *   • 'symlink' — an ABSOLUTE directory symlink capDir → bundleDir (fs.symlinkSync(absSource, capDir,
+ *     'dir'), the 2026-06-30 reference form + deliverBundledSkills shape). Idempotent: a symlink already
+ *     at the correct source is LEFT (action 'already'); a symlink pointing elsewhere is RE-POINTED
+ *     (action 'relinked'); a REAL non-symlink dir/file at capDir is NEVER clobbered (DriverError naming
+ *     the remediation — T-28-01); otherwise the link is created (action 'linked').
+ *   • 'copy' — a recursive copy of the bundle tree into capDir, tagged with a hidden PROMOTION_MARKER so
+ *     a re-run refreshes OUR OWN prior copy idempotently (action 'recopied') without clobbering a FOREIGN
+ *     real dir (a real dir WITHOUT our marker is refused — DriverError, T-28-01). A prior SYMLINK at
+ *     capDir (e.g. switching modes) has its LINK removed WITHOUT recursion (never follows into the bundle),
+ *     then a fresh copy lands (action 'copied'/'recopied'). A real FILE at capDir is refused.
+ *
+ * Containment: the ONLY write target is the capDir derived from liveRoot (T-12-01-PATH / T-28-01) — the
+ * write stays confined to `<liveRoot>/.gsd/capabilities/<CAP_ID>`.
+ *
+ * @param {object} args
+ * @param {string} args.liveRoot  resolved gsd-core runtimeDir (the promotion root).
+ * @param {string} args.bundleDir the real bundle to promote (BUNDLE_CAP_DIR for the local case).
+ * @param {'symlink'|'copy'} args.mode promotion form (resolvePromotionMode).
+ * @returns {{mode:string, capDir:string, bundleDir:string, action:string}}
+ */
+function promoteBundle(args = {}) {
+  const { liveRoot, bundleDir, mode } = args;
+  if (typeof liveRoot !== 'string' || typeof bundleDir !== 'string') {
+    throw new DriverError('promoteBundle requires { liveRoot, bundleDir } string paths');
+  }
+  if (mode !== 'symlink' && mode !== 'copy') {
+    throw new DriverError(
+      'promoteBundle requires mode "symlink" | "copy" (resolvePromotionMode), got ' + JSON.stringify(mode)
+    );
+  }
+  const capDir = capabilityInstallDir(liveRoot);
+  const absSource = path.resolve(bundleDir);
+  // mkdir the `.gsd/capabilities` parent first (mirrors the delivery helpers' mkdir-the-parent step).
+  fs.mkdirSync(path.dirname(capDir), { recursive: true });
+
+  let st = null;
+  try {
+    st = fs.lstatSync(capDir);
+  } catch (_) {
+    st = null; // absent
+  }
+
+  if (mode === 'symlink') {
+    if (st && st.isSymbolicLink()) {
+      let current = '';
+      try {
+        current = fs.readlinkSync(capDir);
+      } catch (_) {
+        current = '';
+      }
+      if (current === absSource) {
+        return { mode, capDir, bundleDir: absSource, action: 'already' }; // idempotent no-op
+      }
+      // Symlink points elsewhere — re-point it (safe: replacing a symlink, not real data).
+      fs.rmSync(capDir, { force: true });
+      fs.symlinkSync(absSource, capDir, 'dir');
+      return { mode, capDir, bundleDir: absSource, action: 'relinked' };
+    }
+    if (st) {
+      // A REAL non-symlink dir/file at capDir — NEVER clobber (T-28-01, mirrors deliverBundledSkills
+      // L529 / install.sh L73 `die "refusing to overwrite real file"`).
+      throw new DriverError(
+        'refusing to overwrite existing entry at ' + capDir + ' (not a symlink into our bundle — found ' +
+          'a real file or directory) — bundle promotion NEVER clobbers existing content at the capDir; ' +
+          'move it aside and re-run `install` (mirrors deliverBundledSkills never-clobber fail-safe)'
+      );
+    }
+    // Absent — create the ABSOLUTE directory symlink → the bundle source (the 2026-06-30 reference form).
+    fs.symlinkSync(absSource, capDir, 'dir');
+    return { mode, capDir, bundleDir: absSource, action: 'linked' };
+  }
+
+  // mode === 'copy'
+  let action = 'copied';
+  if (st && st.isSymbolicLink()) {
+    // A prior symlink promotion (or foreign symlink). Remove the LINK ONLY — rmSync WITHOUT recursive on
+    // a symlink removes the link, NEVER follows into / deletes the target tree (D-02 never-recurse rule).
+    fs.rmSync(capDir, { force: true });
+    action = 'recopied';
+  } else if (st && st.isDirectory()) {
+    // A real dir at capDir. Refresh it ONLY if it is OUR OWN prior copy promotion (carries the marker);
+    // a FOREIGN real dir (no marker) is NEVER clobbered (T-28-01).
+    const ours = fs.existsSync(path.join(capDir, PROMOTION_MARKER));
+    if (!ours) {
+      throw new DriverError(
+        'refusing to overwrite existing directory at ' + capDir + ' (a real dir that is NOT a prior ' +
+          'contribution-toolkit promotion — no ' + PROMOTION_MARKER + ' marker) — bundle promotion NEVER ' +
+          'clobbers unrelated content at the capDir; move it aside and re-run `install`'
+      );
+    }
+    // Our own prior copy — remove it recursively (safe: it is a real dir we created, not a followed
+    // symlink) and re-copy fresh so a regenerated bundle is reflected (idempotent).
+    fs.rmSync(capDir, { recursive: true, force: true });
+    action = 'recopied';
+  } else if (st) {
+    // A real FILE at capDir — NEVER clobber (T-28-01).
+    throw new DriverError(
+      'refusing to overwrite existing file at ' + capDir + ' — bundle promotion NEVER clobbers existing ' +
+        'content at the capDir; move it aside and re-run `install`'
+    );
+  }
+  // Recursive copy of the bundle tree (dereference:false so bundle-internal symlinks are copied as
+  // links, never followed out of the tree), then tag it as OUR promotion for idempotent refresh.
+  fs.cpSync(absSource, capDir, { recursive: true, dereference: false });
+  fs.writeFileSync(
+    path.join(capDir, PROMOTION_MARKER),
+    JSON.stringify({ id: CAP_ID, source: absSource, promotedAt: new Date().toISOString() }, null, 2) + '\n',
+    'utf8'
+  );
+  return { mode, capDir, bundleDir: absSource, action };
 }
 
 // ---------------------------------------------------------------------------
@@ -1555,6 +1750,9 @@ module.exports = {
   removeBundledCommands,
   deliverBundledSkills,
   removeBundledSkills,
+  capabilityInstallDir,
+  resolvePromotionMode,
+  promoteBundle,
   loadLiveEngine,
   readManifest,
   manifestHookBasenames,
