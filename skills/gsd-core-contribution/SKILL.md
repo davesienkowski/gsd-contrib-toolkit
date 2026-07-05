@@ -5,6 +5,8 @@ description: Use when filing or preparing a bug/fix issue and pull request for t
 
 # GSD-Core Contribution Pipeline
 
+> **Source of truth — this skill's canonical home is `skills/gsd-core-contribution/` in the gsd-contrib-toolkit repo.** If you are reading this as an installed/projected copy (under `~/.claude/skills/…` or `.gsd/capabilities/<id>/skills/…`), any edit you make here is **ephemeral** — the next `node bin/build-capability.cjs` re-projects it byte-for-byte from source and overwrites your change. Port the edit to the `skills/` source first, then regenerate the bundle with `node bin/build-capability.cjs`. Editing the projection alone loses the work.
+
 > **STEP ZERO — your very first tool call, before reading further, reproducing, or running anything:** create the P0–P6 checklist (in *Execution Protocol* below) as **tool-tracked todos** via your todo tool (Claude Code: **TodoWrite**). Not a printed markdown list, not "in your head." No exceptions — time pressure and "I'll move fast" do NOT waive it; the todos ARE how you move fast without dropping a gate. If you've already typed an orientation message, your next action is still the TodoWrite call, not a `Bash`/`Read`.
 >
 > **NEVER open the issue or PR before its gate is green.** Do not "file now and run lint/tests as a follow-up" — a PR that then fails `lint:ci` or the suite is the #1543/#1532 failure mode (lands red on the cut, doesn't beat the deadline). Gates run *before* the push, always.
