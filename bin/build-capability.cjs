@@ -65,6 +65,16 @@ const BUNDLE_SKILLS_DIR = path.join(BUNDLE_DIR, 'skills');
 const CANONICAL_COMMANDS_DIR = path.join(REPO_ROOT, 'commands');
 const BUNDLE_COMMANDS_DIR = path.join(BUNDLE_DIR, 'commands');
 
+// The canonical docs source dir (the single DEV SOURCE OF TRUTH for the repo `docs/` tree a shipped
+// skill LINKS) and its bundle mirror. Unlike hooks/skills/commands, the bundle docs/ tree is NOT a
+// wholesale copy — it is a SCOPED PROJECTION (SYNC-02, D-06): only the docs a bundled skill actually
+// LINKS (markdown-link form `](../../docs/…)` / `](docs/…)`) are copied, at the LINK-RESOLVING path so
+// `../../docs/…` from the bundled skill (at <bundleRoot>/skills/<stem>/…) resolves to
+// <bundleRoot>/docs/… — exactly as it resolves from the canonical skill in the source tree. The source
+// links are kept CANONICAL (projected-not-rewritten, D-05); the bundle LAYOUT is made to satisfy them.
+const CANONICAL_DOCS_DIR = path.join(REPO_ROOT, 'docs');
+const BUNDLE_DOCS_DIR = path.join(BUNDLE_DIR, 'docs');
+
 // The disclosed command set is DATA-DRIVEN from disk: the basenames of every `gsd-*.md` under the
 // canonical commands/ dir. This is the EXACT filter verify-capability.cjs's readShippedCommands uses,
 // so the bundled set provably equals the disclosed/verified set (T-17-01-HARDCODE) — never a
@@ -289,6 +299,138 @@ function plannedCommandFiles(deps = {}) {
 }
 
 /**
+ * Extract every markdown-LINK target `](<target>)` from a string. This is LINK-FORM detection ONLY —
+ * it matches the parenthesized destination of a markdown link, so backtick PROSE like
+ * `` `docs/agents/triage-labels.md` `` (a mention, not a link) is NEVER matched. The target is taken up
+ * to the first whitespace/close-paren so a ` "title"` suffix is dropped.
+ *
+ * @param {string} content file text.
+ * @returns {string[]} the raw link targets, in source order (not deduped).
+ */
+function extractMarkdownLinkTargets(content) {
+  const out = [];
+  const re = /\]\(\s*([^)\s]+)/g;
+  let m;
+  while ((m = re.exec(content)) !== null) out.push(m[1]);
+  return out;
+}
+
+/**
+ * Classify a single markdown-link target relative to the linking skill file's repo-relative directory
+ * and, IF it references the repo `docs/` tree, return its repo-relative doc path (`docs/…`). Returns
+ * null for a non-docs link (an ordinary internal link like `reference.md`, an anchor, or an external
+ * scheme URL). A `..`/absolute target that does NOT land under `docs/` ESCAPES the repo/docs root and
+ * is a LOUD throw (mirrors the WR-01 stem guard) — never silently read or projected (T-29-04).
+ *
+ * Resolution rules (deterministic):
+ *   - `../../docs/NAME` from `skills/<stem>` (depth 2) → `docs/NAME` (relative resolution).
+ *   - a bare `docs/NAME` (no `..`) → `docs/NAME` (repo-root-relative by convention, D-04).
+ *   - `reference.md` → resolves inside the skill dir, not under docs/ → null (skip).
+ *   - `../../secrets/x`, `../../../etc/passwd`, `/etc/passwd` → escapes docs/repo root → throw.
+ *
+ * @param {string} skillDirRelToRoot POSIX repo-relative dir of the linking skill file (e.g. `skills/x`).
+ * @param {string} rawTarget the raw link target.
+ * @returns {string|null} repo-relative `docs/…` path, or null when not a docs link.
+ * @throws {Error} when a `..`/absolute target escapes the docs/repo root.
+ */
+function classifyLinkedDocTarget(skillDirRelToRoot, rawTarget) {
+  let t = String(rawTarget).trim();
+  t = t.split(/\s+/)[0]; // drop a ` "title"` suffix
+  const hashIdx = t.indexOf('#');
+  if (hashIdx >= 0) t = t.slice(0, hashIdx); // drop a #fragment
+  if (t === '' || t.startsWith('#')) return null;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(t)) return null; // external scheme (http:, mailto:, …)
+
+  const posix = path.posix;
+  const isAbs = t.startsWith('/');
+  const hasDotDot = t.split('/').includes('..');
+  const bareNorm = posix.normalize(t);
+  const resolved = isAbs ? bareNorm : posix.normalize(posix.join(skillDirRelToRoot, t));
+
+  // KEEP: a relative link that resolves under the repo-root docs/ tree.
+  if (!isAbs && resolved.startsWith('docs/')) return resolved;
+  // KEEP: a bare `docs/NAME` (no traversal) — repo-root-relative by convention (D-04).
+  if (!isAbs && !hasDotDot && bareNorm.startsWith('docs/')) return bareNorm;
+
+  // A `..`/absolute target that did NOT land under docs/ escapes the repo or docs root → LOUD throw.
+  if (isAbs || hasDotDot) {
+    throw new Error(
+      `build-capability: refusing to project a doc link that escapes the docs root: ${JSON.stringify(rawTarget)}`
+    );
+  }
+  // An ordinary internal (non-docs) link — not a docs-projection target.
+  return null;
+}
+
+/**
+ * Read the set of docs a bundled skill LINKS — the docs-projection analogue of readCanonicalScriptSet /
+ * readDeclaredSkillSet. For each PLANNED skill file (enumerated via plannedSkillFiles), scan its bytes
+ * for markdown-LINK-form targets and keep those that resolve under the repo `docs/` root, returning the
+ * SORTED UNIQUE repo-relative doc paths. Scoped to what the skills actually LINK (D-06) — not a vacuum
+ * of all of docs/; backtick prose is excluded (link-FORM only). A traversal-escaping link throws
+ * (classifyLinkedDocTarget, T-29-04).
+ *
+ * @param {object} [deps]
+ * @param {string} [deps.sourceSkillsDir] canonical skills/ dir (defaults to repo skills/).
+ * @param {string[]} [deps.skillSet] declared skill stems (defaults to manifest-derived).
+ * @param {string} [deps.manifestPath] manifest for the default skillSet.
+ * @returns {string[]} sorted unique repo-relative doc paths (e.g. ['docs/REUSE-AND-METHODOLOGY.md']).
+ */
+function readLinkedDocs(deps = {}) {
+  const sourceSkillsDir = deps.sourceSkillsDir || CANONICAL_SKILLS_DIR;
+  const skillSet = deps.skillSet || readDeclaredSkillSet({ manifestPath: deps.manifestPath });
+  const { files } = plannedSkillFiles({ sourceSkillsDir, skillSet });
+  const docs = new Set();
+  for (const rel of files) {
+    const abs = path.join(sourceSkillsDir, rel);
+    const content = fs.readFileSync(abs, 'utf8');
+    // The skill file's repo-relative dir: `skills/` + its skills-relative dir (POSIX).
+    const relPosix = rel.split(path.sep).join('/');
+    const skillDirRelToRoot = path.posix.dirname('skills/' + relPosix);
+    for (const target of extractMarkdownLinkTargets(content)) {
+      const docRel = classifyLinkedDocTarget(skillDirRelToRoot, target);
+      if (docRel) docs.add(docRel);
+    }
+  }
+  return [...docs].sort();
+}
+
+/**
+ * Compute the planned bundle docs file list from the linked-docs set: for each linked doc whose
+ * canonical source EXISTS under sourceDocsDir, a `docs/…` planned path; a linked doc whose source is
+ * ABSENT goes to `missingSources` (fail-loud, never a silent skip) — mirroring plannedSkillFiles /
+ * plannedCommandFiles. The single definition of "which docs the bundle must contain" used by BOTH build
+ * and check.
+ *
+ * @param {object} [deps]
+ * @param {string} [deps.sourceDocsDir] canonical docs/ dir (defaults to repo docs/).
+ * @param {string[]} [deps.linkedDocs] repo-relative `docs/…` paths (defaults to readLinkedDocs()).
+ * @param {string} [deps.sourceSkillsDir] skills dir for the default linkedDocs.
+ * @param {string} [deps.manifestPath] manifest for the default linkedDocs.
+ * @returns {{files:string[], missingSources:string[]}} sorted repo-relative `docs/…` paths + missing.
+ */
+function plannedDocFiles(deps = {}) {
+  const sourceDocsDir = deps.sourceDocsDir || CANONICAL_DOCS_DIR;
+  const linkedDocs =
+    deps.linkedDocs ||
+    readLinkedDocs({ sourceSkillsDir: deps.sourceSkillsDir, manifestPath: deps.manifestPath });
+  const files = [];
+  const missingSources = [];
+  for (const repoRel of linkedDocs) {
+    const sub = repoRel.replace(/^docs\//, '');
+    const src = path.join(sourceDocsDir, sub);
+    if (!fs.existsSync(src) || !fs.statSync(src).isFile()) {
+      missingSources.push(repoRel);
+      continue;
+    }
+    files.push(repoRel);
+  }
+  files.sort();
+  missingSources.sort();
+  return { files, missingSources };
+}
+
+/**
  * Guard: assert a resolved target stays under the confinement root. Rejects any path that escapes
  * (via `..` or absolute) the bundle hooks/ root BEFORE a write happens (T-11-01-01).
  *
@@ -335,6 +477,8 @@ function buildCapability(deps = {}) {
   const bundleSkillsDir = deps.bundleSkillsDir || BUNDLE_SKILLS_DIR;
   const sourceCommandsDir = deps.sourceCommandsDir || CANONICAL_COMMANDS_DIR;
   const bundleCommandsDir = deps.bundleCommandsDir || BUNDLE_COMMANDS_DIR;
+  const sourceDocsDir = deps.sourceDocsDir || CANONICAL_DOCS_DIR;
+  const bundleDocsDir = deps.bundleDocsDir || BUNDLE_DOCS_DIR;
   const manifestPath = deps.manifestPath || MANIFEST_PATH;
   const snippetPath = deps.snippetPath || SNIPPET_PATH;
 
@@ -351,6 +495,12 @@ function buildCapability(deps = {}) {
   // (deps.commandSet is an injectable seam for hermetic tests — production always derives from disk.)
   const commandSet = deps.commandSet || readDisclosedCommandSet({ commandsDir: sourceCommandsDir });
   const commandsPlan = plannedCommandFiles({ sourceCommandsDir, commandSet });
+
+  // Plan the docs PROJECTION (SYNC-02): the docs the bundled skills LINK (scoped, D-06), resolved to
+  // their repo-relative `docs/…` paths. readLinkedDocs throws LOUD on a traversal-escaping link before
+  // anything is read/written (T-29-04).
+  const linkedDocs = readLinkedDocs({ sourceSkillsDir, skillSet });
+  const docsPlan = plannedDocFiles({ sourceDocsDir, linkedDocs });
 
   // Verify EVERY canonical source exists FIRST (fail-loud before any partial write).
   // (1) hooks: each planned hook file must be a regular file.
@@ -395,6 +545,16 @@ function buildCapability(deps = {}) {
         commandsPlan.missingSources.map((s) => 'commands/' + s + '.md').join('\n  ')
     );
   }
+  // (4) docs: a doc a bundled skill LINKS whose canonical source is ABSENT is a LOUD throw (no partial
+  // bundle), mirroring the hooks/skills/commands checks. Checked alongside them BEFORE any write of ANY
+  // tree, so a missing linked-doc source can never leave a half-written bundle (T-29-05). A dangling
+  // link with no source is a build error, never a silently-dropped projection.
+  if (docsPlan.missingSources.length > 0) {
+    throw new Error(
+      'build-capability: missing canonical linked-doc source file(s) — cannot build a partial bundle:\n  ' +
+        docsPlan.missingSources.join('\n  ')
+    );
+  }
 
   // Copy verbatim into the confined bundle hooks/ dir.
   fs.mkdirSync(bundleHooksDir, { recursive: true });
@@ -430,6 +590,21 @@ function buildCapability(deps = {}) {
     }
   }
 
+  // PROJECT the linked docs verbatim at the LINK-RESOLVING bundle path (SYNC-02). A doc's repo-relative
+  // path `docs/NAME` maps to <bundleDocsDir>/NAME, so `../../docs/NAME` from the bundled skill (at
+  // <bundleRoot>/skills/<stem>/…) resolves to it — the source link is satisfied by LAYOUT, not rewritten
+  // (D-05). Buffer copy, byte-for-byte; every write confined under the bundle docs root.
+  if (docsPlan.files.length > 0) {
+    fs.mkdirSync(bundleDocsDir, { recursive: true });
+    for (const repoRel of docsPlan.files) {
+      const sub = repoRel.replace(/^docs\//, '');
+      const src = path.join(sourceDocsDir, sub);
+      const dst = confineUnder(bundleDocsDir, sub);
+      fs.mkdirSync(path.dirname(dst), { recursive: true });
+      fs.writeFileSync(dst, fs.readFileSync(src)); // Buffer copy — byte-for-byte, no transform.
+    }
+  }
+
   // Stamp the manifest version: parse→set→write, preserving every other field verbatim.
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const version = deps.version || manifest.version;
@@ -439,12 +614,14 @@ function buildCapability(deps = {}) {
   manifest.version = version;
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
 
-  // The returned file count covers ALL THREE bundled trees: hooks rel-paths as-is, skill rel-paths
-  // prefixed `skills/`, and command rel-paths prefixed `commands/` so they are namespace-unambiguous.
+  // The returned file count covers ALL FOUR bundled trees: hooks rel-paths as-is, skill rel-paths
+  // prefixed `skills/`, command rel-paths prefixed `commands/`, and the projected docs already carrying
+  // their repo-relative `docs/` prefix — so every entry is namespace-unambiguous.
   const allFiles = [
     ...planned,
     ...skillsPlan.files.map((r) => 'skills/' + r),
     ...commandsPlan.files.map((r) => 'commands/' + r),
+    ...docsPlan.files,
   ].sort();
   return { files: allFiles, version };
 }
@@ -661,6 +838,8 @@ module.exports = {
   plannedBundleFiles,
   plannedSkillFiles,
   plannedCommandFiles,
+  readLinkedDocs,
+  plannedDocFiles,
   confineUnder,
   runCli,
   SEMVER_RE,
