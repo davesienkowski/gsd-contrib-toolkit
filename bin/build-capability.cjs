@@ -663,6 +663,8 @@ function checkBundleFresh(deps = {}) {
   const bundleSkillsDir = deps.bundleSkillsDir || BUNDLE_SKILLS_DIR;
   const sourceCommandsDir = deps.sourceCommandsDir || CANONICAL_COMMANDS_DIR;
   const bundleCommandsDir = deps.bundleCommandsDir || BUNDLE_COMMANDS_DIR;
+  const sourceDocsDir = deps.sourceDocsDir || CANONICAL_DOCS_DIR;
+  const bundleDocsDir = deps.bundleDocsDir || BUNDLE_DOCS_DIR;
   const manifestPath = deps.manifestPath || MANIFEST_PATH;
   const snippetPath = deps.snippetPath || SNIPPET_PATH;
 
@@ -770,10 +772,49 @@ function checkBundleFresh(deps = {}) {
     }
   }
 
+  // ── Docs projection drift (SYNC-02, D-10 — the RED-on-regression backstop) ──
+  // The docs the bundled skills LINK (scoped, D-06) must be projected + byte-identical. A linked doc
+  // whose canonical source is absent surfaces as 'canonical source missing' via docsPlan.missingSources
+  // (NOT a throw on the read-only check path). For each planned doc assert bundle-present + identical;
+  // paths carry their repo-relative `docs/` prefix. REMOVING the projection makes a planned doc report
+  // 'missing from bundle' → `build --check` exits 1 (the dangling link returns).
+  const linkedDocs = readLinkedDocs({ sourceSkillsDir, skillSet });
+  const docsPlan = plannedDocFiles({ sourceDocsDir, linkedDocs });
+  for (const repoRel of docsPlan.missingSources) {
+    staleFiles.push({ path: repoRel, reason: 'canonical source missing' });
+  }
+  const plannedDocRel = new Set(docsPlan.files.map((r) => r.replace(/^docs\//, ''))); // bundle-docs-relative
+  for (const repoRel of docsPlan.files) {
+    const sub = repoRel.replace(/^docs\//, '');
+    const src = path.join(sourceDocsDir, sub);
+    const bundled = path.join(bundleDocsDir, sub);
+    if (!fs.existsSync(src) || !fs.statSync(src).isFile()) {
+      staleFiles.push({ path: repoRel, reason: 'canonical source missing' });
+      continue;
+    }
+    if (!fs.existsSync(bundled) || !fs.statSync(bundled).isFile()) {
+      staleFiles.push({ path: repoRel, reason: 'missing from bundle' });
+      continue;
+    }
+    if (!fs.readFileSync(src).equals(fs.readFileSync(bundled))) {
+      staleFiles.push({ path: repoRel, reason: 'differs from canonical source' });
+    }
+  }
+  // Symmetric extra-file half — walk <bundleDir>/docs ONLY, report any bundled doc not in the planned
+  // (scoped) docs set as 'extra file in bundle' (a doc projected that the skills no longer link, or a
+  // planted file). Paths carry the `docs/` prefix.
+  if (fs.existsSync(bundleDocsDir)) {
+    for (const bundled of listFilesRel(bundleDocsDir)) {
+      if (!plannedDocRel.has(bundled)) {
+        staleFiles.push({ path: 'docs/' + bundled, reason: 'extra file in bundle (not in planned set)' });
+      }
+    }
+  }
+
   return {
     fresh: staleFiles.length === 0,
     staleFiles,
-    checked: planned.length + skillsPlan.files.length + commandsPlan.files.length,
+    checked: planned.length + skillsPlan.files.length + commandsPlan.files.length + docsPlan.files.length,
   };
 }
 
@@ -797,12 +838,14 @@ function runCli(argv = process.argv.slice(2)) {
     }
     process.stdout.write('[FAIL] build-capability --check — bundle is STALE vs canonical source:\n');
     for (const s of result.staleFiles) {
-      // Skills + commands stale paths already carry their `skills/` / `commands/` namespace prefix
-      // (set in checkBundleFresh); hooks stale paths are bundle-hooks-relative and get the `hooks/`
-      // prefix here. This keeps the printed path namespace-correct so a stale skill prints `skills/...`
-      // and a stale command prints `commands/...`, never `hooks/skills/...` / `hooks/commands/...`.
+      // Skills + commands + docs stale paths already carry their `skills/` / `commands/` / `docs/`
+      // namespace prefix (set in checkBundleFresh); hooks stale paths are bundle-hooks-relative and get
+      // the `hooks/` prefix here. This keeps the printed path namespace-correct so a stale skill prints
+      // `skills/...`, a stale command `commands/...`, and a stale doc `docs/...`, never `hooks/docs/...`.
       const printed =
-        s.path.startsWith('skills/') || s.path.startsWith('commands/') ? s.path : 'hooks/' + s.path;
+        s.path.startsWith('skills/') || s.path.startsWith('commands/') || s.path.startsWith('docs/')
+          ? s.path
+          : 'hooks/' + s.path;
       process.stdout.write('         ' + printed + ' — ' + s.reason + '\n');
     }
     process.stdout.write('       Run `node bin/build-capability.cjs` to regenerate the bundle.\n');
