@@ -18,6 +18,7 @@ Authoritative source: **`docs/agents/triage-labels.md`** in the repo (read it li
 
 - **Category:** `bug` · `enhancement` · `feature-request` · `documentation` · `chore` · `test` · `security`
 - **State (issue):** `needs-triage` → `needs-reproduction` / `confirmed-bug`(+`ready-for-agent`) / `approved-enhancement` / `approved-feature` / `needs-maintainer-review` / `blocked` / `wontfix`
+- **Routing (issue):** `capability-candidate` — *"Deliver as an ADR-857 capability on one of 'the 12' extension points, not a direct code change."* Apply to an enhancement/feature that extends behavior at a declared extension point (runtime/host, command family, hook, skill) rather than altering core dispatch — steer it to the capability route instead of a core patch (ADR-857/ADR-1239; see the routing test in [triage-assist.md](triage-assist.md)). Not a substitute for `approved-*`: a capability-candidate still needs its approval gate before code.
 - **Lifecycle (post-approval):** `in-progress` → `fix-pending` (fix PR open) → `fix-released` (merged+released); `awaiting-retest` when a fix shipped in a newer version
 - **Priority:** `priority: critical` (crashes, data-loss, security, blocks all) · `high` · `medium` · `low`
 - **Size:** `size/S` · `size/M` · `size/L` · `size/XL`
