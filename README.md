@@ -13,6 +13,11 @@ is the **sole** entrypoint that restores the full surface — hooks + commands +
 idempotently: re-run it after any GSD update or `gsd-ver` toggle to repair the toolkit
 without losing work, so a reinstall can never lose the toolkit.
 
+> **New here?** Start with the task-oriented **[Guides](docs/guides/)** — an
+> [Overview](docs/guides/overview.md), a [Contributor Guide](docs/guides/contributor-guide.md)
+> (file a change through the gates), and a [Maintainer Guide](docs/guides/maintainer-guide.md)
+> (triage + re-review). This README is the architecture reference.
+
 ## What It Does
 
 It enforces the **outcomes** that matter at the harness boundary — no broken
@@ -205,8 +210,10 @@ This section is load-bearing — the project's core value is honesty, not overse
 - **The override is deliberate, not silent.** `GSD_CONTRIB_OVERRIDE` is a logged,
   per-worktree, reason-carrying escape valve — never a default. Setting it records
   an append-only receipt.
-- **Not yet battle-tested on a real contribution.** The toolkit is built and
-  self-proven; proving it on a live gsd-core contribution remains.
+- **Live-proven once; broader battle-testing continues.** The first toolkit-shepherded
+  contribution landed upstream (issue #1154 → PR #1738, merged 2026-06-29), so the pipeline has
+  cleared a real gsd-core contribution end-to-end. Proving it across the *full* contribution
+  surface (enhancements, epics, fork PRs) is the remaining work.
 
 ## Directory Layout
 
