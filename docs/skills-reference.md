@@ -25,7 +25,7 @@ phases:
 
 | Phase | Does |
 |---|---|
-| **STEP ZERO** | Create the P0–P6 checklist as **tool-tracked todos** (TodoWrite) before anything else. |
+| **STEP ZERO** | Create the P0–P6 checklist as **tool-tracked todos** (TodoWrite, or your harness's equivalent) before anything else. |
 | **P0 — Ground in the canon** | Read CONTRIBUTING + templates + relevant ADRs + CONTEXT first, every time. |
 | **P1 — Verify the finding** | Reproduce the mechanism live (`trust-but-verify`); if it can't be reproduced, withdraw/correct — don't file. |
 | **P2 — Adversarial law pass** | Apply the `skills-from-the-artificer` law-lenses to the change (e.g. Hyrum's-Law behavior disclosure). |
