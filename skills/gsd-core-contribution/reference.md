@@ -42,7 +42,7 @@ tests/foo.test.cjs" node scripts/pr-template-policy.cjs
 npm run lint:ci   # composes eslint + ~9 project linters; must exit 0
 ```
 
-`### GSD Version` value for engine-internal findings: **`1.6.0-rc.1 (next @ <8-char-sha>)`** (sha = current `origin/next`).
+`### GSD Version` value for engine-internal findings: **`<current-version> (next @ <8-char-sha>)`** — read the ACTUAL version live (`node -e "console.log(require('./package.json').version)"` in the gsd-core clone, or `npm view @opengsd/gsd-core version`), do NOT paste a hardcoded literal (it rots every release — the version-gate only checks the token is *valid* semver, not *correct*). sha = current `origin/next`. Example shape only: `1.8.0 (next @ a5180d96)`.
 
 ## Issue types (all six) (KNOW-04)
 
@@ -257,7 +257,7 @@ RED-before-GREEN when the fix is already written: `git stash push src/<file>.cts
 ```markdown
 ### GSD Version
 
-1.6.0-rc.1 (next @ <sha>)
+<current-version> (next @ <sha>)   <!-- read live from the gsd-core clone's package.json; do NOT hardcode — e.g. 1.8.0 (next @ a5180d96) -->
 
 ### Runtime
 
