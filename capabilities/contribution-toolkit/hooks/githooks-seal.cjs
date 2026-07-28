@@ -45,6 +45,41 @@ const REQUIRED_HOOKS_PATH = '.githooks';
 const NO_VERIFY_FLAGS = ['--no-verify', '-n'];
 
 /**
+ * The chained segments that ARE the sealed git action (commit/push).
+ *
+ * ENF-12 must consult ONLY these. `hasFlag` reports a flag's presence across the WHOLE
+ * command's flag space, so scanning `parsed` directly makes any neighbor in the chain
+ * that legitimately carries `-n` — `grep -n`, `sed -n`, `tail -n`, `sort -n` — read as a
+ * `git commit -n`. Those are ubiquitous next to a commit, so the gate denied a large class
+ * of correct commands.
+ *
+ * This is the SAME false-positive class the flag-not-text rule (EP-3) already closed, on a
+ * second axis: that one was flag-vs-message-TEXT, this one is my-segment-vs-a-NEIGHBOR's.
+ * Both end in the trust-eroding false deny that gets the toolkit switched off (red-team
+ * H-B), which is the failure mode this module's own docstring calls load-bearing.
+ *
+ * Narrowing here must not weaken the seal, so this returns EVERY sealed segment rather
+ * than the first: `git commit -m x && git push --no-verify` must still deny on the push.
+ * (classify.findActionSegment is unsuitable — it returns one segment and falls back to
+ * segs[0], which can be a non-git neighbor.) Mirrors the segment fan-out shape of
+ * classify.hasGovernedSegment.
+ *
+ * PURE: reads only argv/classify output.
+ *
+ * @param {Object} parsed result of argv.parseCommand
+ * @returns {Object[]} the segments classifying to a SEALED_ACTIONS action (possibly empty)
+ */
+function sealedSegments(parsed) {
+  const segs = Array.isArray(parsed.segments) && parsed.segments.length > 0
+    ? parsed.segments
+    : [parsed];
+  return segs.filter((seg) => {
+    const r = classifyAction({ ok: true, segments: [seg] });
+    return r && SEALED_ACTIONS.has(r.action);
+  });
+}
+
+/**
  * The pure gate decision with the impure git-config read injected.
  *
  * @param {string} stdinString raw PreToolUse JSON
@@ -64,8 +99,10 @@ function gate(stdinString, deps) {
   // Only commit/push are sealed. Anything else (git reads, non-git) → no-op allow.
   if (!action || !SEALED_ACTIONS.has(action.action)) return allow();
 
-  // (1) ENF-12 — the REAL --no-verify / -n flag (structured argv, never -m message text).
-  if (hasFlag(parsed, NO_VERIFY_FLAGS)) {
+  // (1) ENF-12 — the REAL --no-verify / -n flag (structured argv, never -m message text)
+  // and never a CHAINED NEIGHBOUR's flag: scoped to the sealed git segment(s) only.
+  const sealed = sealedSegments(parsed);
+  if (sealed.some((seg) => hasFlag({ ok: true, segments: [seg] }, NO_VERIFY_FLAGS))) {
     return deny(
       '`--no-verify` / `-n` bypasses the repo\'s `.githooks` gates (pre-commit / pre-push). ' +
         'Remove it and let the local gates run. If a bypass is TRULY necessary, use a ' +
