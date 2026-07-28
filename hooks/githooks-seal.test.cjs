@@ -155,3 +155,54 @@ test('a chained commit hiding --no-verify (git add . && git commit --no-verify) 
   const d = runGithooksGate(input('git add . && git commit --no-verify -m x'), deps());
   assert.strictEqual(d.permissionDecision, 'deny');
 });
+
+// --- ENF-12 segment scoping (EP-3 sibling: my-segment vs a neighbor's) -------------
+// The flag-not-text rule already stopped `-m "…--no-verify…"` from matching. The same
+// false-positive class survived on a second axis: a NEIGHBOR segment in the chain that
+// legitimately carries `-n`. `grep -n` / `sed -n` / `tail -n` / `sort -n` are ubiquitous
+// next to a commit, and denying them is exactly the trust-eroding false deny (red-team
+// H-B) that gets the toolkit switched off.
+
+test('a commit chained with grep -n → allow (the -n belongs to grep, not git)', () => {
+  const d = runGithooksGate(input('git commit -m x && grep -n foo bar.txt'), deps());
+  assert.strictEqual(d.permissionDecision, 'allow');
+});
+
+test('a commit chained with sed -n → allow', () => {
+  const d = runGithooksGate(input("git commit -m x && sed -n '1,5p' file.txt"), deps());
+  assert.strictEqual(d.permissionDecision, 'allow');
+});
+
+test('a commit chained with tail -n / sort -n → allow', () => {
+  assert.strictEqual(
+    runGithooksGate(input('git commit -m x && tail -n 5 log.txt'), deps()).permissionDecision,
+    'allow'
+  );
+  assert.strictEqual(
+    runGithooksGate(input('git commit -m x && sort -n nums.txt'), deps()).permissionDecision,
+    'allow'
+  );
+});
+
+test('a neighbor -n BEFORE the commit → allow (position must not matter)', () => {
+  const d = runGithooksGate(input('grep -n foo bar.txt && git commit -m x'), deps());
+  assert.strictEqual(d.permissionDecision, 'allow');
+});
+
+test('git commit --amend --no-edit → allow (--no-edit is not --no-verify)', () => {
+  const d = runGithooksGate(input('git commit --amend --no-edit'), deps());
+  assert.strictEqual(d.permissionDecision, 'allow');
+});
+
+// Narrowing the scan must NOT weaken the seal: the real flag still denies wherever the
+// sealed segment sits in the chain, and a benign neighbor must not launder it.
+test('scoping does not weaken: real -n on the commit, beside a benign grep -n → deny', () => {
+  const d = runGithooksGate(input('grep -n foo bar.txt && git commit -n -m x'), deps());
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /no-verify/);
+});
+
+test('scoping does not weaken: --no-verify on a LATER push segment → deny', () => {
+  const d = runGithooksGate(input('git commit -m x && git push --no-verify'), deps());
+  assert.strictEqual(d.permissionDecision, 'deny');
+});
