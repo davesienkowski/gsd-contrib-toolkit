@@ -20,8 +20,20 @@
  * DENIES is: a recognized type NOT immediately followed by `(`/`!`/`:`, OR no recognized
  * type prefix at all.
  *
- * HARD-02 / TOOLKIT-OWNED (read OWNED_NOTE below): gsd-core exposes NO reusable shared
- * conventional-commit / type-validation matcher today (#1549). `classifyTitle` in
+ * HARD-02 / TOOLKIT-OWNED (read OWNED_NOTE below). STATUS UPDATE 2026-07-27: gsd-core now
+ * DOES ship a shared matcher — scripts/release-notes/conventional-title.cjs, exporting
+ * HEADER_RE / classifyBucket / evaluatePrTitle, already consumed live by this toolkit at
+ * gh-pr-create.cjs:804 via requireLiveScript. The #1549 repoint mandated below is therefore
+ * dischargeable and is the NEXT change to this gate. It is deliberately not done in the same
+ * change as the RECOGNIZED_TYPES fix, because that matcher validates PR TITLES while this
+ * gate judges COMMIT SUBJECTS (consumer: the release-sdk cherry-pick filter,
+ * CONTRIBUTING.md:185), and its HEADER_RE accepts ANY /^[a-z]+/ type — adopting it verbatim
+ * would silently turn this gate into shape-only and drop the recognized-type vocabulary.
+ * The paragraph below describes the position as of the gate's authoring and is retained for
+ * provenance:
+ *
+ * gsd-core exposed NO reusable shared
+ * conventional-commit / type-validation matcher at authoring time (#1549). `classifyTitle` in
  * scripts/release-notes/format-github-release-notes.cjs only buckets feat/fix → categories
  * and cannot judge a docs/test mislabel; the discord-release-summary strip-regex is a
  * private formatting helper, not an exported policy matcher. Per HARD-02 we may NOT pretend
@@ -68,8 +80,20 @@ const TRIGGER_ACTIONS = new Set(['commit']);
 // TOOLKIT-OWNED recognized conventional-commit types. DECLARED here (no fenced block copied
 // from gsd-core). This mirrors the type vocabulary gsd-core's release/cherry-pick filter
 // buckets on; it is the toolkit's own replica pending the #1549 shared matcher.
+//
+// `enhance` and `feature` added 2026-07-27. Their absence made this gate STRICTER than
+// gsd-core itself, denying commits the repo documents as correct:
+//   - CONTRIBUTING.md:250-251 gives `enhance(#1549): add PR-title validator` verbatim as an
+//     example, and origin/next carries 11 `enhance(` commits against 0 `enh(`.
+//   - conventional-title.cjs FEATURE_RE is /^feat(?:ure)?\s*(?:\(|!|:)/i, so gsd-core accepts
+//     the `feature` spelling too.
+// Falling back to `feat(` when blocked is NOT a safe workaround: classifyBucket() buckets
+// feat* as Feature, so an enhancement committed as `feat` is silently misfiled in the
+// changelog. Longer alternatives are listed before their prefixes so the alternation in
+// PREFIX_RE matches `feature` rather than stopping at `feat`.
 const RECOGNIZED_TYPES = [
-  'feat', 'fix', 'docs', 'chore', 'ci', 'refactor', 'test', 'build', 'perf', 'style', 'revert',
+  'feature', 'feat', 'fix', 'docs', 'chore', 'ci', 'refactor', 'test', 'build', 'perf',
+  'style', 'revert', 'enhance',
 ];
 
 // The obvious-prefix SHAPE rule: a recognized type immediately followed by an optional
@@ -83,11 +107,14 @@ const PREFIX_RE = new RegExp(
 // check and mandates the repoint at the LIVE shared matcher once #1549 extracts one.
 const OWNED_NOTE =
   'This is the toolkit’s own conventional-commit PREFIX check (ENF-16) — a replica of ' +
-  'gsd-core’s release / cherry-pick prefix policy, NOT a callable repo script: gsd-core ' +
-  'exposes no shared conventional-commit matcher yet (#1549). It MUST be repointed at the ' +
-  'LIVE shared matcher (via requireLiveScript + a doctor shape-check) once gsd-core extracts ' +
-  'one (#1549). It judges PREFIX SHAPE only — choosing the semantically-correct type for the ' +
-  'diff is out of scope.';
+  'gsd-core’s release / cherry-pick prefix policy, NOT a callable repo script. gsd-core NOW ' +
+  'ships a shared PR-TITLE matcher (scripts/release-notes/conventional-title.cjs, exporting ' +
+  'HEADER_RE / classifyBucket / evaluatePrTitle), so the #1549 repoint is finally ' +
+  'dischargeable and is tracked as the next change to this gate — note it validates PR ' +
+  'TITLES, while this gate judges COMMIT SUBJECTS, whose consumer is the release-sdk ' +
+  'cherry-pick filter (CONTRIBUTING.md:185); the two policies overlap but are not identical, ' +
+  'which is why the repoint is a deliberate change and not a drop-in. It judges PREFIX SHAPE ' +
+  'only — choosing the semantically-correct type for the diff is out of scope.';
 
 
 /**

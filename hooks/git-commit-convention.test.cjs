@@ -231,3 +231,49 @@ test('git-commit-convention: a non-governed command (git status) ALLOWs without 
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
   assert.strictEqual(resolverTouched, false, 'short-circuit must fire before any resolve/deps access');
 });
+
+// ---- Regression: types gsd-core's own canon documents and CI accepts ----
+//
+// ENF-16 replicated a bare conventional-commit vocabulary that omitted the two
+// enhancement spellings gsd-core actually uses, so it denied commits the repo's
+// own CONTRIBUTING.md gives as verbatim examples:
+//
+//   CONTRIBUTING.md:250-251 -> `enhance(#1549): add PR-title validator`
+//   scripts/release-notes/conventional-title.cjs FEATURE_RE = /^feat(?:ure)?.../
+//
+// Found 2026-07-27 while responding to review on gsd-core PR #2685: the gate
+// blocked `enhance(#2572): ...`, and `origin/next` carries 11 `enhance(` commits
+// against 0 `enh(`. Falling back to `feat(` is NOT a safe workaround -- the
+// changelog classifier buckets feat* as Feature, so it silently misfiles an
+// enhancement.
+
+test('git commit -m "enhance(#1549): add PR-title validator" -> ALLOW (CONTRIBUTING example)', () => {
+  const d = runCommitConventionGate(
+    input('git commit -m "enhance(#1549): add PR-title validator"'),
+    deps()
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('git commit -m "feature(#39): milestone-prefixed phase IDs" -> ALLOW (FEATURE_RE accepts feat(ure)?)', () => {
+  const d = runCommitConventionGate(
+    input('git commit -m "feature(#39): milestone-prefixed phase IDs"'),
+    deps()
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('git commit -m "enhance: no scope" -> ALLOW (scope is optional in the shape rule)', () => {
+  const d = runCommitConventionGate(input('git commit -m "enhance: no scope"'), deps());
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('an unrecognized type is still DENIED -- widening must not become anything-goes', () => {
+  const d = runCommitConventionGate(input('git commit -m "banana(#1): nope"'), deps());
+  assert.strictEqual(d.permissionDecision, 'deny', 'banana is not a recognized type');
+});
+
+test('a recognized type without the separator is still DENIED (the original shape rule)', () => {
+  const d = runCommitConventionGate(input('git commit -m "enhance the parser"'), deps());
+  assert.strictEqual(d.permissionDecision, 'deny', 'no `:` after the type -> obvious violation');
+});
