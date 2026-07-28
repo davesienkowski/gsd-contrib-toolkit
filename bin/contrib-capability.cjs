@@ -4,7 +4,7 @@
 /**
  * bin/contrib-capability.cjs — the CAP-03 thin driver for the contribution-toolkit capability.
  *
- *   node bin/contrib-capability.cjs install            # first-setup fully ON: consent+ledger+13 gates+commands+skills+flag on
+ *   node bin/contrib-capability.cjs install            # first-setup fully ON: consent+ledger+14 gates+commands+skills+flag on
  *   node bin/contrib-capability.cjs on                 # full surface ON: (re)apply gates + deliver commands + skills + flag on
  *   node bin/contrib-capability.cjs off  --reason <w>  # full surface OFF: strip gates + reclaim commands + skills + flag off + receipt
  *   node bin/contrib-capability.cjs status             # report ledger entry + consent record + live gate set
@@ -1799,7 +1799,7 @@ function usage() {
   return [
     'contrib-capability — thin driver for the contribution-toolkit capability (drives the LIVE gsd-core engine)',
     '',
-    '  node bin/contrib-capability.cjs install            first-setup fully ON: consent + ledger + 13 gates + commands + skills + flag on',
+    '  node bin/contrib-capability.cjs install            first-setup fully ON: consent + ledger + 14 gates + commands + skills + flag on',
     '  node bin/contrib-capability.cjs on                 full surface ON: (re)apply gates + deliver commands + skills + flag on',
     '  node bin/contrib-capability.cjs off  --reason <w>  full surface OFF: strip gates + reclaim commands + skills + flag off (+ receipt)',
     '  node bin/contrib-capability.cjs status             report ledger + consent + live gate set',
