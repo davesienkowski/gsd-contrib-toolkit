@@ -41,6 +41,7 @@ const BASH_GATES = [
   'policy-invariants',
   'lint-ci-marker',
   'scan-gate',
+  'protocol-artifact',
 ];
 const WRITE_EDIT_GATES = ['binlib-edit'];
 const PROMPT_HOOKS = ['protocol-reminder'];

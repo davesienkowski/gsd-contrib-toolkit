@@ -14,5 +14,6 @@ Consequences).
 | [CTK-ADR-0001](CTK-ADR-0001-harness-boundary-enforcement.md) | Enforce contribution outcomes at the harness boundary (PreToolUse hooks; outcomes-not-steps; fail-closed; reuse-LIVE) | Accepted | v1.0 |
 | [CTK-ADR-0002](CTK-ADR-0002-capability-native-distribution.md) | Distribute as a `role:feature` capability carrying PreToolUse enforcement via `hooks[]` | Accepted | v2.1 |
 | [CTK-ADR-0003](CTK-ADR-0003-full-surface-toggle-cross-runtime.md) | On/off toggles the full surface; per-runtime hybrid delivery; no `.md`→`.cjs` command rewrite | Accepted | v2.3 |
+| [CTK-ADR-0004](CTK-ADR-0004-artifact-gated-step-discipline.md) | Enforce step discipline by requiring each step's artifact (**amends 0001 §Decision.1**) | Accepted | v1.1 |
 
 For the narrative design overview, see [../foundations.md](../foundations.md).

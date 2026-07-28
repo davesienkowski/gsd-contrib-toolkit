@@ -28,7 +28,7 @@ or rationalizing model.
 
 Installed into gsd-core's project-scoped `.claude/settings.json` by the capability
 CLI (`node bin/contrib-capability.cjs install` — see *Install / restore*) are
-**12 fail-closed PreToolUse gates** (11 on `Bash`, 1 on `Write`/`Edit`) plus
+**13 fail-closed PreToolUse gates** (12 on `Bash`, 1 on `Write`/`Edit`) plus
 **1 advisory `UserPromptSubmit` reminder**. The wired set is derived from the
 canonical `settings.snippet.json` (the source `build-capability.cjs` reads).
 The gates close concrete failure classes a gsd-core
@@ -63,6 +63,7 @@ gsd-core script** rather than reimplementing its policy (see *What it uses*).
 | `lint-ci-marker.cjs` | Bash | a push/PR without a fresh `lint:ci`-green marker for a clean tree | reads the tree-SHA marker (`npm run lint:ci`) |
 | `git-commit-convention.cjs` | Bash | a commit with a missing/wrong conventional-commit prefix | (prefix check — no LIVE script) |
 | `scan-gate.cjs` | Bash | a push with a secret/injection/base64 hit | gsd-core's three LIVE scan scripts |
+| `protocol-artifact.cjs` | Bash | filing/pushing on a contribution branch without the P1-P3 protocol artifacts | reads the branch diff + the LIVE `gsd-test` run |
 | `binlib-edit.cjs` | Write/Edit | editing a generated `bin/lib/*.cjs` instead of `src/*.ts` | (generated-path check — no LIVE script) |
 | `protocol-reminder.cjs` | UserPromptSubmit | *(advisory only — reminds, never denies)* | — |
 
@@ -133,7 +134,7 @@ surfaces as a fail-closed DENY plus a diagnosable report — not a silent miss.
 
 - **Install / restore** the toolkit (idempotent):
   `node bin/contrib-capability.cjs install` — see *Install / restore* below.
-- The **12 PreToolUse gates** (the 13-hook bundle's 12 fail-closed gates plus the
+- The **13 PreToolUse gates** (the 14-hook bundle's 13 fail-closed gates plus the
   1 advisory reminder) fire automatically inside the gsd-core repo once the
   contribution-toolkit capability is installed (`node bin/contrib-capability.cjs install`).
 - Drive a contribution with the **`gsd-submit`** command (file → push → PR through
@@ -173,7 +174,7 @@ The **`maintainer-review-sweep`** skill backs these assists.
 `capabilities/contribution-toolkit/capability.json` packages the contribution +
 maintainer-review knowledge as an installable, **opt-in** GSD capability (ADR-1244
 `role:feature` manifest). The bundle is **self-contained**: it ships the
-**13 hooks** (the 12 fail-closed `PreToolUse` gates + 1 advisory `UserPromptSubmit`
+**14 hooks** (the 13 fail-closed `PreToolUse` gates + 1 advisory `UserPromptSubmit`
 reminder), **both skills** (`gsd-core-contribution`, `maintainer-review-sweep`), and
 **all five commands** (`gsd-submit`, `gsd-review-sweep`, `gsd-triage-assist`,
 `gsd-release-preflight`, `gsd-ruleset-drift`) under
@@ -255,7 +256,7 @@ local gsd-core checkout's `.claude/settings.json`, never `~/.claude`) and is
 **ledger + consent tracked**:
 
 ```bash
-node bin/contrib-capability.cjs install            # stage + consent + ledger + marker-tag the 13 hooks
+node bin/contrib-capability.cjs install            # stage + consent + ledger + marker-tag the 14 hooks
 node bin/contrib-capability.cjs on                 # (re)apply the tagged gates + enforcement flag on
 node bin/contrib-capability.cjs off  --reason <w>  # strip the tagged gates + flag off + logged receipt
 node bin/contrib-capability.cjs status             # report ledger + consent + live gate set
@@ -282,7 +283,7 @@ node bin/contrib-capability.cjs remove --reason <w> # remove from ledger + conse
 The toolkit is also published as a **public, git-installable GSD capability** at
 `github.com/davesienkowski/gsd-contribution-toolkit` (tagged `#v2.1.3`). This is the
 distribution path for anyone other than the owner restoring local symlinks — it
-delivers the **self-contained bundle** (the 13 hooks + 2 skills + 5 commands), **not**
+delivers the **self-contained bundle** (the 14 hooks + 2 skills + 5 commands), **not**
 a hooks-only artifact. Install it through gsd-core's git capability adapter:
 
 ```bash

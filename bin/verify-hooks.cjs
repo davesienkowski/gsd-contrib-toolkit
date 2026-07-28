@@ -142,6 +142,15 @@ const PROOF_TABLE = [
   { name: 'scan-gate', kind: 'deny', needsLive: true,
     bad: bash('git push "unterminated'),
     clean: bash('git status') },
+  // ENF-19 (CTK-ADR-0004): the protocol-artifact gate's content-deny needs an ARMED contribution
+  // branch plus a missing/short artifact, neither of which is controllable from a proof fixture
+  // (on `next` the family is deliberately un-armed and every command ALLOWS). The BAD fixture
+  // therefore proves the deterministic FAIL-CLOSED wiring (HARD-04) instead — an unparseable
+  // push → captured deny regardless of branch — the same convention freshness/scan-gate/
+  // issue-dedupe/policy-invariants use. Mirrored in hooks/integration-proof.test.cjs DENY_GATES.
+  { name: 'protocol-artifact', kind: 'deny', needsLive: true,
+    bad: bash('git push origin "unterminated'),
+    clean: bash('git status') },
   // ── WR-01: bypass-form deny fixtures ─────────────────────────────────────────────
   // Each spawns an EXISTING wired gate (via `hook`) with a BYPASS-form bad fixture that, once
   // 07-05 hardened the shared classifier (CR-01..CR-04), now classifies to the gated action and

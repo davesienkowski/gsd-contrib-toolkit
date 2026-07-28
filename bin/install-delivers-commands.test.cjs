@@ -205,7 +205,7 @@ function makeSandbox(sourceRoot) {
 }
 
 test(
-  'end-to-end: runInstall delivers the 5 commands + 2 skills (alongside the 13 hooks) fully ON + runRemove reclaims both',
+  'end-to-end: runInstall delivers the 5 commands + 2 skills (alongside the 14 hooks) fully ON + runRemove reclaims both',
   { skip: E2E_SKIP },
   () => {
     const sb = makeSandbox(SOURCE_ROOT);
@@ -240,14 +240,14 @@ test(
       const taggedHooks = Object.keys(settings.hooks || {}).reduce((n, ev) => {
         return n + (Array.isArray(settings.hooks[ev]) ? settings.hooks[ev].filter((e) => e && e._gsdCapability === CAP_ID).length : 0);
       }, 0);
-      assert.strictEqual(taggedHooks, 13, 'the 5 commands must land ALONGSIDE the 13 marker-tagged hooks (full local-parity install)');
+      assert.strictEqual(taggedHooks, 14, 'the 5 commands must land ALONGSIDE the 14 marker-tagged hooks (full local-parity install)');
 
       // 21-03 full-surface co-existence: the 2 SKILLS also land at the sandbox skills dir as bundle
       // DIRECTORY symlinks on the SAME runInstall — a remote install reproduces the FULL local surface
       // (commands + hooks + skills together).
       assert.ok(
         installed.deliveredSkills && installed.deliveredSkills.names.length === EXPECTED_SKILL_STEMS.length,
-        'runInstall must deliver the 2 skills alongside the 5 commands + 13 hooks (full-surface install)'
+        'runInstall must deliver the 2 skills alongside the 5 commands + 14 hooks (full-surface install)'
       );
       for (const stem of EXPECTED_SKILL_STEMS) {
         const target = path.join(sb.skillsDir, stem);

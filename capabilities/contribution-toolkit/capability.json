@@ -82,6 +82,11 @@
     },
     {
       "event": "PreToolUse",
+      "matcher": "Bash",
+      "script": "hooks/protocol-artifact.cjs"
+    },
+    {
+      "event": "PreToolUse",
       "matcher": "Write|Edit",
       "script": "hooks/binlib-edit.cjs"
     },

@@ -253,6 +253,16 @@ const DENY_GATES = [
     clean: bash('git status'),
     needsLive: true,
   },
+  {
+    name: 'protocol-artifact',
+    // ENF-19 (CTK-ADR-0004) DENY needs an ARMED contribution branch + a missing artifact
+    // (uncontrollable here — on `next` the family is deliberately un-armed and everything
+    // ALLOWS); the BAD fixture proves the FAIL-CLOSED wiring (HARD-04): an unparseable push →
+    // captured deny regardless of branch. src: protocol-artifact.test.cjs.
+    bad: bash('git push origin "unterminated'),
+    clean: bash('git status'),
+    needsLive: true,
+  },
   // ── WR-01 (07-05): bypass-form deny fixtures (CR-01..CR-04) ──────────────────────────────
   // Each spawns an EXISTING wired gate (via `hook`) with a BYPASS-form bad fixture that, once
   // the shared classifier was hardened, now classifies to the gated action and DENIES under a
