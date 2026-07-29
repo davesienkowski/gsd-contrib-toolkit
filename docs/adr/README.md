@@ -15,5 +15,6 @@ Consequences).
 | [CTK-ADR-0002](CTK-ADR-0002-capability-native-distribution.md) | Distribute as a `role:feature` capability carrying PreToolUse enforcement via `hooks[]` | Accepted | v2.1 |
 | [CTK-ADR-0003](CTK-ADR-0003-full-surface-toggle-cross-runtime.md) | On/off toggles the full surface; per-runtime hybrid delivery; no `.md`→`.cjs` command rewrite | Accepted | v2.3 |
 | [CTK-ADR-0004](CTK-ADR-0004-artifact-gated-step-discipline.md) | Enforce step discipline by requiring each step's artifact (**amends 0001 §Decision.1**) | Accepted | v1.1 |
+| [CTK-ADR-0005](CTK-ADR-0005-graded-gate-severity-and-toolkit-owned-signals.md) | Grade gate severity (`ask` beside `allow`/`deny`); permit a strictly-additional toolkit-owned signal at lower severity (**amends 0001 §Decision.2 and §Decision.3**) | Accepted | v2.7+ |
 
 For the narrative design overview, see [../foundations.md](../foundations.md).

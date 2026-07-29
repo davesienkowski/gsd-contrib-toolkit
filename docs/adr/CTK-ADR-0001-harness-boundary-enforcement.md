@@ -14,6 +14,12 @@
   an *outcome*; what CTK-ADR-0004 adds is that a prior step's deposited **artifact** can be the
   *precondition* of that outcome, which makes the step enforceable *transitively*. Narrowed, not
   withdrawn: this record stays **Accepted**.
+- **Amended by:** [CTK-ADR-0005](CTK-ADR-0005-graded-gate-severity-and-toolkit-owned-signals.md)
+  (2026-07-29) — narrows §Decision.3 ("Reuse LIVE, never reimplement") to permit a *strictly
+  additional* toolkit-owned signal at a **lower** severity beside the LIVE one, never instead of it;
+  and narrows §Decision.2 (HARD-01 fail-closed) with one scoped exception — a sub-check that
+  **cannot deny** may fail OPEN. Any check that can deny still fails closed, unconditionally.
+  Narrowed, not withdrawn: this record stays **Accepted**.
 
 ## Context
 
