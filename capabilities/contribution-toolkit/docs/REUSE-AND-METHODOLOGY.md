@@ -22,8 +22,8 @@ when it sits outside that path and "delegate" when the path calls it rather than
 |---------|---------|-----------|
 | `gsd-ship` | leave-alone | `gsd-ship` is GSD's generic PR/review/merge-prep flow for a project's *own* roadmap work. The contribution path does not ship the toolkit's own roadmap — it files an upstream gsd-core contribution through the toolkit's `gsd-submit` plus the Phase 3/4 enforcement gates (issue-version, PR-template, lint:ci). Routing contributions through `gsd-ship` would bypass those gates, so it stays out of the contribution path entirely. |
 | `gsd-inbox` | leave-alone | `gsd-inbox` is the generic issue/PR triage inbox. Maintainer-side sweeps in this toolkit go through the vendored `maintainer-review-sweep` skill, which carries the repo-specific labels, gotchas, and authority facts. The generic inbox would lose that repo fidelity, so it is left out of the contribution and sweep paths. |
-| `gsd-pr-branch` | delegate | `gsd-pr-branch` produces a clean, `.planning/`-free PR branch — exactly what an upstream contribution must not leak. The toolkit calls it rather than reimplementing branch filtering, so the toolkit inherits GSD's filtering as GSD evolves it instead of maintaining a parallel copy that can drift. |
-| `gsd-code-review` | delegate | `gsd-code-review` is the pre-file review engine. The toolkit invokes it rather than building its own reviewer, then layers the methodology below (artificer law-lenses + `trust-but-verify`) on top of its output. Delegating keeps the review surface aligned with GSD's reviewer as it improves. |
+| `gsd-pr-branch` | leave-alone *(amended 2026-07-29, see A1)* | `gsd-pr-branch` filters transient `.planning/` commits out of a PR branch (`gsd-core/workflows/pr-branch.md:1-7`). **gsd-core gitignores `.planning/` entirely** (`.gitignore:33`), so a contribution branch cannot carry those commits and the filtering is a guaranteed no-op. Delegating would add a second cherry-picked branch (`<branch>-pr`) per contribution and diverge from the `fix/<issue#>-slug` naming the PR-title `#<issue>` scope depends on, in exchange for nothing. Revisit only if gsd-core ever tracks `.planning/`. |
+| `gsd-code-review` | delegate — **BLOCKED, precondition unmet** *(amended 2026-07-29, see A1)* | `gsd-code-review` is the pre-file review engine and remains the right delegation. It writes `${PHASE_DIR}/${PADDED_PHASE}-REVIEW.md` (`gsd-core/workflows/code-review.md:441`); a gsd-core **contribution worktree has no phase directory**, so the delegation cannot be wired until contribution work carries a planning context. File scoping would work (`--files` overrides the SUMMARY.md/git-diff fallback); the write target does not exist. Tracked as a dependency of that work, not as an open action here. ALIGN-01's artificer law-lenses + `trust-but-verify` remain the shipped pre-file review and are **complementary to, not a replacement for**, this engine. |
 
 **Legend — what the verdicts mean:**
 
@@ -34,6 +34,36 @@ when it sits outside that path and "delegate" when the path calls it rather than
   redefining the term).
 - **leave-alone** — the command is out of the contribution/sweep path entirely; the toolkit neither
   calls it nor reimplements it.
+
+### A1 — Amendment, 2026-07-29 (`gsd-pr-branch`, `gsd-code-review`)
+
+**What changed.** `gsd-pr-branch` moves **delegate → leave-alone**. `gsd-code-review` keeps
+**delegate** but gains an explicit **BLOCKED (precondition unmet)** qualifier. The original
+rationales are superseded by the cells above; both are recorded here rather than silently edited.
+
+**Why.** Both verdicts were written in the v1.0 milestone and neither was ever wired — a live check
+of `skills/`, `hooks/`, and `bin/` on 2026-07-29 found **zero** references to either command. That
+prompted the question of whether to wire them or amend them. Investigation said amend:
+
+- **`gsd-pr-branch`** was justified by a leak risk that gsd-core's own `.gitignore:33` had already
+  eliminated. The verdict was correct in general and inapplicable to this repo. Verified with
+  `git check-ignore -v .planning/STATE.md`.
+- **`gsd-code-review`** was never stale — it was *dependent*, on a phase directory that a
+  contribution worktree does not have. The dependency was true from the start and simply never
+  recorded, which is what made the verdict look unimplemented rather than blocked.
+
+**Consequence for sequencing.** `gsd-code-review` is no longer an independent action item. It is a
+**consumer** of giving contribution work a planning context; wiring it is a *reason* to do that
+work, not something to attempt before it.
+
+**Not changed.** `gsd-ship` and `gsd-inbox` remain **leave-alone**, and a 2026-07-29 comparison
+re-confirmed both: `gsd-inbox` overlaps `maintainer-review-sweep` on roughly one of nine phases, and
+where it overlaps it trusts the CI status rollup (`gsd-core/workflows/inbox.md:185`) — the exact
+check `re-review.md` forbids in favour of the literal failing assertion.
+
+**Method note.** ALIGN-03's premise stands: a command gets exactly one verdict plus a defensible
+rationale, and phases consume this record instead of re-deciding. This amendment changes two
+verdicts; it does not change that premise.
 
 ## Methodology Alignment (trek-e)
 
