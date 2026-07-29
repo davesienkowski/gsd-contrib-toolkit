@@ -394,22 +394,29 @@ function consentHasCap(sb) {
   return Object.keys(records).some((k) => records[k] && records[k].id === CAP_ID);
 }
 
-// ───────────────────────── manifest sanity: exactly 14 hooks (13 + 1) ─────────────────────────
+// ─────────────── manifest sanity: exactly 16 hooks (13 PreToolUse + 1 UserPromptSubmit + 2 OBS-01) ───────────────
 
-test('manifest declares EXACTLY the 13 PreToolUse gates + 1 UserPromptSubmit advisory (= 14)', () => {
+test('manifest declares EXACTLY the 13 PreToolUse gates + 1 UserPromptSubmit advisory + 2 OBS-01 post-tool recorder entries (= 16)', () => {
   const manifest = drv.readManifest();
   assert.strictEqual(manifest.id, CAP_ID, 'manifest id must be contribution-toolkit');
   const hooks = Array.isArray(manifest.hooks) ? manifest.hooks : [];
-  assert.strictEqual(hooks.length, 14, 'manifest hooks[] must declare exactly 14 entries');
+  assert.strictEqual(hooks.length, 16, 'manifest hooks[] must declare exactly 16 entries');
   const pre = hooks.filter((h) => h.event === 'PreToolUse').length;
   const ups = hooks.filter((h) => h.event === 'UserPromptSubmit').length;
   assert.strictEqual(pre, 13, 'exactly 13 PreToolUse gates');
   assert.strictEqual(ups, 1, 'exactly 1 UserPromptSubmit advisory');
+  // OBS-01: the recorder is wired on BOTH post-tool events — PostToolUse fires only on SUCCESS,
+  // PostToolUseFailure carries `error` instead of `tool_response`. One without the other would
+  // silently record half the population, so both are asserted, never just the pair count.
+  const post = hooks.filter((h) => h.event === 'PostToolUse').length;
+  const postFail = hooks.filter((h) => h.event === 'PostToolUseFailure').length;
+  assert.strictEqual(post, 1, 'exactly 1 PostToolUse recorder');
+  assert.strictEqual(postFail, 1, 'exactly 1 PostToolUseFailure recorder');
 });
 
 // ───────────────────────── the load-bearing lifecycle proof ─────────────────────────
 
-test('install -> off -> on -> remove on a disposable sandbox; exactly 14 tagged, untagged survives, real state unchanged', { skip: SKIP }, () => {
+test('install -> off -> on -> remove on a disposable sandbox; exactly 16 tagged, untagged survives, real state unchanged', { skip: SKIP }, () => {
   // Snapshot the REAL gsd-core state + real consent BEFORE — must be byte/existence-identical AFTER.
   const before = snapshotRealState(SOURCE_ROOT);
 
@@ -424,12 +431,14 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 14 tagged,
 
     const opts = sandboxOpts(sb);
 
-    // ── install: exactly 14 CAP_MARKER-tagged entries (13 PreToolUse + 1 UserPromptSubmit) ──
+    // ── install: exactly 16 CAP_MARKER-tagged entries (13 PreToolUse + 1 UserPromptSubmit + 2 OBS-01) ──
     drv.runInstall(opts);
     let tagged = countTagged(sb.settingsPath);
-    assert.strictEqual(tagged.total, 14, 'install must tag EXACTLY 14 entries, got ' + tagged.total);
+    assert.strictEqual(tagged.total, 16, 'install must tag EXACTLY 16 entries, got ' + tagged.total);
     assert.strictEqual(tagged.byEvent.PreToolUse, 13, 'exactly 13 PreToolUse gates tagged');
     assert.strictEqual(tagged.byEvent.UserPromptSubmit, 1, 'exactly 1 UserPromptSubmit advisory tagged');
+    assert.strictEqual(tagged.byEvent.PostToolUse, 1, 'exactly 1 PostToolUse recorder tagged (OBS-01)');
+    assert.strictEqual(tagged.byEvent.PostToolUseFailure, 1, 'exactly 1 PostToolUseFailure recorder tagged (OBS-01)');
     assert.strictEqual(userHookSurvives(sb.settingsPath), true, 'the pre-seeded untagged user hook must survive install');
     assert.strictEqual(ledgerHasCap(sb), true, 'install must record a ledger entry for contribution-toolkit');
     assert.strictEqual(consentHasCap(sb), true, 'install must record a consent record for contribution-toolkit');
@@ -457,10 +466,10 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 14 tagged,
       'every wired command script must resolve to a real file after install (INST-02)'
     );
 
-    // ── off: EXACTLY the 14 tagged entries stripped; the UNTAGGED user hook SURVIVES ──
+    // ── off: EXACTLY the 16 tagged entries stripped; the UNTAGGED user hook SURVIVES ──
     drv.runOff(Object.assign({}, opts, { reason: 'CAP-07 hermetic lifecycle proof: off' }));
     tagged = countTagged(sb.settingsPath);
-    assert.strictEqual(tagged.total, 0, 'off must strip EXACTLY the 14 tagged entries, leftover=' + tagged.total);
+    assert.strictEqual(tagged.total, 0, 'off must strip EXACTLY the 16 tagged entries, leftover=' + tagged.total);
     assert.strictEqual(
       userHookSurvives(sb.settingsPath),
       true,
@@ -482,10 +491,10 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 14 tagged,
     // picks it up (off touches only gates/commands/skills/flag, never the promotion).
     assert.ok(fs.existsSync(sandboxCapDir(sb)), 'off must PRESERVE the promoted capDir (D-08)');
 
-    // ── on: the 14 tagged entries are restored (and the untagged user hook is still there) ──
+    // ── on: the 16 tagged entries are restored (and the untagged user hook is still there) ──
     drv.runOn(opts);
     tagged = countTagged(sb.settingsPath);
-    assert.strictEqual(tagged.total, 14, 'on must restore EXACTLY 14 tagged entries, got ' + tagged.total);
+    assert.strictEqual(tagged.total, 16, 'on must restore EXACTLY 16 tagged entries, got ' + tagged.total);
     assert.strictEqual(tagged.byEvent.PreToolUse, 13, 'on restores 13 PreToolUse gates');
     assert.strictEqual(tagged.byEvent.UserPromptSubmit, 1, 'on restores 1 UserPromptSubmit advisory');
     assert.strictEqual(userHookSurvives(sb.settingsPath), true, 'the untagged user hook must still survive after on');
@@ -534,9 +543,9 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 14 tagged,
   assertRealStateUnchanged(before);
 });
 
-test('double-install is idempotent: a second install keeps the tagged set at 14 (no growth)', { skip: SKIP }, () => {
+test('double-install is idempotent: a second install keeps the tagged set at 16 (no growth)', { skip: SKIP }, () => {
   // WR-02: the driver claims re-run idempotency (LIVE apply strips its own marker first). Prove it
-  // empirically — a second install that grew the tagged set from 14 to 28 must be caught here.
+  // empirically — a second install that grew the tagged set from 16 to 32 must be caught here.
   const before = snapshotRealState(SOURCE_ROOT);
   const sb = makeCapSandbox(SOURCE_ROOT);
   try {
@@ -544,11 +553,11 @@ test('double-install is idempotent: a second install keeps the tagged set at 14 
 
     drv.runInstall(opts);
     let tagged = countTagged(sb.settingsPath);
-    assert.strictEqual(tagged.total, 14, 'first install must tag EXACTLY 14 entries, got ' + tagged.total);
+    assert.strictEqual(tagged.total, 16, 'first install must tag EXACTLY 16 entries, got ' + tagged.total);
 
     drv.runInstall(opts); // second call — must NOT append a second tagged set.
     tagged = countTagged(sb.settingsPath);
-    assert.strictEqual(tagged.total, 14, 'double-install must NOT grow the tagged set (idempotent), got ' + tagged.total);
+    assert.strictEqual(tagged.total, 16, 'double-install must NOT grow the tagged set (idempotent), got ' + tagged.total);
     assert.strictEqual(tagged.byEvent.PreToolUse, 13, 'still exactly 13 PreToolUse gates after re-install');
     assert.strictEqual(tagged.byEvent.UserPromptSubmit, 1, 'still exactly 1 UserPromptSubmit advisory after re-install');
     assert.strictEqual(
@@ -616,7 +625,7 @@ test('off without a reason FAILS before mutation; the sandbox settings are untou
       'off with an empty/whitespace --reason must FAIL (accountability gate before mutation)'
     );
     assert.strictEqual(sha(sb.settingsPath), before, 'a rejected off must NOT mutate the settings (gate runs first)');
-    assert.strictEqual(countTagged(sb.settingsPath).total, 14, 'the 14 tagged gates remain after the rejected off');
+    assert.strictEqual(countTagged(sb.settingsPath).total, 16, 'the 16 tagged gates remain after the rejected off');
   } finally {
     sb.dispose();
   }
@@ -633,8 +642,8 @@ test('off whose receipt cannot be written FAILS probe-first; gates/commands/skil
     const opts = sandboxOpts(sb);
     drv.runInstall(opts);
 
-    // Pre-condition: fully ON (14 gates + 5 commands + 2 skills + flag true).
-    assert.strictEqual(countTagged(sb.settingsPath).total, 14, 'pre: 14 tagged gates');
+    // Pre-condition: fully ON (16 wired entries + 5 commands + 2 skills + flag true).
+    assert.strictEqual(countTagged(sb.settingsPath).total, 16, 'pre: 16 tagged gates');
     assert.strictEqual(countDeliveredCommands(sb).delivered, 5, 'pre: 5 command links');
     assert.strictEqual(countDeliveredSkills(sb).delivered, 2, 'pre: 2 skill links');
     assert.strictEqual(readEnforcementFlag(sb), true, 'pre: enforcement flag true');
@@ -652,7 +661,7 @@ test('off whose receipt cannot be written FAILS probe-first; gates/commands/skil
 
     // ZERO mutation: gates, commands, skills, flag, and the settings bytes are ALL unchanged.
     assert.strictEqual(sha(sb.settingsPath), settingsBefore, 'a probe-failed off must NOT mutate settings.json');
-    assert.strictEqual(countTagged(sb.settingsPath).total, 14, 'the 14 tagged gates remain after the probe-failed off');
+    assert.strictEqual(countTagged(sb.settingsPath).total, 16, 'the 16 tagged gates remain after the probe-failed off');
     assert.strictEqual(countDeliveredCommands(sb).delivered, 5, 'the 5 command links remain after the probe-failed off (no reclaim)');
     assert.strictEqual(countDeliveredSkills(sb).delivered, 2, 'the 2 skill links remain after the probe-failed off (no reclaim)');
     assert.strictEqual(readEnforcementFlag(sb), true, 'the enforcement flag stays true after the probe-failed off (no flip)');
@@ -1271,13 +1280,13 @@ test('a re-run of install REPAIRS a dangling install: broken (bundle-absent) ins
     // (2) REPAIR: a normal re-run of install (the sole repair entrypoint).
     const res = drv.runInstall(opts);
 
-    // Repaired: capDir re-promoted, every wired target resolves, exactly 14 tagged (idempotent), logged.
+    // Repaired: capDir re-promoted, every wired target resolves, exactly 16 tagged (idempotent), logged.
     assert.ok(fs.existsSync(sandboxCapDir(sb)), 're-run must re-promote the capDir (D-05)');
     assert.deepStrictEqual(
       unresolvedWiredScripts(sb.settingsPath), [],
       're-run must re-wire so EVERY wired target resolves again (D-05 repair)'
     );
-    assert.strictEqual(countTagged(sb.settingsPath).total, 14, 're-run keeps EXACTLY 14 tagged (idempotent, no growth)');
+    assert.strictEqual(countTagged(sb.settingsPath).total, 16, 're-run keeps EXACTLY 16 tagged (idempotent, no growth)');
     assert.strictEqual(userHookSurvives(sb.settingsPath), true, 'the pre-seeded untagged user hook survives the repair');
     assert.ok(
       res.lines.some((l) => /\[install\] verified \d+ wired hook target\(s\) resolve/.test(l)),

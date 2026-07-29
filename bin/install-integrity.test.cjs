@@ -208,7 +208,7 @@ const write = (file_path) => JSON.stringify({ tool_name: 'Write', tool_input: { 
 
 // ───────────────────────── INST-03 (a): no dangling wired targets ─────────────────────────
 
-test('INST-03(a): a sandbox install wires EVERY CAP_MARKER target to a real file (14 resolve, no dangling)', { skip: SKIP }, () => {
+test('INST-03(a): a sandbox install wires EVERY CAP_MARKER target to a real file (16 resolve, no dangling)', { skip: SKIP }, () => {
   // The INST-01/02 closure as a regression: after a real install every wired gate script must
   // resolve. A future regression to a dangling promoted bundle makes this go RED. (Red-on-regression
   // witness below: with promotion suppressed these SAME targets dangle and the install fails loud.)
@@ -226,9 +226,9 @@ test('INST-03(a): a sandbox install wires EVERY CAP_MARKER target to a real file
     // The promoted capDir the wired paths are composed against exists (INST-02 promotion).
     assert.ok(fs.existsSync(sandboxCapDir(sb)), 'install must promote the capDir (INST-02)');
 
-    // (a) NO DANGLING: enumerate every tagged wired target and stat each — all 14 resolve.
+    // (a) NO DANGLING: enumerate every tagged wired target and stat each — all 16 resolve.
     const targets = wiredTargets(sb.settingsPath);
-    assert.strictEqual(targets.length, 14, 'install must wire EXACTLY 14 tagged targets, got ' + targets.length);
+    assert.strictEqual(targets.length, 16, 'install must wire EXACTLY 16 tagged targets, got ' + targets.length);
     const dangling = targets.filter((t) => !t.resolves).map((t) => t.command);
     assert.deepStrictEqual(
       dangling, [],
@@ -236,13 +236,13 @@ test('INST-03(a): a sandbox install wires EVERY CAP_MARKER target to a real file
         'silent-inert defect INST-01/02 closed; these do NOT resolve: ' + dangling.join(', ')
     );
 
-    // Cross-check via the driver's own fail-loud verifier: verified === 14, no throw.
+    // Cross-check via the driver's own fail-loud verifier: verified === 16, no throw.
     const verification = drv.verifyWiredTargets({
       liveRoot: sb.root,
       confinedSharedFile: requireLiveScript(sb.root, 'gsd-core/bin/lib/capability-lifecycle.cjs').confinedSharedFile,
       capMarker: CAP_MARKER,
     });
-    assert.strictEqual(verification.verified, 14, 'verifyWiredTargets must confirm all 14 wired targets resolve');
+    assert.strictEqual(verification.verified, 16, 'verifyWiredTargets must confirm all 16 wired targets resolve');
   } finally {
     sb.dispose();
   }

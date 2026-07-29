@@ -45,7 +45,18 @@ const BASH_GATES = [
 ];
 const WRITE_EDIT_GATES = ['binlib-edit'];
 const PROMPT_HOOKS = ['protocol-reminder'];
+/**
+ * OBS-01: the observation-only recorder. It is the ONE hook wired more than once — the harness
+ * splits completed tool calls across TWO events (`PostToolUse` fires only on SUCCESS,
+ * `PostToolUseFailure` fires on failure carrying `error` instead of `tool_response`), so a
+ * recorder registered on only one of them silently drops half the population. Hence it is kept
+ * OUT of ALL_HOOKS (whose invariant is "exactly once") and asserted separately below.
+ */
+const RECORDER_HOOKS = ['tool-recorder'];
+const RECORDER_EVENTS = ['PostToolUse', 'PostToolUseFailure'];
 const ALL_HOOKS = [...BASH_GATES, ...WRITE_EDIT_GATES, ...PROMPT_HOOKS];
+/** Every wired script, however many times it appears — the presence set the merge proof uses. */
+const ALL_WIRED_SCRIPTS = [...ALL_HOOKS, ...RECORDER_HOOKS];
 
 function loadSnippet() {
   const raw = fs.readFileSync(SNIPPET_PATH, 'utf8');
@@ -72,6 +83,9 @@ test('snippet is valid JSON with a top-level hooks object', () => {
   assert.ok(snip.hooks && typeof snip.hooks === 'object', 'has .hooks object');
   assert.ok(Array.isArray(snip.hooks.PreToolUse), 'PreToolUse is an array');
   assert.ok(Array.isArray(snip.hooks.UserPromptSubmit), 'UserPromptSubmit is an array');
+  for (const evt of RECORDER_EVENTS) {
+    assert.ok(Array.isArray(snip.hooks[evt]), `${evt} is an array`);
+  }
 });
 
 test('every entry has the harness {matcher, hooks:[{type:command, command, timeout}]} shape', () => {
@@ -107,6 +121,27 @@ test('every Phase-3 hook appears EXACTLY once', () => {
   for (const name of ALL_HOOKS) {
     const hits = cmds.filter((c) => c.command.includes(`/hooks/${name}.cjs"`));
     assert.equal(hits.length, 1, `${name} should appear exactly once (found ${hits.length})`);
+  }
+});
+
+test('tool-recorder is wired on BOTH post-tool events, matcher "*" (OBS-01)', () => {
+  const snip = loadSnippet();
+  const cmds = allCommands(snip);
+  for (const name of RECORDER_HOOKS) {
+    const hits = cmds.filter((c) => c.command.includes(`/hooks/${name}.cjs"`));
+    assert.equal(hits.length, RECORDER_EVENTS.length,
+      `${name} must be wired on all ${RECORDER_EVENTS.length} post-tool events (found ${hits.length})`);
+    assert.deepEqual(
+      hits.map((h) => h.evt).sort(),
+      [...RECORDER_EVENTS].sort(),
+      // A recorder on PostToolUse alone reports only successes and looks like it is working.
+      `${name} must cover BOTH success and failure streams`
+    );
+    for (const h of hits) {
+      assert.equal(h.matcher, '*', `${name} matcher must be "*" — it observes every tool`);
+      assert.ok(h.timeout <= 10,
+        `${name} must carry a SHORT timeout (got ${h.timeout}) — observation must never stall a turn`);
+    }
   }
 });
 
@@ -187,8 +222,8 @@ test('install.sh merge wires every hook WITHOUT clobbering a pre-existing hook',
   const surviving = mergedCmds.some((c) => c.command.includes('/tmp/USER_EXISTING.sh'));
   assert.ok(surviving, 'pre-existing USER_EXISTING hook must survive the merge (EP-6)');
 
-  // Every wired hook (Phase-3 + Phase-4 lint-ci-marker/scan-gate) is present after the merge.
-  for (const name of ALL_HOOKS) {
+  // Every wired hook (Phase-3 + Phase-4 lint-ci-marker/scan-gate + OBS-01) is present after the merge.
+  for (const name of ALL_WIRED_SCRIPTS) {
     assert.ok(
       mergedCmds.some((c) => c.command.includes(`/hooks/${name}.cjs"`)),
       `${name} present after merge`

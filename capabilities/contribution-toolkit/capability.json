@@ -93,6 +93,16 @@
     {
       "event": "UserPromptSubmit",
       "script": "hooks/protocol-reminder.cjs"
+    },
+    {
+      "event": "PostToolUse",
+      "matcher": "*",
+      "script": "hooks/tool-recorder.cjs"
+    },
+    {
+      "event": "PostToolUseFailure",
+      "matcher": "*",
+      "script": "hooks/tool-recorder.cjs"
     }
   ],
   "config": {

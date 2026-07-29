@@ -224,6 +224,27 @@ const PROOF_TABLE = [
   { name: 'preflight-shipped-paths', kind: 'advisory', needsLive: true,
     // preflight reads the REAL working-tree diff at cwd; no stdin payload (single surfaced case).
     inject: '', none: null },
+  // ── DELIBERATE EXCLUSION: hooks/tool-recorder.cjs (OBS-01) ───────────────────────
+  // OBS-01 is WIRED (PostToolUse + PostToolUseFailure, matcher '*') but has NO entry here, and
+  // no DENY_GATES mirror in hooks/integration-proof.test.cjs either. This is deliberate, not an
+  // oversight — `hooks/doctor.cjs` is the existing precedent for a hook file this table skips
+  // (settings.snippet.test.cjs:113-118 asserts doctor is never wired at all).
+  //
+  // Neither proof KIND fits it, and forcing one would manufacture a false signal:
+  //   - kind:'deny'     asserts a permissionDecision of deny/allow. OBS-01 emits NO
+  //                     permissionDecision at all — a PostToolUse hook cannot block, because the
+  //                     tool has already run. Every case would be INCONCLUSIVE, which this runner
+  //                     correctly refuses to score as a pass.
+  //   - kind:'advisory' asserts the INJECT case SURFACES additionalContext (the WR-02 positive
+  //                     assertion). OBS-01 deliberately surfaces NOTHING — silence is its
+  //                     contract, so an advisory row would go RED for behaving correctly.
+  //
+  // What OBS-01 must actually prove (exit 0 + EMPTY stdout on both a well-formed payload and on
+  // garbage, and exactly one bounded JSONL line appended) is proven where those assertions are
+  // expressible: the SPAWNED-hook tests at the end of hooks/tool-recorder.test.cjs. Adding a row
+  // here would change the committed 54-case baseline without adding any evidence.
+  //
+  // If a future proof KIND is introduced for non-decision hooks, this is the entry to add.
 ];
 
 /**

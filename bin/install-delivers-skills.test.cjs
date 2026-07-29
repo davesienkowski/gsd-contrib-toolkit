@@ -305,7 +305,7 @@ test('removeBundledSkills leaves a pre-seeded REAL skill dir at a target untouch
 // ──────────────────────────── END-TO-END runInstall→runRemove (SKIP-on-unreachable) ────────────────────────────
 //
 // Drives the FULL runInstall→runRemove against a disposable sandbox gsd-core checkout, proving the 2
-// skills land ALONGSIDE the 5 commands + 14 hooks via the SAME composed LIVE engine, and runRemove
+// skills land ALONGSIDE the 5 commands + 16 wired hook entries via the SAME composed LIVE engine, and runRemove
 // reclaims the skill links. SKIPs-with-note when no LIVE gsd-core checkout is reachable.
 
 const ENGINE_LIB_REL = path.join('gsd-core', 'bin', 'lib');
@@ -350,7 +350,7 @@ function makeE2ESandbox(sourceRoot) {
 }
 
 test(
-  'end-to-end: runInstall delivers the 2 skills (alongside the 5 commands + 14 hooks) + runRemove reclaims the skill links',
+  'end-to-end: runInstall delivers the 2 skills (alongside the 5 commands + 16 wired hook entries) + runRemove reclaims the skill links',
   { skip: E2E_SKIP },
   () => {
     const sb = makeE2ESandbox(E2E_SOURCE_ROOT);
@@ -380,12 +380,12 @@ test(
         assert.ok(fs.existsSync(path.join(target, 'SKILL.md')), stem + '/SKILL.md reachable through the dir symlink');
       }
 
-      // Co-existence proof: the 2 skills land ALONGSIDE the 14 marker-tagged hooks + the 5 commands.
+      // Co-existence proof: the 2 skills land ALONGSIDE the 16 marker-tagged hook entries + the 5 commands.
       const settings = JSON.parse(fs.readFileSync(path.join(sb.root, SETTINGS_REL), 'utf8'));
       const taggedHooks = Object.keys(settings.hooks || {}).reduce((n, ev) => {
         return n + (Array.isArray(settings.hooks[ev]) ? settings.hooks[ev].filter((e) => e && e._gsdCapability === CAP_ID).length : 0);
       }, 0);
-      assert.strictEqual(taggedHooks, 14, 'the 2 skills must land ALONGSIDE the 14 marker-tagged hooks (full local-parity install)');
+      assert.strictEqual(taggedHooks, 16, 'the 2 skills must land ALONGSIDE the 16 marker-tagged hook entries (full local-parity install)');
       for (const base of ['gsd-submit', 'gsd-review-sweep', 'gsd-triage-assist', 'gsd-release-preflight', 'gsd-ruleset-drift']) {
         assert.ok(fs.existsSync(path.join(sb.commandsDir, base + '.md')), 'the 2 skills must land ALONGSIDE the 5 commands (' + base + '.md present)');
       }
