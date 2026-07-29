@@ -31,12 +31,33 @@
  * threshold (default 0.6), consistent with the fail-closed enforcement posture; the reason
  * lists the duplicate #N + similarity and how to proceed.
  *
+ * TWO SIGNALS, TWO SEVERITIES (260729-p3f):
+ *
+ *   1. TITLE similarity — the LIVE scoreCandidates, unchanged, still the only thing that can
+ *      DENY. Measured at 0.00% false positives over 3570 open non-duplicate pairs: precise,
+ *      not broken. It reliably catches the byte-identical class (#2739-#2748: six-plus
+ *      identical titles filed within twelve minutes, all closed DUPLICATE). Do not widen it.
+ *
+ *   2. CODE-CITATION overlap — toolkit-owned, and only ever an `ask`. Two issues citing the
+ *      same RARE code paths are plausibly the same defect even when their titles share no
+ *      words, which is precisely the class signal 1 cannot see. But it is measured at recall
+ *      2/9 with ~0.048 prompts per filing, so it is an advisory POINTER, never a block. See
+ *      RARE_DF_MAX for the full measurement and the rejected alternatives.
+ *
+ * Signal 2 is a deliberate, recordable DIVERGENCE from strict reuse-LIVE (CTK-ADR-0001 §3):
+ * gsd-core has no equivalent check, so this gate will prompt about pairs gsd-core's CI would
+ * not flag. It is additive, not a reimplementation — gsd-core's similarity math remains
+ * untouched and remains the sole authority for the deny. This wants its own CTK-ADR.
+ *
+ * Signal 2 also fails OPEN while the rest of the gate fails CLOSED. That asymmetry is
+ * intentional and is explained at citationAdvisoryReason.
+ *
  * @module hooks/issue-dedupe
  */
 
 const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction, findActionSegment, isNonGovernedCommand } = require('./lib/classify.cjs');
-const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
+const { runGate, readHookInput, deny, allow, ask, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand, requireLiveScript } = require('./lib/resolve.cjs');
 
 // FailClosed/safeCommand: shared IN-03 helpers from failclosed.cjs.
@@ -153,6 +174,218 @@ function resolveTitle(seg, route) {
 }
 
 /**
+ * Resolve the new issue BODY across native / gh-api / curl routes, for the citation
+ * advisory ONLY. Returns the body string, or '' when there is none.
+ *
+ * Deliberately NOT the same function as gh-issue-create.cjs's `resolveBody`: that one throws
+ * FailClosed when the body lives on an unobservable stdin, because THAT gate must not allow a
+ * body it cannot inspect. Here the body is wanted for an ADVISORY, so an unavailable body is
+ * simply "no advisory" (C2) — never a deny. A read failure throws and is swallowed by the
+ * caller's try/catch. This version also honors `-b`, which the sibling does not.
+ *
+ * @param {Object} seg
+ * @param {string} route 'native' | 'gh-api' | 'curl'
+ * @returns {string} the body, or '' when absent/unavailable
+ */
+function resolveBodyForAdvisory(seg, route) {
+  const flags = seg.flags || {};
+  const shortFlags = seg.shortFlags || {};
+
+  if (route === 'native') {
+    if (typeof flags.body === 'string') return flags.body;
+    if (typeof shortFlags.b === 'string') return shortFlags.b;
+    const bf = flags['body-file'];
+    if (typeof bf === 'string' && bf !== '-') {
+      // May throw (missing/unreadable file) → caught upstream → no advisory, NOT a deny.
+      return require('node:fs').readFileSync(bf, 'utf8');
+    }
+    return '';
+  }
+
+  if (route === 'gh-api') {
+    let body = '';
+    scanFieldPairs(seg, (k, v) => {
+      if (k !== 'body') return;
+      if (v.startsWith('@')) {
+        const src = v.slice(1);
+        if (src !== '-') body = require('node:fs').readFileSync(src, 'utf8');
+      } else {
+        body = v;
+      }
+    });
+    return body;
+  }
+
+  // curl
+  const payload = curlDataBody(seg);
+  if (typeof payload === 'string' && !payload.startsWith('@')) {
+    const fromJson = jsonField(payload, 'body');
+    return fromJson == null ? payload : fromJson;
+  }
+  return '';
+}
+
+/**
+ * The cited-code-path matcher.
+ *
+ * PROVENANCE: copied VERBATIM from the measurement scripts —
+ * `.planning/notes/2026-07-28-sweep-and-toolkit-analysis/dup-fpr.cjs:11` (and the identical
+ * literal in the full sweep, `scratchpad/dedupe-threshold-sweep.cjs`). Do NOT "improve" it:
+ * the recall/false-positive-rate numbers that justify the thresholds below were measured with
+ * EXACTLY this pattern over the real gsd-core tracker. Widening or narrowing it invalidates
+ * them, and the thresholds would then be guesses again.
+ */
+const PATH_RE = /\b(?:src|tests|scripts|bin|hooks|docs|agents|commands|gsd-core|get-shit-done|\.github)\/[A-Za-z0-9_\-.\/]+?\.(?:cts|cjs|mjs|js|ts|md|json|ya?ml|sh)\b/g;
+
+/**
+ * A path counts as RARE when at most this many issues cite it. Two issues citing
+ * `bin/install.js` is noise; two issues citing the same obscure module is a signal.
+ *
+ * MEASURED (do not tune by intuition — re-run the sweep):
+ *   sweep script : scratchpad/dedupe-threshold-sweep.cjs
+ *   corpus       : 117 open issues (85 citing >=1 path), 3570 open non-duplicate pairs,
+ *                  9 "reworded" duplicates (title-dice < 0.6, i.e. invisible to the deny)
+ *   rule shipped : rare(df<=2) >= 2  →  recall 2/9, pair-FPR 0.06%, 0.048 fires per filing
+ *
+ * Rejected alternatives, with the numbers that rejected them:
+ *   sharedPaths >= 1  recall 5/9 but 4.238 fires/filing — fires on essentially every filing
+ *   sharedPaths >= 2  recall 3/9 at 0.595 fires/filing — a prompt every ~2 filings
+ *   jaccard >= 0.15   recall 4/9 at 1.333 fires/filing
+ *   rare(df<=1)       a STRUCTURAL ARTIFACT, never ship it: the df corpus is built from OPEN
+ *                     issues only, so any path shared by two open issues has df>=2 BY
+ *                     CONSTRUCTION and df<=1 therefore cannot fire on a false positive. Its
+ *                     0.00% is a floor, not a measurement.
+ *
+ * The negative result matters as much as the shipped rule: NO threshold reached recall >= 3/9
+ * at acceptable noise. This advisory is an improvement on today's 0/9 for reworded
+ * duplicates, not a solution to them.
+ */
+const RARE_DF_MAX = 2;
+
+/** How many rare paths two issues must SHARE before the advisory fires. See RARE_DF_MAX. */
+const MIN_SHARED_RARE = 2;
+
+/**
+ * Extract the set of cited code paths from an issue body.
+ *
+ * Mirrors the measurement's `cites()` helper exactly, including the trailing-punctuation
+ * strip (`docs/foo.md).` → `docs/foo.md`) — prose cites paths mid-sentence.
+ *
+ * @param {*} body an issue body (anything non-string is treated as no citations)
+ * @returns {Set<string>}
+ */
+function extractCitedPaths(body) {
+  const found = new Set();
+  const text = typeof body === 'string' ? body : '';
+  if (text === '') return found;
+  for (const m of text.matchAll(PATH_RE)) {
+    found.add(m[0].replace(/[.,)]+$/, ''));
+  }
+  return found;
+}
+
+/**
+ * Document frequency: for each cited path, how many issues in the corpus cite it.
+ *
+ * @param {Array<{body?: string}>} candidates the fetched open-issue corpus
+ * @param {(body:*)=>Set<string>} extract the path extractor (injectable for tests)
+ * @returns {Map<string, number>}
+ */
+function computeDocFrequency(candidates, extract) {
+  const df = new Map();
+  for (const c of candidates) {
+    for (const p of extract(c && c.body)) {
+      df.set(p, (df.get(p) || 0) + 1);
+    }
+  }
+  return df;
+}
+
+/**
+ * Find the best candidate sharing >= MIN_SHARED_RARE rare cited paths with the new body.
+ *
+ * The unfiled issue's OWN citations are counted into the document frequency (+1 for a path it
+ * cites). That is not a detail — it reproduces the semantics the sweep measured, where BOTH
+ * members of a scored pair were inside the df corpus. Without the +1, a path cited by the
+ * candidate and one other open issue would read as df 2 ("rare") when the measured rule saw
+ * it as df 3 ("common") and did not fire. Omitting it would make the gate noisier than the
+ * 0.048 fires/filing that justified shipping it.
+ *
+ * @param {string} newBody the unfiled issue's body
+ * @param {Array<{number:number,title:string,body?:string}>} candidates open-issue corpus
+ * @param {{extractCitedPaths?: Function}} [deps] injectable extractor seam
+ * @returns {{number:number, title:string, sharedRare:string[]}|null} null = no advisory
+ */
+function findCitationOverlap(newBody, candidates, deps = {}) {
+  const extract = deps.extractCitedPaths || extractCitedPaths;
+  const newPaths = extract(newBody);
+  if (newPaths.size === 0) return null;
+
+  const df = computeDocFrequency(candidates, extract);
+  const dfWithNew = (p) => (df.get(p) || 0) + (newPaths.has(p) ? 1 : 0);
+
+  let best = null;
+  for (const c of candidates) {
+    if (!c || typeof c.number !== 'number') continue;
+    const shared = [...extract(c.body)].filter((p) => newPaths.has(p));
+    const sharedRare = shared.filter((p) => dfWithNew(p) <= RARE_DF_MAX).sort();
+    if (sharedRare.length < MIN_SHARED_RARE) continue;
+    // Most overlapping rare paths wins; ties resolve to the lower issue number (stable).
+    if (
+      !best ||
+      sharedRare.length > best.sharedRare.length ||
+      (sharedRare.length === best.sharedRare.length && c.number < best.number)
+    ) {
+      best = { number: c.number, title: String(c.title == null ? '' : c.title), sharedRare };
+    }
+  }
+  return best;
+}
+
+/**
+ * Build the advisory ASK reason, or null when nothing fires.
+ *
+ * TOTALLY fail-OPEN (C2). Every step — body resolution, file reads, path extraction, the df
+ * arithmetic — happens inside this try/catch, and ANY failure yields null, i.e. "no advisory",
+ * leaving the LIVE title-dice verdict as the decision. The rest of ENF-11 is fail-CLOSED and
+ * stays that way (a failed FETCH still denies, HARD-01), but an ADVISORY that can fail closed
+ * would be a whole-suite outage risk in exchange for a 2/9 signal. That trade is not worth
+ * taking; L3 already records what one gate's misfire costs.
+ *
+ * @param {Object} seg the issue-create segment
+ * @param {string} route
+ * @param {Array<{number:number,title:string,body?:string}>} candidates
+ * @param {Object} deps
+ * @returns {string|null} the ask reason, or null for no advisory
+ */
+function citationAdvisoryReason(seg, route, candidates, deps) {
+  try {
+    if (!Array.isArray(candidates) || candidates.length === 0) return null;
+    const newBody = resolveBodyForAdvisory(seg, route);
+    if (typeof newBody !== 'string' || newBody.trim() === '') return null;
+
+    const hit = findCitationOverlap(newBody, candidates, deps);
+    if (!hit) return null;
+
+    return (
+      'POSSIBLE duplicate — code-citation overlap (ENF-11 advisory, not a block): the new ' +
+      'issue and open issue #' + hit.number + ' cite the same ' + hit.sharedRare.length +
+      ' rarely-referenced code paths, which often means they are about the same defect even ' +
+      'when the titles share no words.\n' +
+      '  #' + hit.number + ' — ' + hit.title + '\n' +
+      '  shared rare paths: ' + hit.sharedRare.join(', ') + '\n' +
+      'Read #' + hit.number + ' first. If it is the same problem, comment there instead. If ' +
+      'it is genuinely distinct, proceed — this is a prompt, not a gate.\n' +
+      '(Signal strength is modest by measurement: it catches 2 of 9 known reworded ' +
+      'duplicates and fires on roughly 1 in 20 filings. Treat it as a pointer, not a verdict.)'
+    );
+  } catch (_) {
+    // C2: fail OPEN. No advisory; the title-dice verdict stands.
+    return null;
+  }
+}
+
+/**
  * The pure gate decision, with all impure dependencies injected so it is unit-testable
  * without a real gsd-core checkout, `gh`, or network. Wrapped by runGate so any throw →
  * fail-closed DENY.
@@ -207,6 +440,14 @@ function gate(stdinString, deps) {
         'distinct, set GSD_CONTRIB_OVERRIDE="<reason>" to override (logged).'
     );
   }
+
+  // ORDER IS LOAD-BEARING: we are only here because the LIVE title-dice scorer produced NO
+  // deny. A deny is never reconsidered, so it can never be downgraded to an advisory ask.
+  // The citation advisory is strictly a second chance to notice a duplicate the title
+  // similarity missed — at a lower severity, because its precision is lower.
+  const advisory = citationAdvisoryReason(seg, route, candidates, deps);
+  if (advisory) return ask(advisory);
+
   return allow();
 }
 
@@ -222,7 +463,10 @@ function gate(stdinString, deps) {
  */
 function fetchOpenIssuesLive(seg, route) {
   const { execFileSync } = require('node:child_process');
-  const args = ['issue', 'list', '--state', 'open', '--json', 'number,title', '--limit', '200'];
+  // `body` rides the SAME call the gate already made — no extra round trip, and therefore no
+  // new failure mode for the fetch. Measured marginal cost +161 ms (1.161 s → 1.322 s over
+  // 117 open issues / 620 KB). It feeds the citation advisory only.
+  const args = ['issue', 'list', '--state', 'open', '--json', 'number,title,body', '--limit', '200'];
 
   // Honor an explicit target repo (native --repo/-R; gh-api/curl carry it in the path, which
   // gh issue list cannot reuse — fall back to the cwd default in that case).
@@ -260,7 +504,13 @@ function fetchOpenIssuesLive(seg, route) {
   }
   return parsed
     .filter((c) => c && typeof c.number === 'number' && typeof c.title === 'string')
-    .map((c) => ({ number: c.number, title: c.title }));
+    // A missing or non-string body normalizes to '' — it must never make the map throw, and
+    // the LIVE scoreCandidates ignores the extra field (it scores titles only).
+    .map((c) => ({
+      number: c.number,
+      title: c.title,
+      body: typeof c.body === 'string' ? c.body : '',
+    }));
 }
 
 /**
@@ -320,4 +570,19 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { runDedupeGate, gate, resolveTitle, findActionSegment, fetchOpenIssuesLive };
+module.exports = {
+  runDedupeGate,
+  gate,
+  resolveTitle,
+  findActionSegment,
+  fetchOpenIssuesLive,
+  // citation advisory (260729-p3f)
+  resolveBodyForAdvisory,
+  extractCitedPaths,
+  computeDocFrequency,
+  findCitationOverlap,
+  citationAdvisoryReason,
+  PATH_RE,
+  RARE_DF_MAX,
+  MIN_SHARED_RARE,
+};
