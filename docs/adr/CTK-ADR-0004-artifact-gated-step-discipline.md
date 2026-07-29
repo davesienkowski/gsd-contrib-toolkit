@@ -10,6 +10,14 @@
   see Decision below.
 - **Relates to:** ENF-05/ENF-17 (`lint-ci-marker`, the toolkit's first artifact gate, written before
   the pattern was named); ENF-08 (`protocol-reminder`, the advisory layer this supplements).
+- **Amended by:**
+  [CTK-ADR-0006](CTK-ADR-0006-universal-step-enforcement-and-obligation-scaffolding.md) (2026-07-29) —
+  extends the artifact pattern from P1–P3 to **every** contribution step and to four re-review steps
+  (ENF-20), and adds the scaffolding contract this record's §Decision.4 implies but never states: a
+  gate may write a **skeleton of unfilled obligations**, never evidence, and
+  `hasUnfilledPlaceholders` on the raw text is a **precondition** of every shape assertion —
+  measured, because 5 of 6 of §Decision.4's own P2 assertions pass an untouched skeleton. Extended,
+  not withdrawn: this record stays **Accepted**.
 
 ## Context
 
