@@ -4,7 +4,12 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { parseCommand } = require('./argv.cjs');
-const { classifyAction, findActionSegment, isNonGovernedCommand, hasGovernedSegment, hasFailClosedSegment, resolveProgram } = require('./classify.cjs');
+const {
+  classifyAction, findActionSegment, isNonGovernedCommand, hasGovernedSegment,
+  hasFailClosedSegment, resolveProgram,
+  // ENF-20 (T1): the review-side action vocabulary + the PR-comment collapse contract.
+  REVIEW_SIDE_ACTIONS, LEGACY_MUTATION_ACTIONS, PR_COMMENT_EQUIVALENT_ACTIONS,
+} = require('./classify.cjs');
 
 const cls = (cmd) => classifyAction(parseCommand(cmd));
 
@@ -839,3 +844,681 @@ test('CF-08 narrows-not-weakens: classifyAction sudo -u user ls → other, not f
 test('CF-08 regression: bare-wrapper sudo git push (CF-04, no value flag) still → push', () => {
   assert.strictEqual(cls('sudo git push origin main').action, 'push');
 });
+
+// ===========================================================================
+// ENF-20 (T1): the REVIEW-SIDE actions — pr-review, pr-merge, issue-close,
+// issue-comment, pr-comment.
+//
+// The enforcement inversion this closes: the toolkit gates AUTHORING (13 gates,
+// 19 ENF codes) and gates ADJUDICATING not at all — approving, merging, closing
+// and commenting are outward-facing and effectively irreversible, and every one
+// of them classified as action:'other' (a silent allow at every gate).
+//
+// Rigour parity with ENF-15: each new action is recognized via its NATIVE gh verb
+// AND its `gh api` / `curl` REST synonym (-X/--method POST, PUT, PATCH), because a
+// synonym route that maps to 'other' bypasses the gate just as effectively as no
+// gate at all.
+//
+// BLAST RADIUS (all 13 wired hooks consume classifyAction). Two invariants are
+// asserted below and are non-negotiable:
+//   (a) the SIX pre-existing actions classify byte-identically;
+//   (b) an existing gate that governs e.g. ['issue-create'] does NOT start firing
+//       because 'issue-comment' now exists.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Native gh review-side verbs
+// ---------------------------------------------------------------------------
+
+test('ENF-20: gh pr review → pr-review / native', () => {
+  assert.deepStrictEqual(cls('gh pr review 42'), { action: 'pr-review', route: 'native' });
+});
+
+test('ENF-20: gh pr review --approve → pr-review (flag form)', () => {
+  assert.deepStrictEqual(cls('gh pr review 42 --approve'), { action: 'pr-review', route: 'native' });
+});
+
+test('ENF-20: gh pr review --request-changes → pr-review (flag form)', () => {
+  assert.deepStrictEqual(cls('gh pr review 42 --request-changes --body "needs work"'), {
+    action: 'pr-review', route: 'native',
+  });
+});
+
+test('ENF-20: gh pr review --comment → pr-review (flag form)', () => {
+  assert.deepStrictEqual(cls('gh pr review 42 --comment --body x'), {
+    action: 'pr-review', route: 'native',
+  });
+});
+
+test('ENF-20: gh pr review --approve BEFORE the number → pr-review (flag ordering)', () => {
+  assert.deepStrictEqual(cls('gh pr review --approve 42'), { action: 'pr-review', route: 'native' });
+});
+
+test('ENF-20: gh pr merge → pr-merge / native', () => {
+  assert.deepStrictEqual(cls('gh pr merge 42 --squash --delete-branch'), {
+    action: 'pr-merge', route: 'native',
+  });
+});
+
+test('ENF-20: gh pr merge --admin → pr-merge (admin bypass form still classified)', () => {
+  assert.deepStrictEqual(cls('gh pr merge --admin 42'), { action: 'pr-merge', route: 'native' });
+});
+
+test('ENF-20: gh issue close → issue-close / native', () => {
+  assert.deepStrictEqual(cls('gh issue close 42'), { action: 'issue-close', route: 'native' });
+});
+
+test('ENF-20: gh issue close --reason → issue-close', () => {
+  assert.deepStrictEqual(cls('gh issue close 42 --reason "not planned"'), {
+    action: 'issue-close', route: 'native',
+  });
+});
+
+test('ENF-20: gh issue comment → issue-comment / native', () => {
+  assert.deepStrictEqual(cls('gh issue comment 42 --body x'), {
+    action: 'issue-comment', route: 'native',
+  });
+});
+
+test('ENF-20: gh pr comment → pr-comment / native', () => {
+  assert.deepStrictEqual(cls('gh pr comment 42 --body x'), {
+    action: 'pr-comment', route: 'native',
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wrapper / env / path / global-option forms of the review-side verbs.
+// The SAME bypass surface ENF-15 + CF-08 closed for create/edit applies here —
+// `sudo gh pr merge`, `nice -n 10 gh pr review`, `/usr/bin/gh pr merge`,
+// `A=1 gh issue close`, `gh --repo o/r pr review` are the same mutation.
+// ---------------------------------------------------------------------------
+
+test('ENF-20: sudo gh pr merge → pr-merge (wrapper prefix)', () => {
+  assert.strictEqual(cls('sudo gh pr merge 42 --squash').action, 'pr-merge');
+});
+
+test('ENF-20: nice -n 10 gh pr review --approve → pr-review (value-flag wrapper, CF-08)', () => {
+  assert.strictEqual(cls('nice -n 10 gh pr review 42 --approve').action, 'pr-review');
+});
+
+test('ENF-20: /usr/bin/gh pr merge → pr-merge (path-qualified, CR-03)', () => {
+  assert.strictEqual(cls('/usr/bin/gh pr merge 42').action, 'pr-merge');
+});
+
+test('ENF-20: A=1 gh issue close → issue-close (env-assignment prefix, CR-02)', () => {
+  assert.strictEqual(cls('A=1 gh issue close 42').action, 'issue-close');
+});
+
+test('ENF-20: gh --repo o/r pr review --approve → pr-review (global option, CR-01)', () => {
+  assert.strictEqual(cls('gh --repo o/r pr review 42 --approve').action, 'pr-review');
+});
+
+// ---------------------------------------------------------------------------
+// REST synonyms — gh api
+//
+// POST /repos/{o}/{r}/pulls/{n}/reviews        → pr-review
+// POST /repos/{o}/{r}/pulls/{n}/reviews/{id}/events   → pr-review (submit a pending review)
+// PUT  /repos/{o}/{r}/pulls/{n}/reviews/{id}/dismissals → pr-review (dismissal)
+// PUT|POST /repos/{o}/{r}/pulls/{n}/merge      → pr-merge
+// POST /repos/{o}/{r}/issues/{n}/comments      → issue-comment
+// POST /repos/{o}/{r}/pulls/{n}/comments       → pr-comment (review comments)
+// ---------------------------------------------------------------------------
+
+test('ENF-20: gh api -X POST .../pulls/N/reviews → pr-review / gh-api', () => {
+  assert.deepStrictEqual(cls('gh api -X POST repos/o/r/pulls/42/reviews -f event=APPROVE'), {
+    action: 'pr-review', route: 'gh-api',
+  });
+});
+
+test('ENF-20: gh api --method POST .../pulls/N/reviews → pr-review / gh-api (long form)', () => {
+  assert.deepStrictEqual(cls('gh api --method POST repos/o/r/pulls/42/reviews -f event=APPROVE'), {
+    action: 'pr-review', route: 'gh-api',
+  });
+});
+
+test('ENF-20: gh api -XPOST bundled .../pulls/N/reviews → pr-review / gh-api', () => {
+  assert.deepStrictEqual(cls('gh api -XPOST repos/o/r/pulls/42/reviews'), {
+    action: 'pr-review', route: 'gh-api',
+  });
+});
+
+test('ENF-20: gh api POST inferred from -f alone .../pulls/N/reviews → pr-review', () => {
+  assert.deepStrictEqual(cls('gh api repos/o/r/pulls/42/reviews -f event=APPROVE'), {
+    action: 'pr-review', route: 'gh-api',
+  });
+});
+
+test('ENF-20: gh api POST .../pulls/N/reviews/ID/events → pr-review (pending-review submit)', () => {
+  assert.deepStrictEqual(cls('gh api -X POST repos/o/r/pulls/42/reviews/9/events -f event=APPROVE'), {
+    action: 'pr-review', route: 'gh-api',
+  });
+});
+
+test('ENF-20: gh api PUT .../pulls/N/reviews/ID/dismissals → pr-review (dismissal)', () => {
+  assert.deepStrictEqual(cls('gh api -X PUT repos/o/r/pulls/42/reviews/9/dismissals -f message=x'), {
+    action: 'pr-review', route: 'gh-api',
+  });
+});
+
+test('ENF-20: gh api -X PUT .../pulls/N/merge → pr-merge / gh-api (canonical merge verb)', () => {
+  assert.deepStrictEqual(cls('gh api -X PUT repos/o/r/pulls/42/merge'), {
+    action: 'pr-merge', route: 'gh-api',
+  });
+});
+
+test('ENF-20: gh api -X POST .../pulls/N/merge → pr-merge / gh-api (POST form too)', () => {
+  assert.deepStrictEqual(cls('gh api -X POST repos/o/r/pulls/42/merge'), {
+    action: 'pr-merge', route: 'gh-api',
+  });
+});
+
+test('ENF-20: gh api -X POST .../issues/N/comments → issue-comment / gh-api', () => {
+  assert.deepStrictEqual(cls('gh api -X POST repos/o/r/issues/42/comments -f body=x'), {
+    action: 'issue-comment', route: 'gh-api',
+  });
+});
+
+test('ENF-20: gh api -X POST .../pulls/N/comments → pr-comment / gh-api (review comments)', () => {
+  assert.deepStrictEqual(cls('gh api -X POST repos/o/r/pulls/42/comments -f body=x'), {
+    action: 'pr-comment', route: 'gh-api',
+  });
+});
+
+test('ENF-20: gh api PATCH .../issues/comments/ID (repo-level comment edit) stays failClosed', () => {
+  // Non-numeric member ('comments') → unmappable mutating github path → EP-1 deny.
+  // Byte-identical to today; recorded so a future relaxation cannot silently open it.
+  const r = cls('gh api -X PATCH repos/o/r/issues/comments/9 -f body=x');
+  assert.strictEqual(r.failClosed, true, JSON.stringify(r));
+});
+
+// ---------------------------------------------------------------------------
+// REST synonyms — the issue-CLOSE form: PATCH .../issues/{n} with state=closed.
+//
+// This is the ONE input class whose classification MOVES (issue-edit → issue-close),
+// and it is mandated by the task. The blast radius is deliberately minimized by an
+// EDIT-WINS precedence rule: when the same PATCH also carries a title/body field it
+// is still a body/title edit, so `gh-edit` (which governs {issue-edit, pr-edit})
+// keeps firing on it. Only a PURE state-change PATCH diverts to issue-close.
+// ---------------------------------------------------------------------------
+
+test('ENF-20: gh api PATCH .../issues/N -f state=closed → issue-close / gh-api', () => {
+  assert.deepStrictEqual(cls('gh api -X PATCH repos/o/r/issues/42 -f state=closed'), {
+    action: 'issue-close', route: 'gh-api',
+  });
+});
+
+test('ENF-20: gh api PATCH .../issues/N --field state=closed → issue-close (long field form)', () => {
+  assert.deepStrictEqual(cls('gh api -X PATCH repos/o/r/issues/42 --field state=closed'), {
+    action: 'issue-close', route: 'gh-api',
+  });
+});
+
+test('ENF-20: gh api PATCH .../issues/N --raw-field state=closed → issue-close', () => {
+  assert.deepStrictEqual(cls('gh api -X PATCH repos/o/r/issues/42 --raw-field state=closed'), {
+    action: 'issue-close', route: 'gh-api',
+  });
+});
+
+test('ENF-20: gh api PATCH .../issues/N -fstate=closed (bundled short) → issue-close', () => {
+  assert.deepStrictEqual(cls('gh api -X PATCH repos/o/r/issues/42 -fstate=closed'), {
+    action: 'issue-close', route: 'gh-api',
+  });
+});
+
+test('ENF-20: gh api PATCH .../issues/N -F state=closed → issue-close', () => {
+  assert.deepStrictEqual(cls('gh api -X PATCH repos/o/r/issues/42 -F state=closed'), {
+    action: 'issue-close', route: 'gh-api',
+  });
+});
+
+test('ENF-20 EDIT WINS: PATCH .../issues/N with state=closed AND body → issue-edit (gh-edit keeps firing)', () => {
+  assert.deepStrictEqual(cls('gh api -X PATCH repos/o/r/issues/42 -f state=closed -f body=hi'), {
+    action: 'issue-edit', route: 'gh-api',
+  });
+});
+
+test('ENF-20 EDIT WINS: PATCH .../issues/N with state=closed AND title → issue-edit', () => {
+  assert.deepStrictEqual(cls('gh api -X PATCH repos/o/r/issues/42 -f title=t -f state=closed'), {
+    action: 'issue-edit', route: 'gh-api',
+  });
+});
+
+test('ENF-20: PATCH .../issues/N -f state=open → issue-edit (reopen is NOT a close)', () => {
+  assert.deepStrictEqual(cls('gh api -X PATCH repos/o/r/issues/42 -f state=open'), {
+    action: 'issue-edit', route: 'gh-api',
+  });
+});
+
+test('ENF-20: PATCH .../pulls/N -f state=closed → pr-edit (pr-close is NOT in scope)', () => {
+  // issue-close is the only close action T1 adds; the PR form stays exactly as today.
+  assert.deepStrictEqual(cls('gh api -X PATCH repos/o/r/pulls/42 -f state=closed'), {
+    action: 'pr-edit', route: 'gh-api',
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REST synonyms — curl
+// ---------------------------------------------------------------------------
+
+test('ENF-20: curl POST api.github.com .../pulls/N/reviews → pr-review / curl', () => {
+  assert.deepStrictEqual(
+    cls('curl -X POST https://api.github.com/repos/o/r/pulls/42/reviews -d {}'),
+    { action: 'pr-review', route: 'curl' }
+  );
+});
+
+test('ENF-20: curl PUT api.github.com .../pulls/N/merge → pr-merge / curl', () => {
+  assert.deepStrictEqual(
+    cls('curl -X PUT https://api.github.com/repos/o/r/pulls/42/merge -d {}'),
+    { action: 'pr-merge', route: 'curl' }
+  );
+});
+
+test('ENF-20: curl POST api.github.com .../issues/N/comments → issue-comment / curl', () => {
+  assert.deepStrictEqual(
+    cls('curl -X POST https://api.github.com/repos/o/r/issues/42/comments -d {}'),
+    { action: 'issue-comment', route: 'curl' }
+  );
+});
+
+test('ENF-20: curl --data-raw .../pulls/N/reviews (inferred POST) → pr-review / curl', () => {
+  assert.deepStrictEqual(
+    cls('curl https://api.github.com/repos/o/r/pulls/42/reviews --data-raw {}'),
+    { action: 'pr-review', route: 'curl' }
+  );
+});
+
+test('ENF-20: curl PATCH .../issues/N with a JSON state:closed body → issue-close / curl', () => {
+  assert.deepStrictEqual(
+    cls('curl -X PATCH https://api.github.com/repos/o/r/issues/42 -d \'{"state":"closed"}\''),
+    { action: 'issue-close', route: 'curl' }
+  );
+});
+
+test('ENF-20: curl PATCH .../issues/N with JSON state:closed AND body → issue-edit (edit wins)', () => {
+  assert.deepStrictEqual(
+    cls('curl -X PATCH https://api.github.com/repos/o/r/issues/42 -d \'{"state":"closed","body":"x"}\''),
+    { action: 'issue-edit', route: 'curl' }
+  );
+});
+
+test('ENF-20 no-over-block: curl POST to a NON-github host .../pulls/N/reviews → other', () => {
+  const r = cls('curl -X POST https://example.com/repos/o/r/pulls/42/reviews -d {}');
+  assert.strictEqual(r.action, 'other');
+  assert.notStrictEqual(r.failClosed, true);
+});
+
+// ---------------------------------------------------------------------------
+// NO OVER-BLOCK: read-only review-side surfaces stay 'other', never failClosed.
+// A false deny on `gh pr view` / a GET of the reviews list is exactly the H-B
+// trust erosion that gets the toolkit switched off.
+// ---------------------------------------------------------------------------
+
+test('ENF-20 no-over-block: gh api GET .../pulls/N/reviews stays other', () => {
+  const r = cls('gh api repos/o/r/pulls/42/reviews');
+  assert.strictEqual(r.action, 'other');
+  assert.notStrictEqual(r.failClosed, true);
+});
+
+test('ENF-20 no-over-block: gh pr view / gh pr checks / gh pr diff stay other', () => {
+  for (const cmd of ['gh pr view 42', 'gh pr checks 42', 'gh pr diff 42', 'gh issue view 42']) {
+    const r = cls(cmd);
+    assert.strictEqual(r.action, 'other', `${cmd} → ${JSON.stringify(r)}`);
+    assert.notStrictEqual(r.failClosed, true);
+  }
+});
+
+test('ENF-20 no-over-block: gh pr close / gh issue reopen stay other (NOT in the five)', () => {
+  // Deliberately out of T1 scope; recorded so the boundary is explicit rather than
+  // an accident, and so a later widening is a visible test change.
+  for (const cmd of ['gh pr close 42', 'gh issue reopen 42', 'gh pr ready 42']) {
+    const r = cls(cmd);
+    assert.strictEqual(r.action, 'other', `${cmd} → ${JSON.stringify(r)}`);
+    assert.notStrictEqual(r.failClosed, true);
+  }
+});
+
+test('ENF-20 no-over-block: existing G1 sub-resources are UNCHANGED (labels/assignees/reviewers)', () => {
+  for (const cmd of [
+    'gh api -X POST repos/o/r/issues/123/labels -f labels[]=bug',
+    'gh api -X PUT repos/o/r/issues/123/labels -f labels[]=bug',
+    'gh api -X POST repos/o/r/pulls/123/requested_reviewers -f reviewers[]=octocat',
+    'gh api -X POST repos/o/r/issues/123/assignees -f assignees[]=octocat',
+    'curl -X POST https://api.github.com/repos/o/r/pulls/123/requested_reviewers -d {}',
+  ]) {
+    const r = cls(cmd);
+    assert.strictEqual(r.action, 'other', `${cmd} → ${JSON.stringify(r)}`);
+    assert.notStrictEqual(r.failClosed, true);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// THE SIX PRE-EXISTING ACTIONS ARE BYTE-IDENTICAL (invariant (a)).
+// The exhaustive proof is the 436-command before/after corpus diff recorded in
+// scratchpad/; these rows lock the load-bearing ones into the suite permanently.
+// ---------------------------------------------------------------------------
+
+test('ENF-20 invariant (a): the six pre-existing actions classify byte-identically', () => {
+  const expected = [
+    ['git commit -m x', { action: 'commit' }],
+    ['git push origin main', { action: 'push' }],
+    ['gh issue create --title x', { action: 'issue-create', route: 'native' }],
+    ['gh pr create --title x', { action: 'pr-create', route: 'native' }],
+    ['gh issue edit 12 --body y', { action: 'issue-edit', route: 'native' }],
+    ['gh pr edit 12 --body y', { action: 'pr-edit', route: 'native' }],
+    ['gh api -X POST repos/o/r/issues -f title=x', { action: 'issue-create', route: 'gh-api' }],
+    ['gh api -X POST repos/o/r/pulls -f title=x', { action: 'pr-create', route: 'gh-api' }],
+    ['gh api -X PATCH repos/o/r/issues/42', { action: 'issue-edit', route: 'gh-api' }],
+    ['gh api -X PATCH repos/o/r/pulls/42', { action: 'pr-edit', route: 'gh-api' }],
+    ['gh api -X PATCH repos/o/r/issues/42 -f body=hi', { action: 'issue-edit', route: 'gh-api' }],
+    ['curl -X POST https://api.github.com/repos/o/r/issues -d {}', { action: 'issue-create', route: 'curl' }],
+    ['curl -X PATCH https://api.github.com/repos/o/r/issues/7', { action: 'issue-edit', route: 'curl' }],
+    ['git status', { action: 'other' }],
+    ['gh repo view o/r', { action: 'other' }],
+  ];
+  for (const [cmd, want] of expected) {
+    assert.deepStrictEqual(cls(cmd), want, cmd);
+  }
+});
+
+test('ENF-20 invariant (a): the failClosed corpus is byte-identical', () => {
+  for (const cmd of [
+    'gh api -X POST repos/o/r/issues/weird/path/segments',
+    'gh api -X POST repos/o/r/issues/weird/labels',
+    'gh api -X POST repos/o/r/issues/123',
+    'gh api -X POST repos/o/r/pulls/123',
+    'gh api -X POST repos/o/r/pulls/comments/issues',
+    '/usr/bin/gh api -X POST repos/o/r/issues/weird',
+    "env -S 'git push origin main'",
+    'gh issue create --title "unterminated',
+  ]) {
+    const r = cls(cmd);
+    assert.strictEqual(r.failClosed, true, `${cmd} → ${JSON.stringify(r)}`);
+    assert.strictEqual(r.action, 'unknown', cmd);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// CHAIN PRECEDENCE — the mechanism that makes invariant (a) STRUCTURAL, not lucky.
+//
+// classifyAction returns ONE result for a whole chain. Before ENF-20 the only
+// actionable results were the six + failClosed, so a chain collapsed to its first
+// legacy-actionable segment. Six wired gates read that single result directly
+// (issue-dedupe, freshness, git-commit-convention, policy-invariants, lint-ci-marker,
+// protocol-artifact). If a NEW review-side action could win the aggregation, then
+// `gh issue comment … && gh issue create …` would collapse to 'issue-comment' and
+// issue-dedupe / protocol-artifact would ALLOW a create they deny today — the
+// classifier extension would have MANUFACTURED A BYPASS in six gates.
+//
+// So classifyAction resolves in two passes: legacy actions + failClosed FIRST, the
+// review-side actions only when no legacy segment exists (i.e. exactly where the old
+// code returned 'other'). That makes byte-identity provable by construction.
+//
+// The correct pattern for a T3 gate that governs a review-side action is therefore
+// hasGovernedSegment(parsed, ['pr-merge']) — the CF-05 all-segments chokepoint — NOT
+// classifyAction(parsed).action. Asserted below so T3 inherits the rule.
+// ---------------------------------------------------------------------------
+
+test('ENF-20 chain precedence: gh pr comment && gh pr create → pr-create (legacy wins)', () => {
+  const r = cls('gh pr comment 1 --body x && gh pr create --title t --body b');
+  assert.strictEqual(r.action, 'pr-create', JSON.stringify(r));
+});
+
+test('ENF-20 chain precedence: gh issue comment && gh issue create → issue-create (issue-dedupe unbroken)', () => {
+  const r = cls('gh issue comment 1 --body x && gh issue create --title t');
+  assert.strictEqual(r.action, 'issue-create', JSON.stringify(r));
+});
+
+test('ENF-20 chain precedence: gh pr merge && git push → push (scan-gate/lint-ci unbroken)', () => {
+  assert.strictEqual(cls('gh pr merge 1 --squash && git push origin main').action, 'push');
+});
+
+test('ENF-20 chain precedence: gh issue close && git commit → commit (freshness unbroken)', () => {
+  assert.strictEqual(cls('gh issue close 1 && git commit -m x').action, 'commit');
+});
+
+test('ENF-20 chain precedence: failClosed still beats a review-side action anywhere in the chain', () => {
+  const r = cls('gh pr review 1 --approve && gh api -X POST repos/o/r/issues/weird');
+  assert.strictEqual(r.failClosed, true, JSON.stringify(r));
+  assert.strictEqual(r.action, 'unknown');
+});
+
+test('ENF-20 chain precedence: a review-side action still wins over plain read-only segments', () => {
+  assert.strictEqual(cls('git status && gh pr merge 1 --squash').action, 'pr-merge');
+  assert.strictEqual(cls('echo hi ; gh pr review 1 --approve').action, 'pr-review');
+});
+
+test('ENF-20: hasGovernedSegment is the correct T3 trigger — it sees a masked review action', () => {
+  const parsed = parseCommand('gh pr merge 1 --squash && git push origin main');
+  // classifyAction collapses to the legacy 'push' (byte-identity), so a T3 gate MUST
+  // use the all-segments chokepoint to see the merge.
+  assert.strictEqual(classifyAction(parsed).action, 'push');
+  assert.strictEqual(hasGovernedSegment(parsed, ['pr-merge']), true);
+  assert.strictEqual(hasGovernedSegment(parsed, ['pr-review']), false);
+});
+
+test('ENF-20: findActionSegment resolves a review-side target segment', () => {
+  const parsed = parseCommand('git status && gh pr review 42 --approve');
+  const seg = findActionSegment(parsed, 'pr-review');
+  assert.strictEqual(classifyAction({ ok: true, segments: [seg] }).action, 'pr-review');
+});
+
+// ---------------------------------------------------------------------------
+// INVARIANT (b): no EXISTING gate starts firing on a new action.
+//
+// Every wired gate decides "is this mine?" through one of: classifyAction().action,
+// hasGovernedSegment(set), or isNonGovernedCommand(set) — each keyed to an explicit
+// action-name set. These rows assert, per gate set, that every new action is
+// non-governed → the gate short-circuits to allow(). The spawn proofs further down
+// confirm it at the real entrypoint.
+// ---------------------------------------------------------------------------
+
+const NEW_ACTION_COMMANDS = [
+  'gh pr review 42 --approve',
+  'gh pr merge 42 --squash',
+  'gh issue close 42',
+  'gh issue comment 42 --body x',
+  'gh pr comment 42 --body x',
+  'gh api -X POST repos/o/r/pulls/42/reviews -f event=APPROVE',
+  'gh api -X PUT repos/o/r/pulls/42/merge',
+  'gh api -X POST repos/o/r/issues/42/comments -f body=x',
+  'gh api -X PATCH repos/o/r/issues/42 -f state=closed',
+];
+
+// Exactly the governed sets the wired gates declare today (harvested from the gates).
+const EXISTING_GATE_SETS = {
+  'gh-issue-create': ['issue-create'],
+  'gh-pr-create': ['pr-create'],
+  'gh-edit': ['issue-edit', 'pr-edit'],
+  'git-commit-convention': ['commit'],
+  'githooks-seal': ['commit', 'push'],
+  'scan-gate': ['push'],
+  'lint-ci-marker': ['push', 'pr-create'],
+  'policy-invariants': ['commit', 'pr-create'],
+  'protocol-artifact': ['issue-create', 'pr-create', 'push'],
+  'tool-recorder': ['issue-create', 'pr-create', 'issue-edit', 'pr-edit', 'commit', 'push'],
+};
+
+test('ENF-20 invariant (b): every new action is NON-GOVERNED for every existing gate set', () => {
+  for (const cmd of NEW_ACTION_COMMANDS) {
+    const parsed = parseCommand(cmd);
+    assert.strictEqual(parsed.ok, true, cmd);
+    assert.strictEqual(hasFailClosedSegment(parsed), false, `${cmd} must not fail closed`);
+    for (const [gate, actions] of Object.entries(EXISTING_GATE_SETS)) {
+      assert.strictEqual(
+        hasGovernedSegment(parsed, actions), false,
+        `${gate} must NOT be governed by: ${cmd}`
+      );
+      assert.strictEqual(
+        isNonGovernedCommand(parsed, actions), true,
+        `${gate} must short-circuit to allow for: ${cmd}`
+      );
+    }
+  }
+});
+
+test('ENF-20 invariant (b): issue-comment existing does not make an issue-create gate fire', () => {
+  const parsed = parseCommand('gh issue comment 7 --body "not a create"');
+  assert.strictEqual(classifyAction(parsed).action, 'issue-comment');
+  assert.strictEqual(hasGovernedSegment(parsed, ['issue-create']), false);
+  assert.strictEqual(isNonGovernedCommand(parsed, ['issue-create']), true);
+});
+
+test('ENF-20 invariant (b): the review-side and legacy vocabularies are DISJOINT', () => {
+  for (const a of REVIEW_SIDE_ACTIONS) {
+    assert.strictEqual(LEGACY_MUTATION_ACTIONS.has(a), false, `${a} must not be a legacy action`);
+  }
+  assert.deepStrictEqual(
+    [...LEGACY_MUTATION_ACTIONS].sort(),
+    ['commit', 'issue-create', 'issue-edit', 'pr-create', 'pr-edit', 'push']
+  );
+  assert.deepStrictEqual(
+    [...REVIEW_SIDE_ACTIONS].sort(),
+    ['issue-close', 'issue-comment', 'pr-comment', 'pr-merge', 'pr-review']
+  );
+});
+
+// ---------------------------------------------------------------------------
+// pr-comment vs issue-comment — the disambiguation contract.
+//
+// GitHub's REST API posts a PR *conversation* comment to the ISSUES endpoint
+// (POST /repos/{o}/{r}/issues/{n}/comments); the pulls endpoint
+// (POST /repos/{o}/{r}/pulls/{n}/comments) is for inline REVIEW comments. Issue and
+// PR numbers share ONE namespace, so `/issues/42/comments` cannot be resolved to
+// "issue 42" vs "PR 42" from the command string — that needs a network lookup, and
+// this module is PURE by contract (no I/O, no env).
+//
+// So the classifier reports what the command NAMES, never a guess:
+//   - the command names `pulls`  → pr-comment
+//   - the command names `issues` → issue-comment
+// and the ambiguity is handed to the gate (which may do I/O) as an explicit
+// contract: PR_COMMENT_EQUIVALENT_ACTIONS. A T3 gate that governs PR comments MUST
+// govern BOTH names, or `gh api POST /issues/<pr#>/comments` is a one-line bypass.
+// Collapsing the two into a single action was rejected: `gh issue comment` on a real
+// issue is not a PR event, and merging them would make every issue comment trip a
+// PR-review gate (over-block).
+// ---------------------------------------------------------------------------
+
+test('ENF-20 disambiguation: the pulls endpoint is unambiguously pr-comment', () => {
+  assert.strictEqual(cls('gh api -X POST repos/o/r/pulls/42/comments -f body=x').action, 'pr-comment');
+  assert.strictEqual(cls('gh pr comment 42 --body x').action, 'pr-comment');
+});
+
+test('ENF-20 disambiguation: the issues endpoint reports issue-comment (PR comments post here too)', () => {
+  assert.strictEqual(cls('gh api -X POST repos/o/r/issues/42/comments -f body=x').action, 'issue-comment');
+  assert.strictEqual(cls('gh issue comment 42 --body x').action, 'issue-comment');
+});
+
+test('ENF-20 disambiguation: PR_COMMENT_EQUIVALENT_ACTIONS names BOTH routes (T3 must govern both)', () => {
+  assert.deepStrictEqual([...PR_COMMENT_EQUIVALENT_ACTIONS].sort(), ['issue-comment', 'pr-comment']);
+  // The contract is load-bearing: governing both catches the issues-endpoint route.
+  const viaIssuesEndpoint = parseCommand('gh api -X POST repos/open-gsd/gsd-core/issues/1738/comments -f body=CLEAR');
+  assert.strictEqual(hasGovernedSegment(viaIssuesEndpoint, PR_COMMENT_EQUIVALENT_ACTIONS), true);
+  // …and governing pr-comment ALONE does not (this is the bypass the contract closes).
+  assert.strictEqual(hasGovernedSegment(viaIssuesEndpoint, ['pr-comment']), false);
+});
+
+test('ENF-20 purity: classify.cjs performs no I/O and reads no env (contract)', () => {
+  const raw = require('node:fs').readFileSync(require('node:path').join(__dirname, 'classify.cjs'), 'utf8');
+  // Strip block + line comments so the docblock's own prose ("Pure: no I/O, no
+  // process.env") is not mistaken for a violation. The assertion is about CODE.
+  const code = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  assert.strictEqual(/node:fs|require\(['"]fs['"]\)/.test(code), false, 'must not require fs');
+  assert.strictEqual(/process\.env/.test(code), false, 'must not read process.env');
+  assert.strictEqual(/child_process/.test(code), false, 'must not spawn');
+});
+
+// ---------------------------------------------------------------------------
+// INVARIANT (b) AT THE REAL ENTRYPOINT — spawn proofs.
+//
+// The unit rows above prove the PREDICATES say "not mine". These rows spawn the
+// REAL `node hooks/<gate>.cjs` with a new-action command on stdin and assert the
+// emitted permissionDecision is 'allow'. The four gates the task names explicitly
+// are covered: gh-issue-create, gh-pr-create, containment, scan-gate (plus gh-edit,
+// which is the gate the issue-close reclassification could plausibly disturb).
+//
+// The spawn runs in a hermetic SANDBOX carrying the gsd-core sentinel layout, so the
+// gates resolve their LIVE scripts from a temp copy and the real checkout is never
+// written to (and never even resolved). A PAIRED CONTROL asserts the same spawn in
+// the same sandbox can still produce a DENY — otherwise an 'allow' here would be
+// vacuous (the gate allowing because its environment is broken, not because the
+// command is non-governed). crash != allow is enforced by proof-harness.
+// ---------------------------------------------------------------------------
+
+const nodePath = require('node:path');
+const nodeFs = require('node:fs');
+const { spawnHook } = require('./proof-harness.cjs');
+const { makeSandbox } = require('./sandbox.cjs');
+const { resolveGsdCoreRoot } = require('./resolve.cjs');
+
+const HOOKS_DIR = nodePath.join(__dirname, '..');
+const bashPayload = (command) => JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
+
+// Resolve a gsd-core checkout to COPY FROM (read-only). When none is reachable the
+// spawn proofs skip with a note rather than fail on a missing EXTERNAL checkout.
+function findSourceRoot() {
+  let resolved = null;
+  try {
+    // resolveGsdCoreRoot THROWS (ScriptResolveError) when no checkout is reachable —
+    // that is a "no sandbox source" signal here, not a test failure.
+    resolved = resolveGsdCoreRoot(process.cwd());
+  } catch (_) {
+    resolved = null;
+  }
+  const candidates = [
+    process.env.GSD_CORE_ROOT,
+    resolved,
+    nodePath.join(require('node:os').homedir(), 'repos', 'gsd-core'),
+  ].filter(Boolean);
+  for (const c of candidates) {
+    try {
+      if (
+        nodeFs.statSync(nodePath.join(c, 'scripts')).isDirectory() &&
+        nodeFs.statSync(nodePath.join(c, 'gsd-core', 'bin', 'lib')).isDirectory()
+      ) return c;
+    } catch (_) { /* next candidate */ }
+  }
+  return null;
+}
+
+const SOURCE_ROOT = findSourceRoot();
+
+// gate → [a new-action command that must ALLOW, a control command that must DENY]
+const SPAWN_CASES = [
+  ['gh-issue-create', 'gh issue comment 42 --body "a comment, not a create"', 'gh issue create --title "unterminated'],
+  ['gh-pr-create', 'gh pr review 42 --approve', 'gh pr create --title "unterminated'],
+  ['containment', 'gh pr merge 42 --squash', 'git add .planning/STATE.md'],
+  ['scan-gate', 'gh api -X POST repos/o/r/pulls/42/reviews -f event=APPROVE', 'git push origin "unterminated'],
+  ['gh-edit', 'gh api -X PATCH repos/o/r/issues/42 -f state=closed', 'gh issue edit 7 --body "unterminated'],
+];
+
+for (const [gate, allowCmd, denyCmd] of SPAWN_CASES) {
+  test(`ENF-20 invariant (b) spawn: ${gate} ALLOWS a new-action command`, (t) => {
+    if (!SOURCE_ROOT) {
+      t.skip('no gsd-core checkout reachable to build the sandbox from');
+      return;
+    }
+    const sb = makeSandbox({ sourceRoot: SOURCE_ROOT });
+    try {
+      const control = spawnHook(nodePath.join(HOOKS_DIR, `${gate}.cjs`), {
+        stdin: bashPayload(denyCmd), cwd: sb.root,
+      });
+      assert.strictEqual(
+        control.decision, 'deny',
+        `CONTROL: ${gate} must still DENY ${JSON.stringify(denyCmd)} in this sandbox, else the ` +
+        `allow below is vacuous — got ${control.decision} (${control.reason}) ${control.rawStderr}`
+      );
+
+      const res = spawnHook(nodePath.join(HOOKS_DIR, `${gate}.cjs`), {
+        stdin: bashPayload(allowCmd), cwd: sb.root,
+      });
+      assert.strictEqual(res.conclusive, true, `${gate}: ${res.reason} ${res.rawStderr}`);
+      assert.strictEqual(
+        res.decision, 'allow',
+        `${gate} must NOT fire on ${JSON.stringify(allowCmd)} — got ${res.decision}: ${res.rawStdout}`
+      );
+    } finally {
+      sb.dispose();
+    }
+  });
+}

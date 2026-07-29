@@ -21,6 +21,18 @@
  * over-block — a false-positive deny erodes trust and gets the toolkit disabled
  * (red-team H-B).
  *
+ * ENF-20 extends the vocabulary from the six AUTHORING actions to the five
+ * ADJUDICATING ones — pr-review, pr-merge, issue-close, issue-comment, pr-comment —
+ * closing the enforcement inversion where the side with more authority (approving,
+ * dismissing, closing, merging: outward-facing and effectively irreversible) carried
+ * no classification at all and so no gate could reach it. Same ENF-15 rigour applies:
+ * native verb AND REST synonym, or the gate is theatre. Two invariants govern that
+ * extension and are asserted in the tests:
+ *   (a) the six legacy actions classify byte-identically — enforced structurally by
+ *       classifyAction's two-pass aggregation, not by test luck;
+ *   (b) no existing gate starts firing on a new action — every gate keys on an explicit
+ *       action-name set, and the two vocabularies are disjoint.
+ *
  * Pure: no I/O, no process.env.
  *
  * @module hooks/lib/classify
@@ -31,6 +43,37 @@ require('./argv.cjs'); // contract dependency (parseCommand output shape)
 
 const MUTATING_METHODS = new Set(['POST', 'PATCH', 'PUT']);
 const GITHUB_API_HOSTS = new Set(['api.github.com']);
+
+// ---------------------------------------------------------------------------
+// ENF-20: the ACTION VOCABULARY, split into the two generations.
+//
+// LEGACY_MUTATION_ACTIONS are the six AUTHORING actions this classifier has always
+// recognized. REVIEW_SIDE_ACTIONS are the five ADJUDICATING actions ENF-20 adds —
+// approving, merging, closing, commenting: outward-facing, effectively irreversible,
+// and until now every one of them classified as action:'other' (a silent allow at
+// all 13 wired gates).
+//
+// The split is not documentation — it is LOAD-BEARING in classifyAction's two-pass
+// aggregation (see there). Keeping the sets disjoint is what makes the six legacy
+// actions' classification provably byte-identical after this extension.
+// ---------------------------------------------------------------------------
+const LEGACY_MUTATION_ACTIONS = Object.freeze(new Set([
+  'commit', 'push', 'issue-create', 'issue-edit', 'pr-create', 'pr-edit',
+]));
+
+const REVIEW_SIDE_ACTIONS = Object.freeze(new Set([
+  'pr-review', 'pr-merge', 'issue-close', 'issue-comment', 'pr-comment',
+]));
+
+// ENF-20 disambiguation contract. GitHub posts a PR *conversation* comment to the
+// ISSUES endpoint (POST /repos/{o}/{r}/issues/{n}/comments) — the pulls endpoint is
+// only for inline REVIEW comments — and issue/PR numbers share ONE namespace. So
+// `/issues/42/comments` cannot be resolved to "issue 42" vs "PR 42" without a network
+// lookup, and this module is PURE by contract. The classifier therefore reports what
+// the command NAMES (pulls → pr-comment, issues → issue-comment) and hands the
+// ambiguity to the gate as this explicit pair: a gate governing PR comments MUST
+// govern BOTH names, or `gh api POST /issues/<pr#>/comments` is a one-line bypass.
+const PR_COMMENT_EQUIVALENT_ACTIONS = Object.freeze(['pr-comment', 'issue-comment']);
 
 // CR-03: wrapper builtins that PRECEDE the real program (`command git …`,
 // `env git …`, `sudo git …`). We advance past the wrapper (and any wrapper flags)
@@ -315,12 +358,16 @@ function classifyGithubPath(path) {
   }
 
   // Member SUB-resource: OWNER/REPO/resource/N/<labels|assignees|requested_reviewers|…>.
-  // These are benign metadata mutations — NOT a create (collection POST) and NOT a
-  // body/title edit (bare-member PATCH). Governing covers create + body/title only,
-  // so a sub-resource mutation is out of this gate's scope and must pass through as
-  // 'other' rather than fail closed (G1). The numeric-member check above keeps
-  // genuinely-unmappable paths (non-numeric member) failing closed.
-  return { resource, member: true, sub: true };
+  // Most of these are benign metadata mutations — NOT a create (collection POST) and
+  // NOT a body/title edit (bare-member PATCH) — so they pass through as 'other' rather
+  // than fail closed (G1). The numeric-member check above keeps genuinely-unmappable
+  // paths (non-numeric member) failing closed.
+  //
+  // ENF-20 adds `subPath` (additive): the ordered sub-resource segments after the
+  // numeric member id, so classifyRestSegment can recognize the REVIEW-SIDE
+  // sub-resources (`reviews`, `merge`, `comments`) that are anything but benign. Every
+  // other subPath keeps the pre-ENF-20 'other' outcome untouched.
+  return { resource, member: true, sub: true, subPath: rest.slice(1) };
 }
 
 /**
@@ -406,6 +453,18 @@ function classifySegment(seg) {
       if (verb === 'edit') {
         return { action: area === 'issue' ? 'issue-edit' : 'pr-edit', route: 'native' };
       }
+      // ENF-20: the review-side (adjudicating) verbs. Additive — every verb NOT
+      // listed here still falls through to `other` exactly as before.
+      if (area === 'pr' && verb === 'review') return { action: 'pr-review', route: 'native' };
+      if (area === 'pr' && verb === 'merge') return { action: 'pr-merge', route: 'native' };
+      if (area === 'issue' && verb === 'close') return { action: 'issue-close', route: 'native' };
+      if (verb === 'comment') {
+        // `gh pr comment` names the PR; `gh issue comment` names the issue. See
+        // PR_COMMENT_EQUIVALENT_ACTIONS for why these stay two actions, not one.
+        return { action: area === 'issue' ? 'issue-comment' : 'pr-comment', route: 'native' };
+      }
+      // NOT in ENF-20's five (deliberately, so the boundary is explicit): `gh pr close`,
+      // `gh issue reopen`, `gh pr ready`, `gh pr review-request`. They stay `other`.
       return null; // gh issue view / list → other
     }
 
@@ -432,6 +491,116 @@ function classifySegment(seg) {
   if (wrapped) return null;
 
   return null;
+}
+
+/**
+ * ENF-20: map a mutating github MEMBER SUB-RESOURCE to a review-side action.
+ *
+ * Pre-ENF-20 every member sub-resource returned 'other' (G1) because the only governed
+ * surfaces were create (collection POST) and body/title edit (bare-member PATCH). But
+ * three sub-resources are the REST synonyms of the most authoritative actions there are:
+ *
+ *   pulls/{n}/reviews[/{id}/events|/{id}/dismissals]  → pr-review
+ *       (POST reviews = submit a review; POST reviews/{id}/events = submit a PENDING
+ *        review — the actual approve; PUT reviews/{id}/dismissals = dismiss someone
+ *        else's review. All three are the same authority, so all three classify alike.)
+ *   pulls/{n}/merge                                    → pr-merge  (PUT canonical, POST accepted)
+ *   pulls/{n}/comments                                 → pr-comment (inline review comments)
+ *   issues/{n}/comments                                → issue-comment (also the PR
+ *        conversation-comment route — see PR_COMMENT_EQUIVALENT_ACTIONS)
+ *
+ * Returns null for EVERY other sub-resource (labels, assignees, requested_reviewers,
+ * …), which preserves the G1 'other' outcome byte-for-byte. The caller has already
+ * established the method is mutating and the member id is numeric.
+ *
+ * @param {{resource:string, subPath?:string[]}} kind classifyGithubPath result (sub form)
+ * @param {'gh-api'|'curl'} route
+ * @returns {{action:string, route:string}|null}
+ */
+function classifyReviewSideSubResource(kind, route) {
+  const sub = Array.isArray(kind.subPath) ? kind.subPath : [];
+  const head = sub[0];
+  if (!head) return null;
+
+  if (kind.resource === 'pulls') {
+    if (head === 'reviews') return { action: 'pr-review', route };
+    // Only the bare `pulls/{n}/merge` endpoint — a deeper path under it is not a merge.
+    if (head === 'merge' && sub.length === 1) return { action: 'pr-merge', route };
+    if (head === 'comments') return { action: 'pr-comment', route };
+    return null;
+  }
+  if (kind.resource === 'issues') {
+    if (head === 'comments') return { action: 'issue-comment', route };
+    return null;
+  }
+  return null;
+}
+
+// ENF-20: field/body shapes that mark a bare-member PATCH/PUT as a pure CLOSE rather
+// than a body/title edit. Matched against the segment's TOKENS *and* its parsed flag
+// values, because gh accepts `-f state=closed`, `--field state=closed`,
+// `--raw-field state=closed`, `-F state=closed`, `--field=state=closed` and the bundled
+// `-fstate=closed` (whose value only survives in shortFlags), while curl sends a JSON
+// body (`-d '{"state":"closed"}'`) or a urlencoded pair. Repeated `-f` flags overwrite
+// each other in the parsed flag map, so the TOKEN list is the resilient source and both
+// are scanned.
+const STATE_CLOSED_FIELD = /^state=closed$/i;
+const STATE_CLOSED_JSON = /"state"\s*:\s*"closed"/i;
+const TITLE_OR_BODY_FIELD = /^(?:title|body)=/i;
+const TITLE_OR_BODY_JSON = /"(?:title|body)"\s*:/i;
+
+// A field given in ATTACHED form carries the flag on the same token, so the bare
+// `name=value` shape has to be recovered before matching: `-fstate=closed` (gh's bundled
+// short field) and `--field=state=closed` (attached long field). argv records the bundled
+// short form as shortFlags{fstate:'closed'} — the `=` split happens before the single-letter
+// check — so neither the raw token nor the parsed value is a bare `state=closed`. Stripping
+// exactly ONE leading dash+letter (gh/curl field flags are all single-letter: -f -F -d)
+// recovers it without swallowing the field name itself.
+const ATTACHED_SHORT_FIELD = /^-[A-Za-z](.+)$/;
+const ATTACHED_LONG_FIELD = /^--[A-Za-z][A-Za-z0-9-]*=(.+)$/;
+
+/**
+ * ENF-20: is this bare-member mutation a PURE close (state→closed with no title/body
+ * change)?
+ *
+ * THE PRECEDENCE RULE — EDIT WINS. `PATCH /repos/{o}/{r}/issues/{n}` with
+ * `state=closed` is the REST synonym of `gh issue close`, and it is the ONE input class
+ * whose action MOVES in ENF-20 (issue-edit → issue-close). That move has a cost: the
+ * gh-edit gate governs exactly {issue-edit, pr-edit}, so anything diverted away from
+ * issue-edit stops being edit-gated. To keep the diversion as narrow as the truth
+ * allows, a PATCH that ALSO carries a title/body field is still a body/title edit and
+ * keeps classifying as issue-edit — gh-edit keeps firing on it, unchanged. Only a PATCH
+ * whose sole substantive effect is the state change becomes issue-close.
+ *
+ * `state=open` (a reopen) is NOT a close and returns false — reopening is out of the
+ * five actions T1 adds.
+ *
+ * @param {Object} seg structured segment from argv.parseCommand
+ * @returns {boolean}
+ */
+function isPureStateClose(seg) {
+  const candidates = [];
+  const add = (v) => {
+    if (typeof v !== 'string' || v.length === 0) return;
+    candidates.push(v);
+    // Also consider the ATTACHED-form field recovered from the token.
+    const short = ATTACHED_SHORT_FIELD.exec(v);
+    if (short) candidates.push(short[1]);
+    const long = ATTACHED_LONG_FIELD.exec(v);
+    if (long) candidates.push(long[1]);
+  };
+  if (Array.isArray(seg.tokens)) seg.tokens.forEach(add);
+  for (const v of Object.values(seg.flags || {})) add(v);
+  for (const v of Object.values(seg.shortFlags || {})) add(v);
+
+  let sawClose = false;
+  for (const c of candidates) {
+    if (TITLE_OR_BODY_FIELD.test(c) || TITLE_OR_BODY_JSON.test(c)) {
+      return false; // an edit is present → EDIT WINS, stay issue-edit
+    }
+    if (STATE_CLOSED_FIELD.test(c) || STATE_CLOSED_JSON.test(c)) sawClose = true;
+  }
+  return sawClose;
 }
 
 /**
@@ -479,13 +648,23 @@ function classifyRestSegment(seg, route, isCurl) {
     return null;
   }
 
-  // Member sub-resource (labels / assignees / requested_reviewers / …): benign
-  // metadata, out of this gate's scope (create + body/title edit only). Allow as
-  // 'other' — never fail closed (G1).
-  if (kind.sub) return null;
+  // Member sub-resource. ENF-20 first tries the REVIEW-SIDE map (reviews / merge /
+  // comments — the adjudicating synonyms); everything else (labels / assignees /
+  // requested_reviewers / …) is benign metadata that stays 'other', never failClosed (G1).
+  if (kind.sub) {
+    const reviewSide = classifyReviewSideSubResource(kind, route);
+    if (reviewSide) return reviewSide;
+    return null;
+  }
 
   const isPatchOrPut = method === 'PATCH' || method === 'PUT';
   if (kind.resource === 'issues') {
+    // ENF-20: a bare-member PATCH/PUT whose only substantive field is state=closed is
+    // the REST synonym of `gh issue close`. EDIT WINS when title/body is also present
+    // (see isPureStateClose) so gh-edit's coverage is not narrowed beyond the truth.
+    if (kind.member && isPatchOrPut && isPureStateClose(seg)) {
+      return { action: 'issue-close', route };
+    }
     if (kind.member && isPatchOrPut) return { action: 'issue-edit', route };
     if (!kind.member && method === 'POST') return { action: 'issue-create', route };
     return FAIL_CLOSED; // mutating-but-mismatched (e.g. POST to member) → deny
@@ -561,14 +740,45 @@ function classifyAction(parsed) {
     ? parsed.segments
     : [parsed];
 
+  // ENF-20 TWO-PASS AGGREGATION — the mechanism that makes the six legacy actions'
+  // classification byte-identical BY CONSTRUCTION rather than by luck.
+  //
+  // classifyAction returns ONE result for a whole chain, and six wired gates read that
+  // single result directly (issue-dedupe, freshness, git-commit-convention,
+  // policy-invariants, lint-ci-marker, protocol-artifact). Before ENF-20 the only
+  // actionable results were the six legacy actions + failClosed, so a chain always
+  // collapsed to its FIRST legacy-actionable segment. If a new review-side action could
+  // win that aggregation, then `gh issue comment … && gh issue create …` would collapse
+  // to 'issue-comment' and issue-dedupe / protocol-artifact would ALLOW a create they
+  // deny today: the classifier extension would have MANUFACTURED A BYPASS in six gates.
+  //
+  // So: PASS 1 considers only failClosed + LEGACY_MUTATION_ACTIONS — reproducing the old
+  // result exactly whenever one exists. PASS 2 returns a review-side action only when
+  // pass 1 found nothing, i.e. exactly where the old code returned 'other'. Pass 2's
+  // results are therefore a strict subset of the old 'other' outcomes: no pre-existing
+  // classification can change.
+  //
+  // CONSEQUENCE FOR CALLERS (T3): a gate governing a review-side action must trigger on
+  // hasGovernedSegment(parsed, ['pr-merge']) — the CF-05 all-segments chokepoint — NOT on
+  // classifyAction(parsed).action, which by design still reports the legacy action for a
+  // chain like `gh pr merge … && git push`.
+  const results = [];
   for (const seg of segments) {
-    const res = classifySegment(seg);
-    if (res === null) {
-      // A non-actionable segment (read-only / unrelated) — keep scanning the chain.
-      continue;
+    results.push(classifySegment(seg));
+  }
+
+  // PASS 1 — legacy actions + failClosed (byte-identical to pre-ENF-20 behaviour).
+  for (const res of results) {
+    if (res === null) continue;
+    if (res.failClosed === true || LEGACY_MUTATION_ACTIONS.has(res.action)) {
+      return { ...res };
     }
-    // Any actionable (or fail-closed) segment classifies the whole command — a
-    // mutation hidden in a chain must not be diluted by a benign neighbor.
+  }
+
+  // PASS 2 — review-side actions (ENF-20). Only reachable where the pre-ENF-20 code
+  // returned 'other', so this can never displace an existing classification.
+  for (const res of results) {
+    if (res === null) continue;
     return { ...res };
   }
 
@@ -750,6 +960,15 @@ module.exports = {
   // segment's program via resolveProgram so wrapped git (`sudo/command/env git`)
   // resolves to `git` — do NOT re-implement wrapper stripping in the gate.
   resolveProgram,
+  // ENF-20: the action vocabulary, exported so a gate declares its governed set by
+  // NAME rather than re-typing string literals, and so the legacy/review-side split
+  // (which classifyAction's two-pass aggregation depends on) is assertable in tests.
+  LEGACY_MUTATION_ACTIONS,
+  REVIEW_SIDE_ACTIONS,
+  // ENF-20: a gate governing PR comments MUST govern BOTH names — GitHub posts PR
+  // conversation comments to the ISSUES endpoint and the numbering namespace is shared,
+  // so `gh api POST /issues/<pr#>/comments` is otherwise a one-line bypass.
+  PR_COMMENT_EQUIVALENT_ACTIONS,
   // exported for unit-level reuse / testing
   classifyGithubPath,
   hostOf,
