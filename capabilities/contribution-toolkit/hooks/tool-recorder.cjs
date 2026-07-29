@@ -33,7 +33,7 @@
  *      no decision to fail closed on: the tool has ALREADY executed. A PostToolUse hook cannot
  *      block, un-execute, or halt anything. This is the ONE hook in the suite where FAIL-OPEN is
  *      correct — a serialization bug must cost a dropped record, never a disrupted turn. Do not
- *      "fix" this into consistency with the twelve fail-closed gates.
+ *      "fix" this into consistency with the fourteen fail-closed gates.
  *   2. emit() HARDCODES `hookEventName: 'PreToolUse'` in its envelope (failclosed.cjs:114-118),
  *      so it cannot address a PostToolUse envelope at all.
  *

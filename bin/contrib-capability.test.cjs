@@ -8,12 +8,13 @@
  * against a FAKE .claude/settings.json + a sandboxed consent/ledger store on a DISPOSABLE
  * mkdtemp sandbox, and proves the full lifecycle is BOTH correct AND hermetic:
  *
- *   install -> EXACTLY 16 CAP_MARKER-tagged hook entries (the 13 PreToolUse gates + the 1
- *              UserPromptSubmit advisory + the 2 post-tool tool-recorder registrations from the
- *              manifest hooks[]) land in the fake settings.json.
- *   off     -> stripCapabilitySharedEdits removes EXACTLY those 16 tagged entries; a PRE-SEEDED
+ *   install -> EXACTLY the canonical wired set, CAP_MARKER-tagged (currently 17 entries: the 14
+ *              PreToolUse gates + the 1 UserPromptSubmit advisory + the 2 post-tool tool-recorder
+ *              registrations), lands in the fake settings.json. The expected totals are DERIVED
+ *              AT RUNTIME from settings.snippet.json (see `WIRED` below) — never hardcoded.
+ *   off     -> stripCapabilitySharedEdits removes EXACTLY those tagged entries; a PRE-SEEDED
  *              UNTAGGED user hook SURVIVES (the strip is marker-scoped, not a blanket wipe).
- *   on      -> applyCapabilitySharedEdits restores EXACTLY the 16 tagged entries.
+ *   on      -> applyCapabilitySharedEdits restores EXACTLY the tagged entries.
  *   remove  -> removeCapability + revokeProjectConsent leave NO ledger entry and NO consent record
  *              for 'contribution-toolkit' in the SANDBOXED store.
  *
@@ -29,7 +30,8 @@
  * REAL engine dir so requireLiveScript(sandbox, ...) loads the LIVE capability engine (read-only
  * require — the engine modules are never written), while the driver's WRITES (settings/ledger/
  * config/consent) all land under the temp root. The bundle is the REAL in-repo
- * capabilities/contribution-toolkit (read-only — its manifest hooks[] is the source of the exactly-14 set).
+ * capabilities/contribution-toolkit (read-only — its manifest hooks[] is asserted against the
+ * canonical settings.snippet.json wired set).
  *
  * REACHABILITY: when no real gsd-core source is reachable to seed the sandbox, every case
  * SKIPs-with-note (never fabricate a fake sentinel layout — a fabricated proof is worse than no
@@ -52,6 +54,32 @@ const CAP_MARKER = '_gsdCapability';
 const SETTINGS_REL = path.join('.claude', 'settings.json');
 const LEDGER_REL = '.gsd-capabilities.json';
 const ENGINE_LIB_REL = path.join('gsd-core', 'bin', 'lib');
+
+/**
+ * WIRED — the expected registration counts, DERIVED AT RUNTIME from the canonical
+ * `settings.snippet.json` (the wired-set source `bin/build-capability.cjs` reads) rather than
+ * hardcoded numerals.
+ *
+ * WHY DERIVED. These counts were literals (`16`, `13`, …) and went silently stale every time a
+ * gate was wired — the same drift `docs-hook-counts.test.cjs` was written to catch in the prose.
+ * Deriving them from the snippet keeps every assertion below STRUCTURAL and strengthens it: the
+ * manifest `hooks[]` and the installed `settings.json` must match the canonical snippet EXACTLY,
+ * per event — not "at least", not "some number someone remembered to update". A wired-but-unbundled
+ * (or bundled-but-unwired) hook is now RED here without any edit to this file.
+ *
+ * `WIRED.byEvent` is asserted per event on purpose: a total-only check would let a PreToolUse gate
+ * be silently swapped for a post-tool registration.
+ */
+const WIRED = (() => {
+  const snip = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'settings.snippet.json'), 'utf8'));
+  const byEvent = Object.create(null);
+  let total = 0;
+  for (const [event, groups] of Object.entries(snip.hooks || {})) {
+    byEvent[event] = groups.reduce((n, g) => n + ((g.hooks || []).length), 0);
+    total += byEvent[event];
+  }
+  return { total, byEvent };
+})();
 
 /**
  * Resolve the REAL gsd-core source the SAME way the driver does (resolveGsdCoreCwd: GSD_CORE_ROOT,
@@ -395,29 +423,41 @@ function consentHasCap(sb) {
   return Object.keys(records).some((k) => records[k] && records[k].id === CAP_ID);
 }
 
-// ─────────────── manifest sanity: exactly 16 hooks (13 PreToolUse + 1 UserPromptSubmit + 2 OBS-01) ───────────────
+// ─── manifest sanity: hooks[] matches settings.snippet.json EXACTLY (total + per event) ───
 
-test('manifest declares EXACTLY the 13 PreToolUse gates + 1 UserPromptSubmit advisory + 2 OBS-01 post-tool recorder entries (= 16)', () => {
+test('manifest hooks[] declares EXACTLY the canonical wired set from settings.snippet.json (total + per event)', () => {
   const manifest = drv.readManifest();
   assert.strictEqual(manifest.id, CAP_ID, 'manifest id must be contribution-toolkit');
   const hooks = Array.isArray(manifest.hooks) ? manifest.hooks : [];
-  assert.strictEqual(hooks.length, 16, 'manifest hooks[] must declare exactly 16 entries');
-  const pre = hooks.filter((h) => h.event === 'PreToolUse').length;
-  const ups = hooks.filter((h) => h.event === 'UserPromptSubmit').length;
-  assert.strictEqual(pre, 13, 'exactly 13 PreToolUse gates');
-  assert.strictEqual(ups, 1, 'exactly 1 UserPromptSubmit advisory');
+  assert.strictEqual(
+    hooks.length,
+    WIRED.total,
+    'manifest hooks[] must declare exactly ' + WIRED.total + ' entries (the snippet total) — ' +
+      're-run: node bin/build-capability.cjs'
+  );
+  // Per event, both directions: every snippet event is declared with the snippet's count, and the
+  // manifest declares NO event the snippet does not wire.
+  for (const [event, expected] of Object.entries(WIRED.byEvent)) {
+    const got = hooks.filter((h) => h.event === event).length;
+    assert.strictEqual(got, expected, 'manifest ' + event + ' entries: got ' + got + ', snippet wires ' + expected);
+  }
+  const manifestEvents = [...new Set(hooks.map((h) => h.event))].sort();
+  assert.deepStrictEqual(
+    manifestEvents,
+    Object.keys(WIRED.byEvent).sort(),
+    'manifest must declare exactly the snippet event set — no phantom event, none missing'
+  );
   // OBS-01: the recorder is wired on BOTH post-tool events — PostToolUse fires only on SUCCESS,
   // PostToolUseFailure carries `error` instead of `tool_response`. One without the other would
-  // silently record half the population, so both are asserted, never just the pair count.
-  const post = hooks.filter((h) => h.event === 'PostToolUse').length;
-  const postFail = hooks.filter((h) => h.event === 'PostToolUseFailure').length;
-  assert.strictEqual(post, 1, 'exactly 1 PostToolUse recorder');
-  assert.strictEqual(postFail, 1, 'exactly 1 PostToolUseFailure recorder');
+  // silently record half the population, so BOTH are named explicitly here (a derived per-event
+  // loop alone would pass if the snippet itself lost one).
+  assert.ok(WIRED.byEvent.PostToolUse >= 1, 'the snippet must wire a PostToolUse recorder (OBS-01)');
+  assert.ok(WIRED.byEvent.PostToolUseFailure >= 1, 'the snippet must wire a PostToolUseFailure recorder (OBS-01)');
 });
 
 // ───────────────────────── the load-bearing lifecycle proof ─────────────────────────
 
-test('install -> off -> on -> remove on a disposable sandbox; exactly 16 tagged, untagged survives, real state unchanged', { skip: SKIP }, () => {
+test('install -> off -> on -> remove on a disposable sandbox; exactly the wired set tagged, untagged survives, real state unchanged', { skip: SKIP }, () => {
   // Snapshot the REAL gsd-core state + real consent BEFORE — must be byte/existence-identical AFTER.
   const before = snapshotRealState(SOURCE_ROOT);
 
@@ -432,14 +472,19 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 16 tagged,
 
     const opts = sandboxOpts(sb);
 
-    // ── install: exactly 16 CAP_MARKER-tagged entries (13 PreToolUse + 1 UserPromptSubmit + 2 OBS-01) ──
+    // ── install: exactly the canonical wired set, CAP_MARKER-tagged, asserted per event ──
     drv.runInstall(opts);
     let tagged = countTagged(sb.settingsPath);
-    assert.strictEqual(tagged.total, 16, 'install must tag EXACTLY 16 entries, got ' + tagged.total);
-    assert.strictEqual(tagged.byEvent.PreToolUse, 13, 'exactly 13 PreToolUse gates tagged');
-    assert.strictEqual(tagged.byEvent.UserPromptSubmit, 1, 'exactly 1 UserPromptSubmit advisory tagged');
-    assert.strictEqual(tagged.byEvent.PostToolUse, 1, 'exactly 1 PostToolUse recorder tagged (OBS-01)');
-    assert.strictEqual(tagged.byEvent.PostToolUseFailure, 1, 'exactly 1 PostToolUseFailure recorder tagged (OBS-01)');
+    assert.strictEqual(
+      tagged.total, WIRED.total,
+      'install must tag EXACTLY ' + WIRED.total + ' entries (the snippet total), got ' + tagged.total
+    );
+    for (const [event, expected] of Object.entries(WIRED.byEvent)) {
+      assert.strictEqual(
+        tagged.byEvent[event], expected,
+        'install must tag exactly ' + expected + ' ' + event + ' entries, got ' + tagged.byEvent[event]
+      );
+    }
     assert.strictEqual(userHookSurvives(sb.settingsPath), true, 'the pre-seeded untagged user hook must survive install');
     assert.strictEqual(ledgerHasCap(sb), true, 'install must record a ledger entry for contribution-toolkit');
     assert.strictEqual(consentHasCap(sb), true, 'install must record a consent record for contribution-toolkit');
@@ -467,10 +512,13 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 16 tagged,
       'every wired command script must resolve to a real file after install (INST-02)'
     );
 
-    // ── off: EXACTLY the 16 tagged entries stripped; the UNTAGGED user hook SURVIVES ──
+    // ── off: EXACTLY the tagged entries stripped; the UNTAGGED user hook SURVIVES ──
     drv.runOff(Object.assign({}, opts, { reason: 'CAP-07 hermetic lifecycle proof: off' }));
     tagged = countTagged(sb.settingsPath);
-    assert.strictEqual(tagged.total, 0, 'off must strip EXACTLY the 16 tagged entries, leftover=' + tagged.total);
+    assert.strictEqual(
+      tagged.total, 0,
+      'off must strip EXACTLY the ' + WIRED.total + ' tagged entries, leftover=' + tagged.total
+    );
     assert.strictEqual(
       userHookSurvives(sb.settingsPath),
       true,
@@ -492,12 +540,19 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 16 tagged,
     // picks it up (off touches only gates/commands/skills/flag, never the promotion).
     assert.ok(fs.existsSync(sandboxCapDir(sb)), 'off must PRESERVE the promoted capDir (D-08)');
 
-    // ── on: the 16 tagged entries are restored (and the untagged user hook is still there) ──
+    // ── on: the tagged entries are restored (and the untagged user hook is still there) ──
     drv.runOn(opts);
     tagged = countTagged(sb.settingsPath);
-    assert.strictEqual(tagged.total, 16, 'on must restore EXACTLY 16 tagged entries, got ' + tagged.total);
-    assert.strictEqual(tagged.byEvent.PreToolUse, 13, 'on restores 13 PreToolUse gates');
-    assert.strictEqual(tagged.byEvent.UserPromptSubmit, 1, 'on restores 1 UserPromptSubmit advisory');
+    assert.strictEqual(
+      tagged.total, WIRED.total,
+      'on must restore EXACTLY ' + WIRED.total + ' tagged entries, got ' + tagged.total
+    );
+    for (const [event, expected] of Object.entries(WIRED.byEvent)) {
+      assert.strictEqual(
+        tagged.byEvent[event], expected,
+        'on must restore exactly ' + expected + ' ' + event + ' entries, got ' + tagged.byEvent[event]
+      );
+    }
     assert.strictEqual(userHookSurvives(sb.settingsPath), true, 'the untagged user hook must still survive after on');
     // WR-02: on must flip workflow.gsd_contrib_enforcement ON in config.json (read it back).
     assert.strictEqual(
@@ -544,9 +599,9 @@ test('install -> off -> on -> remove on a disposable sandbox; exactly 16 tagged,
   assertRealStateUnchanged(before);
 });
 
-test('double-install is idempotent: a second install keeps the tagged set at 16 (no growth)', { skip: SKIP }, () => {
+test('double-install is idempotent: a second install keeps the tagged set at the wired total (no growth)', { skip: SKIP }, () => {
   // WR-02: the driver claims re-run idempotency (LIVE apply strips its own marker first). Prove it
-  // empirically — a second install that grew the tagged set from 16 to 32 must be caught here.
+  // empirically — a second install that DOUBLED the tagged set must be caught here.
   const before = snapshotRealState(SOURCE_ROOT);
   const sb = makeCapSandbox(SOURCE_ROOT);
   try {
@@ -554,13 +609,23 @@ test('double-install is idempotent: a second install keeps the tagged set at 16 
 
     drv.runInstall(opts);
     let tagged = countTagged(sb.settingsPath);
-    assert.strictEqual(tagged.total, 16, 'first install must tag EXACTLY 16 entries, got ' + tagged.total);
+    assert.strictEqual(
+      tagged.total, WIRED.total,
+      'first install must tag EXACTLY ' + WIRED.total + ' entries, got ' + tagged.total
+    );
 
     drv.runInstall(opts); // second call — must NOT append a second tagged set.
     tagged = countTagged(sb.settingsPath);
-    assert.strictEqual(tagged.total, 16, 'double-install must NOT grow the tagged set (idempotent), got ' + tagged.total);
-    assert.strictEqual(tagged.byEvent.PreToolUse, 13, 'still exactly 13 PreToolUse gates after re-install');
-    assert.strictEqual(tagged.byEvent.UserPromptSubmit, 1, 'still exactly 1 UserPromptSubmit advisory after re-install');
+    assert.strictEqual(
+      tagged.total, WIRED.total,
+      'double-install must NOT grow the tagged set (idempotent), got ' + tagged.total
+    );
+    for (const [event, expected] of Object.entries(WIRED.byEvent)) {
+      assert.strictEqual(
+        tagged.byEvent[event], expected,
+        'still exactly ' + expected + ' ' + event + ' entries after re-install, got ' + tagged.byEvent[event]
+      );
+    }
     assert.strictEqual(
       userHookSurvives(sb.settingsPath),
       true,
@@ -626,7 +691,10 @@ test('off without a reason FAILS before mutation; the sandbox settings are untou
       'off with an empty/whitespace --reason must FAIL (accountability gate before mutation)'
     );
     assert.strictEqual(sha(sb.settingsPath), before, 'a rejected off must NOT mutate the settings (gate runs first)');
-    assert.strictEqual(countTagged(sb.settingsPath).total, 16, 'the 16 tagged gates remain after the rejected off');
+    assert.strictEqual(
+      countTagged(sb.settingsPath).total, WIRED.total,
+      'the ' + WIRED.total + ' tagged gates remain after the rejected off'
+    );
   } finally {
     sb.dispose();
   }
@@ -643,8 +711,11 @@ test('off whose receipt cannot be written FAILS probe-first; gates/commands/skil
     const opts = sandboxOpts(sb);
     drv.runInstall(opts);
 
-    // Pre-condition: fully ON (16 wired entries + 5 commands + 2 skills + flag true).
-    assert.strictEqual(countTagged(sb.settingsPath).total, 16, 'pre: 16 tagged gates');
+    // Pre-condition: fully ON (the full wired set + 5 commands + 2 skills + flag true).
+    assert.strictEqual(
+      countTagged(sb.settingsPath).total, WIRED.total,
+      'pre: ' + WIRED.total + ' tagged gates'
+    );
     assert.strictEqual(countDeliveredCommands(sb).delivered, 5, 'pre: 5 command links');
     assert.strictEqual(countDeliveredSkills(sb).delivered, 2, 'pre: 2 skill links');
     assert.strictEqual(readEnforcementFlag(sb), true, 'pre: enforcement flag true');
@@ -662,7 +733,10 @@ test('off whose receipt cannot be written FAILS probe-first; gates/commands/skil
 
     // ZERO mutation: gates, commands, skills, flag, and the settings bytes are ALL unchanged.
     assert.strictEqual(sha(sb.settingsPath), settingsBefore, 'a probe-failed off must NOT mutate settings.json');
-    assert.strictEqual(countTagged(sb.settingsPath).total, 16, 'the 16 tagged gates remain after the probe-failed off');
+    assert.strictEqual(
+      countTagged(sb.settingsPath).total, WIRED.total,
+      'the ' + WIRED.total + ' tagged gates remain after the probe-failed off'
+    );
     assert.strictEqual(countDeliveredCommands(sb).delivered, 5, 'the 5 command links remain after the probe-failed off (no reclaim)');
     assert.strictEqual(countDeliveredSkills(sb).delivered, 2, 'the 2 skill links remain after the probe-failed off (no reclaim)');
     assert.strictEqual(readEnforcementFlag(sb), true, 'the enforcement flag stays true after the probe-failed off (no flip)');
@@ -1281,13 +1355,17 @@ test('a re-run of install REPAIRS a dangling install: broken (bundle-absent) ins
     // (2) REPAIR: a normal re-run of install (the sole repair entrypoint).
     const res = drv.runInstall(opts);
 
-    // Repaired: capDir re-promoted, every wired target resolves, exactly 16 tagged (idempotent), logged.
+    // Repaired: capDir re-promoted, every wired target resolves, exactly the wired set tagged
+    // (idempotent), logged.
     assert.ok(fs.existsSync(sandboxCapDir(sb)), 're-run must re-promote the capDir (D-05)');
     assert.deepStrictEqual(
       unresolvedWiredScripts(sb.settingsPath), [],
       're-run must re-wire so EVERY wired target resolves again (D-05 repair)'
     );
-    assert.strictEqual(countTagged(sb.settingsPath).total, 16, 're-run keeps EXACTLY 16 tagged (idempotent, no growth)');
+    assert.strictEqual(
+      countTagged(sb.settingsPath).total, WIRED.total,
+      're-run keeps EXACTLY ' + WIRED.total + ' tagged (idempotent, no growth)'
+    );
     assert.strictEqual(userHookSurvives(sb.settingsPath), true, 'the pre-seeded untagged user hook survives the repair');
     assert.ok(
       res.lines.some((l) => /\[install\] verified \d+ wired hook target\(s\) resolve/.test(l)),

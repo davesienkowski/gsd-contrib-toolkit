@@ -12,7 +12,8 @@
  * every write confined to a mkdtemp root) and asserts:
  *
  *   (a) NO DANGLING — every CAP_MARKER-tagged wired settings hook target resolves to a real file
- *       (all 16). A future regression to a dangling promoted bundle makes this go RED. (Documented
+ *       (all of them; the expected total is DERIVED from settings.snippet.json, never hardcoded —
+ *       currently 17). A future regression to a dangling promoted bundle makes this go RED. (Documented
  *       red-on-regression witness: with promotion suppressed the install fails loud + the targets
  *       dangle — the exact silent-inert defect INST-01/02 closed.)
  *
@@ -48,6 +49,28 @@ const CAP_ID = 'contribution-toolkit';
 const CAP_MARKER = '_gsdCapability';
 const SETTINGS_REL = path.join('.claude', 'settings.json');
 const ENGINE_LIB_REL = path.join('gsd-core', 'bin', 'lib');
+
+/**
+ * WIRED_TOTAL / WIRED_BASH — DERIVED AT RUNTIME from the canonical `settings.snippet.json` (the
+ * wired-set source `bin/build-capability.cjs` reads) instead of hardcoded numerals, which went
+ * silently stale on every newly wired gate. The assertions below stay STRUCTURAL — "EXACTLY the
+ * canonical set, none dangling" — and now track the snippet without an edit here.
+ */
+const WIRED = (() => {
+  const snip = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'settings.snippet.json'), 'utf8'));
+  let total = 0;
+  let bash = 0;
+  let writeEdit = 0;
+  for (const [event, groups] of Object.entries(snip.hooks || {})) {
+    for (const g of groups) {
+      const n = (g.hooks || []).length;
+      total += n;
+      if (event === 'PreToolUse' && g.matcher === 'Bash') bash += n;
+      if (event === 'PreToolUse' && g.matcher === 'Write|Edit') writeEdit += n;
+    }
+  }
+  return { total, bash, writeEdit };
+})();
 
 // The REAL canonical binlib-edit entrypoint (never the sandbox copy) — the 260630-v1h fix under test.
 const BINLIB_EDIT = path.join(__dirname, '..', 'hooks', 'binlib-edit.cjs');
@@ -208,7 +231,7 @@ const write = (file_path) => JSON.stringify({ tool_name: 'Write', tool_input: { 
 
 // ───────────────────────── INST-03 (a): no dangling wired targets ─────────────────────────
 
-test('INST-03(a): a sandbox install wires EVERY CAP_MARKER target to a real file (16 resolve, no dangling)', { skip: SKIP }, () => {
+test('INST-03(a): a sandbox install wires EVERY CAP_MARKER target to a real file (all resolve, no dangling)', { skip: SKIP }, () => {
   // The INST-01/02 closure as a regression: after a real install every wired gate script must
   // resolve. A future regression to a dangling promoted bundle makes this go RED. (Red-on-regression
   // witness below: with promotion suppressed these SAME targets dangle and the install fails loud.)
@@ -226,9 +249,12 @@ test('INST-03(a): a sandbox install wires EVERY CAP_MARKER target to a real file
     // The promoted capDir the wired paths are composed against exists (INST-02 promotion).
     assert.ok(fs.existsSync(sandboxCapDir(sb)), 'install must promote the capDir (INST-02)');
 
-    // (a) NO DANGLING: enumerate every tagged wired target and stat each — all 16 resolve.
+    // (a) NO DANGLING: enumerate every tagged wired target and stat each — all of them resolve.
     const targets = wiredTargets(sb.settingsPath);
-    assert.strictEqual(targets.length, 16, 'install must wire EXACTLY 16 tagged targets, got ' + targets.length);
+    assert.strictEqual(
+      targets.length, WIRED.total,
+      'install must wire EXACTLY ' + WIRED.total + ' tagged targets (the snippet total), got ' + targets.length
+    );
     const dangling = targets.filter((t) => !t.resolves).map((t) => t.command);
     assert.deepStrictEqual(
       dangling, [],
@@ -236,13 +262,16 @@ test('INST-03(a): a sandbox install wires EVERY CAP_MARKER target to a real file
         'silent-inert defect INST-01/02 closed; these do NOT resolve: ' + dangling.join(', ')
     );
 
-    // Cross-check via the driver's own fail-loud verifier: verified === 16, no throw.
+    // Cross-check via the driver's own fail-loud verifier: verified === the wired total, no throw.
     const verification = drv.verifyWiredTargets({
       liveRoot: sb.root,
       confinedSharedFile: requireLiveScript(sb.root, 'gsd-core/bin/lib/capability-lifecycle.cjs').confinedSharedFile,
       capMarker: CAP_MARKER,
     });
-    assert.strictEqual(verification.verified, 16, 'verifyWiredTargets must confirm all 16 wired targets resolve');
+    assert.strictEqual(
+      verification.verified, WIRED.total,
+      'verifyWiredTargets must confirm all ' + WIRED.total + ' wired targets resolve'
+    );
   } finally {
     sb.dispose();
   }
@@ -299,9 +328,19 @@ test('INST-03(b) MATCHER SCOPE: the installed binlib-edit entry keeps its scoped
         'is the 260630-v1h defect (every Bash payload would trip the Write/Edit HARD-01 fail-closed); got: ' +
         JSON.stringify(binlib.matcher)
     );
-    // The 12 Bash gates stay under `Bash`, binlib-edit is the sole Write|Edit entry (scope sanity).
+    // The Bash gates stay under `Bash`, binlib-edit is the sole Write|Edit entry (scope sanity).
+    // Both counts are DERIVED from settings.snippet.json — the structural property (exactly one
+    // Write|Edit gate, every other PreToolUse gate on Bash) is unchanged, only the numeral is derived.
     const writeEdit = targets.filter((t) => t.matcher === 'Write|Edit');
-    assert.strictEqual(writeEdit.length, 1, 'exactly one Write|Edit-scoped gate (binlib-edit) — no catch-all creep');
+    assert.strictEqual(
+      writeEdit.length, WIRED.writeEdit,
+      'exactly ' + WIRED.writeEdit + ' Write|Edit-scoped gate(s) (binlib-edit) — no catch-all creep'
+    );
+    const bashScoped = targets.filter((t) => t.matcher === 'Bash');
+    assert.strictEqual(
+      bashScoped.length, WIRED.bash,
+      'exactly ' + WIRED.bash + ' Bash-scoped gates — a gate that lost its matcher would show up here'
+    );
   } finally {
     sb.dispose();
   }

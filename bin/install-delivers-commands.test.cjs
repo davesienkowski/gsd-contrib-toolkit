@@ -70,6 +70,20 @@ const EXPECTED_COMMANDS = [
 // named explicitly so a silently-dropped skill is CAUGHT in the end-to-end half too.
 const EXPECTED_SKILL_STEMS = ['gsd-core-contribution', 'maintainer-review-sweep'];
 
+/**
+ * WIRED_TOTAL — the hook-registration total, DERIVED AT RUNTIME from the canonical
+ * `settings.snippet.json` rather than a hardcoded numeral (which went stale on every newly wired
+ * gate). The command/skill counts above stay literal on purpose: they are asserted BY NAME, so a
+ * silently-dropped command or skill is caught by identity, not by an arithmetic coincidence.
+ */
+const WIRED_TOTAL = (() => {
+  const snip = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'settings.snippet.json'), 'utf8'));
+  return Object.values(snip.hooks || {}).reduce(
+    (n, groups) => n + groups.reduce((m, g) => m + ((g.hooks || []).length), 0),
+    0
+  );
+})();
+
 // ──────────────────────────────── 1. DELIVERY + RECLAIM (unconditional) ────────────────────────────────
 //
 // Drives the REAL deliverBundledCommands / removeBundledCommands (pure node:fs over the BUNDLE — no live
@@ -205,7 +219,7 @@ function makeSandbox(sourceRoot) {
 }
 
 test(
-  'end-to-end: runInstall delivers the 5 commands + 2 skills (alongside the 16 wired hook entries) fully ON + runRemove reclaims both',
+  'end-to-end: runInstall delivers the 5 commands + 2 skills (alongside the full wired hook set) fully ON + runRemove reclaims both',
   { skip: E2E_SKIP },
   () => {
     const sb = makeSandbox(SOURCE_ROOT);
@@ -240,14 +254,17 @@ test(
       const taggedHooks = Object.keys(settings.hooks || {}).reduce((n, ev) => {
         return n + (Array.isArray(settings.hooks[ev]) ? settings.hooks[ev].filter((e) => e && e._gsdCapability === CAP_ID).length : 0);
       }, 0);
-      assert.strictEqual(taggedHooks, 16, 'the 5 commands must land ALONGSIDE the 16 marker-tagged hook entries (full local-parity install)');
+      assert.strictEqual(
+        taggedHooks, WIRED_TOTAL,
+        'the 5 commands must land ALONGSIDE all ' + WIRED_TOTAL + ' marker-tagged hook entries (full local-parity install)'
+      );
 
       // 21-03 full-surface co-existence: the 2 SKILLS also land at the sandbox skills dir as bundle
       // DIRECTORY symlinks on the SAME runInstall — a remote install reproduces the FULL local surface
       // (commands + hooks + skills together).
       assert.ok(
         installed.deliveredSkills && installed.deliveredSkills.names.length === EXPECTED_SKILL_STEMS.length,
-        'runInstall must deliver the 2 skills alongside the 5 commands + 16 wired hook entries (full-surface install)'
+        'runInstall must deliver the 2 skills alongside the 5 commands + the full wired hook set (full-surface install)'
       );
       for (const stem of EXPECTED_SKILL_STEMS) {
         const target = path.join(sb.skillsDir, stem);

@@ -50,8 +50,8 @@
  *     never recursed into).
  *
  *   • END-TO-END (SKIP-on-unreachable) — drives the full runInstall→runRemove against a disposable
- *     sandbox gsd-core checkout, proving the 2 skills land ALONGSIDE the 5 commands + the 16 wired hook
- *     entries via the
+ *     sandbox gsd-core checkout, proving the 2 skills land ALONGSIDE the 5 commands + the FULL wired
+ *     hook set (total DERIVED from settings.snippet.json — currently 17) via the
  *     SAME composed LIVE engine, and runRemove reclaims the skill links. SKIPs-with-note when no LIVE
  *     gsd-core checkout is reachable (never a false green).
  *
@@ -75,6 +75,19 @@ const CANONICAL_SKILLS_DIR = path.join(REPO_ROOT, 'skills');
 // The two declared stems whose SKILL.md must materialize at the install root, named explicitly so a
 // silently-dropped skill is caught (the overlay-expected form is asserted per-stem).
 const EXPECTED_STEMS = ['gsd-core-contribution', 'maintainer-review-sweep'];
+/**
+ * WIRED_TOTAL — the hook-registration total, DERIVED AT RUNTIME from the canonical
+ * `settings.snippet.json` rather than a hardcoded numeral (which went stale on every newly wired
+ * gate). The skill-count literals above stay literal on purpose: `EXPECTED_STEMS` names the two
+ * skills explicitly so a silently-dropped skill is caught by NAME, not just by count.
+ */
+const WIRED_TOTAL = (() => {
+  const snip = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'settings.snippet.json'), 'utf8'));
+  return Object.values(snip.hooks || {}).reduce(
+    (n, groups) => n + groups.reduce((m, g) => m + ((g.hooks || []).length), 0),
+    0
+  );
+})();
 
 /**
  * Resolve the LIVE gsd-core checkout the SAME way the driver does: GSD_CORE_ROOT, then
@@ -306,7 +319,7 @@ test('removeBundledSkills leaves a pre-seeded REAL skill dir at a target untouch
 // ──────────────────────────── END-TO-END runInstall→runRemove (SKIP-on-unreachable) ────────────────────────────
 //
 // Drives the FULL runInstall→runRemove against a disposable sandbox gsd-core checkout, proving the 2
-// skills land ALONGSIDE the 5 commands + 16 wired hook entries via the SAME composed LIVE engine, and runRemove
+// skills land ALONGSIDE the 5 commands + the full wired hook set via the SAME composed LIVE engine, and runRemove
 // reclaims the skill links. SKIPs-with-note when no LIVE gsd-core checkout is reachable.
 
 const ENGINE_LIB_REL = path.join('gsd-core', 'bin', 'lib');
@@ -351,7 +364,7 @@ function makeE2ESandbox(sourceRoot) {
 }
 
 test(
-  'end-to-end: runInstall delivers the 2 skills (alongside the 5 commands + 16 wired hook entries) + runRemove reclaims the skill links',
+  'end-to-end: runInstall delivers the 2 skills (alongside the 5 commands + the full wired hook set) + runRemove reclaims the skill links',
   { skip: E2E_SKIP },
   () => {
     const sb = makeE2ESandbox(E2E_SOURCE_ROOT);
@@ -381,12 +394,15 @@ test(
         assert.ok(fs.existsSync(path.join(target, 'SKILL.md')), stem + '/SKILL.md reachable through the dir symlink');
       }
 
-      // Co-existence proof: the 2 skills land ALONGSIDE the 16 marker-tagged hook entries + the 5 commands.
+      // Co-existence proof: the 2 skills land ALONGSIDE the full marker-tagged hook set + the 5 commands.
       const settings = JSON.parse(fs.readFileSync(path.join(sb.root, SETTINGS_REL), 'utf8'));
       const taggedHooks = Object.keys(settings.hooks || {}).reduce((n, ev) => {
         return n + (Array.isArray(settings.hooks[ev]) ? settings.hooks[ev].filter((e) => e && e._gsdCapability === CAP_ID).length : 0);
       }, 0);
-      assert.strictEqual(taggedHooks, 16, 'the 2 skills must land ALONGSIDE the 16 marker-tagged hook entries (full local-parity install)');
+      assert.strictEqual(
+        taggedHooks, WIRED_TOTAL,
+        'the 2 skills must land ALONGSIDE all ' + WIRED_TOTAL + ' marker-tagged hook entries (full local-parity install)'
+      );
       for (const base of ['gsd-submit', 'gsd-review-sweep', 'gsd-triage-assist', 'gsd-release-preflight', 'gsd-ruleset-drift']) {
         assert.ok(fs.existsSync(path.join(sb.commandsDir, base + '.md')), 'the 2 skills must land ALONGSIDE the 5 commands (' + base + '.md present)');
       }

@@ -5,7 +5,7 @@
  * hooks/protocol-artifact.cjs — PreToolUse(Bash) ENF-19 protocol-artifact gate
  * (CTK-ADR-0004, HARD-01 fail-closed, HARD-04 robust-parse, ENF-15 synonym coverage).
  *
- * The other twelve blocking gates enforce OUTCOMES: they parse the command's payload (an
+ * The payload-inspecting blocking gates enforce OUTCOMES: they parse the command's payload (an
  * issue body, a PR body, a commit message, an edited path) and check its content. That
  * leaves the P0-P6 steps which emit no payload at all — P1 reproduce-the-mechanism, P2 the
  * adversarial law pass + POLICY-01 ADR quoting, P3 TDD red-before-green. Those live ONLY in

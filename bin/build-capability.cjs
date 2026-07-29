@@ -13,9 +13,11 @@
  *   node bin/build-capability.cjs --check   # CHECK: exit 1 if the bundle is stale vs source, 0 if fresh
  *
  * THE WIRED SET IS DATA-DRIVEN (never a hardcoded list): the canonical script basenames are read
- * from `settings.snippet.json` (the canonical 15 wired scripts / 16 registrations — 13 PreToolUse
+ * from `settings.snippet.json` (currently 16 wired scripts / 17 registrations — 14 PreToolUse
  * gates + the protocol-reminder advisory + the tool-recorder observability hook, which is wired on
- * both PostToolUse and PostToolUseFailure). The whole `hooks/lib/` tree is shipped too, so each bundled gate's
+ * both PostToolUse and PostToolUseFailure; the numbers here are descriptive — the code reads the
+ * snippet, and `docs-hook-counts.test.cjs` guards the prose counts against it). The whole
+ * `hooks/lib/` tree is shipped too, so each bundled gate's
  * relative `require('./lib/...')` resolves INSIDE the bundle. The copy is VERBATIM — the bundled
  * gates still resolve + call the LIVE gsd-core scripts at runtime via hooks/lib/resolve.cjs, so
  * reuse-LIVE is preserved (design §10).

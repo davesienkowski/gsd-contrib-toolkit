@@ -51,7 +51,7 @@ const GITHUB_API_HOSTS = new Set(['api.github.com']);
 // recognized. REVIEW_SIDE_ACTIONS are the five ADJUDICATING actions ENF-20 adds —
 // approving, merging, closing, commenting: outward-facing, effectively irreversible,
 // and until now every one of them classified as action:'other' (a silent allow at
-// all 13 wired gates).
+// every gate wired before this extension).
 //
 // The split is not documentation — it is LOAD-BEARING in classifyAction's two-pass
 // aggregation (see there). Keeping the sets disjoint is what makes the six legacy
