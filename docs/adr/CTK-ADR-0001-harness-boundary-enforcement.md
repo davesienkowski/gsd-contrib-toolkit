@@ -8,6 +8,12 @@
   distinct from gsd-core's own numeric ADRs).
 - **Relates to (gsd-core):** ADR-457 (generated-from-source `bin/lib/*.cjs`); the gsd-core
   #1278/#1279 fail-closed arc.
+- **Amended by:** [CTK-ADR-0004](CTK-ADR-0004-artifact-gated-step-discipline.md) (2026-07-27,
+  milestone v1.1) — narrows §Decision.1 ("Enforce outcomes, not steps") and the Consequences clause
+  "step-level discipline cannot be hard-enforced". The mechanism is unchanged — a gate still fires on
+  an *outcome*; what CTK-ADR-0004 adds is that a prior step's deposited **artifact** can be the
+  *precondition* of that outcome, which makes the step enforceable *transitively*. Narrowed, not
+  withdrawn: this record stays **Accepted**.
 
 ## Context
 

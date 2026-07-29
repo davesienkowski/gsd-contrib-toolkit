@@ -30,6 +30,14 @@ Because a `PreToolUse` hook fires **before** the permission check, these gates h
 project actually claims. Everything else (todo-first discipline, review quality) is model-driven and
 documented honestly as such.
 
+**One narrowing (CTK-ADR-0004).** The mechanism above is unchanged — a gate still fires on an
+*outcome*. What changed is the recognition that where a step deposits an **artifact**, that artifact
+can become the *precondition* of the next outcome, which makes the step enforceable *transitively*
+(ENF-05's `lint:ci` marker was the first instance; ENF-19's protocol artifacts generalise it). So
+"model-driven" above now reads: model-driven **unless the step leaves evidence behind**. A step that
+deposits nothing is still unenforceable, and the gate asserts an artifact's *shape*, not its honesty
+— see [CTK-ADR-0004](../adr/CTK-ADR-0004-artifact-gated-step-discipline.md).
+
 ## What's in it
 
 | Layer | What | Where |

@@ -197,10 +197,16 @@ hooks** layer once installed, a property of those hooks and not of the capabilit
 
 This section is load-bearing — the project's core value is honesty, not overselling.
 
-- **Hooks lock outcomes, not steps.** The gates enforce *what must not ship*. They
-  do **not** enforce *how* you work — e.g. todo-first discipline stays model-driven
-  (the skill plus the advisory `UserPromptSubmit` reminder). That is an honest
-  limitation a `PreToolUse` hook cannot enforce.
+- **Hooks lock outcomes, not steps — narrowed, not withdrawn.** The gates enforce
+  *what must not ship*. They do **not** directly enforce *how* you work — e.g.
+  todo-first discipline stays model-driven (the skill plus the advisory
+  `UserPromptSubmit` reminder). The narrowing: where a step deposits an
+  **artifact**, the next outcome can be gated on that artifact, which makes the
+  step enforceable *transitively* (ENF-05's `lint:ci` marker was the first
+  instance; ENF-19's protocol artifacts generalise it — see
+  [CTK-ADR-0004](docs/adr/CTK-ADR-0004-artifact-gated-step-discipline.md)). A step
+  that deposits **nothing** is still unenforceable, and the gate asserts an
+  artifact's *shape*, not its honesty.
 - **The share-form capability is advisory-only.** Its `gates[]` is empty; a
   capability gate would block only at the closed set of GSD-loop extension points
   reached *inside* a GSD command. It does **not** reach the harness tool-call
