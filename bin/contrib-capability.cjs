@@ -4,7 +4,7 @@
 /**
  * bin/contrib-capability.cjs — the CAP-03 thin driver for the contribution-toolkit capability.
  *
- *   node bin/contrib-capability.cjs install            # first-setup fully ON: consent+ledger+14 gates+commands+skills+flag on
+ *   node bin/contrib-capability.cjs install            # first-setup fully ON: consent+ledger+wired hooks+commands+skills+flag on
  *   node bin/contrib-capability.cjs on                 # full surface ON: (re)apply gates + deliver commands + skills + flag on
  *   node bin/contrib-capability.cjs off  --reason <w>  # full surface OFF: strip gates + reclaim commands + skills + flag off + receipt
  *   node bin/contrib-capability.cjs status             # report ledger entry + consent record + live gate set
@@ -224,7 +224,7 @@ function consentStoreHome() {
 //   Commands + skills are now ENFORCEMENT-COUPLED AVAILABILITY (governed by on/off), NOT install/remove.
 //   The four lifecycle verbs:
 //     • install = FIRST-SETUP, FULLY ON. Records consent/ledger, reconciles legacy untagged entries,
-//       lays down the 13 marker-tagged gates, DELIVERS the commands + skills, and flips the
+//       lays down every marker-tagged wired hook entry, DELIVERS the commands + skills, and flips the
 //       enforcement flag TRUE. Install lands the capability fully active in one shot.
 //     • on  = (re)apply the gates + DELIVER the commands + skills + flag TRUE — the full surface ON.
 //     • off = DEACTIVATE-BUT-RE-ACTIVATABLE. Probes the receipt FIRST, then strips the gates, reclaims
@@ -1110,7 +1110,7 @@ function verifyWiredTargets(args = {}) {
  * Drive the LIVE engine (composed seams — the spike's chosen path B) to install contribution-toolkit against
  * a local gsd-core checkout: (1) reconcile away the legacy untagged duplicates, (2) record a real
  * project-scope consent (bundleContentHash + signatureForManifest), (3) recordInstall into the LIVE
- * ledger, (4) applyCapabilitySharedEdits to write the 13 manifest hooks marker-tagged. Idempotent.
+ * ledger, (4) applyCapabilitySharedEdits to write every manifest hook entry marker-tagged. Idempotent.
  *
  * @param {object} [opts] same injectable seams as loadLiveEngine, plus consentHome/bundleDir.
  * @returns {{lines:string[], applied:number, reconciled:number}}
@@ -1799,7 +1799,7 @@ function usage() {
   return [
     'contrib-capability — thin driver for the contribution-toolkit capability (drives the LIVE gsd-core engine)',
     '',
-    '  node bin/contrib-capability.cjs install            first-setup fully ON: consent + ledger + 14 gates + commands + skills + flag on',
+    '  node bin/contrib-capability.cjs install            first-setup fully ON: consent + ledger + wired hooks + commands + skills + flag on',
     '  node bin/contrib-capability.cjs on                 full surface ON: (re)apply gates + deliver commands + skills + flag on',
     '  node bin/contrib-capability.cjs off  --reason <w>  full surface OFF: strip gates + reclaim commands + skills + flag off (+ receipt)',
     '  node bin/contrib-capability.cjs status             report ledger + consent + live gate set',

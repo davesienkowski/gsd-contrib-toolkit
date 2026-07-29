@@ -8,11 +8,12 @@
  * against a FAKE .claude/settings.json + a sandboxed consent/ledger store on a DISPOSABLE
  * mkdtemp sandbox, and proves the full lifecycle is BOTH correct AND hermetic:
  *
- *   install -> EXACTLY 14 CAP_MARKER-tagged hook entries (the 13 PreToolUse gates + the 1
- *              UserPromptSubmit advisory from the manifest hooks[]) land in the fake settings.json.
- *   off     -> stripCapabilitySharedEdits removes EXACTLY those 14 tagged entries; a PRE-SEEDED
+ *   install -> EXACTLY 16 CAP_MARKER-tagged hook entries (the 13 PreToolUse gates + the 1
+ *              UserPromptSubmit advisory + the 2 post-tool tool-recorder registrations from the
+ *              manifest hooks[]) land in the fake settings.json.
+ *   off     -> stripCapabilitySharedEdits removes EXACTLY those 16 tagged entries; a PRE-SEEDED
  *              UNTAGGED user hook SURVIVES (the strip is marker-scoped, not a blanket wipe).
- *   on      -> applyCapabilitySharedEdits restores EXACTLY the 14 tagged entries.
+ *   on      -> applyCapabilitySharedEdits restores EXACTLY the 16 tagged entries.
  *   remove  -> removeCapability + revokeProjectConsent leave NO ledger entry and NO consent record
  *              for 'contribution-toolkit' in the SANDBOXED store.
  *

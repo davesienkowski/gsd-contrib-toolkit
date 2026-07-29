@@ -42,11 +42,11 @@ deposits nothing is still unenforceable, and the gate asserts an artifact's *sha
 
 | Layer | What | Where |
 |---|---|---|
-| **Enforcement** | **13 harness-run hooks** — 12 fail-closed `PreToolUse` gates (11 on `Bash`, 1 on `Write`/`Edit`) + 1 advisory `UserPromptSubmit` reminder | `hooks/` (+ shared anti-bypass `hooks/lib/`) |
+| **Enforcement** | **16 harness-run hook registrations across 15 hook scripts** — 13 fail-closed `PreToolUse` gates (12 on `Bash`, 1 on `Write`/`Edit`) + 1 advisory `UserPromptSubmit` reminder + 1 observability recorder wired on both `PostToolUse` and `PostToolUseFailure` (the one hook registered twice). Only the 13 `PreToolUse` gates block. | `hooks/` (+ shared anti-bypass `hooks/lib/`) |
 | **Knowledge (skills)** | **`gsd-core-contribution`** — the gated P0–P6 contribution pipeline; **`maintainer-review-sweep`** — the triage + re-review sweep (with `re-review.md`, `labels.md`, `triage-assist.md` sub-guides) | `skills/` |
 | **Triggers (commands)** | **5** `gsd-*` slash-commands: `gsd-submit`, `gsd-review-sweep`, `gsd-triage-assist`, `gsd-release-preflight`, `gsd-ruleset-drift` | `commands/` |
 | **Tools** | `contrib-capability` (the install/toggle driver), `lint-ci-stamp`, `triage-assist`, `release-preflight`, `ruleset-drift`, plus `verify-hooks` / `verify-capability` / `self-test` provers | `bin/` |
-| **Share form** | An opt-in, consent + ledger tracked GSD capability bundling the 13 hooks + 2 skills + 5 commands | `capabilities/contribution-toolkit/` |
+| **Share form** | An opt-in, consent + ledger tracked GSD capability bundling the 15 hook scripts + 2 skills + 5 commands | `capabilities/contribution-toolkit/` |
 | **Wired-set source** | The canonical hooks settings block `build-capability.cjs` reads to generate the bundle | `settings.snippet.json` |
 
 ### The two pillars
@@ -54,7 +54,8 @@ deposits nothing is still unenforceable, and the gate asserts an artifact's *sha
 The toolkit serves two roles, which is why it has both hard gates and advisory assists:
 
 - **Contributor pillar (hard enforcement).** Drive a contribution with **`/gsd-submit`** (+ the
-  `gsd-core-contribution` skill). The 12 gates make a broken issue/PR/push *impossible to land*. →
+  `gsd-core-contribution` skill). Every wired `PreToolUse` gate makes a broken issue/PR/push
+  *impossible to land*. →
   [Contributor Guide](contributor-guide.md).
 - **Maintainer pillar (advisory assists).** Triage and re-review with **`/gsd-review-sweep`**,
   **`/gsd-triage-assist`**, **`/gsd-release-preflight`**, **`/gsd-ruleset-drift`** (+ the

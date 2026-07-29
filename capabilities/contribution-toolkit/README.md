@@ -6,8 +6,9 @@
 
 A `role:feature` capability for **GSD 1.6.0+** (ADR-1244 capability ecosystem). It bundles the
 *knowledge* (two skills), the *triggers* (five `gsd-*` commands), and the *load-bearing layer* —
-twelve `PreToolUse` enforcement hooks that the **harness** runs (not the model) and that call
-gsd-core's own LIVE gate scripts at runtime. It installs, toggles, and removes through gsd-core's
+thirteen fail-closed `PreToolUse` enforcement hooks that the **harness** runs (not the model) and
+that call gsd-core's own LIVE gate scripts at runtime (alongside two non-blocking wired hooks — an
+advisory reminder and an observability recorder). It installs, toggles, and removes through gsd-core's
 native capability system, tracked by gsd-core's ledger + consent.
 
 - **Repo:** `github.com/davesienkowski/gsd-contribution-toolkit`
@@ -52,14 +53,17 @@ hooks-only artifact:
 
 | Surface | Count | Items |
 |---|---|---|
-| `PreToolUse` gates | 12 | `gh-issue-create`, `gh-pr-create`, `gh-edit`, `issue-dedupe`, `policy-invariants`, `lint-ci-marker`, `git-commit-convention`, `containment`, `freshness`, `githooks-seal`, `scan-gate`, `binlib-edit` |
-| `UserPromptSubmit` advisory | 1 | `protocol-reminder` |
+| `PreToolUse` gates (fail-closed — these block) | 13 | `gh-issue-create`, `gh-pr-create`, `gh-edit`, `issue-dedupe`, `policy-invariants`, `lint-ci-marker`, `git-commit-convention`, `containment`, `freshness`, `githooks-seal`, `scan-gate`, `protocol-artifact`, `binlib-edit` |
+| `UserPromptSubmit` advisory (never denies) | 1 | `protocol-reminder` |
+| `PostToolUse` + `PostToolUseFailure` observability (never denies) | 1 script / 2 registrations | `tool-recorder` — the one hook wired on two events |
 | Skills | 2 | `gsd-core-contribution`, `maintainer-review-sweep` |
 | Commands | 5 | `gsd-submit`, `gsd-review-sweep`, `gsd-triage-assist`, `gsd-release-preflight`, `gsd-ruleset-drift` |
 | Loop contribution | 1 | an advisory `plan:pre` fragment, gated by the default-off `workflow.gsd_contrib_enforcement` flag |
 
-The bundled hook scripts **resolve and call the LIVE gsd-core gate scripts at runtime** — they never
-reimplement gsd-core policy. When gsd-core's scripts evolve, the gates follow.
+That is **15 hook scripts** producing **16 `hooks[]` registrations** in `capability.json` (the
+recorder is registered on two events). The bundled hook scripts **resolve and call the LIVE gsd-core
+gate scripts at runtime** — they never reimplement gsd-core policy. When gsd-core's scripts evolve,
+the gates follow.
 
 ## What it's capable of — by role
 
@@ -86,8 +90,8 @@ node <gsd-core>/bin/gsd-tools.cjs capability install \
 - `--scope project` installs into the gsd-core checkout (`.gsd/capabilities/contribution-toolkit/` +
   a `.gsd-capabilities.json` ledger), keeping enforcement project-scoped — never `~/.claude`.
   Use `--scope global` for `~/.gsd/...`.
-- `--yes` grants consent — the capability ships executable surfaces (the 13 hooks), so the install
-  discloses them and aborts without consent.
+- `--yes` grants consent — the capability ships executable surfaces (the 15 hook scripts), so the
+  install discloses them and aborts without consent.
 - `--shared-file .claude/settings.json` is **required to actually wire the hooks** into
   `settings.json`; without it the install records the ledger + overlay but applies no gates.
 - Pin a release with `#v2.1.3` (a tag) or `#sha:<40-hex>` (an exact commit). The earlier `…-gate`
@@ -114,7 +118,7 @@ the hooks *are* the enforcement).
 
 ## How it works
 
-1. **Harness-boundary enforcement.** The 12 `PreToolUse` gates are written into `settings.json` on
+1. **Harness-boundary enforcement.** The 13 `PreToolUse` gates are written into `settings.json` on
    install. The harness runs them before each matching tool call; a broken contribution outcome
    returns `permissionDecision: "deny"`. They fail **closed** — an unparseable command, an
    unreadable body, or a missing LIVE script denies rather than allows.
@@ -151,7 +155,12 @@ Each skill carries an explicit advisory-only note. Full model:
 | `freshness` | acting against a current base |
 | `githooks-seal` | git hooks not tampered |
 | `scan-gate` | secret / prompt-injection / base64 scans before push |
+| `protocol-artifact` | filing/pushing on a contribution branch without the P1–P3 protocol artifacts |
 | `binlib-edit` | no hand-edits to generated `bin/lib/*.cjs` (ADR-457) |
+
+The two wired **non-blocking** hooks are outside this table by design: `protocol-reminder`
+(`UserPromptSubmit`, advisory) and `tool-recorder` (`PostToolUse`/`PostToolUseFailure`,
+observability). Neither ever denies.
 
 ## Recovery offramp
 
@@ -170,7 +179,7 @@ Please read this as written — don't over-read it:
   `plan:pre` contribution fires only inside a GSD command. The capability does **not** reach the
   harness tool-call boundary — a direct issue/PR/push typed outside a GSD command never crosses a
   loop point, so the capability never sees it.
-- The **harness-boundary enforcement** is a property of the 12 `PreToolUse` hooks **once installed
+- The **harness-boundary enforcement** is a property of the 13 `PreToolUse` hooks **once installed
   into `settings.json`**, not an inherent property of this (toggleable) capability. **Do not read
   this capability as "unbypassable."**
 - It is **fully removable**: `disable`/`remove` genuinely takes the enforcement away.

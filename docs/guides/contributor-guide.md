@@ -16,7 +16,7 @@ maintainer side see the [Maintainer Guide](maintainer-guide.md).*
 ### Install / restore (idempotent)
 
 ```bash
-node bin/contrib-capability.cjs install    # stage + consent + ledger + marker-tag the 13 hooks
+node bin/contrib-capability.cjs install    # stage + consent + ledger + marker-tag every wired hook
 node bin/contrib-capability.cjs status      # confirm ledger + consent + live gate set
 ```
 

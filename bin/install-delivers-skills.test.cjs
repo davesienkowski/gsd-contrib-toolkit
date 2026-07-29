@@ -50,7 +50,8 @@
  *     never recursed into).
  *
  *   • END-TO-END (SKIP-on-unreachable) — drives the full runInstall→runRemove against a disposable
- *     sandbox gsd-core checkout, proving the 2 skills land ALONGSIDE the 5 commands + 14 hooks via the
+ *     sandbox gsd-core checkout, proving the 2 skills land ALONGSIDE the 5 commands + the 16 wired hook
+ *     entries via the
  *     SAME composed LIVE engine, and runRemove reclaims the skill links. SKIPs-with-note when no LIVE
  *     gsd-core checkout is reachable (never a false green).
  *

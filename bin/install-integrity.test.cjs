@@ -4,7 +4,7 @@
  * bin/install-integrity.test.cjs — the INST-03 (D-06) sandbox regression.
  *
  * Phase 28 closed two coupled install-integrity defects: INST-01/02 (a promoted bundle that
- * never resolved → the 12 wired PreToolUse gates dangled and enforcement was silently INERT) and
+ * never resolved → the wired PreToolUse gates dangled and enforcement was silently INERT) and
  * — the sibling shipped in quick task 260630-v1h — the binlib-edit `Write|Edit` gate installed
  * CATCH-ALL, which then received every `Bash` payload and fail-closed-DENIED all work. This test
  * is the regression that keeps BOTH closed: it installs the capability into a DISPOSABLE fixture
@@ -12,7 +12,7 @@
  * every write confined to a mkdtemp root) and asserts:
  *
  *   (a) NO DANGLING — every CAP_MARKER-tagged wired settings hook target resolves to a real file
- *       (all 13). A future regression to a dangling promoted bundle makes this go RED. (Documented
+ *       (all 16). A future regression to a dangling promoted bundle makes this go RED. (Documented
  *       red-on-regression witness: with promotion suppressed the install fails loud + the targets
  *       dangle — the exact silent-inert defect INST-01/02 closed.)
  *
@@ -299,7 +299,7 @@ test('INST-03(b) MATCHER SCOPE: the installed binlib-edit entry keeps its scoped
         'is the 260630-v1h defect (every Bash payload would trip the Write/Edit HARD-01 fail-closed); got: ' +
         JSON.stringify(binlib.matcher)
     );
-    // The 11 Bash gates stay under `Bash`, binlib-edit is the sole Write|Edit entry (scope sanity).
+    // The 12 Bash gates stay under `Bash`, binlib-edit is the sole Write|Edit entry (scope sanity).
     const writeEdit = targets.filter((t) => t.matcher === 'Write|Edit');
     assert.strictEqual(writeEdit.length, 1, 'exactly one Write|Edit-scoped gate (binlib-edit) — no catch-all creep');
   } finally {

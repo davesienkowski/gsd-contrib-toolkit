@@ -28,9 +28,13 @@ or rationalizing model.
 
 Installed into gsd-core's project-scoped `.claude/settings.json` by the capability
 CLI (`node bin/contrib-capability.cjs install` — see *Install / restore*) are
-**13 fail-closed PreToolUse gates** (12 on `Bash`, 1 on `Write`/`Edit`) plus
-**1 advisory `UserPromptSubmit` reminder**. The wired set is derived from the
-canonical `settings.snippet.json` (the source `build-capability.cjs` reads).
+**16 hook registrations across 15 hook scripts**: **13 fail-closed `PreToolUse`
+gates** (12 on `Bash`, 1 on `Write`/`Edit`), **1 advisory `UserPromptSubmit`
+reminder**, and **1 observability recorder** wired on *both* `PostToolUse` and
+`PostToolUseFailure` — which is why 15 files produce 16 registrations. Only the
+13 `PreToolUse` gates block; the reminder and the recorder never deny. The wired
+set is derived from the canonical `settings.snippet.json` (the source
+`build-capability.cjs` reads).
 The gates close concrete failure classes a gsd-core
 contribution gets bounced (or merged red) for:
 
@@ -47,8 +51,11 @@ contribution gets bounced (or merged red) for:
 
 ### Gate Reference
 
-Each gate DENIES at the `PreToolUse` boundary; most resolve and call a **LIVE
-gsd-core script** rather than reimplementing its policy (see *What it uses*).
+Every wired `PreToolUse` gate DENIES at the harness boundary; most resolve and call
+a **LIVE gsd-core script** rather than reimplementing its policy (see *What it
+uses*). The last two rows are the wired **non-blocking** hooks — the advisory
+reminder and the observability recorder — listed here so this table enumerates the
+wired set exactly.
 
 | Gate hook | Event | Blocks | LIVE script / check it calls |
 | --------- | ----- | ------ | ---------------------------- |
@@ -66,6 +73,7 @@ gsd-core script** rather than reimplementing its policy (see *What it uses*).
 | `protocol-artifact.cjs` | Bash | filing/pushing on a contribution branch without the P1-P3 protocol artifacts | reads the branch diff + the LIVE `gsd-test` run |
 | `binlib-edit.cjs` | Write/Edit | editing a generated `bin/lib/*.cjs` instead of `src/*.ts` | (generated-path check — no LIVE script) |
 | `protocol-reminder.cjs` | UserPromptSubmit | *(advisory only — reminds, never denies)* | — |
+| `tool-recorder.cjs` | PostToolUse + PostToolUseFailure | *(observability only — records, never denies; the one hook wired on two events)* | — |
 
 ## How It Works
 
@@ -134,8 +142,9 @@ surfaces as a fail-closed DENY plus a diagnosable report — not a silent miss.
 
 - **Install / restore** the toolkit (idempotent):
   `node bin/contrib-capability.cjs install` — see *Install / restore* below.
-- The **13 PreToolUse gates** (the 14-hook bundle's 13 fail-closed gates plus the
-  1 advisory reminder) fire automatically inside the gsd-core repo once the
+- The **13 fail-closed `PreToolUse` gates** — the blocking part of the wired set of
+  16 registrations; the other entries are the 1 advisory reminder and the 1
+  observability recorder — fire automatically inside the gsd-core repo once the
   contribution-toolkit capability is installed (`node bin/contrib-capability.cjs install`).
 - Drive a contribution with the **`gsd-submit`** command (file → push → PR through
   the gates) and the **`gsd-core-contribution`** skill (the contribution knowledge,
@@ -174,8 +183,10 @@ The **`maintainer-review-sweep`** skill backs these assists.
 `capabilities/contribution-toolkit/capability.json` packages the contribution +
 maintainer-review knowledge as an installable, **opt-in** GSD capability (ADR-1244
 `role:feature` manifest). The bundle is **self-contained**: it ships the
-**14 hooks** (the 13 fail-closed `PreToolUse` gates + 1 advisory `UserPromptSubmit`
-reminder), **both skills** (`gsd-core-contribution`, `maintainer-review-sweep`), and
+**15 hook scripts** (the 13 fail-closed `PreToolUse` gates + 1 advisory
+`UserPromptSubmit` reminder + 1 `PostToolUse`/`PostToolUseFailure` observability
+recorder = **16 wired registrations**), **both skills**
+(`gsd-core-contribution`, `maintainer-review-sweep`), and
 **all five commands** (`gsd-submit`, `gsd-review-sweep`, `gsd-triage-assist`,
 `gsd-release-preflight`, `gsd-ruleset-drift`) under
 `capabilities/contribution-toolkit/{hooks,skills,commands,fragments}/` — it is **not**
@@ -226,11 +237,11 @@ This section is load-bearing — the project's core value is honesty, not overse
 
 | Path                    | Purpose                                                                                  |
 | ----------------------- | ---------------------------------------------------------------------------------------- |
-| `hooks/`                | Harness-run `PreToolUse` / `UserPromptSubmit` gate scripts + the shared anti-bypass `hooks/lib/` (argv tokenizer, classifier, LIVE-script resolver, fail-closed harness, tree-SHA marker, override receipt, doctor). |
+| `hooks/`                | Harness-run `PreToolUse` gate scripts + the `UserPromptSubmit` advisory + the `PostToolUse`/`PostToolUseFailure` recorder, plus the shared anti-bypass `hooks/lib/` (argv tokenizer, classifier, LIVE-script resolver, fail-closed harness, tree-SHA marker, override receipt, doctor). `doctor.cjs` and `preflight-shipped-paths.cjs` live here but are deliberately **not wired** — they are CLIs, not hooks. |
 | `bin/`                  | Runnable tools: `verify-hooks`, `self-test`, `lint-ci-stamp`, `triage-assist`, `release-preflight`, `ruleset-drift`, `verify-capability`. |
 | `commands/`             | Vendored slash commands: `gsd-submit`, `gsd-review-sweep`, `gsd-triage-assist`, `gsd-release-preflight`, `gsd-ruleset-drift`; symlinked into `~/.claude`. |
 | `skills/`               | Vendored Claude skills: `gsd-core-contribution`, `maintainer-review-sweep`; symlinked into `~/.claude`. |
-| `capabilities/`         | The share-form GSD capability: the **self-contained** `contribution-toolkit/` bundle — `capability.json` + `fragments/` + the bundled `hooks/` (13), `skills/` (2), and `commands/` (5) a remote install delivers (NOT hooks-only). |
+| `capabilities/`         | The share-form GSD capability: the **self-contained** `contribution-toolkit/` bundle — `capability.json` + `fragments/` + the bundled `hooks/` (15 scripts / 16 wired registrations), `skills/` (2), and `commands/` (5) a remote install delivers (NOT hooks-only). |
 | `settings.snippet.json` | The canonical hooks settings block — the wired-set source `build-capability.cjs` reads to generate the capability bundle.         |
 
 ## Source of Truth and Symlinks
@@ -262,7 +273,7 @@ local gsd-core checkout's `.claude/settings.json`, never `~/.claude`) and is
 **ledger + consent tracked**:
 
 ```bash
-node bin/contrib-capability.cjs install            # stage + consent + ledger + marker-tag the 14 hooks
+node bin/contrib-capability.cjs install            # stage + consent + ledger + marker-tag every wired hook
 node bin/contrib-capability.cjs on                 # (re)apply the tagged gates + enforcement flag on
 node bin/contrib-capability.cjs off  --reason <w>  # strip the tagged gates + flag off + logged receipt
 node bin/contrib-capability.cjs status             # report ledger + consent + live gate set
@@ -289,7 +300,7 @@ node bin/contrib-capability.cjs remove --reason <w> # remove from ledger + conse
 The toolkit is also published as a **public, git-installable GSD capability** at
 `github.com/davesienkowski/gsd-contribution-toolkit` (tagged `#v2.1.3`). This is the
 distribution path for anyone other than the owner restoring local symlinks — it
-delivers the **self-contained bundle** (the 14 hooks + 2 skills + 5 commands), **not**
+delivers the **self-contained bundle** (the 15 hook scripts + 2 skills + 5 commands), **not**
 a hooks-only artifact. Install it through gsd-core's git capability adapter:
 
 ```bash
