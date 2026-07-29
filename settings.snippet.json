@@ -63,6 +63,11 @@
             "type": "command",
             "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/protocol-artifact.cjs\"",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/review-artifact.cjs\"",
+            "timeout": 60
           }
         ]
       },

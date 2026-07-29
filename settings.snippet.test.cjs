@@ -40,8 +40,12 @@ const BASH_GATES = [
   'containment',
   'policy-invariants',
   'lint-ci-marker',
+  // `git-commit-convention` was wired in settings.snippet.json but MISSING from this array,
+  // so the "appears exactly once" invariant below silently under-covered it. Added with ENF-20.
+  'git-commit-convention',
   'scan-gate',
   'protocol-artifact',
+  'review-artifact',
 ];
 const WRITE_EDIT_GATES = ['binlib-edit'];
 const PROMPT_HOOKS = ['protocol-reminder'];
