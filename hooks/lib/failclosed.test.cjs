@@ -186,3 +186,124 @@ test('safeCommand returns empty string when tool_input.command is absent', () =>
     ''
   );
 });
+
+// ---- ENF-11 advisory severity: emit() must learn 'ask' WITHOUT weakening fail-closed ----
+//
+// Context (quick task 260729-p3f / C1): the citation-overlap advisory ships at
+// `permissionDecision:'ask'` because its MEASURED recall is 2/9 at 0.048 fires per filing —
+// far too noisy to be a deny. Before this change `emit()` collapsed EVERY non-'allow'
+// decision to 'deny', so an 'ask' silently became the exact hard block the measurement
+// rules out. The change is purely ADDITIVE: 'ask' passes through, and everything that is
+// neither 'allow' nor 'ask' STILL denies.
+//
+// These byte-exact envelope literals were captured from the PRE-change module. They are the
+// regression fence: if a future edit to emit() perturbs the allow/deny wire format by even
+// one character, these fail.
+const ENVELOPE_ALLOW =
+  '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}\n';
+const ENVELOPE_DENY_REASON =
+  '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"r"}}\n';
+const ENVELOPE_DENY_DEFAULT =
+  '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"denied"}}\n';
+const ENVELOPE_DENY_EMPTY =
+  '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"empty decision"}}\n';
+
+/**
+ * Capture exactly what emit() writes to stdout, byte for byte.
+ * @param {*} decision
+ * @returns {string}
+ */
+function captureEmit(decision) {
+  const realWrite = process.stdout.write.bind(process.stdout);
+  const savedExitCode = process.exitCode;
+  let out = '';
+  process.stdout.write = (chunk) => {
+    out += chunk;
+    return true;
+  };
+  try {
+    fc.emit(decision);
+  } finally {
+    process.stdout.write = realWrite;
+    process.exitCode = savedExitCode;
+  }
+  return out;
+}
+
+test('ask() returns an ask decision carrying the reason', () => {
+  const d = fc.ask('two shared rare code citations with #2774');
+  assert.strictEqual(d.permissionDecision, 'ask');
+  assert.strictEqual(d.permissionDecisionReason, 'two shared rare code citations with #2774');
+});
+
+test('ask() defaults its reason rather than emitting undefined', () => {
+  const d = fc.ask();
+  assert.strictEqual(d.permissionDecision, 'ask');
+  assert.strictEqual(typeof d.permissionDecisionReason, 'string');
+  assert.ok(d.permissionDecisionReason.length > 0);
+});
+
+test('emit(ask) round-trips as permissionDecision:ask WITH its reason (not collapsed to deny)', () => {
+  const out = captureEmit(fc.ask('shares 2 rare paths with #2774'));
+  const parsed = JSON.parse(out);
+  assert.strictEqual(parsed.hookSpecificOutput.hookEventName, 'PreToolUse');
+  assert.strictEqual(parsed.hookSpecificOutput.permissionDecision, 'ask');
+  assert.strictEqual(
+    parsed.hookSpecificOutput.permissionDecisionReason,
+    'shares 2 rare paths with #2774'
+  );
+});
+
+test('emit(allow) envelope is BYTE-IDENTICAL to the pre-change format', () => {
+  assert.strictEqual(captureEmit(fc.allow()), ENVELOPE_ALLOW);
+});
+
+test('emit(deny) envelope is BYTE-IDENTICAL to the pre-change format', () => {
+  assert.strictEqual(captureEmit(fc.deny('r')), ENVELOPE_DENY_REASON);
+  assert.strictEqual(captureEmit(fc.deny()), ENVELOPE_DENY_DEFAULT);
+});
+
+test('emit() fail-closed default is UNCHANGED: null/undefined/{}/garbage/unknown ALL deny', () => {
+  // The fail-closed floor. Teaching emit() one new decision value must not open a hole for
+  // an empty, malformed, or unrecognized decision — each of these still denies, byte-exactly.
+  assert.strictEqual(captureEmit(null), ENVELOPE_DENY_EMPTY, 'emit(null)');
+  assert.strictEqual(captureEmit(undefined), ENVELOPE_DENY_EMPTY, 'emit(undefined)');
+  assert.strictEqual(captureEmit('garbage'), ENVELOPE_DENY_EMPTY, "emit('garbage')");
+  assert.strictEqual(captureEmit({}), ENVELOPE_DENY_DEFAULT, 'emit({})');
+  assert.strictEqual(
+    captureEmit({ permissionDecision: 'wat' }),
+    ENVELOPE_DENY_DEFAULT,
+    "emit({permissionDecision:'wat'})"
+  );
+  // Near-misses on the new literal must NOT sneak through as an ask.
+  assert.strictEqual(captureEmit({ permissionDecision: 'ASK' }), ENVELOPE_DENY_DEFAULT, 'ASK');
+  assert.strictEqual(captureEmit({ permissionDecision: ' ask' }), ENVELOPE_DENY_DEFAULT, '" ask"');
+  assert.strictEqual(captureEmit({ permissionDecision: 'asks' }), ENVELOPE_DENY_DEFAULT, 'asks');
+});
+
+test('runGate passes a returned ask THROUGH (it is a real policy choice, not an error)', () => {
+  // Without this, gate() returning an ask would be collapsed to ALLOW by runGate's
+  // `return allow()` fallthrough and the advisory would never reach the user.
+  const { impl, calls } = makeOverrideStub({ override: true, reason: 'should-not-matter' });
+  const decision = fc.runGate(() => fc.ask('shares 2 rare paths with #2774'), {
+    worktreeRoot: '/tmp/wt-ask',
+    command: 'gh issue create --title x',
+    action: 'issue-create',
+    overrideImpl: impl,
+  });
+  assert.strictEqual(decision.permissionDecision, 'ask');
+  assert.match(decision.permissionDecisionReason, /#2774/);
+  // An ask is not an error, so the override must not flip it and no receipt is written.
+  assert.strictEqual(calls.writeReceipt.length, 0, 'an ask must NOT write an override receipt');
+});
+
+test('runGate still DENIES on a throw even though ask now exists (HARD-01 unweakened)', () => {
+  const { impl } = makeOverrideStub({ override: false });
+  const decision = fc.runGate(
+    () => {
+      throw new Error('gh not authenticated');
+    },
+    { worktreeRoot: '/tmp/wt-ask-throw', action: 'issue-create', overrideImpl: impl }
+  );
+  assert.strictEqual(decision.permissionDecision, 'deny');
+});

@@ -7,7 +7,7 @@
  * policy logic in `runGate(gateFn, ctx)` so that the HARD-01 invariant is inherited,
  * not re-implemented (and therefore not accidentally fail-OPEN):
  *
- *   - gateFn returns a decision (deny|allow)         → that decision is honored
+ *   - gateFn returns a decision (deny|allow|ask)     → that decision is honored
  *   - gateFn THROWS (missing/again-shaped live script, parse failure, unauth gh, ANY
  *     error)                                          → FAIL CLOSED: deny
  *       …UNLESS checkOverride(worktreeRoot).override   → allow + writeReceipt (HARD-03)
@@ -23,7 +23,12 @@
  * allow on unparseable input.
  *
  * `emit` is the only impure function (it writes the harness decision JSON to stdout and
- * sets the process exit semantics). The decision helpers (deny/allow) are pure.
+ * sets the process exit semantics). The decision helpers (deny/allow/ask) are pure.
+ *
+ * `ask` (added 260729-p3f) is a THIRD severity for advisory signals that are real but not
+ * precise enough to block on — the harness prompts instead of denying. It is only ever
+ * produced by an explicit `ask()` return; it is NOT reachable from an error, an empty
+ * decision, or an unrecognized decision value, all of which still DENY.
  *
  * @module hooks/lib/failclosed
  */
@@ -97,6 +102,30 @@ function allow() {
 }
 
 /**
+ * Build an ASK (advisory) decision: the harness PROMPTS the user rather than blocking.
+ *
+ * This is the severity for a signal that is real but not precise enough to be a deny.
+ * Introduced for ENF-11's citation-overlap advisory (quick task 260729-p3f), whose MEASURED
+ * recall is 2/9 at ~0.048 prompts per issue filed — useful, but nowhere near precise enough
+ * to block on. A deny at that precision is the failure mode L3 already records: one gate's
+ * misfire takes the whole suite offline.
+ *
+ * `ask` is NOT part of the fail-closed ladder. It must only ever be RETURNED deliberately by
+ * a gate that has decided the signal is advisory. A thrown error, an empty decision, or any
+ * unrecognized decision value still resolves to DENY (see `emit` and `runGate`) — teaching
+ * the harness this third value does not soften that floor.
+ *
+ * @param {string} reason human-readable reason surfaced to the user in the prompt.
+ * @returns {{permissionDecision: 'ask', permissionDecisionReason: string}}
+ */
+function ask(reason) {
+  return {
+    permissionDecision: 'ask',
+    permissionDecisionReason: String(reason == null ? 'confirmation requested' : reason),
+  };
+}
+
+/**
  * Write the harness PreToolUse decision JSON to stdout and exit.
  *
  * Emits the documented PreToolUse contract envelope:
@@ -110,15 +139,25 @@ function allow() {
  */
 function emit(decision) {
   const d = decision && typeof decision === 'object' ? decision : deny('empty decision');
+  // EXACTLY three recognized decisions. 'allow' and 'ask' must each match the literal;
+  // EVERYTHING else — absent, empty, misspelled ('ASK', 'asks'), or an unknown future value
+  // — collapses to 'deny'. That default is the fail-closed floor (HARD-01) and is asserted
+  // byte-for-byte in failclosed.test.cjs; do not relax it to a permissive check.
+  const raw = d.permissionDecision;
+  const resolved = raw === 'allow' ? 'allow' : raw === 'ask' ? 'ask' : 'deny';
   const envelope = {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
-      permissionDecision: d.permissionDecision === 'allow' ? 'allow' : 'deny',
+      permissionDecision: resolved,
     },
   };
-  if (envelope.hookSpecificOutput.permissionDecision === 'deny') {
+  if (resolved === 'deny') {
     envelope.hookSpecificOutput.permissionDecisionReason =
       d.permissionDecisionReason || 'denied';
+  } else if (resolved === 'ask') {
+    // An ask with no reason is a bare, unexplainable prompt — give the user something.
+    envelope.hookSpecificOutput.permissionDecisionReason =
+      d.permissionDecisionReason || 'confirmation requested';
   }
   process.stdout.write(JSON.stringify(envelope) + '\n');
   // Exit 0: the decision is conveyed by the JSON, not the exit status.
@@ -150,6 +189,13 @@ function runGate(gateFn, ctx = {}) {
     // and a clean allow needs no receipt.
     if (decision && decision.permissionDecision === 'deny') {
       return deny(decision.permissionDecisionReason);
+    }
+    // An ASK is likewise a real policy choice (an advisory prompt), so it passes through
+    // rather than falling into the `allow()` default below — otherwise a gate's advisory
+    // would be silently discarded here and never reach the user. Like a deny, it is NOT an
+    // error, so the override does not flip it and no receipt is written.
+    if (decision && decision.permissionDecision === 'ask') {
+      return ask(decision.permissionDecisionReason);
     }
     return allow();
   } catch (err) {
@@ -187,6 +233,7 @@ module.exports = {
   readHookInput,
   deny,
   allow,
+  ask,
   emit,
   runGate,
   FailClosed,
