@@ -112,6 +112,34 @@ when ENF-21 was built was hand-typed, is not reproducible, and is erased by the 
    it to a gate input would turn every fast-path stamp into a deny, and is a decision to record here
    first.
 
+6. **Recorded limit (MEASURED, and sharper than expected): the payload comparison assumes the
+   installer is a byte-copy, and it is not.** A sandboxed proof of the full reinstall path (a scratch
+   `$HOME`, an empty runtime payload, forcing the slow path) established that `bin/install.js`
+   **transforms** the payload it writes: it rewrites `/gsd:<cmd>` → `/gsd-<cmd>` throughout, driven by
+   the target runtime descriptor's `hostBehaviors.hyphenNameAgentBody` (gsd-core #3583 / #3677). All
+   96 differing `workflows/` files in that run differed by exactly that substitution and nothing else;
+   file counts matched exactly (117 / 115 / 46 / 3) and `contexts/` — which contains no command
+   references — matched byte-for-byte.
+
+   Where that transform is a **no-op**, `sync` works exactly as designed. That is the case on the
+   machine ENF-21 was built on, and it was verified rather than assumed: the raw clone's payload
+   digest and the installed runtime's are **identical** (`sha256:5f85fdf0…`), which is why the
+   bootstrap run legitimately took the fast path.
+
+   Where the transform **fires**, the installed payload can never equal the raw clone byte-for-byte,
+   so `sync`'s post-install re-verify always fails, `sync` always aborts without stamping, and ENF-21
+   denies **permanently with an unreachable remediation**. That is a genuine portability defect, and
+   it is recorded here rather than papered over. Three consequences follow:
+   - the abort message is **self-diagnosing**: it names the transform, the descriptor flag, and the
+     fact that the runtime may nonetheless be at the right tip;
+   - it explicitly **forbids** the obvious workaround of hand-writing `runtime-stamp.json`, which
+     would forge exactly the evidence the gate exists to check;
+   - the comparison is deliberately **left as-is** for now. Normalising both sides before hashing
+     would mean replicating upstream's rewrite policy inside the toolkit — the thing CTK-ADR-0001 §3
+     exists to prevent — and every alternative (trusting the install, or recording
+     `payload_verified:false`) weakens T-0ov-06. Choosing among them is a decision to take
+     deliberately, not a defect to patch quietly.
+
 ## Consequences
 
 - **Positive:** "I verified this against current `next`" becomes a machine fact instead of an

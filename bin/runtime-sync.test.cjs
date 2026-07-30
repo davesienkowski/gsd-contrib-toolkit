@@ -222,8 +222,25 @@ test('sync SLOW PATH: a post-install re-verify MISMATCH aborts non-zero with NO 
   const { deps, state } = syncDeps({ payloads: [[DIGEST, bad], [DIGEST, bad]] });
   const r = cli.sync(deps);
   assert.notStrictEqual(r.code, 0);
+  assert.strictEqual(r.reason, 'post-install-mismatch');
   assert.strictEqual(state.stamps.length, 0, 'never stamp an install we could not confirm');
   assert.strictEqual(state.rm.length, 1, 'the tmpdir is still removed on the failure path');
+});
+
+test('sync SLOW PATH: the post-install-mismatch abort is SELF-DIAGNOSING, not a dead end', () => {
+  // Measured in a sandboxed HOME (quick task 260730-0ov): gsd-core's installer is NOT a byte-copy —
+  // it rewrites `/gsd:<cmd>` → `/gsd-<cmd>` when the target runtime declares
+  // hostBehaviors.hyphenNameAgentBody (#3583/#3677). Where that fires, this comparison can NEVER be
+  // satisfied, so the abort recurs forever. A user who hits it must be told the cause, and must be
+  // told NOT to hand-write the stamp — forging the evidence defeats the whole gate.
+  const bad = 'sha256:' + '1'.repeat(64);
+  const { deps, state } = syncDeps({ payloads: [[DIGEST, bad], [DIGEST, bad]] });
+  cli.sync(deps);
+  const out = state.logs.join('\n');
+  assert.match(out, /installer is NOT a byte-copy/i, 'the abort names the measured cause');
+  assert.match(out, /hyphenNameAgentBody/, 'it names the exact descriptor flag that drives it');
+  assert.match(out, /Do not work around it by hand-writing/i, 'it forbids forging the stamp');
+  assert.match(out, /CTK-ADR-0007/, 'it points at the recorded decision');
 });
 
 // ───────────────────────────── sync: the race guard ─────────────────────────────

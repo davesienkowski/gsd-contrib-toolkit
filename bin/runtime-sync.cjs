@@ -207,10 +207,23 @@ function sync(deps = {}) {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
 
-      // (5) Re-verify. An install we cannot confirm is never stamped.
+      // (5) Re-verify. An install we cannot confirm is never stamped (T-0ov-06).
       if (!samePayload()) {
         log('ENF-21 sync ABORTED: the installed payload STILL differs after the reinstall — ' +
           'refusing to stamp an install that cannot be confirmed.');
+        log('');
+        log('MEASURED CAUSE (quick task 260730-0ov, proven in a sandboxed HOME): gsd-core\'s');
+        log('installer is NOT a byte-copy. It rewrites `/gsd:<cmd>` → `/gsd-<cmd>` in the payload it');
+        log('writes, driven by the target runtime descriptor\'s `hostBehaviors.hyphenNameAgentBody`');
+        log('(gsd-core #3583 / #3677). Where that transform FIRES, the installed payload can never');
+        log('equal the raw clone byte-for-byte, so this comparison can never be satisfied and this');
+        log('abort will recur on every run.');
+        log('');
+        log('This is a KNOWN LIMIT of the payload comparison, not necessarily a broken install: the');
+        log('runtime may well be at ' + tip.slice(0, 8) + ' already. But ENF-21 will keep denying,');
+        log('because a stamp is only ever written for an install this tool could CONFIRM.');
+        log('Do not work around it by hand-writing ~/.gsd-contrib/runtime-stamp.json — that forges');
+        log('the very evidence the gate exists to check. See CTK-ADR-0007 §Consequences.');
         return { code: 1, reason: 'post-install-mismatch' };
       }
       mode = 'installed';
