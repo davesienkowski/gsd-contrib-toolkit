@@ -81,6 +81,9 @@ const liveTitle = liveScript('scripts/release-notes/conventional-title.cjs');
 // test so the docs-required mirror is exercised against the REAL upstream verdict — the SAME
 // single-source script production resolves via requireLiveScript (D-01/D-06/HARD-02: never forked).
 const liveDocsLint = liveScript('scripts/lint-docs-required.cjs');
+// CF-09: the LIVE changeset lint (presence), injected alongside the docs lint (pairing) so the
+// unit suite exercises the REAL upstream verdict for both.
+const liveChangesetLint = liveScript('scripts/changeset/lint.cjs');
 
 function input(command) {
   return JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
@@ -151,6 +154,7 @@ function deps(over = {}) {
       // → allow — unperturbed by the new docs-required condition. CF-03 tests override
       // `worktreeRoot` (a temp .changeset/ root) + `readChangedFiles` to exercise the deny paths.
       liveDocsLint,
+      liveChangesetLint,
       readChangedFiles: () => [],
       overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
     },
@@ -1242,6 +1246,7 @@ test('CF-02 Task 2: with NO injected readIssueLabels, an unreadable label read f
       // lint-docs-required does NOT throw on this non-gsd-core temp root — keeping the deny
       // provably from the label read (CF-02 runs BEFORE the CF-03 docs check).
       liveDocsLint,
+      liveChangesetLint,
       readChangedFiles: () => [],
       // readIssueLabels intentionally NOT injected → defaultReadIssueLabels runs.
       overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
@@ -1335,11 +1340,69 @@ test('CF-03: a malformed .changeset/*.md fragment → DENY (FAIL_MALFORMED_FRAGM
 
 test('CF-03: no changeset fragments at all → allow (OK_NO_TRIGGERING_FRAGMENTS)', () => {
   const root = changesetRoot({});
+  // Fixture narrowed to NON-user-facing paths when CF-09 landed. It previously used
+  // ['src/index.cts', 'README.md'] — but `src/` IS user-facing to gsd-core's LIVE changeset lint
+  // (verified: evaluateLint(['src/index.cts']) -> fail_missing_fragment), so that PR would have
+  // been bounced by upstream `changeset-required.yml` anyway. The old fixture encoded a scenario
+  // upstream rejects; CF-09 now catches it locally, which is the whole point. Kept non-user-facing
+  // here so this test isolates the CF-03 (docs PAIRING) concern it was written for.
   const d = runPrGate(
     input(CF03_CREATE),
-    deps({ worktreeRoot: root, readChangedFiles: () => ['src/index.cts', 'README.md'] })
+    deps({ worktreeRoot: root, readChangedFiles: () => ['README.md'] })
   );
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+// ─── CF-09: changeset PRESENCE (distinct from CF-03's changeset->docs PAIRING) ───────────────
+// gsd-core's changeset-required.yml has NO author exemption, so for a CODEOWNER a missing
+// fragment lands as pure CI whiplash. These drive the REAL upstream evaluateLint.
+
+test('CF-09: user-facing change with NO .changeset fragment → deny naming the live verdict', () => {
+  const root = changesetRoot({});
+  const d = runPrGate(
+    input(CF03_CREATE),
+    deps({ worktreeRoot: root, readChangedFiles: () => ['src/index.cts'] })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /CF-09/);
+  assert.match(d.permissionDecisionReason, /fail_missing_fragment/);
+  assert.match(d.permissionDecisionReason, /npm run changeset/, 'the deny must be actionable');
+});
+
+test('CF-09: a present .changeset fragment allows (presence satisfied)', () => {
+  const root = changesetRoot({});
+  const d = runPrGate(
+    input(CF03_CREATE),
+    deps({
+      worktreeRoot: root,
+      readChangedFiles: () => ['src/index.cts', '.changeset/some-fix.md'],
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('CF-09: a NON-user-facing-only change needs no fragment (no over-blocking)', () => {
+  const root = changesetRoot({});
+  for (const files of [['README.md'], ['docs/guide.md'], []]) {
+    const d = runPrGate(
+      input(CF03_CREATE),
+      deps({ worktreeRoot: root, readChangedFiles: () => files })
+    );
+    assert.strictEqual(d.permissionDecision, 'allow', JSON.stringify(files) + ': ' + d.permissionDecisionReason);
+  }
+});
+
+test('CF-09: a THROW from the live changeset lint fails closed (HARD-01)', () => {
+  const root = changesetRoot({});
+  const d = runPrGate(
+    input(CF03_CREATE),
+    deps({
+      worktreeRoot: root,
+      readChangedFiles: () => ['src/index.cts'],
+      liveChangesetLint: { evaluateLint: () => { throw new Error('live lint exploded'); } },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
 });
 
 test('CF-03: readChangedFiles THROWS (diff unavailable) → FAIL CLOSED deny (HARD-01)', () => {
@@ -1398,6 +1461,7 @@ test('CF-03 Task 2: with NO injected readChangedFiles, an unreadable diff fails 
       liveTarget,
       liveTitle,
       liveDocsLint,
+      liveChangesetLint,
       branch: 'fix/12-the-thing',
       changedFiles: ['src/index.cts'],
       authorAssociation: 'OWNER',

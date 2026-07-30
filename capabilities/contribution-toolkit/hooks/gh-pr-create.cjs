@@ -670,6 +670,34 @@ function gate(stdinString, deps) {
     );
   }
 
+  // CF-09 — changeset PRESENCE (distinct from the docs-required PAIRING above).
+  //
+  // gsd-core's `changeset-required.yml` bounces any PR with user-facing changes and NO
+  // `.changeset/*.md` fragment, and it has no author exemption — so for a CODEOWNER this lands as
+  // pure CI whiplash: the PR opens, then goes red for a missing file the author could have been
+  // told about locally. CF-03 above gates the changeset->docs PAIRING; nothing gated PRESENCE.
+  //
+  // `labels: []` pre-PR, the same documented narrowing CF-03 carries: the `no-changelog` opt-out
+  // is a maintainer-applied LABEL a contributor cannot self-apply before the PR exists. Erring
+  // toward denying a PR that would have been opted out is the safe direction — the fix is one
+  // `npm run changeset`, whereas the CI-red alternative costs a push cycle.
+  const changesetVerdict = deps.liveChangesetLint.evaluateLint({
+    changedFiles,
+    labels: [],
+    fragmentFailures: [],
+  });
+  if (!changesetVerdict || changesetVerdict.ok !== true) {
+    return deny(
+      'PR blocked by the LIVE gsd-core changeset lint (CF-09 — mirrors `changeset-required.yml`, ' +
+        'which has NO author exemption): ' +
+        ((changesetVerdict && changesetVerdict.reason) || 'changeset verdict not ok') +
+        '. This PR touches user-facing paths with no `.changeset/*.md` fragment. Add one with ' +
+        '`npm run changeset -- --type Fixed --pr <PR#> --body "…"` before opening, so the PR does ' +
+        'not land red. This CALLS gsd-core’s LIVE `scripts/changeset/lint.cjs` evaluateLint, ' +
+        'never a forked path list (D-01/D-06/HARD-02).'
+    );
+  }
+
   // (5) ENF-18 Tier-2 — TOOLKIT-OWNED read of the AUTHORITATIVE CI result for the head
   // SHA. The four checks above gate FIRST and unchanged; this is an ADDITIONAL condition
   // on the pr-create path. We resolve the head SHA from the SAME worktree root the gate
@@ -783,7 +811,7 @@ function runPrGate(stdinString, deps = {}) {
     // head branch is read from that same root so a cross-repo session reads the worktree's
     // branch, not the session repo's.
     let root = resolved.worktreeRoot || null;
-    if (!root && (!resolved.liveTemplate || !resolved.liveTarget || !resolved.liveTitle || !resolved.liveDocsLint || !resolved.branch)) {
+    if (!root && (!resolved.liveTemplate || !resolved.liveTarget || !resolved.liveTitle || !resolved.liveDocsLint || !resolved.liveChangesetLint || !resolved.branch)) {
       root = resolveRootForCommand(ctx.command, process.cwd());
       if (!root) {
         // ROB-01 locked discriminator (same seam as gh-issue-create): an out-of-tree command
@@ -821,6 +849,15 @@ function runPrGate(stdinString, deps = {}) {
       // missing/reshaped script throws ScriptResolveError → runGate fail-closed deny (HARD-02)
       // for a gsd-core-targeting create — no vendored fallback, no forked lint (D-01/D-06).
       resolved.liveDocsLint = requireLiveScript(root, 'scripts/lint-docs-required.cjs');
+    }
+    if (!resolved.liveChangesetLint) {
+      // CF-09 (changeset PRESENCE): gsd-core's `changeset-required.yml` runs
+      // `node scripts/changeset/lint.cjs`, and that script exports the pure `evaluateLint` used
+      // here — so this CALLS the live policy rather than mirroring it. That distinction matters:
+      // a local path-list reimplementation would join the drift-blind local replicas already
+      // logged as a known weakness (H-A), and this gate exists precisely to avoid CI whiplash,
+      // not to become another thing that silently disagrees with upstream.
+      resolved.liveChangesetLint = requireLiveScript(root, 'scripts/changeset/lint.cjs');
     }
     if (!resolved.branch) {
       resolved.branch = currentBranch(root);
