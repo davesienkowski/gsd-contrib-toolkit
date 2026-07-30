@@ -430,3 +430,34 @@ test('OBS-02: the OUTER guard holds even if the recorder itself throws (mutation
   assert.strictEqual(out.permissionDecision, 'deny');
   assert.strictEqual(out.permissionDecisionReason, 'policy deny survives');
 });
+
+// ─── HARD-05: only an EXPLICIT allow allows ─────────────────────────────────────────────────
+//
+// runGate's fall-through used to be `return allow()` for anything that was not deny/ask —
+// including `undefined`, `null`, `{}`, and a misspelled `'ALLOW'`. A gate whose code path fell
+// off the end (a future refactor, an early `return;`) therefore produced a SILENT ALLOW at the
+// one place the whole design promises cannot fail open. `emit()` already defaults such values to
+// deny, but runGate converted them to a well-formed allow() FIRST, so emit's floor never saw them.
+// Inverted: the decision must literally say 'allow'.
+
+test('HARD-05: a gate returning undefined DENIES (no silent allow)', () => {
+  const d = fc.runGate(() => undefined, { action: 'p', overrideImpl: NOOP_OVERRIDE });
+  assert.strictEqual(d.permissionDecision, 'deny');
+});
+
+test('HARD-05: null / {} / a misspelled decision all DENY', () => {
+  for (const bad of [null, {}, { permissionDecision: '' }, { permissionDecision: 'ALLOW' }, { permissionDecision: 'allowed' }, 'allow', 42]) {
+    const d = fc.runGate(() => bad, { action: 'p', overrideImpl: NOOP_OVERRIDE });
+    assert.strictEqual(d.permissionDecision, 'deny', 'must deny for: ' + JSON.stringify(bad));
+  }
+});
+
+test('HARD-05: an explicit allow() still allows (the floor narrows, it does not break)', () => {
+  const d = fc.runGate(() => fc.allow(), { action: 'p', overrideImpl: NOOP_OVERRIDE });
+  assert.strictEqual(d.permissionDecision, 'allow');
+});
+
+test('HARD-05: the deny reason names the malformed decision so it is diagnosable', () => {
+  const d = fc.runGate(() => undefined, { action: 'p', overrideImpl: NOOP_OVERRIDE });
+  assert.match(d.permissionDecisionReason, /decision/i);
+});

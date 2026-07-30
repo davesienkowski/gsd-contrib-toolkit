@@ -243,7 +243,26 @@ function runGateInner(gateFn, ctx = {}) {
     if (decision && decision.permissionDecision === 'ask') {
       return ask(decision.permissionDecisionReason);
     }
-    return allow();
+    // HARD-05: only an EXPLICIT `allow` allows. This used to be a bare `return allow()`, i.e. the
+    // fall-through for ANY value that was not deny/ask — `undefined`, `null`, `{}`, a misspelled
+    // `'ALLOW'`. A gate whose code path fell off the end (a future refactor, a stray early
+    // `return;`) therefore produced a SILENT ALLOW at the one place this design promises cannot
+    // fail open. `emit()` already collapses such values to deny, but runGate converted them into a
+    // well-formed `allow()` FIRST, so emit's floor never saw them — the second layer was
+    // unreachable for exactly the inputs it existed to catch.
+    //
+    // Narrows-not-weakens: every gate already returns allow()/deny()/ask(), so no legitimate path
+    // changes (proven by the full suite staying green across all 15 gates).
+    if (decision && decision.permissionDecision === 'allow') {
+      return allow();
+    }
+    return deny(
+      'gate returned a malformed decision (' +
+        (decision && typeof decision === 'object'
+          ? 'permissionDecision=' + JSON.stringify(decision.permissionDecision)
+          : typeof decision) +
+        ') — only an explicit `allow` allows; failing closed (HARD-05)'
+    );
   } catch (err) {
     // FAIL CLOSED. The only escape is a deliberate, logged override (HARD-03).
     const reason =
