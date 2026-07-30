@@ -20,7 +20,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { runSelfTest, nodeCheckAll, coveredTestsCheck, runTestSuite } = require('./self-test.cjs');
+const { runSelfTest, nodeCheckAll, coveredTestsCheck, executedTestsCheck, runTestSuite } = require('./self-test.cjs');
 
 // --- Stub factories -------------------------------------------------------
 
@@ -82,6 +82,106 @@ test('nodeCheckAll: ok:false and records the failing file', () => {
   assert.equal(r.ok, false);
   assert.equal(r.failures.length, 1);
   assert.match(r.failures[0].path, /b\.cjs$/);
+});
+
+// --- executedTestsCheck unit (EXEC-01) ------------------------------------
+//
+// The defect this closes: COVERED_TESTS already NAMES hooks/fault-injection.test.cjs as covering
+// HARD-01/HARD-02, but coveredTestsCheck only asserted the file EXISTS, and runTestSuite reads
+// only the suite exit status (stdio:'inherit', so it cannot see counts). `node --test` exits 0
+// when every case SKIPS. Measured 2026-07-30 from the toolkit root: 8 tests, 0 pass, 8 skipped —
+// and the CLI printed "Self-test PASSED". A green that proves nothing read as a green.
+
+/** A spawn stub whose `--test <file>` runs emit a TAP summary tail. */
+function makeExecSpawn(tapByFile) {
+  return function spawn(_cmd, args) {
+    if (args[0] === '--test') {
+      const file = args[1];
+      const tap = tapByFile[file];
+      if (!tap) return { status: 0, stdout: '# pass 3\n# fail 0\n# skipped 0\n' };
+      return { status: tap.status === undefined ? 0 : tap.status, stdout: tap.stdout };
+    }
+    return { status: 0 };
+  };
+}
+
+const MUST = [{ path: 'hooks/fault-injection.test.cjs', covers: 'HARD-01/HARD-02', mustExecute: true }];
+
+test('executedTestsCheck: ok:false when a mustExecute proof SKIPPED every case (the 2026-07-30 defect)', () => {
+  const r = executedTestsCheck({
+    repoRoot: '/repo',
+    covered: MUST,
+    spawn: makeExecSpawn({
+      '/repo/hooks/fault-injection.test.cjs': { stdout: '# tests 8\n# pass 0\n# fail 0\n# skipped 8\n' },
+    }),
+  });
+  assert.equal(r.ok, false, 'zero executed cases must NOT read as success');
+  assert.equal(r.unproven.length, 1);
+  assert.match(r.unproven[0].path, /fault-injection/);
+});
+
+test('executedTestsCheck: ok:false when a mustExecute proof ran but skipped SOME cases', () => {
+  const r = executedTestsCheck({
+    repoRoot: '/repo',
+    covered: MUST,
+    spawn: makeExecSpawn({
+      '/repo/hooks/fault-injection.test.cjs': { stdout: '# tests 8\n# pass 6\n# fail 0\n# skipped 2\n' },
+    }),
+  });
+  assert.equal(r.ok, false, 'a partially-skipped load-bearing proof is still unproven');
+});
+
+test('executedTestsCheck: ok:true when every case actually executed', () => {
+  const r = executedTestsCheck({
+    repoRoot: '/repo',
+    covered: MUST,
+    spawn: makeExecSpawn({
+      '/repo/hooks/fault-injection.test.cjs': { stdout: '# tests 8\n# pass 8\n# fail 0\n# skipped 0\n' },
+    }),
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.unproven.length, 0);
+  assert.equal(r.executed[0].pass, 8);
+});
+
+test('executedTestsCheck: entries WITHOUT mustExecute are not probed (no extra spawns)', () => {
+  const spawned = [];
+  const r = executedTestsCheck({
+    repoRoot: '/repo',
+    covered: [{ path: 'bin/self-test.test.cjs', covers: 'x' }],
+    spawn: (_c, args) => {
+      spawned.push(args.join(' '));
+      return { status: 0, stdout: '# pass 1\n# fail 0\n# skipped 0\n' };
+    },
+  });
+  assert.equal(r.ok, true);
+  assert.deepEqual(spawned, [], 'only mustExecute entries are re-run');
+});
+
+test('executedTestsCheck: unparseable TAP output is treated as UNPROVEN, never as pass', () => {
+  const r = executedTestsCheck({
+    repoRoot: '/repo',
+    covered: MUST,
+    spawn: makeExecSpawn({ '/repo/hooks/fault-injection.test.cjs': { stdout: 'total garbage' } }),
+  });
+  assert.equal(r.ok, false, 'no parseable counts means no proof — fail loud');
+});
+
+test('runSelfTest: an all-skipped mustExecute proof flips overall ok:false', () => {
+  const r = runSelfTest(
+    baseDeps({
+      covered: MUST,
+      spawn: (cmd, args) => {
+        if (args[0] === '--check') return { status: 0, stderr: '' };
+        if (args[0] === '--test' && args.length > 1) {
+          return { status: 0, stdout: '# tests 8\n# pass 0\n# fail 0\n# skipped 8\n' };
+        }
+        return { status: 0 };
+      },
+    })
+  );
+  assert.equal(r.executedTests.ok, false);
+  assert.equal(r.ok, false, 'self-test must NOT report PASSED over zero executed load-bearing cases');
 });
 
 // --- runTestSuite unit ----------------------------------------------------
