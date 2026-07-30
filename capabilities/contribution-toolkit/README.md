@@ -6,7 +6,7 @@
 
 A `role:feature` capability for **GSD 1.6.0+** (ADR-1244 capability ecosystem). It bundles the
 *knowledge* (two skills), the *triggers* (five `gsd-*` commands), and the *load-bearing layer* —
-fourteen fail-closed `PreToolUse` enforcement hooks that the **harness** runs (not the model) and
+fifteen fail-closed `PreToolUse` enforcement hooks that the **harness** runs (not the model) and
 that call gsd-core's own LIVE gate scripts at runtime (alongside two non-blocking wired hooks — an
 advisory reminder and an observability recorder). It installs, toggles, and removes through gsd-core's
 native capability system, tracked by gsd-core's ledger + consent.
@@ -53,14 +53,14 @@ hooks-only artifact:
 
 | Surface | Count | Items |
 |---|---|---|
-| `PreToolUse` gates (fail-closed — these block) | 14 | `gh-issue-create`, `gh-pr-create`, `gh-edit`, `issue-dedupe`, `policy-invariants`, `lint-ci-marker`, `git-commit-convention`, `containment`, `freshness`, `githooks-seal`, `scan-gate`, `protocol-artifact`, `review-artifact`, `binlib-edit` |
+| `PreToolUse` gates (fail-closed — these block) | 15 | `gh-issue-create`, `gh-pr-create`, `gh-edit`, `issue-dedupe`, `policy-invariants`, `lint-ci-marker`, `git-commit-convention`, `containment`, `freshness`, `githooks-seal`, `scan-gate`, `protocol-artifact`, `review-artifact`, `runtime-drift`, `binlib-edit` |
 | `UserPromptSubmit` advisory (never denies) | 1 | `protocol-reminder` |
 | `PostToolUse` + `PostToolUseFailure` observability (never denies) | 1 script / 2 registrations | `tool-recorder` — the one hook wired on two events |
 | Skills | 2 | `gsd-core-contribution`, `maintainer-review-sweep` |
 | Commands | 5 | `gsd-submit`, `gsd-review-sweep`, `gsd-triage-assist`, `gsd-release-preflight`, `gsd-ruleset-drift` |
 | Loop contribution | 1 | an advisory `plan:pre` fragment, gated by the default-off `workflow.gsd_contrib_enforcement` flag |
 
-That is **16 hook scripts** producing **17 `hooks[]` registrations** in `capability.json` (the
+That is **17 hook scripts** producing **18 `hooks[]` registrations** in `capability.json` (the
 recorder is registered on two events). The bundled hook scripts **resolve and call the LIVE gsd-core
 gate scripts at runtime** — they never reimplement gsd-core policy. When gsd-core's scripts evolve,
 the gates follow.
@@ -90,7 +90,7 @@ node <gsd-core>/bin/gsd-tools.cjs capability install \
 - `--scope project` installs into the gsd-core checkout (`.gsd/capabilities/contribution-toolkit/` +
   a `.gsd-capabilities.json` ledger), keeping enforcement project-scoped — never `~/.claude`.
   Use `--scope global` for `~/.gsd/...`.
-- `--yes` grants consent — the capability ships executable surfaces (the 16 hook scripts), so the
+- `--yes` grants consent — the capability ships executable surfaces (the 17 hook scripts), so the
   install discloses them and aborts without consent.
 - `--shared-file .claude/settings.json` is **required to actually wire the hooks** into
   `settings.json`; without it the install records the ledger + overlay but applies no gates.
@@ -118,7 +118,7 @@ the hooks *are* the enforcement).
 
 ## How it works
 
-1. **Harness-boundary enforcement.** The 14 `PreToolUse` gates are written into `settings.json` on
+1. **Harness-boundary enforcement.** The 15 `PreToolUse` gates are written into `settings.json` on
    install. The harness runs them before each matching tool call; a broken contribution outcome
    returns `permissionDecision: "deny"`. They fail **closed** — an unparseable command, an
    unreadable body, or a missing LIVE script denies rather than allows.
@@ -180,7 +180,7 @@ Please read this as written — don't over-read it:
   `plan:pre` contribution fires only inside a GSD command. The capability does **not** reach the
   harness tool-call boundary — a direct issue/PR/push typed outside a GSD command never crosses a
   loop point, so the capability never sees it.
-- The **harness-boundary enforcement** is a property of the 14 `PreToolUse` hooks **once installed
+- The **harness-boundary enforcement** is a property of the 15 `PreToolUse` hooks **once installed
   into `settings.json`**, not an inherent property of this (toggleable) capability. **Do not read
   this capability as "unbypassable."**
 - It is **fully removable**: `disable`/`remove` genuinely takes the enforcement away.

@@ -47,6 +47,7 @@ When this skill activates, **your FIRST action — before any Read, Bash, `gh`, 
 
 ```
 [ ] P-1 Create this checklist as tool-tracked todos (todo tool, NOT a printed list)   [GATE: todos exist BEFORE any other tool call]
+[ ] RT0 Runtime freshness — `node <gsd-contrib-toolkit>/bin/runtime-sync.cjs check`; on drift run `… sync` (no ask). Advisory here; the blocking floor is ENF-21 at file/push time
 [ ] P0  Read CONTRIBUTING.md + matching issue template + PR template + governing ADR(s) + CONTEXT.md
 [ ] P0b ADR/CONTEXT awareness sweep (POLICY-03) — LIST governing ADRs/policies + CONTEXT.md predicates for the changed area BEFORE authoring (grep/gsd-tools over docs/adr/ + CONTEXT.md). Awareness only, NOT a pass/fail gate
 [ ] P1  Run trust-but-verify; reproduce the mechanism live on src/*.cts (probe or failing test)   [GATE: reproduced, else WITHDRAW]
@@ -72,6 +73,11 @@ Epic instead of a single fix? Swap P4–P5 for the **Epic variant** below, but t
 **REQUIRED SUB-SKILLS:** `tdd` (Matt Pocock — Phase 3 authoring; ALIGN-02, supersedes the former `superpowers:test-driven-development`), `skills-from-the-artificer` + `trust-but-verify` (Phase 1–2 pre-file review; ALIGN-01). **Companion:** `maintainer-review-sweep` (shared repo facts: labels, gotchas, authority). Verdicts and the named-skill choices are fixed in [docs/REUSE-AND-METHODOLOGY.md](../../docs/REUSE-AND-METHODOLOGY.md).
 
 ### Phase 0 — Ground in the canon (read first, every time)
+
+**RT0 — Runtime freshness, BEFORE you read anything (ENF-21).** Run `node <gsd-contrib-toolkit>/bin/runtime-sync.cjs check`. On any verdict other than `fresh`, run `node <gsd-contrib-toolkit>/bin/runtime-sync.cjs sync` — **do not ask, just run it**: it is one command with no prompts and no decisions, it reinstalls only if the installed payload actually differs, and re-running it is safe. This is first because a stale `~/.claude/gsd-core` poisons everything downstream: Phase 1's "reproduced locally" and Phase 3d's suite results will disagree with CI, and the fix you are about to author may already be upstream. Note that `check` reads the **globally installed runtime**, not your gsd-core worktree — they are different things and only the worktree is visible in `git log`.
+>
+> This step is **advisory** — it surfaces drift early, where remediating it is visible and cheap. The **blocking** floor is the ENF-21 `PreToolUse` gate, which DENIES `gh issue create` / `gh pr create` / `git push` against `open-gsd/gsd-core` when the runtime is unstamped, digest-mismatched, or behind `origin/next`. Its deny reason prints the same `runtime-sync.cjs sync` command with the absolute path already filled in. If github is unreachable the gate `ask`s rather than denying (an outage must not make gsd-core un-fileable) — see [CTK-ADR-0007](../../docs/adr/CTK-ADR-0007-runtime-freshness-and-the-network-unavailable-severity.md).
+
 Read before authoring: `CONTRIBUTING.md`, the matching **issue** template, the matching **PR** template (`.github/PULL_REQUEST_TEMPLATE/{fix,enhancement,feature}.md`), the governing **ADR(s)** in `docs/adr/`, and `CONTEXT.md` for the touched area. Know the gate scripts (see [reference.md](reference.md)).
 
 **Issue types — all SIX, not three (KNOW-04).** The repo ships **six** issue templates in `.github/ISSUE_TEMPLATE/`: `bug_report`, `enhancement`, `feature_request`, **`chore`**, **`docs_issue`**, and **`config`**. Route the contribution to the template that fits its *nature* — a `chore`, `docs_issue`, or `config` change must NOT be force-fit into the bug/enhancement/feature shape (that trips the wrong intake gate). See the full type→use→labels table in [reference.md](reference.md).

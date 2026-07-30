@@ -92,6 +92,11 @@
     },
     {
       "event": "PreToolUse",
+      "matcher": "Bash",
+      "script": "hooks/runtime-drift.cjs"
+    },
+    {
+      "event": "PreToolUse",
       "matcher": "Write|Edit",
       "script": "hooks/binlib-edit.cjs"
     },

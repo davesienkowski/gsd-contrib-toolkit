@@ -11,6 +11,13 @@
   exception. Neither is withdrawn — see Decision below.
 - **Relates to:** ENF-11 (`issue-dedupe`), the first graded gate; CTK-ADR-0004 (the artifact
   pattern, whose "assert shape not honesty" honesty clause this record follows).
+- **Amended by:** [CTK-ADR-0007](CTK-ADR-0007-runtime-freshness-and-the-network-unavailable-severity.md)
+  (2026-07-30, milestone v2.7+) — narrows §Decision.4. That clause admits a fail-OPEN exception to
+  HARD-01 **only** for a sub-check that *cannot* deny. CTK-ADR-0007 adds the adjacent case: a
+  sub-check that *can* deny, whose input is *unobtainable* (ENF-21's upstream tip with the network
+  down and no cached tip inside the staleness budget), resolves to **`ask`** — the third severity
+  this record introduced — and never to `allow`. Narrowed, not withdrawn: this record stays
+  **Accepted**, and every check that can deny still fails closed whenever its input is obtainable.
 
 ## Context
 

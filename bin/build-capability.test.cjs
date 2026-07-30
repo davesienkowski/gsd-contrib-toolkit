@@ -639,11 +639,20 @@ test('docs-projection: internal (non-docs) links like `reference.md` are ignored
   assert.deepEqual(linked, [], 'internal non-docs links are not docs targets');
 });
 
-test('docs-projection over the REAL skill files returns exactly the canonical linked doc', () => {
-  // Against the real skills/ + manifest defaults: gsd-core-contribution links
-  // ../../docs/REUSE-AND-METHODOLOGY.md; maintainer-review-sweep links only internal docs.
+test('docs-projection over the REAL skill files returns exactly the canonical linked docs', () => {
+  // Against the real skills/ + manifest defaults. This is an EXACT-SET pin, not a count: it names
+  // every repo doc the shipped skills link, so an adopter's installed copy has no dangling link.
+  //   • docs/REUSE-AND-METHODOLOGY.md — linked by gsd-core-contribution (the alignment record).
+  //   • docs/adr/CTK-ADR-0007-…       — linked by BOTH skills' RT0 runtime-freshness step (ENF-21),
+  //     which cites the `ask`-on-network-unavailable severity and the recorded review-side non-gate.
+  //     Both links project the SAME doc (deduped), and it lands at the link-resolving bundle path
+  //     capabilities/contribution-toolkit/docs/adr/…, so `../../docs/adr/…` resolves from the
+  //     bundled skill exactly as it does from the canonical one.
   const linked = readLinkedDocs();
-  assert.deepEqual(linked, ['docs/REUSE-AND-METHODOLOGY.md']);
+  assert.deepEqual(linked, [
+    'docs/REUSE-AND-METHODOLOGY.md',
+    'docs/adr/CTK-ADR-0007-runtime-freshness-and-the-network-unavailable-severity.md',
+  ]);
 });
 
 test('docs-projection NO REWRITE (D-05): the bundled skill link text is byte-identical to source', () => {
