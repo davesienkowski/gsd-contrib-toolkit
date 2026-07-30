@@ -78,7 +78,19 @@ const OWNED_NOTE =
 // path) is deliberately NOT in this set — fix-bucket PRs are UNAFFECTED (D-04): the LIVE
 // enh/feat discriminator is classifyBucket (D-01 reuse), and the residual fix-PR case is still
 // caught server-side by the LIVE workflow (D-06: a NEW check, no existing deny surface weakened).
-const APPROVAL_LABELS = ['approved-feature', 'approved-enhancement'];
+/**
+ * The approval labels CF-02 accepts. Mirrors live `auto-close-unsolicited-prs.yml`'s
+ * APPROVAL_LABELS ('approved-feature,approved-enhancement,confirmed-bug').
+ *
+ * `confirmed-bug` was added 2026-07-30 for fidelity. It is a WIDENING only — one more label CF-02
+ * will accept — so it can never turn an allow into a deny.
+ *
+ * DELIBERATELY NOT DONE: extending CF-02 to the Fix bucket to match live's scope. The live
+ * workflow's `if:` exempts OWNER/MEMBER/COLLABORATOR, so it never fires for a maintainer's own PR
+ * at all. Extending here would DENY fix PRs that upstream would accept without complaint — an
+ * over-block with no upstream counterpart. The D-04 Fix-bucket pass-through stays.
+ */
+const APPROVAL_LABELS = ['approved-feature', 'approved-enhancement', 'confirmed-bug'];
 
 /**
  * CF-10: a changed capability DESCRIPTOR. Capture group 1 is the folder name, which the LIVE
