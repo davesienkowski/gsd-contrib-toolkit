@@ -389,6 +389,21 @@ const DENY_GATES = [
     clean: bash('sudo -u user ls'),
     needsLive: true,
   },
+  // ── ENF-21 (CTK-ADR-0007): the runtime-freshness gate ────────────────────────────────────
+  {
+    name: 'runtime-drift',
+    // ENF-21's content-deny is STATE-driven (the installed runtime's stamp + whole-tree digest +
+    // the upstream `next` tip), not COMMAND-driven, so no fixture can trip it — the same situation
+    // freshness / scan-gate / issue-dedupe / policy-invariants / protocol-artifact document. The
+    // BAD fixture proves the deterministic FAIL-CLOSED wiring (HARD-04): an unparseable
+    // `gh pr create` → captured deny regardless of what is installed. The CLEAN fixture proves the
+    // RES-01 action-first short-circuit (D-06): a non-governed `git status` ALLOWS without ever
+    // reaching the oracle. needsLive:false — ENF-21 resolves NO live gsd-core script, so both cases
+    // are environment-independent and never SKIP (the CF-06 precedent).
+    bad: bash('gh pr create --title "x'),
+    clean: bash('git status'),
+    needsLive: false,
+  },
 ];
 
 for (const g of DENY_GATES) {

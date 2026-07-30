@@ -1,0 +1,17 @@
+{
+  "hook": "runtime-drift",
+  "case": "deny",
+  "fixture": "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gh pr create --title \\\"x\"}}",
+  "expected": "deny",
+  "verdict": "pass",
+  "decision": "deny",
+  "exitCode": 0,
+  "reason": "parsed permissionDecision:deny",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "permissionDecisionReason": "unparseable command: unbalanced quote"
+    }
+  }
+}

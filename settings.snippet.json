@@ -68,6 +68,11 @@
             "type": "command",
             "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/review-artifact.cjs\"",
             "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/runtime-drift.cjs\"",
+            "timeout": 20
           }
         ]
       },

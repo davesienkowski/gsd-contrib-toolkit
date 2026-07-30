@@ -213,6 +213,20 @@ const PROOF_TABLE = [
   { name: 'cf08-wrapped-value-flag-push', hook: 'containment', kind: 'deny', needsLive: true,
     bad: bash('sudo -u user git push origin main'),
     clean: bash('sudo -u user ls') },
+  // ── ENF-21 (CTK-ADR-0007): the runtime-freshness gate ────────────────────────────
+  // runtime-drift's content-deny is STATE-driven (the installed runtime's stamp + digest + the
+  // upstream tip), not COMMAND-driven, so it cannot be tripped by a fixture — the same situation
+  // freshness / scan-gate / issue-dedupe / policy-invariants / protocol-artifact already document.
+  // The BAD fixture therefore proves the deterministic FAIL-CLOSED wiring (HARD-04): an unparseable
+  // `gh pr create` → captured deny, independent of whatever is installed at ~/.claude/gsd-core. The
+  // CLEAN fixture proves the RES-01 action-first short-circuit: a non-governed `git status` ALLOWS
+  // without reaching the oracle at all. needsLive:false — ENF-21 resolves NO live gsd-core script
+  // (its oracle is the local stamp plus the network), so BOTH cases are environment-independent and
+  // the proof never SKIPs (the CF-06 precedent). Mirrored in hooks/integration-proof.test.cjs
+  // DENY_GATES (the sync SOURCE).
+  { name: 'runtime-drift', kind: 'deny', needsLive: false,
+    bad: bash('gh pr create --title "x'),
+    clean: bash('git status') },
   // ── binlib-edit (Write|Edit gate): command-only, no live resolution ──
   { name: 'binlib-edit', kind: 'deny', needsLive: false,
     bad: edit('/g/gsd-core/bin/lib/decisions.cjs'),
