@@ -86,13 +86,44 @@ test('the frozen constants are the documented ones', () => {
   assert.strictEqual(rs.TTL_MS, 15 * 60 * 1000);
   assert.strictEqual(rs.STALE_BUDGET_MS, 24 * 60 * 60 * 1000);
   assert.strictEqual(rs.UPSTREAM_REF, 'next');
-  // Built from resolve.cjs's owner/repo — no second source of truth for the target repo.
+});
+
+test('UPSTREAM_URL is the LITERAL upstream repo, built from resolve.cjs (no second source of truth)', () => {
+  // Asserted as a LITERAL, not as `includes(OWNER + '/' + REPO)`. The composed form was the
+  // original assertion and it passed VACUOUSLY: both constants were module-private in resolve.cjs,
+  // so the expression evaluated to 'undefined/undefined' — which the equally-undefined URL
+  // contained. The bug only surfaced when a real `ls-remote` hit github.com/undefined/undefined.
+  assert.strictEqual(rs.UPSTREAM_URL, 'https://github.com/open-gsd/gsd-core.git');
   const { GSD_CORE_OWNER, GSD_CORE_REPO } = require('./resolve.cjs');
-  assert.ok(rs.UPSTREAM_URL.includes(GSD_CORE_OWNER + '/' + GSD_CORE_REPO));
+  assert.strictEqual(GSD_CORE_OWNER, 'open-gsd');
+  assert.strictEqual(GSD_CORE_REPO, 'gsd-core');
+  assert.ok(!rs.UPSTREAM_URL.includes('undefined'), 'the URL must never contain a stringified undefined');
 });
 
 test('REMEDIATION_COMMAND is the single absolute `runtime-sync.cjs sync` string', () => {
   assert.match(rs.REMEDIATION_COMMAND, /^node \/.*\/bin\/runtime-sync\.cjs sync$/);
+});
+
+test('REMEDIATION_COMMAND names a file that ACTUALLY EXISTS (a broken remediation is worse than none)', () => {
+  const nodeFs = require('node:fs');
+  assert.ok(rs.REMEDIATION_CLI, 'the CLI must be reachable from the canonical module');
+  assert.ok(nodeFs.existsSync(rs.REMEDIATION_CLI), rs.REMEDIATION_CLI + ' must exist on disk');
+});
+
+test('the CLI is also reachable from the BUNDLED copy of this module (the path the harness wires)', () => {
+  // build-capability projects hooks/ + hooks/lib/ into capabilities/contribution-toolkit/, and the
+  // installed settings.json wires THAT copy. A fixed `../../bin/runtime-sync.cjs` resolves there to
+  // the bundle root, which has no bin/ — the deny reason would name a path that does not exist.
+  const nodeFs = require('node:fs');
+  const bundleLib = path.resolve(__dirname, '..', '..', 'capabilities', 'contribution-toolkit', 'hooks', 'lib');
+  const found = rs.resolveRemediationCli(path.dirname(bundleLib));
+  assert.ok(found, 'the walk-up must find bin/runtime-sync.cjs from the bundled hooks dir');
+  assert.ok(nodeFs.existsSync(found), found + ' must exist on disk');
+  assert.strictEqual(found, rs.REMEDIATION_CLI, 'canonical and bundled copies must name the SAME CLI');
+});
+
+test('resolveRemediationCli returns null (never a fabricated path) when the CLI is unreachable', () => {
+  assert.strictEqual(rs.resolveRemediationCli('/nonexistent/deep/path', { existsSync: () => false }), null);
 });
 
 test('the state dir defaults to ~/.gsd-contrib and honours GSD_CONTRIB_STATE_DIR', () => {

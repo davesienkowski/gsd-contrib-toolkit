@@ -445,6 +445,11 @@ module.exports = {
   expandHome,
   resolveRootForCommand,
   commandTargetsGsdCore,
+  // ENF-21: exported so `runtime-stamp.cjs` builds the upstream `ls-remote` URL from the SAME
+  // owner/repo every gate already adjudicates against, rather than introducing a second source of
+  // truth for "which repo is upstream". They were module-private until 260730-0ov.
+  GSD_CORE_OWNER,
+  GSD_CORE_REPO,
   parseOwnerRepo,
   repoSpecTargetsGsdCore,
   tokenTargetsGsdCoreApi,

@@ -85,7 +85,23 @@ const TTL_MS = 15 * 60 * 1000;
  */
 const STALE_BUDGET_MS = 24 * 60 * 60 * 1000;
 
-/** Built from resolve.cjs's owner/repo — deliberately NOT a second source of truth (D-03). */
+/**
+ * Built from resolve.cjs's owner/repo — deliberately NOT a second source of truth (D-03).
+ *
+ * The load-bearing assertion below is not paranoia. Both constants were module-PRIVATE in
+ * resolve.cjs until this module needed them, and a silent `undefined` composes into the
+ * perfectly-shaped URL `https://github.com/undefined/undefined.git`, which `ls-remote` answers
+ * with a plain "Repository not found" — i.e. an ordinary network failure, which D-05 maps to
+ * `ask`. The gate would then have degraded to a permanent, silent, well-reasoned prompt against a
+ * repo that does not exist. Fail LOUD at load instead.
+ */
+if (typeof GSD_CORE_OWNER !== 'string' || typeof GSD_CORE_REPO !== 'string' ||
+    GSD_CORE_OWNER.length === 0 || GSD_CORE_REPO.length === 0) {
+  throw new Error(
+    'runtime-stamp: hooks/lib/resolve.cjs must export non-empty GSD_CORE_OWNER/GSD_CORE_REPO — ' +
+      'got ' + JSON.stringify(GSD_CORE_OWNER) + '/' + JSON.stringify(GSD_CORE_REPO)
+  );
+}
 const UPSTREAM_URL = 'https://github.com/' + GSD_CORE_OWNER + '/' + GSD_CORE_REPO + '.git';
 const UPSTREAM_REF = 'next';
 
@@ -93,11 +109,48 @@ const UPSTREAM_REF = 'next';
 const LS_REMOTE_TIMEOUT_MS = 5000;
 
 /**
- * THE single remediation string. Every deny reason, both skill steps, and the CLI's own help
- * quote THIS constant, so the instruction can never diverge across surfaces.
+ * Locate the real `bin/runtime-sync.cjs` by walking up from a starting directory.
+ *
+ * This is not over-engineering — a fixed `../../bin/runtime-sync.cjs` is WRONG for the copy of
+ * this module that actually runs. `build-capability.cjs` projects `hooks/` + `hooks/lib/` into
+ * `capabilities/contribution-toolkit/`, and the harness wires the BUNDLED path, so at gate time
+ * `__dirname` is `capabilities/contribution-toolkit/hooks/lib`. Two levels up is the bundle root,
+ * which has no `bin/` — the deny reason would have handed the user a path that does not exist,
+ * which is the one thing a remediation string must never do. Walking up finds the repo root from
+ * either location.
+ *
+ * @param {string} startDir
+ * @param {{existsSync?:Function}} [deps]
+ * @returns {string|null} absolute path to the CLI, or null when it is not reachable from here
  */
-const REMEDIATION_COMMAND =
-  'node ' + path.join(path.resolve(__dirname, '..', '..'), 'bin', 'runtime-sync.cjs') + ' sync';
+function resolveRemediationCli(startDir, deps = {}) {
+  const existsSync = deps.existsSync || nodeFs.existsSync;
+  let dir = path.resolve(startDir);
+  for (let i = 0; i < 12; i += 1) {
+    const candidate = path.join(dir, 'bin', 'runtime-sync.cjs');
+    if (existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+/** The CLI this module's deny reasons point at, or null when it is not reachable. */
+const REMEDIATION_CLI = resolveRemediationCli(path.resolve(__dirname, '..'));
+
+/**
+ * THE single remediation string. Every deny reason, the `ask` reason, the CLI's own output, and
+ * both skill steps quote THIS constant, so the instruction cannot diverge across surfaces.
+ *
+ * When the CLI is genuinely unreachable — an adopter who installed only the published capability
+ * bundle, with no toolkit checkout — the string degrades to a NAMED placeholder rather than an
+ * absolute path that resolves to nothing. A user who cannot find the file is better served by
+ * being told which repo it lives in than by a confident, broken path.
+ */
+const REMEDIATION_COMMAND = REMEDIATION_CLI
+  ? 'node ' + REMEDIATION_CLI + ' sync'
+  : 'node <gsd-contrib-toolkit>/bin/runtime-sync.cjs sync';
 
 /**
  * The four PAYLOAD directories the installer projects from `<clone>/gsd-core/` into
@@ -631,6 +684,8 @@ module.exports = {
   UPSTREAM_REF,
   LS_REMOTE_TIMEOUT_MS,
   REMEDIATION_COMMAND,
+  REMEDIATION_CLI,
+  resolveRemediationCli,
   PAYLOAD_DIRS,
   DENY_VERDICTS,
   UpstreamUnavailable,
