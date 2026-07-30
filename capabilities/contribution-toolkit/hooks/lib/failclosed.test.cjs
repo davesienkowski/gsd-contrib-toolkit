@@ -307,3 +307,126 @@ test('runGate still DENIES on a throw even though ask now exists (HARD-01 unweak
   );
   assert.strictEqual(decision.permissionDecision, 'deny');
 });
+
+// ─── OBS-02 (Half B): the verdict-log wrapper must be unable to affect enforcement ───────────
+//
+// runGate now wraps the (unchanged) fail-closed path so every gate's verdict is recorded at one
+// chokepoint. These pin the four non-negotiables AT THE runGate LEVEL — verdict-log.test.cjs pins
+// them inside the recorder; these prove the wiring cannot betray them either. failclosed.cjs is
+// the file whose blast radius is all 15 gates, so "the instrumentation is safe" is not something
+// to take on trust.
+
+const NOOP_OVERRIDE = { checkOverride: () => ({ override: false }), writeReceipt: () => {} };
+
+function captureVerdict() {
+  const seen = [];
+  return {
+    seen,
+    deps: { env: {}, writer: (line) => { seen.push(JSON.parse(line)); return '/fake'; } },
+  };
+}
+
+test('OBS-02: an allow is returned UNCHANGED and recorded', () => {
+  const cap = captureVerdict();
+  const out = fc.runGate(() => fc.allow(), {
+    action: 'probe-allow',
+    command: 'ls -la',
+    overrideImpl: NOOP_OVERRIDE,
+    verdictLogDeps: cap.deps,
+  });
+  assert.strictEqual(out.permissionDecision, 'allow');
+  assert.strictEqual(cap.seen.length, 1);
+  assert.strictEqual(cap.seen[0].decision, 'allow');
+  assert.strictEqual(cap.seen[0].gate, 'probe-allow');
+  assert.strictEqual(typeof cap.seen[0].duration_ms, 'number');
+});
+
+test('OBS-02: a fail-closed DENY from a THROW is recorded as deny (the previously invisible event)', () => {
+  const cap = captureVerdict();
+  const out = fc.runGate(() => { throw new Error('live script missing'); }, {
+    action: 'probe-throw',
+    command: 'gh pr create --title x',
+    overrideImpl: NOOP_OVERRIDE,
+    verdictLogDeps: cap.deps,
+  });
+  assert.strictEqual(out.permissionDecision, 'deny');
+  assert.strictEqual(cap.seen[0].decision, 'deny');
+  // The whole point of Half B: PostToolUse never fires for this call, so before OBS-02 this
+  // event left no trace anywhere.
+  assert.strictEqual(cap.seen[0].gate, 'probe-throw');
+});
+
+test('OBS-02: a recorder that THROWS cannot break the gate (enforcement > measurement)', () => {
+  const boom = { env: {}, writer: () => { throw new Error('log disk on fire'); } };
+  let out;
+  assert.doesNotThrow(() => {
+    out = fc.runGate(() => fc.deny('real policy deny'), {
+      action: 'probe-boom',
+      overrideImpl: NOOP_OVERRIDE,
+      verdictLogDeps: boom,
+    });
+  });
+  assert.strictEqual(out.permissionDecision, 'deny');
+  assert.match(out.permissionDecisionReason, /real policy deny/);
+});
+
+test('OBS-02: the recorder cannot MUTATE the decision it is handed', () => {
+  const mutating = {
+    env: {},
+    writer: () => '/fake',
+  };
+  const out = fc.runGate(() => fc.deny('untouched'), {
+    action: 'probe-mutate',
+    overrideImpl: NOOP_OVERRIDE,
+    verdictLogDeps: mutating,
+  });
+  assert.strictEqual(out.permissionDecision, 'deny');
+  assert.strictEqual(out.permissionDecisionReason, 'untouched');
+});
+
+test('OBS-02: the kill switch silences recording without changing any verdict', () => {
+  const cap = captureVerdict();
+  cap.deps.env = { GSD_CONTRIB_NO_VERDICT_LOG: '1' };
+  const out = fc.runGate(() => fc.deny('still denied'), {
+    action: 'probe-off',
+    overrideImpl: NOOP_OVERRIDE,
+    verdictLogDeps: cap.deps,
+  });
+  assert.strictEqual(out.permissionDecision, 'deny', 'gate logic is untouched by the switch');
+  assert.deepStrictEqual(cap.seen, [], 'nothing recorded');
+});
+
+test('OBS-02: ctx.stdin supplies session/tool ids; the raw command is NEVER recorded', () => {
+  const cap = captureVerdict();
+  fc.runGate(() => fc.deny('x'), {
+    action: 'probe-ids',
+    command: 'gh pr create --body "TOKEN-shhh"',
+    stdin: JSON.stringify({ session_id: 's1', tool_use_id: 't1', tool_name: 'Bash' }),
+    overrideImpl: NOOP_OVERRIDE,
+    verdictLogDeps: cap.deps,
+  });
+  const rec = cap.seen[0];
+  assert.strictEqual(rec.session_id, 's1');
+  assert.strictEqual(rec.tool_use_id, 't1');
+  assert.strictEqual(rec.tool_name, 'Bash');
+  assert.strictEqual(rec.action, 'pr-create', 'classified action only');
+  assert.ok(!JSON.stringify(rec).includes('TOKEN-shhh'), 'the command body must never be logged');
+});
+
+test('OBS-02: the OUTER guard holds even if the recorder itself throws (mutation-proven)', () => {
+  // recordVerdict is total, so a throwing WRITER only exercises its internal guard. Injecting a
+  // throwing RECORDER is the only way to prove runGate's own try/catch is load-bearing —
+  // mutation-testing showed that without this case, deleting that catch failed zero tests.
+  let out;
+  assert.doesNotThrow(() => {
+    out = fc.runGate(() => fc.deny('policy deny survives'), {
+      action: 'probe-outer-guard',
+      overrideImpl: NOOP_OVERRIDE,
+      recordVerdictImpl: () => {
+        throw new Error('recorder itself exploded');
+      },
+    });
+  });
+  assert.strictEqual(out.permissionDecision, 'deny');
+  assert.strictEqual(out.permissionDecisionReason, 'policy deny survives');
+});

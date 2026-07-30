@@ -161,6 +161,8 @@ function runScanGate(stdinString, deps = {}) {
   const ctx = {
     command: safeCommand(stdinString),
     action: 'scan-gate',
+    // OBS-02: read ONLY for session/tool ids in the verdict log; never logged verbatim.
+    stdin: stdinString,
     worktreeRoot: deps.worktreeRoot,
     overrideImpl: deps.overrideImpl,
   };

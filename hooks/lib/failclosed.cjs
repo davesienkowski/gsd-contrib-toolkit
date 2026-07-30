@@ -34,6 +34,10 @@
  */
 
 const override = require('./override.cjs');
+// OBS-02 (Half B): the gate-verdict recorder. Required here because runGate is the single
+// chokepoint every wired gate returns through. verdict-log is TOTAL (it cannot throw) and
+// side-effect-free on require.
+const { recordVerdict } = require('./verdict-log.cjs');
 
 /**
  * IN-03: the single shared fail-closed error type. A typed Error so a gate's runGate
@@ -175,12 +179,54 @@ function emit(decision) {
  * @param {string} [ctx.worktreeRoot] the gsd-core worktree root (for the override receipt).
  * @param {string} [ctx.command] the command being gated (recorded in a receipt).
  * @param {string} [ctx.action] the action being overridden (recorded in a receipt).
+ * @param {string} [ctx.stdin] OBS-02: the raw harness payload, used ONLY to read
+ *   `session_id`/`tool_use_id`/`tool_name` for the verdict log. Optional — absent, the record
+ *   still writes with null ids. Never logged verbatim.
  * @param {{checkOverride: Function, writeReceipt: Function}} [ctx.overrideImpl]
  *   injectable seam for the override module (defaults to the real ./override.cjs) so
  *   tests stay deterministic and filesystem-free.
+ * @param {Object} [ctx.verdictLogDeps] OBS-02 test seam forwarded to `recordVerdict`.
  * @returns {{permissionDecision: string, permissionDecisionReason?: string}}
  */
 function runGate(gateFn, ctx = {}) {
+  const startedAt = Date.now();
+  const result = runGateInner(gateFn, ctx);
+  // ── OBS-02 (Half B) ────────────────────────────────────────────────────────────────────────
+  // The ONLY instrumentation point for all 15 wired gates, at zero new process spawns.
+  //
+  // This shape is chosen so three of the four non-negotiables hold STRUCTURALLY rather than by
+  // discipline: the call cannot run before the decision (it is sequenced after), cannot alter it
+  // (`result` is already bound and is returned unmodified), and cannot throw out of runGate (the
+  // catch here, plus recordVerdict being total internally — belt AND braces, because this is the
+  // file whose blast radius is every gate). A measurement failure must never become an
+  // enforcement failure.
+  //
+  // Do NOT "simplify" this by inlining the log into the return paths of runGateInner: that would
+  // put a mutable call site in front of each decision and reintroduce exactly the risk this
+  // wrapper removes.
+  // `recordVerdict` is itself total, so this catch is the SECOND layer. It is not decoration: a
+  // future edit to verdict-log (or a require-time swap) could reintroduce a throw, and the cost of
+  // being wrong here is all 15 gates going offline. `ctx.recordVerdictImpl` exists so this outer
+  // guard is actually TESTABLE — mutation-testing showed that without an injectable recorder,
+  // deleting this try/catch failed zero tests, i.e. the guarantee was asserted but not proven.
+  const record = ctx.recordVerdictImpl || recordVerdict;
+  try {
+    record(ctx, result, Date.now() - startedAt, ctx.verdictLogDeps);
+  } catch (_) {
+    /* best-effort: a verdict that cannot be logged is dropped, never escalated */
+  }
+  return result;
+}
+
+/**
+ * The unchanged fail-closed decision path (HARD-01). Split out of `runGate` by OBS-02 purely so
+ * the verdict log can wrap a single computed result; not one line of its logic changed.
+ *
+ * @param {() => {permissionDecision: string, permissionDecisionReason?: string}} gateFn
+ * @param {Object} ctx
+ * @returns {{permissionDecision: string, permissionDecisionReason?: string}}
+ */
+function runGateInner(gateFn, ctx = {}) {
   const ovr = ctx.overrideImpl || override;
   try {
     const decision = gateFn();
