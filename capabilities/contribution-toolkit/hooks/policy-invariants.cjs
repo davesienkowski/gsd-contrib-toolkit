@@ -29,6 +29,12 @@ const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction, isNonGovernedCommand } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveGsdCoreRoot, commandStartDir, ScriptResolveError } = require('./lib/resolve.cjs');
+const {
+  readTreeShaLive,
+  readWorkingTreeStatusLive,
+  resolveMarkerPathLive,
+  markerExistsLive,
+} = require('./lib/marker.cjs');
 
 // FailClosed/safeCommand: shared IN-03 helpers from failclosed.cjs.
 
@@ -46,6 +52,50 @@ const POLICY_CHECKS = Object.freeze([
 
 /** Actions that trigger the POLICY-02 invariants. */
 const TRIGGER_ACTIONS = new Set(['commit', 'pr-create']);
+
+/**
+ * The one POLICY_CHECKS entry the ENF-05/ENF-17 Tier-1 marker already vouches for.
+ *
+ * PERF-01: `bin/lint-ci-stamp.cjs:50` runs the IDENTICAL `npm run --silent lint:ci` and, ONLY on
+ * exit 0, atomically stamps a marker keyed to the current `git write-tree` SHA.
+ * `hooks/lint-ci-marker.cjs` then DENIES push/pr-create unless that marker exists for the current
+ * tree AND the tree is clean. Re-deriving the same fact here costs 6.01s — measured 91% of this
+ * gate's total runtime (the other three checks are 0.36s combined).
+ *
+ * Skipping it when the marker vouches is NARROWS-NOT-WEAKENS on the repo's own accepted reasoning:
+ *   - the marker is keyed to tree CONTENT, so an amend/rebase that keeps the same files keeps the
+ *     marker while ANY real content change yields a different SHA (lint-ci-marker.cjs:18-19,
+ *     T-07-02-STALE) — a stale-green marker is unreachable;
+ *   - a DIRTY tree already invalidates it (lint-ci-marker.cjs:21-23, EP-4/TOCTOU), and the probe
+ *     below re-applies that guard rather than assuming it;
+ *   - lint-ci-marker.cjs:141-142 already names this exact optimization as intended design
+ *     (T-07-02-PERF): "keeps the already-stamped common case from re-running the suite
+ *     unnecessarily".
+ *
+ * Only `lint:ci` is vouched. The other three checks are NOT covered by the stamp and always run.
+ */
+const MARKER_VOUCHED_CHECK = 'lint:ci';
+
+/**
+ * Does a fresh Tier-1 marker vouch that `lint:ci` is green for the CURRENT tree?
+ *
+ * Mirrors lint-ci-marker.cjs's own order: dirty-tree guard FIRST (a dirty tree can never be
+ * trusted no matter what marker exists), then the tree SHA, then marker presence. Read-only —
+ * never writes a marker and never invokes the lint suite.
+ *
+ * MAY THROW (git unavailable, unreadable marker dir). The throw propagates through `gate` to
+ * `runGate` → fail-closed DENY (HARD-01). It is NEVER caught into a "just run the check" fallback:
+ * a probe that fails is an infra fault, and this gate fails closed on infra faults like every
+ * other path in it.
+ *
+ * @param {string} root absolute gsd-core worktree root.
+ * @returns {boolean} true iff the tree is clean AND a marker exists for its write-tree SHA.
+ */
+function markerVouchesLintCiLive(root) {
+  const status = readWorkingTreeStatusLive(root);
+  if (typeof status === 'string' && status.trim().length > 0) return false;
+  return markerExistsLive(resolveMarkerPathLive(root, readTreeShaLive(root)));
+}
 
 /** Max characters of a failed check's output kept in the deny reason. */
 const TAIL_LIMIT = 600;
@@ -122,7 +172,15 @@ function gate(stdinString, deps) {
   // this gate only ADDS the mechanizable invariants on commit/pr-create.
   if (!TRIGGER_ACTIONS.has(action.action)) return allow();
 
-  const results = deps.runChecks(deps.gsdCoreRoot, POLICY_CHECKS); // may throw → fail closed
+  // PERF-01: drop the one check the Tier-1 marker already proved green for THIS exact tree. The
+  // probe may throw → fail closed (HARD-01); it is never swallowed. Every other check still runs,
+  // so a skipped lint:ci can never mask a failure elsewhere.
+  const checksToRun =
+    typeof deps.markerVouchesLintCi === 'function' && deps.markerVouchesLintCi(deps.gsdCoreRoot)
+      ? POLICY_CHECKS.filter((c) => c.name !== MARKER_VOUCHED_CHECK)
+      : POLICY_CHECKS;
+
+  const results = deps.runChecks(deps.gsdCoreRoot, checksToRun); // may throw → fail closed
   const failed = (results || []).filter((r) => r && r.ok === false);
   if (failed.length === 0) return allow();
 
@@ -178,6 +236,11 @@ function runPolicyGate(stdinString, deps = {}) {
     if (!resolved.runChecks) {
       resolved.runChecks = runChecksLive;
     }
+    // PERF-01: default the marker probe to the LIVE read bound to the resolved root. A caller that
+    // injects `markerVouchesLintCi: () => false` gets the pre-PERF-01 behavior verbatim.
+    if (!resolved.markerVouchesLintCi) {
+      resolved.markerVouchesLintCi = markerVouchesLintCiLive;
+    }
     return gate(stdinString, resolved);
   }, ctx);
 }
@@ -202,6 +265,8 @@ module.exports = {
   runPolicyGate,
   gate,
   runChecksLive,
+  markerVouchesLintCiLive,
+  MARKER_VOUCHED_CHECK,
   POLICY_CHECKS,
   TRIGGER_ACTIONS,
 };

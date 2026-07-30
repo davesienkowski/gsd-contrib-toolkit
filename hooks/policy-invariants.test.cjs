@@ -51,6 +51,11 @@ function deps(over = {}) {
       worktreeRoot: '/tmp/wt',
       gsdCoreRoot: '/tmp/wt',
       runChecks: stubRunner(),
+      // PERF-01: the marker probe is an impure dep and must be injected like runChecks — the
+      // default LIVE probe would shell out to git against the fake '/tmp/wt' root. `false` is the
+      // pre-PERF-01 behavior verbatim (every check runs), so every pre-existing case below is
+      // asserting exactly what it asserted before this change.
+      markerVouchesLintCi: () => false,
       overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
     },
     over
@@ -73,6 +78,68 @@ test('git commit, all four checks green → allow', () => {
     ran.sort(),
     ['check:alias-drift', 'check:identity-drift', 'lint:ci', 'lint:docs'].sort()
   );
+});
+
+// ─── PERF-01: reuse the Tier-1 tree-SHA marker for the lint:ci dimension ───
+//
+// bin/lint-ci-stamp.cjs runs the IDENTICAL `npm run --silent lint:ci` and, only on exit 0,
+// stamps a marker keyed to `git write-tree`. hooks/lint-ci-marker.cjs then DENIES push/pr-create
+// unless that marker exists for the current tree AND the tree is clean. Re-running lint:ci here
+// on the same tree costs 6.01s (91% of this gate's runtime) to re-derive a fact already proven.
+//
+// Skipping it is narrows-not-weakens on the repo's own accepted reasoning: the marker is keyed to
+// tree CONTENT (T-07-02-STALE), so a change that could turn lint:ci red yields a different SHA;
+// and a dirty tree already invalidates the marker (EP-4/TOCTOU). lint-ci-marker.cjs:141 names
+// this exact optimization as intended design (T-07-02-PERF).
+
+test('PERF-01: a fresh Tier-1 marker on a CLEAN tree skips lint:ci — the other three still run', () => {
+  const ran = [];
+  const d = runPolicyGate(
+    input('gh pr create --title "fix(#1): x" --body y'),
+    deps({ runChecks: stubRunner({}, ran), markerVouchesLintCi: () => true })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.ok(!ran.includes('lint:ci'), 'lint:ci must NOT re-run when the marker already vouches it');
+  assert.deepStrictEqual(
+    ran.sort(),
+    ['check:alias-drift', 'check:identity-drift', 'lint:docs'].sort(),
+    'the three checks the marker does NOT vouch must still run'
+  );
+});
+
+test('PERF-01: NO marker (or a dirty tree) → lint:ci runs exactly as before', () => {
+  const ran = [];
+  const d = runPolicyGate(
+    input('gh pr create --title "fix(#1): x" --body y'),
+    deps({ runChecks: stubRunner({}, ran), markerVouchesLintCi: () => false })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.ok(ran.includes('lint:ci'), 'an unvouched tree must still pay the full lint:ci run');
+  assert.strictEqual(ran.length, 4, 'all four checks run when nothing is vouched');
+});
+
+test('PERF-01: a skipped lint:ci cannot mask a REAL failure in another check', () => {
+  const d = runPolicyGate(
+    input('gh pr create --title "fix(#1): x" --body y'),
+    deps({
+      runChecks: stubRunner({ 'check:alias-drift': 'alias drift detail' }),
+      markerVouchesLintCi: () => true,
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /check:alias-drift/);
+});
+
+test('PERF-01: a THROW from the marker probe fails closed (HARD-01), never silently skips', () => {
+  const d = runPolicyGate(
+    input('gh pr create --title "fix(#1): x" --body y'),
+    deps({
+      markerVouchesLintCi: () => {
+        throw new Error('git write-tree exploded');
+      },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
 });
 
 test('failing lint:docs → deny naming lint:docs and a tail', () => {
