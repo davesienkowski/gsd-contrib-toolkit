@@ -218,6 +218,62 @@ function runCheckLive(root, name) {
 }
 
 /**
+ * Will gsd-core's OWN `.githooks/pre-commit` run these very checks for this commit?
+ *
+ * PERF (measured): the check set here is IDENTICAL to the pre-commit's — all ten `check:*-fresh`
+ * scripts, same names. When the pre-commit is live and not bypassed, running them here too is
+ * pure duplicated work on every commit, and each `npm run` carries its own startup cost.
+ *
+ * This is NOT a weakening. The gate exists because the pre-commit is BYPASSABLE; so we skip only
+ * when it provably is not bypassed:
+ *   • the command carries no `--no-verify` / `-n`, AND
+ *   • `core.hooksPath` resolves to a directory holding an EXECUTABLE `pre-commit`.
+ * Anything unknown — an unreadable config, a missing or non-executable hook, a git failure —
+ * returns FALSE, so the checks run here and the fail-closed posture (HARD-01) is preserved.
+ * A stale artifact is still refused either way; only WHO refuses it changes.
+ *
+ * @param {string} root the gsd-core worktree root
+ * @param {Object} parsed the parsed command (argv.cjs)
+ * @param {Object} deps injected `execFileSync` / `statSync`
+ * @returns {boolean} true ⇒ safe to skip, the pre-commit covers it
+ */
+function preCommitCovers(root, parsed, deps = {}) {
+  const argv = (parsed && parsed.argv) || [];
+  // `git commit --no-verify` / `-n` skips the pre-commit entirely → we MUST run the checks.
+  if (argv.some((a) => a === '--no-verify' || a === '-n')) return false;
+
+  const execFileSync = deps.execFileSync || require('node:child_process').execFileSync;
+  const statSync = deps.statSync || require('node:fs').statSync;
+  const path = require('node:path');
+
+  let hooksPath;
+  try {
+    hooksPath = String(
+      execFileSync('git', ['-C', root, 'config', '--get', 'core.hooksPath'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    ).trim();
+  } catch (_) {
+    // Unset is the common case and exits non-zero — fall back to git's default.
+    hooksPath = '.git/hooks';
+  }
+  if (!hooksPath) hooksPath = '.git/hooks';
+
+  const hookFile = path.isAbsolute(hooksPath)
+    ? path.join(hooksPath, 'pre-commit')
+    : path.join(root, hooksPath, 'pre-commit');
+
+  try {
+    const st = statSync(hookFile);
+    // Present AND executable by someone — a non-executable file is silently ignored by git.
+    return st.isFile() && (st.mode & 0o111) !== 0;
+  } catch (_) {
+    return false; // absent / unreadable → run the checks here
+  }
+}
+
+/**
  * Keep the last TAIL_LIMIT characters of a check's output (the actionable tail).
  * @param {string} out
  * @returns {string}
@@ -255,6 +311,13 @@ function gate(stdinString, deps) {
   const staged = deps.stagedFiles(deps.gsdCoreRoot); // may throw → fail closed
   const names = matchedChecks(staged);
   if (names.length === 0) return allow(); // no governed src/generated pair staged
+
+  // PERF: gsd-core's own pre-commit runs this exact check set. When it is live and unbypassed,
+  // running them here as well is duplicated work on every commit. Skipping is safe ONLY in that
+  // case — see preCommitCovers, which returns false on `--no-verify` and on anything it cannot
+  // prove, so the fail-closed posture is unchanged.
+  const covers = deps.preCommitCovers || preCommitCovers;
+  if (covers(deps.gsdCoreRoot, parsed, deps)) return allow();
 
   const failed = [];
   for (const name of names) {
@@ -331,6 +394,7 @@ module.exports = {
   runFreshnessGate,
   gate,
   matchedChecks,
+  preCommitCovers,
   stagedFilesLive,
   runCheckLive,
   FRESHNESS_CHECKS,

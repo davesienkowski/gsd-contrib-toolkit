@@ -65,7 +65,7 @@ const path = require('node:path');
 const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction, isNonGovernedCommand } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
-const { resolveRootForCommand } = require('./lib/resolve.cjs');
+const { resolveRootForCommand, isContribBranch } = require('./lib/resolve.cjs');
 const {
   PLACEHOLDER_RE,
   hasUnfilledPlaceholders,
@@ -77,11 +77,14 @@ const {
 /** Actions this gate governs. Everything else is a no-op allow. */
 const GOVERNED_ACTIONS = new Set(['issue-create', 'pr-create', 'push']);
 
-/**
- * Branches that ARM the family. A contribution branch is `<type>/<issue#>-<slug>` per the
- * repo's branch convention; `next`/`main` and a detached HEAD are never armed.
- */
-const CONTRIB_BRANCH_RE = /^(?:fix|feat|enh|docs|chore|perf|refactor)\//;
+// Branches that ARM the family come from the ONE shared definition in `lib/resolve.cjs`
+// (`isContribBranch`), mirrored from upstream `branch-naming.yml`. `next`/`main`/`develop`, the
+// bot prefixes, and a detached HEAD are never armed.
+//
+// The former local regex invented `enh/` (absent upstream) and MISSED `hotfix|test|release|ci|
+// revert`, so this family silently did not arm on those branches — an enforcement hole that was
+// masked only because gh-pr-create.cjs happened to reject those PRs for a different, also-wrong
+// reason.
 
 /** Where a run's artifacts live, relative to the worktree root. `.gsd` is gitignored. */
 const ARTIFACT_DIR = '.gsd/contrib';
@@ -845,7 +848,7 @@ function gate(stdinString, deps) {
 
   // ARM: the contribution branch is the run boundary (CTK-ADR-0004 §Decision.3).
   const branch = deps.readBranch(); // may throw -> fail closed
-  if (!branch || branch === 'HEAD' || !CONTRIB_BRANCH_RE.test(branch)) return allow();
+  if (!branch || branch === 'HEAD' || !isContribBranch(branch)) return allow();
 
   const dir = ARTIFACT_DIR + '/' + slugify(branch);
 
@@ -1154,7 +1157,7 @@ module.exports = {
   gsdTestStateDir,
   GATES,
   GOVERNED_ACTIONS,
-  CONTRIB_BRANCH_RE,
+  isContribBranch,
   ARTIFACT_DIR,
   DISPOSITIONS,
   CODE_PATH_RE,

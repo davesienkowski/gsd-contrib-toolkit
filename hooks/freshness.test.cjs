@@ -165,3 +165,65 @@ test('FRESHNESS_CHECKS covers the full pre-commit check:*-fresh family', () => {
     assert.ok(names.includes(expected), 'missing ' + expected);
   }
 });
+
+// ───────────── PERF de-duplication: the pre-commit runs this same check set ─────────────
+//
+// gsd-core's .githooks/pre-commit runs all ten `check:*-fresh` scripts — the identical set this
+// gate runs. Duplicating them on every commit is pure waste. Skipping is safe ONLY when the
+// pre-commit provably will run; every unknown must still run the checks (HARD-01).
+
+const fresh = require('./freshness.cjs');
+
+function covers(over = {}) {
+  return fresh.preCommitCovers('/w', over.parsed || { argv: ['git', 'commit', '-m', 'x'] }, {
+    execFileSync: over.execFileSync || (() => '.githooks\n'),
+    statSync: over.statSync || (() => ({ isFile: () => true, mode: 0o755 })),
+  });
+}
+
+test('preCommitCovers: an executable pre-commit at core.hooksPath COVERS the checks', () => {
+  assert.strictEqual(covers(), true);
+});
+
+test('preCommitCovers: `--no-verify` bypasses the pre-commit → must NOT skip', () => {
+  assert.strictEqual(covers({ parsed: { argv: ['git', 'commit', '--no-verify', '-m', 'x'] } }), false);
+});
+
+test('preCommitCovers: `-n` is the same bypass → must NOT skip', () => {
+  assert.strictEqual(covers({ parsed: { argv: ['git', 'commit', '-n', '-m', 'x'] } }), false);
+});
+
+test('preCommitCovers: an ABSENT pre-commit → must NOT skip', () => {
+  assert.strictEqual(covers({ statSync: () => { throw new Error('ENOENT'); } }), false);
+});
+
+test('preCommitCovers: a NON-EXECUTABLE pre-commit is ignored by git → must NOT skip', () => {
+  assert.strictEqual(covers({ statSync: () => ({ isFile: () => true, mode: 0o644 }) }), false);
+});
+
+test('preCommitCovers: a git-config failure falls back to .git/hooks, never to "skip"', () => {
+  // config --get exits non-zero when unset; that must not be read as "covered".
+  const r = fresh.preCommitCovers('/w', { argv: ['git', 'commit'] }, {
+    execFileSync: () => { throw new Error('exit 1'); },
+    statSync: () => { throw new Error('ENOENT'); },
+  });
+  assert.strictEqual(r, false);
+});
+
+test('preCommitCovers: the check set here is IDENTICAL to what the pre-commit runs', () => {
+  // If these ever diverge, skipping would silently drop a check the pre-commit does not run.
+  // This pins the invariant the de-duplication depends on.
+  const names = fresh.FRESHNESS_CHECKS.map((c) => c.name).sort();
+  assert.deepStrictEqual(names, [
+    'check:alias-drift',
+    'check:configuration-fresh',
+    'check:decisions-fresh',
+    'check:plan-scan-fresh',
+    'check:project-root-fresh',
+    'check:schema-detect-fresh',
+    'check:secrets-fresh',
+    'check:state-document-fresh',
+    'check:workstream-inventory-builder-fresh',
+    'check:workstream-name-policy-fresh',
+  ]);
+});

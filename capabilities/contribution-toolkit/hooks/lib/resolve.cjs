@@ -200,6 +200,67 @@ function resolveRootForCommand(command, baseCwd) {
 const GSD_CORE_OWNER = 'open-gsd';
 const GSD_CORE_REPO = 'gsd-core';
 
+// ─────────────────────── the branch-naming policy (ONE definition) ───────────────────────
+//
+// Mirrors `.github/workflows/branch-naming.yml` on `origin/next` — the AUTHORITATIVE upstream
+// policy. Read it before editing this list; a drift here is a false deny or an enforcement hole.
+//
+// Two gates consumed this and had drifted APART, each also wrong against upstream:
+//   • `gh-pr-create.cjs` allowed only `fix|docs|feat` AND additionally demanded an issue number
+//     (`/^(fix|docs|feat)\/\d+-/`). Upstream requires NEITHER — it denied `hotfix/`, `perf/`,
+//     `refactor/`, `test/`, `release/`, `ci/`, `revert/` and every no-issue-number branch that
+//     upstream accepts.
+//   • `protocol-artifact.cjs` armed on `fix|feat|enh|docs|chore|perf|refactor` — inventing `enh/`
+//     (absent upstream) while MISSING `hotfix|test|release|ci|revert`, so the whole contribution
+//     artifact family silently did not arm on those branches.
+//
+// Upstream emits `core.warning` and does NOT fail the job; the toolkit deliberately keeps a DENY
+// (a warning is not a gate). What is NOT ours to invent is the branch SET — that is upstream's.
+const UPSTREAM_BRANCH_PREFIXES = Object.freeze([
+  'feat/', 'fix/', 'hotfix/', 'docs/', 'chore/',
+  'refactor/', 'test/', 'release/', 'ci/', 'perf/', 'revert/',
+]);
+
+// Branches upstream exempts outright: the long-lived trunks, bot branches, and GSD/Claude
+// auto-created branches. `branch-naming.yml` returns early for each of these.
+const BRANCH_EXEMPT_EXACT = Object.freeze(['main', 'next', 'develop']);
+const BRANCH_EXEMPT_PREFIXES = Object.freeze(['dependabot/', 'renovate/', 'gsd/', 'claude/']);
+
+/**
+ * Does `branch` satisfy the upstream branch-naming convention?
+ *
+ * Exempt branches answer TRUE — upstream returns before its prefix test, so treating them as
+ * violations would deny work upstream never objects to. A detached HEAD or an unreadable branch
+ * is the CALLER's problem: pass a non-empty string or handle the false yourself.
+ *
+ * @param {string} branch the branch NAME (no `refs/heads/` prefix)
+ * @returns {boolean}
+ */
+function isConventionalBranch(branch) {
+  const b = String(branch || '');
+  if (!b) return false;
+  if (BRANCH_EXEMPT_EXACT.includes(b)) return true;
+  if (BRANCH_EXEMPT_PREFIXES.some((p) => b.startsWith(p))) return true;
+  return UPSTREAM_BRANCH_PREFIXES.some((p) => b.startsWith(p));
+}
+
+/**
+ * Is `branch` a CONTRIBUTION branch — one the artifact protocol should arm on?
+ *
+ * This is `isConventionalBranch` MINUS the exemptions: `next` is conventional but is not a
+ * contribution branch, and arming the protocol family on it would be nonsense.
+ *
+ * @param {string} branch the branch NAME
+ * @returns {boolean}
+ */
+function isContribBranch(branch) {
+  const b = String(branch || '');
+  if (!b) return false;
+  if (BRANCH_EXEMPT_EXACT.includes(b)) return false;
+  if (BRANCH_EXEMPT_PREFIXES.some((p) => b.startsWith(p))) return false;
+  return UPSTREAM_BRANCH_PREFIXES.some((p) => b.startsWith(p));
+}
+
 // A GitHub-safe owner/repo segment: alnum, dot, dash, underscore. Anything else
 // (a stray `:`, whitespace, a second path separator that survived normalization) means
 // the input did NOT resolve to an enumerated owner/repo → null (fail-closed signal).
@@ -450,6 +511,11 @@ module.exports = {
   // truth for "which repo is upstream". They were module-private until 260730-0ov.
   GSD_CORE_OWNER,
   GSD_CORE_REPO,
+  UPSTREAM_BRANCH_PREFIXES,
+  BRANCH_EXEMPT_EXACT,
+  BRANCH_EXEMPT_PREFIXES,
+  isConventionalBranch,
+  isContribBranch,
   parseOwnerRepo,
   repoSpecTargetsGsdCore,
   tokenTargetsGsdCoreApi,

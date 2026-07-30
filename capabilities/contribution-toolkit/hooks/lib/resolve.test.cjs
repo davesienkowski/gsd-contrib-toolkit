@@ -560,3 +560,65 @@ test('real gsd-core: resolves the root and require()s the LIVE issue-version-gat
   const decision = prTarget.classifyPrTarget('next', 'anything');
   assert.strictEqual(decision.decision, 'allowed');
 });
+
+// ───────────────── the shared branch-naming policy (one definition) ─────────────────
+//
+// Mirrors upstream `.github/workflows/branch-naming.yml`. These cases are the exact ones the
+// two former local copies got WRONG: gh-pr-create.cjs allowed only `fix|docs|feat` AND demanded
+// an issue number; protocol-artifact.cjs invented `enh/` and missed five upstream prefixes.
+
+test('branch policy: every upstream prefix is conventional (the 8 gh-pr-create used to DENY)', () => {
+  for (const p of res.UPSTREAM_BRANCH_PREFIXES) {
+    assert.strictEqual(res.isConventionalBranch(p + '2801-thing'), true,
+      p + ' is valid upstream and must not be denied');
+  }
+  // The specific regressions: these were denied by the old /^(fix|docs|feat)\/\d+-/.
+  for (const b of ['hotfix/2801-x', 'perf/2801-x', 'refactor/2801-x', 'test/2801-x',
+    'release/1.9.0', 'ci/2801-x', 'revert/2801-x']) {
+    assert.strictEqual(res.isConventionalBranch(b), true, b + ' must be accepted');
+  }
+});
+
+test('branch policy: upstream requires NO issue number — a bare slug is conventional', () => {
+  // The old gh-pr-create regex demanded `\d+-`; upstream never does.
+  assert.strictEqual(res.isConventionalBranch('fix/typo-in-readme'), true);
+  assert.strictEqual(res.isConventionalBranch('docs/clarify-adr-0007'), true);
+});
+
+test('branch policy: `enh/` was INVENTED locally and is not upstream', () => {
+  assert.strictEqual(res.isConventionalBranch('enh/2801-x'), false);
+  assert.strictEqual(res.isContribBranch('enh/2801-x'), false);
+});
+
+test('branch policy: a non-conventional prefix is rejected', () => {
+  for (const b of ['wip/thing', 'dave/scratch', 'nonsense', '']) {
+    assert.strictEqual(res.isConventionalBranch(b), false, b + ' must be rejected');
+  }
+});
+
+test('branch policy: upstream exemptions are conventional but are NOT contribution branches', () => {
+  for (const b of ['main', 'next', 'develop', 'dependabot/npm/x', 'renovate/y',
+    'gsd/auto-1', 'claude/auto-2']) {
+    assert.strictEqual(res.isConventionalBranch(b), true, b + ' is exempt upstream');
+    assert.strictEqual(res.isContribBranch(b), false,
+      b + ' must never ARM the artifact protocol');
+  }
+});
+
+test('branch policy: the five prefixes protocol-artifact used to MISS now arm the family', () => {
+  // The enforcement hole: `hotfix|test|release|ci|revert` did not arm the artifact protocol.
+  for (const b of ['hotfix/2801-x', 'test/2801-x', 'release/1.9.0', 'ci/2801-x', 'revert/2801-x']) {
+    assert.strictEqual(res.isContribBranch(b), true, b + ' must arm the protocol');
+  }
+});
+
+test('branch policy: the two gates now agree — contrib ⊆ conventional, no gate-only branch', () => {
+  const samples = ['fix/1-a', 'hotfix/2-b', 'enh/3-c', 'wip/d', 'next', 'main',
+    'dependabot/x', 'release/1.0.0', 'fix/no-number'];
+  for (const b of samples) {
+    if (res.isContribBranch(b)) {
+      assert.strictEqual(res.isConventionalBranch(b), true,
+        b + ' arms the protocol but would be DENIED at PR time — the old contradiction');
+    }
+  }
+});

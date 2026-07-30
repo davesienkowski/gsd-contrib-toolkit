@@ -186,7 +186,7 @@ test('Closes #N is also accepted as a link', () => {
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
 });
 
-test('branch not matching fix|docs|feat/<n>- (toolkit-owned) → DENY, worded as ours', () => {
+test('branch with a non-conventional prefix → DENY, worded as ours', () => {
   const d = runPrGate(
     input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
     deps({ branch: 'my-random-branch' })
@@ -1397,3 +1397,42 @@ function escapeNl(s) {
 function escapeSingle(s) {
   return s.replace(/\n/g, '\\n').replace(/'/g, "'\\''");
 }
+
+// ── the shared upstream branch policy (was: a 3-prefix + issue-number local copy) ──
+//
+// `gh-pr-create` used to enforce /^(fix|docs|feat)\/\d+-/ — only 3 of upstream's 11 prefixes,
+// plus an issue-number requirement upstream never makes. Every branch below is valid per
+// `.github/workflows/branch-naming.yml` and was being DENIED locally.
+
+for (const head of ['hotfix/2801-x', 'perf/2801-x', 'refactor/2801-x', 'test/2801-x',
+  'release/1.9.0', 'ci/2801-x', 'revert/2801-x', 'chore/2801-x']) {
+  test('branch policy: `' + head + '` is valid upstream → must NOT be denied for its name', () => {
+    const d = runPrGate(
+      input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
+      deps({ branch: head })
+    );
+    if (d.permissionDecision === 'deny') {
+      assert.doesNotMatch(d.permissionDecisionReason, /conventional prefixes/i,
+        head + ' must not be rejected by the branch-name check');
+    }
+  });
+}
+
+test('branch policy: upstream requires no issue number — `fix/typo-in-readme` passes the name check', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({ branch: 'fix/typo-in-readme' })
+  );
+  if (d.permissionDecision === 'deny') {
+    assert.doesNotMatch(d.permissionDecisionReason, /conventional prefixes/i);
+  }
+});
+
+test('branch policy: the deny reason NAMES the accepted prefixes (actionable, not just "bad")', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({ branch: 'wip/whatever' })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /hotfix\//, 'the reason lists the valid prefixes');
+});

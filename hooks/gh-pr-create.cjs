@@ -51,14 +51,20 @@ const {
   classifyAction, findActionSegment, isNonGovernedCommand, hasGovernedSegment, hasFailClosedSegment,
 } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
-const { resolveRootForCommand, requireLiveScript, commandTargetsGsdCore, parseOwnerRepo } = require('./lib/resolve.cjs');
+const {
+  resolveRootForCommand, requireLiveScript, commandTargetsGsdCore, parseOwnerRepo,
+  isConventionalBranch, UPSTREAM_BRANCH_PREFIXES,
+} = require('./lib/resolve.cjs');
 
 // FailClosed/safeCommand: shared IN-03 helpers from failclosed.cjs.
 
 // Toolkit-OWNED policies (replicated from gsd-core CI workflows — H-A). Documented as
 // ours; the deny reasons name them as the toolkit's own.
 const LINKED_ISSUE_RE = /\b(?:Fixes|Closes|Resolves)\s+#\d+\b/i;
-const BRANCH_NAME_RE = /^(fix|docs|feat)\/\d+-/;
+// The branch-name policy is deliberately NOT defined here. It is ONE shared definition in
+// `lib/resolve.cjs` (`isConventionalBranch` / `UPSTREAM_BRANCH_PREFIXES`), mirrored from
+// upstream `branch-naming.yml`. A second local copy is what let this gate and
+// `protocol-artifact.cjs` drift apart.
 
 const OWNED_NOTE =
   'This is the toolkit’s own check — a gsd-core CI-workflow policy ' +
@@ -580,12 +586,17 @@ function gate(stdinString, deps) {
     );
   }
 
-  // (4) ENF-10 — TOOLKIT-OWNED branch-name check (H-A).
-  if (typeof head !== 'string' || !BRANCH_NAME_RE.test(head)) {
+  // (4) ENF-10 — branch-name check, against the SHARED upstream policy (see resolve.cjs).
+  // The prefix SET is upstream's (`branch-naming.yml`), not ours; only the severity is ours
+  // (upstream warns, this denies). The former local regex additionally demanded an issue number
+  // and allowed only 3 of upstream's 11 prefixes, denying legitimate PRs.
+  if (typeof head !== 'string' || !isConventionalBranch(head)) {
     return deny(
       'Head branch `' +
         String(head) +
-        '` does not match the required `fix|docs|feat/<issue#>-slug` form. ' +
+        '` does not use one of the conventional prefixes: ' +
+        UPSTREAM_BRANCH_PREFIXES.join(', ') +
+        '. ' +
         OWNED_NOTE
     );
   }
@@ -1404,5 +1415,6 @@ module.exports = {
   ownerRepoFromRemote,
   resolveExplicitTarget,
   LINKED_ISSUE_RE,
-  BRANCH_NAME_RE,
+  isConventionalBranch,
+  UPSTREAM_BRANCH_PREFIXES,
 };
