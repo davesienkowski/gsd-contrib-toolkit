@@ -297,6 +297,50 @@ function runtimeDigest(root, deps = {}) {
 }
 
 /**
+ * The PAYLOAD INVENTORY (D-13): the sorted `<dir>/<relative path>` list across the four payload
+ * directories — names only, no content.
+ *
+ * WHY NAMES: `bin/install.js` applies TWO content transforms when it writes the payload, and a
+ * byte comparison is defeated by the second one.
+ *   1. `/gsd:<cmd>` → `/gsd-<cmd>` (`hostBehaviors.hyphenNameAgentBody`) — config-independent.
+ *   2. the CONFIG-DIR path is baked in (`copyWithPathReplacement`): the same source line renders
+ *      as `~/.claude/notes/…` in the repo, `$HOME/.claude/notes/…` when installed to `~/.claude`,
+ *      and `<sandbox>/cfg/notes/…` when installed anywhere else.
+ * Transform 2 makes any two installs with DIFFERENT config dirs differ by construction — which is
+ * why comparing a real install against a sandboxed "projection" can never succeed.
+ *
+ * The inventory is invariant under BOTH transforms (neither adds, removes, or renames a file), so
+ * it is a sound cross-install comparison. It is genuinely weaker than byte-equality — it proves
+ * the right FILE SET, not the right bytes — and callers must describe it honestly.
+ *
+ * @param {string} root the directory CONTAINING the four payload dirs
+ * @param {Object} [deps] injectable `readdirSync`
+ * @returns {string[]} sorted relative paths, prefixed by their payload dir
+ */
+function payloadInventory(root, deps = {}) {
+  const readdirSync = deps.readdirSync || nodeFs.readdirSync;
+  const out = [];
+  for (const dir of PAYLOAD_DIRS) {
+    const base = path.join(root, dir);
+    const walk = (abs, rel) => {
+      let entries;
+      try {
+        entries = readdirSync(abs, { withFileTypes: true });
+      } catch (_) {
+        return; // an absent payload dir contributes nothing; the caller compares the whole list
+      }
+      for (const e of entries.slice().sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+        const childRel = rel ? rel + '/' + e.name : e.name;
+        if (e.isDirectory()) walk(path.join(abs, e.name), childRel);
+        else out.push(dir + '/' + childRel);
+      }
+    };
+    walk(base, '');
+  }
+  return out.sort();
+}
+
+/**
  * The PAYLOAD digest (D-09): a digest of only the four installer-projected directories, used by
  * `bin/runtime-sync.cjs` to compare a fresh clone against the installed runtime. It answers the
  * NARROWER question "does the runtime's payload equal `next`'s?" — it cannot see `bin/`, which
@@ -696,6 +740,7 @@ module.exports = {
   // digests
   runtimeDigest,
   payloadDigest,
+  payloadInventory,
   // stamp
   readStamp,
   writeStamp,

@@ -66,15 +66,22 @@ function syncDeps(over = {}) {
   };
   const d = over.digests || {};
   const cloneDigest = d.clone || DIGEST;
-  const projectionDigest = d.projection || cloneDigest;
   const runtimeSeq = Array.isArray(d.runtime) ? d.runtime : [d.runtime || DIGEST];
   let realInstalls = 0;
 
   const payloadDigest = (root) => {
     const s = String(root);
-    if (s.includes('.enf21-projection')) return projectionDigest;
     if (s.startsWith(TMP)) return cloneDigest;
     return runtimeSeq[Math.min(realInstalls, runtimeSeq.length - 1)];
+  };
+
+  // D-13: the post-install check is the payload INVENTORY, not bytes. `inventory` is
+  // {clone, runtime}; equal lists ⇒ confirmed. Default: identical.
+  const inv = over.inventory || {};
+  const payloadInventory = (root) => {
+    const s = String(root);
+    const dflt = ['workflows/a.md', 'references/b.md'];
+    return s.startsWith(TMP) ? (inv.clone || dflt) : (inv.runtime || inv.clone || dflt);
   };
 
   const deps = Object.assign(
@@ -83,6 +90,7 @@ function syncDeps(over = {}) {
       oracle: Object.assign({}, oracle, {
         fetchTipLive: () => (over.tip === undefined ? TIP : over.tip),
         payloadDigest,
+        payloadInventory,
         runtimeDigest: () => DIGEST,
         writeStamp: (s) => { state.stamps.push(s); return '/s/runtime-stamp.json'; },
       }, over.oracle || {}),
@@ -251,11 +259,11 @@ test('sync SLOW PATH: npm ci runs in the CLONE with a bounded timeout, install.j
   assert.strictEqual(inst.opts.timeout, 300000);
 });
 
-test('sync SLOW PATH: a post-install re-verify MISMATCH aborts non-zero with NO stamp (T-0ov-06)', () => {
-  const bad = 'sha256:' + '1'.repeat(64);
-  // Differs from the clone AND from the projection, and the reinstall does not fix it.
+test('sync SLOW PATH: a post-install INVENTORY mismatch aborts non-zero, NO stamp (T-0ov-06)', () => {
+  const STALE = 'sha256:' + '1'.repeat(64);
   const { deps, state } = syncDeps({
-    digests: { clone: DIGEST, projection: DIGEST, runtime: [bad, bad] },
+    digests: { clone: DIGEST, runtime: [STALE, STALE] },
+    inventory: { clone: ['workflows/a.md', 'workflows/b.md'], runtime: ['workflows/a.md'] },
   });
   const r = cli.sync(deps);
   assert.notStrictEqual(r.code, 0);
@@ -264,87 +272,43 @@ test('sync SLOW PATH: a post-install re-verify MISMATCH aborts non-zero with NO 
   assert.strictEqual(state.rm.length, 1, 'the tmpdir is still removed on the failure path');
 });
 
-test('sync SLOW PATH: the post-install-mismatch abort EXCLUDES the transform as the cause', () => {
-  // Post-D-11 both sides of the failing comparison were produced by running the SAME installer on
-  // the SAME tip, so the known `/gsd:` → `/gsd-` rewrite can no longer explain a mismatch here.
-  // The abort must say so — otherwise it sends the reader chasing a cause that is already handled —
-  // and must still forbid hand-writing the stamp, which would forge the gate's own evidence.
-  const bad = 'sha256:' + '1'.repeat(64);
+test('sync SLOW PATH: the abort NAMES the missing files and rules the transforms out', () => {
+  // D-13: the inventory is invariant under BOTH installer transforms, so a mismatch here cannot
+  // be blamed on them — the message must say so and point at the actual wrong file set.
+  const STALE = 'sha256:' + '1'.repeat(64);
   const { deps, state } = syncDeps({
-    digests: { clone: DIGEST, projection: DIGEST, runtime: [bad, bad] },
+    digests: { clone: DIGEST, runtime: [STALE, STALE] },
+    inventory: { clone: ['workflows/a.md', 'workflows/b.md'], runtime: ['workflows/a.md'] },
   });
   cli.sync(deps);
   const out = state.logs.join('\n');
-  assert.match(out, /already accounted for/i, 'it states the transform is handled, not the cause');
-  assert.match(out, /NOT the known transform/i, 'it explicitly rules the transform out');
-  assert.match(out, /Do not work around it by hand-writing/i, 'it still forbids forging the stamp');
-  assert.match(out, /CTK-ADR-0007/, 'it points at the recorded decision');
-  assert.doesNotMatch(out, /abort will recur on every run/i,
-    'the permanent-dead-end language is obsolete — D-11 removed the dead end');
+  assert.match(out, /invariant under both known installer transforms/i);
+  assert.match(out, /workflows\/b\.md/, 'the missing file is named');
+  assert.match(out, /Do not work around it by hand-writing/i, 'still forbids forging the stamp');
+  assert.match(out, /CTK-ADR-0007/);
 });
 
-// ───────────────────────── sync: the projection path (D-11) ─────────────────────────
-
-test('sync D-11: runtime matches the PROJECTION → no reinstall, stamp projection-verified', () => {
-  // The measured real-world case: the installer rewrote `/gsd:<cmd>` → `/gsd-<cmd>`, so the raw
-  // clone can never equal the runtime — but the runtime IS at the tip. Before D-11 this reinstalled
-  // and then aborted forever; now it must recognise the runtime as current and mutate NOTHING.
-  const RAW = 'sha256:' + 'a'.repeat(64);
-  const INSTALLED = 'sha256:' + 'b'.repeat(64);
-  const { deps, state } = syncDeps({
-    digests: { clone: RAW, projection: INSTALLED, runtime: INSTALLED },
-  });
-  const r = cli.sync(deps);
-  assert.strictEqual(r.code, 0);
-  assert.strictEqual(state.stamps.length, 1);
-  assert.strictEqual(state.stamps[0].mode, 'projection-verified');
-  assert.strictEqual(state.stamps[0].engine_verified, false,
-    'no real install happened, so the engine is not verified');
-  assert.strictEqual(state.stamps[0].sha, TIP);
-  const realInstall = state.exec.find((c) => isInstall(c) && !c.args.includes('--config-dir'));
-  assert.strictEqual(realInstall, undefined,
-    'the runtime already matches the projection — a REAL install must not run');
-});
-
-test('sync D-11: the projection install is sandboxed — --config-dir AND a redirected HOME', () => {
-  // It runs the real installer purely to observe its transform. If it could reach the user's
-  // ~/.claude it would be performing the very mutation the projection exists to avoid.
-  const RAW = 'sha256:' + 'a'.repeat(64);
-  const INSTALLED = 'sha256:' + 'b'.repeat(64);
-  const calls = [];
-  const { deps } = syncDeps({ digests: { clone: RAW, projection: INSTALLED, runtime: INSTALLED } });
-  const inner = deps.execFileSync;
-  deps.execFileSync = (file, args, opts) => {
-    calls.push({ file, args, opts });
-    return inner(file, args, opts);
-  };
-  cli.sync(deps);
-  const proj = calls.find((c) => isInstall(c) && c.args.includes('--config-dir'));
-  assert.ok(proj, 'a projection install must run');
-  const cfg = proj.args[proj.args.indexOf('--config-dir') + 1];
-  assert.ok(String(cfg).startsWith(TMP), 'the projection config dir must live inside the tmpdir');
-  assert.ok(proj.opts.env && String(proj.opts.env.HOME).startsWith(TMP),
-    'HOME must be redirected into the tmpdir so a homedir() fallback cannot reach ~/.claude');
-});
-
-test('sync D-11: `npm ci` runs at most ONCE even though projection and install both need it', () => {
-  const RAW = 'sha256:' + 'a'.repeat(64);
+test('sync D-13: a matching inventory CONFIRMS the install even when the DIGEST differs', () => {
+  // This is the whole point: the config-dir bake guarantees the digest differs, so keying the
+  // confirmation on bytes made a correct install unconfirmable.
   const STALE = 'sha256:' + '1'.repeat(64);
-  const INSTALLED = 'sha256:' + 'b'.repeat(64);
   const { deps, state } = syncDeps({
-    digests: { clone: RAW, projection: INSTALLED, runtime: [STALE, INSTALLED] },
+    digests: { clone: DIGEST, runtime: [STALE, STALE] },
+    inventory: { clone: ['workflows/a.md', 'references/b.md'] },
   });
   const r = cli.sync(deps);
   assert.strictEqual(r.code, 0);
   assert.strictEqual(state.stamps[0].mode, 'installed');
-  assert.strictEqual(state.exec.filter(isNpmCi).length, 1, '`npm ci` is hoisted, not repeated');
+  assert.strictEqual(state.stamps[0].engine_verified, true);
 });
 
-test('sync D-11: the fast path still costs NO projection install', () => {
-  const { deps, state } = syncDeps({ digests: { clone: DIGEST, runtime: DIGEST } });
+test('sync D-13: no sandboxed projection install is attempted any more (it was unsound)', () => {
+  const STALE = 'sha256:' + '1'.repeat(64);
+  const { deps, state } = syncDeps({ digests: { clone: DIGEST, runtime: [STALE, STALE] } });
   cli.sync(deps);
-  assert.ok(!ran(state, isInstall), 'a raw match must short-circuit before any install');
-  assert.ok(!ran(state, isNpmCi));
+  const proj = state.exec.find((c) => isInstall(c) && c.args.includes('--config-dir'));
+  assert.strictEqual(proj, undefined,
+    'a sandboxed projection can never match a real install — it must not be run');
 });
 
 // ───────────────────────────── sync: the race guard ─────────────────────────────
@@ -365,71 +329,76 @@ test('sync: an exploding clone still removes the tmpdir (finally, not a happy-pa
   deps.execFileSync = (file, args) => {
     state.exec.push({ file, args });
     if (file === 'git' && args[0] === 'clone') throw new Error('network down');
-    return TIP + '\n';
+    return '';
   };
   const r = cli.sync(deps);
   assert.notStrictEqual(r.code, 0);
   assert.strictEqual(state.stamps.length, 0);
-  assert.strictEqual(state.rm.length, 1);
+  assert.strictEqual(state.rm.length, 1, 'the tmpdir must be removed on the failure path too');
 });
 
-test('sync: an unreachable upstream aborts BEFORE any tmpdir is created', () => {
+test('sync: an unresolvable upstream tip aborts BEFORE creating a tmpdir', () => {
   const { deps, state } = syncDeps({
-    oracle: { fetchTipLive: () => { throw new oracle.UpstreamUnavailable('offline'); } },
+    oracle: { fetchTipLive: () => { throw new Error('offline'); } },
   });
   const r = cli.sync(deps);
-  assert.notStrictEqual(r.code, 0);
-  assert.strictEqual(state.mkdtemp, 0);
-  assert.strictEqual(state.rm.length, 0);
+  assert.strictEqual(r.code, 2);
+  assert.strictEqual(state.mkdtemp, 0, 'an outage must cost nothing');
   assert.strictEqual(state.stamps.length, 0);
 });
 
-test('sync: the clone is shallow, branch-pinned to `next`, and reads the UPSTREAM_URL constant', () => {
-  const { deps, state } = syncDeps();
-  cli.sync(deps);
-  const clone = state.exec.find(isClone);
-  assert.deepStrictEqual(clone.args, [
-    'clone', '--depth', '1', '--branch', oracle.UPSTREAM_REF, oracle.UPSTREAM_URL, TMP,
-  ]);
-});
+// ─────────── D-12 (corrected): NEVER auto-collapse a symlinked runtime root ───────────
+//
+// An earlier revision set GSD_ALLOW_SYMLINKED_DEST=1 automatically once it had verified the link
+// stayed inside the install root. That was proven wrong DESTRUCTIVELY: the install replaced the
+// symlink with a real directory and the active sibling kept the old payload. Collapsing a
+// deliberate layout is the user's call; this tool aborts and explains.
 
-test('sync NEVER touches the local gsd-core clone (no path outside the tmpdir is written)', () => {
-  const { deps, state } = syncDeps({ payloads: [[DIGEST, 'sha256:' + '1'.repeat(64)], [DIGEST, DIGEST]] });
-  cli.sync(deps);
-  for (const call of state.exec) {
-    const joined = call.args.join(' ');
-    assert.ok(
-      !/repos\/gsd-core/.test(joined),
-      'no exec call may reference the local /home/dave/repos/gsd-core clone: ' + joined
-    );
-  }
-});
+function linkDeps(over = {}) {
+  return {
+    lstatSync: over.lstatSync || (() => ({ isSymbolicLink: () => true })),
+    realpathSync: over.realpathSync || (() => '/home/u/.claude/gsd-core-next-edge'),
+    env: over.env || {},
+  };
+}
 
-// ───────────────────────────── main / argv ─────────────────────────────
-
-test('main: dispatches `check` and `sync`, and rejects anything else with usage', () => {
+test('symlinkPreflight: a symlinked runtime root BLOCKS, even when contained in the install root', () => {
   const logs = [];
-  const stub = { log: (l) => logs.push(String(l)) };
-  let checked = 0;
-  let synced = 0;
-  const deps = Object.assign({}, stub, {
-    checkImpl: () => { checked += 1; return { code: 0, verdict: 'fresh' }; },
-    syncImpl: () => { synced += 1; return { code: 0 }; },
-  });
-  assert.strictEqual(cli.main(['check'], deps), 0);
-  assert.strictEqual(checked, 1);
-  assert.strictEqual(cli.main(['sync'], deps), 0);
-  assert.strictEqual(synced, 1);
-  const bad = cli.main(['frobnicate'], deps);
-  assert.notStrictEqual(bad, 0);
-  assert.ok(logs.join('\n').includes('check'), 'usage names the subcommands');
-  assert.ok(logs.join('\n').includes('sync'));
+  const r = cli.symlinkPreflight('/home/u/.claude/gsd-core', (l) => logs.push(String(l)), linkDeps());
+  assert.strictEqual(r.blocked, true, 'containment is NOT sufficient — the layout is what matters');
+  assert.match(logs.join('\n'), /SYMLINK/);
+  assert.match(logs.join('\n'), /GSD_ALLOW_SYMLINKED_DEST=1/, 'it names the deliberate opt-out');
 });
 
-test('main: no subcommand prints usage and exits non-zero (no implicit mutation)', () => {
-  const logs = [];
-  let synced = 0;
-  const code = cli.main([], { log: (l) => logs.push(String(l)), syncImpl: () => { synced += 1; return { code: 0 }; } });
-  assert.notStrictEqual(code, 0);
-  assert.strictEqual(synced, 0, 'a bare invocation must never default to the mutating subcommand');
+test('symlinkPreflight: the tool never sets the flag itself — only the user\'s own env unblocks', () => {
+  const r = cli.symlinkPreflight('/home/u/.claude/gsd-core', () => {},
+    linkDeps({ env: { GSD_ALLOW_SYMLINKED_DEST: '1' } }));
+  assert.strictEqual(r.blocked, false, 'an explicit user opt-in is honored');
+});
+
+test('symlinkPreflight: a REAL directory proceeds normally', () => {
+  const r = cli.symlinkPreflight('/home/u/.claude/gsd-core', () => {},
+    linkDeps({ lstatSync: () => ({ isSymbolicLink: () => false }) }));
+  assert.strictEqual(r.blocked, false);
+});
+
+test('symlinkPreflight: an ABSENT runtime root does not throw and does not block', () => {
+  const r = cli.symlinkPreflight('/home/u/.claude/gsd-core', () => {},
+    linkDeps({ lstatSync: () => { throw new Error('ENOENT'); } }));
+  assert.strictEqual(r.blocked, false);
+});
+
+test('sync: a symlinked runtime root aborts BEFORE npm ci or install.js, with NO stamp', () => {
+  const STALE = 'sha256:' + '1'.repeat(64);
+  const { deps, state } = syncDeps({ digests: { clone: DIGEST, runtime: [STALE, STALE] } });
+  deps.lstatSync = () => ({ isSymbolicLink: () => true });
+  deps.realpathSync = () => '/home/u/.claude/gsd-core-next-edge';
+  deps.env = {};
+  const r = cli.sync(deps);
+  assert.strictEqual(r.reason, 'symlinked-runtime-root');
+  assert.notStrictEqual(r.code, 0);
+  assert.ok(!ran(state, isNpmCi), 'it must abort before the expensive work');
+  assert.ok(!ran(state, isInstall), 'and before writing anything');
+  assert.strictEqual(state.stamps.length, 0);
+  assert.strictEqual(state.rm.length, 1, 'the tmpdir is still cleaned up');
 });

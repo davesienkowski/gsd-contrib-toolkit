@@ -37,23 +37,25 @@
  * engine_verified:true`. `engine_verified` is RECORDED, NOT GATED: the gate keys on `sha` +
  * `runtime_digest`. Do not quietly promote it to a gate input.
  *
- * ── WHY A RAW CLONE↔RUNTIME COMPARISON IS NOT ENOUGH (D-11) ─────────────────────────────
- * `bin/install.js` is NOT a byte-copy. It rewrites `/gsd:<cmd>` → `/gsd-<cmd>` throughout the
- * payload it writes, driven by the target runtime descriptor's
- * `hostBehaviors.hyphenNameAgentBody` (gsd-core #3583 / #3677). Measured on this machine: 104
- * `workflows/`, 32 `references/` and 16 `templates/` files differ by exactly that substitution,
- * while `contexts/` — which contains no command references — matches byte-for-byte.
+ * ── WHY BYTE-EQUALITY CANNOT CONFIRM AN INSTALL (D-13, replaces D-11) ──────────────────
+ * `bin/install.js` is NOT a byte-copy. It applies TWO transforms to the payload it writes:
+ *   1. `/gsd:<cmd>` → `/gsd-<cmd>`, per the target descriptor's
+ *      `hostBehaviors.hyphenNameAgentBody` (gsd-core #3583 / #3677) — config-INDEPENDENT.
+ *   2. the CONFIG-DIR PATH is baked in (`copyWithPathReplacement`) — config-DEPENDENT.
+ *      Measured on `workflows/note.md`: the repo says `~/.claude/notes/…`, an install to
+ *      `~/.claude` writes `$HOME/.claude/notes/…`, and an install anywhere else writes that
+ *      other path.
  *
- * So `raw clone payload == installed payload` is simply the WRONG QUESTION wherever the
- * transform fires: it can never be satisfied, which made the original post-install re-verify
- * abort permanently and left ENF-21 denying with an unreachable remediation.
+ * D-11 tried to neutralise (1) by running the LIVE installer a second time into a throwaway
+ * `--config-dir` and comparing against that projection. Transform (2) defeats it: a projection
+ * must use a DIFFERENT config dir than the real install, so the two can never match. The
+ * projection comparison could only ever FAIL, which is exactly what it did on first real use.
  *
- * The fix does NOT replicate upstream's rewrite policy here — that is exactly what
- * CTK-ADR-0001 §3 forbids, and it would rot the moment upstream changed the rule. Instead the
- * LIVE installer is run a SECOND time into a throwaway config dir and that output is hashed:
- * upstream stays the sole authority on its own transform, and we merely ensure the same
- * transform has been applied to both sides before comparing. A raw match still short-circuits
- * first, so the extra install is paid only when the cheap comparison is inconclusive.
+ * D-13 compares the payload INVENTORY instead — the sorted file list across the four payload
+ * dirs. Neither transform adds, removes, or renames a file, so the inventory is invariant under
+ * both while still proving the tip's payload actually landed. This is deliberately weaker than
+ * byte-equality and is described as such: it proves the right FILE SET, not the right bytes.
+ * The raw byte comparison is kept as a fast path, since when it does hold it proves more.
  */
 
 const nodeFs = require('node:fs');
@@ -69,7 +71,76 @@ const INSTALL_TIMEOUT_MS = 300000;
 /** The shallow clone. */
 const CLONE_TIMEOUT_MS = 300000;
 
+/**
+ * Refuse to reinstall over a SYMLINKED runtime root (D-12, corrected).
+ *
+ * A multi-runtime layout parks several runtimes side by side and makes `<root>/gsd-core` a
+ * SYMLINK to whichever is active:
+ *
+ *   ~/.claude/gsd-core -> ~/.claude/gsd-core-next-edge
+ *   ~/.claude/gsd-core-stable/   ~/.claude/gsd-core-edge/   ~/.claude/gsd-core-next-edge/
+ *
+ * `bin/install.js` refuses to write through such a destDir and names
+ * `GSD_ALLOW_SYMLINKED_DEST=1` as the opt-out.
+ *
+ * ⚠️ THIS TOOL MUST NEVER SET THAT FLAG ITSELF. An earlier revision did, after verifying the
+ * link stayed INSIDE the install root — reasoning the guard was about path CONFINEMENT. That
+ * was wrong, and it was proven wrong destructively: the install REPLACED the symlink with a real
+ * directory, so the switch was gone and the active sibling silently kept the OLD payload.
+ * Containment is not the only thing that guard protects; the symlink LAYOUT is.
+ *
+ * Whether to collapse a deliberate symlink layout is the USER's decision, never an automatic
+ * remediation's. So: abort with instructions. If the user genuinely wants it, they set
+ * `GSD_ALLOW_SYMLINKED_DEST=1` in their own environment and re-run — that env is inherited
+ * untouched, so their explicit choice still works.
+ *
+ * @param {string} runtimeRoot the `<install root>/gsd-core` path
+ * @param {(l:string)=>void} log
+ * @param {Object} [deps] injectable `lstatSync` / `realpathSync` / `env`
+ * @returns {{blocked:boolean, target?:string}}
+ */
+function symlinkPreflight(runtimeRoot, log, deps = {}) {
+  const lstatSync = deps.lstatSync || nodeFs.lstatSync;
+  const realpathSync = deps.realpathSync || nodeFs.realpathSync;
+  const env = deps.env || process.env;
+
+  let isLink = false;
+  try {
+    isLink = lstatSync(runtimeRoot).isSymbolicLink();
+  } catch (_) {
+    return { blocked: false }; // absent → the installer will create it normally
+  }
+  if (!isLink) return { blocked: false };
+
+  // The user's OWN explicit opt-in is honored — it is their layout and their call.
+  if (env.GSD_ALLOW_SYMLINKED_DEST === '1') {
+    log('NOTE: ' + runtimeRoot + ' is a symlink, and GSD_ALLOW_SYMLINKED_DEST=1 is set in your');
+    log('environment. Proceeding — be aware the installer may REPLACE the symlink with a real');
+    log('directory, collapsing a multi-runtime switch layout.');
+    return { blocked: false };
+  }
+
+  let target = '(unresolvable)';
+  try {
+    target = realpathSync(runtimeRoot);
+  } catch (_) { /* keep the placeholder */ }
+
+  log('ENF-21 sync ABORTED: ' + runtimeRoot + ' is a SYMLINK to');
+  log('  ' + target);
+  log('');
+  log('Reinstalling would let the installer REPLACE that symlink with a real directory,');
+  log('collapsing what is almost certainly a deliberate multi-runtime switch layout — the');
+  log('active sibling would silently keep the OLD payload. That is your decision, not this');
+  log('tool\'s, so nothing has been written.');
+  log('');
+  log('Either:');
+  log('  • point the symlink at the runtime you want and reinstall it yourself, or');
+  log('  • collapse the layout deliberately:  GSD_ALLOW_SYMLINKED_DEST=1 <this command>');
+  return { blocked: true, target };
+}
+
 const USAGE = [
+
   'usage: node bin/runtime-sync.cjs <check|sync>',
   '',
   '  check   read-only. Print the ENF-21 runtime-freshness verdict and exit:',
@@ -139,15 +210,11 @@ function check(deps = {}) {
  *   2. shallow-clone that branch into a tmpdir, then RACE-GUARD: the clone's HEAD must equal
  *      the resolved tip, else abort (the tip can move between the two calls);
  *   3. compare the clone's payload to the runtime's — equal ⇒ stamp `payload-verified` and stop;
- *   4. otherwise the difference may be the installer transform rather than drift, so `npm ci`
- *      (which runs `prepare` → `build:lib`, producing the gitignored `bin/lib/*.cjs` the
- *      installer requires) and build a PROJECTION by running `bin/install.js --claude` into a
- *      throwaway `--config-dir` with HOME redirected (D-11). If the runtime matches the
- *      projection ⇒ stamp `projection-verified` and stop — still no mutation. Only if it
- *      differs from the projection too is this real drift, and only then does the real
- *      `node <tmp>/bin/install.js --claude` run;
- *   5. RE-verify against the PROJECTION — like with like; on mismatch abort WITHOUT stamping
- *      (T-0ov-06 — never stamp an install we could not confirm);
+ *   4. otherwise `npm ci` (which runs `prepare` → `build:lib`, producing the gitignored
+ *      `bin/lib/*.cjs` the installer requires) then `node <tmp>/bin/install.js --claude`;
+ *   5. RE-verify by payload INVENTORY (D-13 — invariant under both installer transforms); on
+ *      mismatch abort WITHOUT stamping (T-0ov-06 — never stamp an install we could not
+ *      confirm);
  *   6. stamp `installed` with a freshly computed whole-tree digest;
  *   7. remove the tmpdir in a `finally`, on the success AND the failure path.
  *
@@ -202,16 +269,40 @@ function sync(deps = {}) {
       return { code: 1, reason: 'race' };
     }
 
-    // (3) The payload comparison (D-09, amended by D-11).
+    // (3) The comparison (D-09, amended by D-13 — D-11's projection was UNSOUND, see below).
     const cloneRoot = path.join(tmp, 'gsd-core');
-    const runtimePayload = () => O.payloadDigest(runtimeRoot);
 
-    // `npm ci` runs `prepare` → `build:lib`, producing the gitignored `gsd-core/bin/lib/*.cjs`
-    // that `bin/install.js` require()s. A fresh clone cannot run the installer unbuilt. Both the
-    // PROJECTION and the real install need it, so it is hoisted and run at most once.
-    let built = false;
-    const ensureBuilt = () => {
-      if (built) return;
+    let mode = 'payload-verified';
+    let engineVerified = false;
+
+    if (O.payloadDigest(cloneRoot) === O.payloadDigest(runtimeRoot)) {
+      // Byte-equality with the raw clone. Only possible when BOTH install transforms happen to be
+      // no-ops for this payload, but when it holds it is the strongest answer available and it
+      // costs neither an `npm ci` nor an install.
+      log('Installed payload already matches ' + tip.slice(0, 8) + ' — no reinstall needed.');
+    } else {
+      // D-13 — WHY NOT A PROJECTION (this replaces D-11):
+      // D-11 tried to neutralise the installer's `/gsd:` → `/gsd-` rewrite by running the LIVE
+      // installer into a throwaway `--config-dir` and comparing against THAT. It is unsound.
+      // `bin/install.js` applies a SECOND transform: it bakes the CONFIG-DIR PATH into the
+      // payload (`copyWithPathReplacement`). Measured on `workflows/note.md`:
+      //     repo        `~/.claude/notes/…`
+      //     real install `$HOME/.claude/notes/…`
+      //     projection   `<sandbox>/cfg/notes/…`
+      // A projection must use a DIFFERENT config dir than the real install, so its bytes can
+      // never equal the real install's. The projection comparison could only ever fail.
+      //
+      // The sound comparison is the payload INVENTORY: neither transform adds, removes, or
+      // renames a file, so the file SET is invariant under both while remaining a real check
+      // that the tip's payload actually landed. It is honestly weaker than byte-equality —
+      // it proves the right files, not the right bytes — and the stamp says so via
+      // `engine_verified`.
+      // NEVER collapse a symlinked runtime root automatically (D-12).
+      if (symlinkPreflight(runtimeRoot, log, deps).blocked) {
+        return { code: 1, reason: 'symlinked-runtime-root' };
+      }
+
+      log('Installed payload differs from the raw clone — reinstalling from ' + tip.slice(0, 8) + ' …');
       log('  npm ci …');
       execFileSync('npm', ['ci'], {
         cwd: tmp,
@@ -219,87 +310,38 @@ function sync(deps = {}) {
         timeout: NPM_CI_TIMEOUT_MS,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
-      built = true;
-    };
+      log('  node bin/install.js --claude …');
+      execFileSync(process.execPath, [path.join(tmp, 'bin', 'install.js'), '--claude'], {
+        cwd: tmp,
+        encoding: 'utf8',
+        timeout: INSTALL_TIMEOUT_MS,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
 
-    // D-11 — THE PROJECTION. The installer is NOT a byte-copy: it rewrites `/gsd:<cmd>` →
-    // `/gsd-<cmd>` per the target descriptor's `hostBehaviors.hyphenNameAgentBody` (gsd-core
-    // #3583 / #3677), so `raw clone payload == installed payload` is the WRONG question wherever
-    // that transform fires. Rather than replicate upstream's rewrite policy here — which is what
-    // CTK-ADR-0001 §3 forbids — we run the LIVE installer a second time into a throwaway config
-    // dir and hash THAT. Upstream remains the only authority on its own transform; we merely
-    // apply it to both sides before comparing. `--config-dir` takes priority over
-    // CLAUDE_CONFIG_DIR, and HOME is redirected as well so any homedir() fallback inside the
-    // installer lands in the sandbox and can never touch the user's real `~/.claude`.
-    const projectedPayload = () => {
-      ensureBuilt();
-      const sandbox = path.join(tmp, '.enf21-projection');
-      const sandboxHome = path.join(sandbox, 'home');
-      const sandboxCfg = path.join(sandbox, 'cfg');
-      mkdirSync(sandboxHome, { recursive: true });
-      mkdirSync(sandboxCfg, { recursive: true });
-      execFileSync(
-        process.execPath,
-        [path.join(tmp, 'bin', 'install.js'), '--claude', '--config-dir', sandboxCfg],
-        {
-          cwd: tmp,
-          encoding: 'utf8',
-          timeout: INSTALL_TIMEOUT_MS,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          env: Object.assign({}, process.env, { HOME: sandboxHome }),
-        }
-      );
-      return O.payloadDigest(path.join(sandboxCfg, 'gsd-core'));
-    };
+      // (5) Re-verify by INVENTORY. An install we cannot confirm is never stamped (T-0ov-06).
+      const want = O.payloadInventory(cloneRoot);
+      const got = O.payloadInventory(runtimeRoot);
+      const missing = want.filter((f) => !got.includes(f));
+      const extra = got.filter((f) => !want.includes(f));
 
-    let mode = 'payload-verified';
-    let engineVerified = false;
-
-    if (O.payloadDigest(cloneRoot) === runtimePayload()) {
-      // The byte-copy case: the transform is a no-op for this payload, so the raw comparison is
-      // already conclusive and costs neither an `npm ci` nor an install.
-      log('Installed payload already matches ' + tip.slice(0, 8) + ' — no reinstall needed.');
-    } else {
-      // Inconclusive, NOT yet drift: the difference may be the installer's transform rather than
-      // a stale runtime. Build the projection to find out before mutating anything.
-      log('Raw clone payload differs from the runtime — building an installer PROJECTION to');
-      log('separate the installer transform from real drift (D-11) …');
-      const projected = projectedPayload();
-
-      if (projected === runtimePayload()) {
-        log('Runtime payload MATCHES the projection of ' + tip.slice(0, 8) + ' — the raw');
-        log('difference is the installer transform, not drift. No reinstall needed.');
-        mode = 'projection-verified';
-      } else {
-        log('Runtime payload differs from the projection too — real drift. Reinstalling …');
-        log('  node bin/install.js --claude …');
-        execFileSync(process.execPath, [path.join(tmp, 'bin', 'install.js'), '--claude'], {
-          cwd: tmp,
-          encoding: 'utf8',
-          timeout: INSTALL_TIMEOUT_MS,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
-
-        // (5) Re-verify AGAINST THE PROJECTION — like with like. An install we cannot confirm is
-        // never stamped (T-0ov-06). Before D-11 this compared against the RAW clone, which the
-        // transform made unsatisfiable, so `sync` aborted permanently wherever it fired.
-        if (runtimePayload() !== projected) {
-          log('ENF-21 sync ABORTED: the reinstalled payload does not match the projection built');
-          log('from the same tip by the same installer — refusing to stamp an install that');
-          log('cannot be confirmed.');
-          log('');
-          log('The installer transform is already accounted for (D-11): both sides of this');
-          log('comparison were produced by running `bin/install.js` on ' + tip.slice(0, 8) + ',');
-          log('so a mismatch here is NOT the known transform. Something else is wrong — a');
-          log('partial or failed install, a concurrent writer, or a non-deterministic installer.');
-          log('');
-          log('Do not work around it by hand-writing ~/.gsd-contrib/runtime-stamp.json — that');
-          log('forges the very evidence the gate exists to check. See CTK-ADR-0007 §Decision.6.');
-          return { code: 1, reason: 'post-install-mismatch' };
-        }
-        mode = 'installed';
-        engineVerified = true;
+      if (missing.length > 0 || extra.length > 0) {
+        log('ENF-21 sync ABORTED: the reinstalled payload does not carry the same FILE SET as');
+        log(tip.slice(0, 8) + ' — refusing to stamp an install that cannot be confirmed.');
+        log('');
+        log('This comparison is invariant under both known installer transforms (the');
+        log('`/gsd:` → `/gsd-` rewrite and the baked-in config-dir path), so a mismatch here is');
+        log('a genuinely wrong file set: a partial or failed install, or a concurrent writer.');
+        if (missing.length) log('  missing (' + missing.length + '): ' + missing.slice(0, 5).join(', '));
+        if (extra.length) log('  unexpected (' + extra.length + '): ' + extra.slice(0, 5).join(', '));
+        log('');
+        log('Do not work around it by hand-writing ~/.gsd-contrib/runtime-stamp.json — that');
+        log('forges the very evidence the gate exists to check. See CTK-ADR-0007 §Decision.8.');
+        return { code: 1, reason: 'post-install-mismatch' };
       }
+
+      log('Verified: ' + want.length + ' payload files match ' + tip.slice(0, 8) + ' exactly.');
+      mode = 'installed';
+      engineVerified = true;
     }
 
     // (6) Stamp. The digest is over the WHOLE installed tree, so a later foreign reinstall
@@ -349,6 +391,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  symlinkPreflight,
   check,
   sync,
   main,
