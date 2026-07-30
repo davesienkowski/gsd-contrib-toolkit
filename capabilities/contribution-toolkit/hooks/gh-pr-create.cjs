@@ -80,6 +80,13 @@ const OWNED_NOTE =
 // caught server-side by the LIVE workflow (D-06: a NEW check, no existing deny surface weakened).
 const APPROVAL_LABELS = ['approved-feature', 'approved-enhancement'];
 
+/**
+ * CF-10: a changed capability DESCRIPTOR. Capture group 1 is the folder name, which the LIVE
+ * validator compares against the manifest's own `id` — so a descriptor copied into the wrong
+ * directory is caught by the same call.
+ */
+const CAP_MANIFEST_RE = /^capabilities\/([^/]+)\/capability\.json$/;
+
 // Bound the number of linked-issue label reads (mirrors the LIVE workflow's MAX_ISSUE_CHECKS)
 // so a body stuffed with hundreds of `#N` refs cannot fan out into unbounded gh api calls
 // (T-30-02-03 DoS).
@@ -707,6 +714,54 @@ function gate(stdinString, deps) {
     );
   }
 
+  // CF-10 — capability-manifest conformance.
+  //
+  // gsd-core is descriptor-first (ADR-857/1016/1239): extending behaviour at one of "the 12"
+  // extension points is delivered as a CAPABILITY, not a scattered core patch. The toolkit already
+  // ROUTES an enhancement toward `capability-candidate` at authoring time (skill Phase 0) and
+  // REVIEWS the capability-vs-core boundary on the maintainer side — but every gate was
+  // core-patch-shaped: none of them validated a `capability.json` the PR actually changes. So the
+  // one contribution shape gsd-core most wants was the one shape nothing checked.
+  //
+  // Reuses the SAME LIVE validators bin/verify-capability.cjs already calls
+  // (scripts/gen-capability-registry.cjs) — never a forked schema (D-01/D-06/HARD-02). The
+  // difference is scope: verify-capability validates the toolkit's OWN shipped bundle; this
+  // validates a manifest the PR is CHANGING, which nothing did.
+  //
+  // `validateCapability(manifest, folderName)` returns [] when conformant and an array of error
+  // strings otherwise, and it checks id-vs-folder agreement — so a manifest copied into the wrong
+  // directory is caught here rather than at registry-generation time.
+  const changedManifests = changedFiles.filter((f) => CAP_MANIFEST_RE.test(String(f)));
+  if (changedManifests.length > 0) {
+    const problems = [];
+    for (const rel of changedManifests) {
+      const folder = CAP_MANIFEST_RE.exec(rel)[1];
+      let manifest;
+      try {
+        manifest = JSON.parse(deps.readRepoFile(deps.root, rel));
+      } catch (err) {
+        // Unreadable or non-JSON is a REAL problem, not an excuse to skip: a PR that ships a
+        // malformed descriptor is exactly what this gate exists to stop.
+        problems.push(rel + ': cannot parse — ' + ((err && err.message) || String(err)));
+        continue;
+      }
+      const errs = deps.liveCapRegistry.validateCapability(manifest, folder);
+      if (Array.isArray(errs) && errs.length > 0) {
+        problems.push(rel + ': ' + errs.join('; '));
+      }
+    }
+    if (problems.length > 0) {
+      return deny(
+        'PR blocked by the LIVE gsd-core capability-manifest validators (CF-10): this PR changes ' +
+          'a capability descriptor that does not conform, so `gen-capability-registry` would ' +
+          'reject it downstream.\n\n' +
+          problems.join('\n') +
+          '\n\nThis CALLS gsd-core\u2019s LIVE `scripts/gen-capability-registry.cjs` ' +
+          '`validateCapability`, never a forked schema (D-01/D-06/HARD-02).'
+      );
+    }
+  }
+
   // (5) ENF-18 Tier-2 — TOOLKIT-OWNED read of the AUTHORITATIVE CI result for the head
   // SHA. The four checks above gate FIRST and unchanged; this is an ADDITIONAL condition
   // on the pr-create path. We resolve the head SHA from the SAME worktree root the gate
@@ -820,7 +875,7 @@ function runPrGate(stdinString, deps = {}) {
     // head branch is read from that same root so a cross-repo session reads the worktree's
     // branch, not the session repo's.
     let root = resolved.worktreeRoot || null;
-    if (!root && (!resolved.liveTemplate || !resolved.liveTarget || !resolved.liveTitle || !resolved.liveDocsLint || !resolved.liveChangesetLint || !resolved.branch)) {
+    if (!root && (!resolved.liveTemplate || !resolved.liveTarget || !resolved.liveTitle || !resolved.liveDocsLint || !resolved.liveChangesetLint || !resolved.liveCapRegistry || !resolved.branch)) {
       root = resolveRootForCommand(ctx.command, process.cwd());
       if (!root) {
         // ROB-01 locked discriminator (same seam as gh-issue-create): an out-of-tree command
@@ -868,6 +923,12 @@ function runPrGate(stdinString, deps = {}) {
       // not to become another thing that silently disagrees with upstream.
       resolved.liveChangesetLint = requireLiveScript(root, 'scripts/changeset/lint.cjs');
     }
+    if (!resolved.liveCapRegistry) {
+      // CF-10: gsd-core's LIVE capability-manifest validators. Same single-source discipline as
+      // bin/verify-capability.cjs, which already reuses this exact script — but that only ever
+      // validated the toolkit's OWN bundle. This applies it to a manifest the PR is CHANGING.
+      resolved.liveCapRegistry = requireLiveScript(root, 'scripts/gen-capability-registry.cjs');
+    }
     if (!resolved.branch) {
       resolved.branch = currentBranch(root);
     }
@@ -900,6 +961,19 @@ function runPrGate(stdinString, deps = {}) {
       // coverage cannot be confirmed DENIES (HARD-01), never a silent allow. liveDocsLint is
       // wired above and reused for readFragmentsFromDisk + evaluateLint.
       resolved.readChangedFiles = (root, base) => defaultReadChangedFiles(root, base);
+    }
+    if (!resolved.readRepoFile) {
+      // CF-10: read a repo-relative file from the resolved root. `confineUnder`-style containment
+      // is unnecessary here because the only paths reaching it are ones CAP_MANIFEST_RE already
+      // matched (`capabilities/<name>/capability.json`, no separators in the folder group), but the
+      // resolve+prefix check is kept so a future caller cannot turn this into an arbitrary reader.
+      resolved.readRepoFile = (root, rel) => {
+        const abs = path.resolve(root, rel);
+        if (abs !== root && !abs.startsWith(root + path.sep)) {
+          throw new Error('readRepoFile: path escapes the worktree root: ' + rel);
+        }
+        return require('node:fs').readFileSync(abs, 'utf8');
+      };
     }
     if (!resolved.readBodyFile) {
       const fs = require('node:fs');

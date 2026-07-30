@@ -84,6 +84,9 @@ const liveDocsLint = liveScript('scripts/lint-docs-required.cjs');
 // CF-09: the LIVE changeset lint (presence), injected alongside the docs lint (pairing) so the
 // unit suite exercises the REAL upstream verdict for both.
 const liveChangesetLint = liveScript('scripts/changeset/lint.cjs');
+// CF-10: the LIVE capability-manifest validators — the SAME script bin/verify-capability.cjs
+// reuses, so the unit suite exercises the real upstream schema rather than a stub.
+const liveCapRegistry = liveScript('scripts/gen-capability-registry.cjs');
 
 function input(command) {
   return JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
@@ -155,6 +158,7 @@ function deps(over = {}) {
       // `worktreeRoot` (a temp .changeset/ root) + `readChangedFiles` to exercise the deny paths.
       liveDocsLint,
       liveChangesetLint,
+      liveCapRegistry,
       readChangedFiles: () => [],
       overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
     },
@@ -1247,6 +1251,7 @@ test('CF-02 Task 2: with NO injected readIssueLabels, an unreadable label read f
       // provably from the label read (CF-02 runs BEFORE the CF-03 docs check).
       liveDocsLint,
       liveChangesetLint,
+      liveCapRegistry,
       readChangedFiles: () => [],
       // readIssueLabels intentionally NOT injected → defaultReadIssueLabels runs.
       overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
@@ -1462,6 +1467,7 @@ test('CF-03 Task 2: with NO injected readChangedFiles, an unreadable diff fails 
       liveTitle,
       liveDocsLint,
       liveChangesetLint,
+      liveCapRegistry,
       branch: 'fix/12-the-thing',
       changedFiles: ['src/index.cts'],
       authorAssociation: 'OWNER',
@@ -1583,4 +1589,145 @@ test('WR-01 no-regression: a genuine upstream approval still allows', () => {
     deps({ readIssueLabels: (n, repo) => (repo && repo.owner === 'open-gsd' ? ['approved-feature'] : []) })
   );
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+// ─── CF-10: capability-manifest conformance ─────────────────────────────────────────────────
+//
+// gsd-core is descriptor-first (ADR-857/1016/1239): extending behaviour at one of "the 12"
+// extension points ships as a CAPABILITY, not a scattered core patch. The toolkit already ROUTES
+// toward `capability-candidate` and REVIEWS the boundary — but every gate was core-patch-shaped,
+// so the one contribution shape gsd-core most wants was the shape nothing validated.
+//
+// These drive the REAL LIVE validators (the same script bin/verify-capability.cjs reuses), so a
+// schema change upstream surfaces here rather than in a forked copy.
+
+// A genuinely conformant descriptor, DERIVED from the toolkit's own shipped manifest (which the
+// LIVE validator accepts) rather than hand-written. A hand-written "valid" fixture failed on first
+// run — the real schema also requires tier/requires/runtimeCompat/skills/agents/config/steps/
+// contributions/gates — which is precisely why deriving from a known-good descriptor beats guessing
+// at the shape a live validator will accept.
+const VALID_MANIFEST = (() => {
+  const real = JSON.parse(
+    require('node:fs').readFileSync(
+      require('node:path').join(__dirname, '..', 'capabilities', 'contribution-toolkit', 'capability.json'),
+      'utf8'
+    )
+  );
+  real.id = 'demo-cap';
+  return JSON.stringify(real);
+})();
+
+function capDeps(files, contents, over = {}) {
+  return deps(
+    Object.assign(
+      {
+        readChangedFiles: () => files,
+        readRepoFile: (root, rel) => {
+          if (!(rel in contents)) throw new Error('ENOENT: ' + rel);
+          return contents[rel];
+        },
+      },
+      over
+    )
+  );
+}
+
+test('CF-10: a PR changing a NONCONFORMANT capability.json is denied, naming the live errors', () => {
+  const bad = JSON.stringify({ id: 'demo-cap', role: 'not-a-role', version: '1.0.0' });
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'feat(#39): x' --body "${escapeNl(bodyLinking(39))}"`),
+    capDeps(
+      ['capabilities/demo-cap/capability.json', '.changeset/x.md'],
+      { 'capabilities/demo-cap/capability.json': bad }
+    )
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /CF-10/);
+  assert.match(d.permissionDecisionReason, /role must be one of/);
+});
+
+test('CF-10: id-vs-FOLDER disagreement is caught (a descriptor copied to the wrong dir)', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'feat(#39): x' --body "${escapeNl(bodyLinking(39))}"`),
+    capDeps(
+      ['capabilities/wrong-folder/capability.json', '.changeset/x.md'],
+      { 'capabilities/wrong-folder/capability.json': VALID_MANIFEST }
+    )
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /must equal the folder name/);
+});
+
+test('CF-10: an UNPARSEABLE descriptor denies — malformed is a problem, not a reason to skip', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'feat(#39): x' --body "${escapeNl(bodyLinking(39))}"`),
+    capDeps(
+      ['capabilities/demo-cap/capability.json', '.changeset/x.md'],
+      { 'capabilities/demo-cap/capability.json': '{ not json' }
+    )
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /cannot parse/);
+});
+
+test('CF-10: an UNREADABLE descriptor denies rather than silently passing', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'feat(#39): x' --body "${escapeNl(bodyLinking(39))}"`),
+    capDeps(['capabilities/demo-cap/capability.json', '.changeset/x.md'], {})
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /cannot parse|ENOENT/);
+});
+
+test('CF-10: a CONFORMANT descriptor allows (no over-blocking of real capability work)', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'feat(#39): x' --body "${escapeNl(bodyLinking(39))}"`),
+    capDeps(
+      ['capabilities/demo-cap/capability.json', '.changeset/x.md'],
+      { 'capabilities/demo-cap/capability.json': VALID_MANIFEST }
+    )
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('CF-10: a core-patch PR touching NO descriptor is unaffected (the reader is never called)', () => {
+  let called = 0;
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'feat(#39): x' --body "${escapeNl(bodyLinking(39))}"`),
+    deps({
+      readChangedFiles: () => ['src/index.cts', '.changeset/x.md'],
+      readRepoFile: () => { called += 1; return '{}'; },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.strictEqual(called, 0, 'a non-capability PR must not read descriptors at all');
+});
+
+test('CF-10: EVERY changed descriptor is reported, not just the first (no fail-fast)', () => {
+  const bad = JSON.stringify({ id: 'a', role: 'nope' });
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'feat(#39): x' --body "${escapeNl(bodyLinking(39))}"`),
+    capDeps(
+      ['capabilities/a/capability.json', 'capabilities/b/capability.json', '.changeset/x.md'],
+      {
+        'capabilities/a/capability.json': bad,
+        'capabilities/b/capability.json': '{ also broken',
+      }
+    )
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /capabilities\/a\/capability\.json/);
+  assert.match(d.permissionDecisionReason, /capabilities\/b\/capability\.json/);
+});
+
+test('CF-10: a THROW from the live validator fails closed (HARD-01)', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'feat(#39): x' --body "${escapeNl(bodyLinking(39))}"`),
+    capDeps(
+      ['capabilities/demo-cap/capability.json', '.changeset/x.md'],
+      { 'capabilities/demo-cap/capability.json': VALID_MANIFEST },
+      { liveCapRegistry: { validateCapability: () => { throw new Error('validator exploded'); } } }
+    )
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
 });
