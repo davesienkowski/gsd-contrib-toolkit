@@ -121,24 +121,49 @@ when ENF-21 was built was hand-typed, is not reproducible, and is erased by the 
    file counts matched exactly (117 / 115 / 46 / 3) and `contexts/` — which contains no command
    references — matched byte-for-byte.
 
-   Where that transform is a **no-op**, `sync` works exactly as designed. That is the case on the
-   machine ENF-21 was built on, and it was verified rather than assumed: the raw clone's payload
-   digest and the installed runtime's are **identical** (`sha256:5f85fdf0…`), which is why the
-   bootstrap run legitimately took the fast path.
+   Where that transform is a **no-op**, `sync` works as originally designed. Where it **fires**, the
+   installed payload can never equal the raw clone byte-for-byte, so the post-install re-verify always
+   failed, `sync` always aborted without stamping, and ENF-21 denied **permanently with an unreachable
+   remediation**.
 
-   Where the transform **fires**, the installed payload can never equal the raw clone byte-for-byte,
-   so `sync`'s post-install re-verify always fails, `sync` always aborts without stamping, and ENF-21
-   denies **permanently with an unreachable remediation**. That is a genuine portability defect, and
-   it is recorded here rather than papered over. Three consequences follow:
-   - the abort message is **self-diagnosing**: it names the transform, the descriptor flag, and the
-     fact that the runtime may nonetheless be at the right tip;
-   - it explicitly **forbids** the obvious workaround of hand-writing `runtime-stamp.json`, which
-     would forge exactly the evidence the gate exists to check;
-   - the comparison is deliberately **left as-is** for now. Normalising both sides before hashing
-     would mean replicating upstream's rewrite policy inside the toolkit — the thing CTK-ADR-0001 §3
-     exists to prevent — and every alternative (trusting the install, or recording
-     `payload_verified:false`) weakens T-0ov-06. Choosing among them is a decision to take
-     deliberately, not a defect to patch quietly.
+   > **SUPERSEDED IN PART by Decision 7 — the limit is FIXED, and the "no-op on this machine"
+   > reading was an artifact.** The original claim that the raw clone and the installed runtime were
+   > byte-identical here (`sha256:5f85fdf0…`) held only for a runtime that had been *hand-placed*
+   > rather than installer-produced. Once a genuine `bin/install.js` run occurred, re-measurement
+   > showed the transform **does** fire on this machine: 104 `workflows/`, 32 `references/` and 16
+   > `templates/` files differ by exactly the `/gsd:` → `/gsd-` substitution, with `contexts/` clean.
+   > The defect was therefore live, not latent. What survives from this decision is the *measurement*
+   > and the standing prohibition on hand-writing `runtime-stamp.json`; what is superseded is the
+   > conclusion that the comparison should be left as-is.
+
+7. **The installer transform is neutralised by PROJECTION, not by replication (fixes Decision 6).**
+   *(Carried in code as `D-11`, the next free id in the implementation-plan decision namespace —
+   `D-01…D-10` — which is distinct from this ADR's own numbering.)*
+    `sync` no longer asks "does the raw clone equal the runtime?" — the wrong question wherever the
+    transform fires. When the cheap raw comparison is inconclusive it runs the **LIVE installer a
+    second time** into a throwaway `--config-dir` with `HOME` redirected, and compares the runtime
+    against *that* projection. Both sides have then had the same transform applied by the same
+    installer at the same tip.
+
+    This resolves the trilemma recorded in Decision 6 rather than picking one of its horns:
+    - it does **not** replicate upstream's rewrite policy inside the toolkit — the thing
+      CTK-ADR-0001 §3 forbids. Upstream remains the sole authority on its own transform; the toolkit
+      only *applies* it, via upstream's own binary. This is CTK-ADR-0001 §Decision.3 ("reuse LIVE")
+      applied to a transform instead of a check;
+    - it does **not** weaken T-0ov-06. Byte-equality is still required before any stamp is written —
+      only the reference moved from a raw clone to a correctly-projected one;
+    - it does **not** trust the install, and it does not record a weaker `payload_verified:false`.
+
+    Three consequences follow:
+    - a new stamp mode, **`projection-verified`**: the runtime matched the projection without any
+      reinstall, so it is provably at the tip while `engine_verified` stays `false`. This is the
+      common case on a machine where the transform fires, and it mutates nothing;
+    - the raw comparison is kept as a **fast path**, so the extra install is paid only when the cheap
+      answer is inconclusive — a no-op-transform machine costs exactly what it did before;
+    - the post-install abort now **rules the transform out** instead of blaming it. Both sides of that
+      comparison came from the same installer and tip, so a mismatch there means something else
+      (a partial install, a concurrent writer, a non-deterministic installer). The prohibition on
+      hand-writing `runtime-stamp.json` is unchanged — it would forge the gate's own evidence.
 
 ## Consequences
 

@@ -44,9 +44,16 @@ function stampAt(sha, digest) {
 }
 
 /**
- * Build injectable deps for `sync`. `payloads` is the sequence of [cloneDigest, runtimeDigest]
- * pairs `payloadDigest` should yield, consumed one pair per comparison — so a test can say
- * "differs, then matches after the install" without stubbing call sites individually.
+ * Build injectable deps for `sync`.
+ *
+ * THREE payload roots exist since D-11, and a test must be able to set them independently:
+ *   • the RAW clone            `<tmp>/gsd-core`
+ *   • the installer PROJECTION `<tmp>/.enf21-projection/cfg/gsd-core`  (D-11)
+ *   • the live RUNTIME         (anywhere outside the tmpdir)
+ *
+ * `digests: {clone, projection, runtime}` sets them. `runtime` may be an ARRAY, consumed by
+ * index as REAL installs complete — `[before, after]` expresses "the reinstall changed it".
+ * A projection install (it carries `--config-dir`) never advances that index.
  */
 function syncDeps(over = {}) {
   const state = {
@@ -55,16 +62,19 @@ function syncDeps(over = {}) {
     stamps: [],
     logs: [],
     mkdtemp: 0,
+    mkdirs: [],
   };
-  const payloads = over.payloads || [[DIGEST, DIGEST]];
-  let compareIdx = 0;
+  const d = over.digests || {};
+  const cloneDigest = d.clone || DIGEST;
+  const projectionDigest = d.projection || cloneDigest;
+  const runtimeSeq = Array.isArray(d.runtime) ? d.runtime : [d.runtime || DIGEST];
+  let realInstalls = 0;
+
   const payloadDigest = (root) => {
-    const pair = payloads[Math.min(compareIdx, payloads.length - 1)];
-    // The RUNTIME root is the one that is not under the tmpdir.
-    const isClone = String(root).startsWith(TMP);
-    const value = isClone ? pair[0] : pair[1];
-    if (!isClone) compareIdx += 1; // one comparison consumes one pair (runtime side is second)
-    return value;
+    const s = String(root);
+    if (s.includes('.enf21-projection')) return projectionDigest;
+    if (s.startsWith(TMP)) return cloneDigest;
+    return runtimeSeq[Math.min(realInstalls, runtimeSeq.length - 1)];
   };
 
   const deps = Object.assign(
@@ -81,9 +91,15 @@ function syncDeps(over = {}) {
         if (file === 'git' && args[0] === '-C' && args[2] === 'rev-parse') {
           return (over.cloneHead === undefined ? TIP : over.cloneHead) + '\n';
         }
+        // A REAL install (no --config-dir) is what can change the runtime payload; the D-11
+        // projection install writes only into its sandbox and must not advance the sequence.
+        if (args.some((a) => String(a).includes('install.js')) && !args.includes('--config-dir')) {
+          realInstalls += 1;
+        }
         return '';
       },
       mkdtempSync: () => { state.mkdtemp += 1; return TMP; },
+      mkdirSync: (p, o) => { state.mkdirs.push({ path: p, opts: o }); },
       rmSync: (p, o) => state.rm.push({ path: p, opts: o }),
       log: (line) => state.logs.push(String(line)),
       now: () => '2026-07-30T00:00:00.000Z',
@@ -159,7 +175,7 @@ test('check: an unobtainable upstream tip exits 2 (distinct from a drift verdict
 // ───────────────────────────── sync: the fast path (D-09) ─────────────────────────────
 
 test('sync FAST PATH: payload already equal → NO npm ci, NO install.js, stamp payload-verified', () => {
-  const { deps, state } = syncDeps({ payloads: [[DIGEST, DIGEST]] });
+  const { deps, state } = syncDeps({ digests: { clone: DIGEST, runtime: DIGEST } });
   const r = cli.sync(deps);
   assert.strictEqual(r.code, 0);
   assert.ok(ran(state, isClone), 'it still clones to obtain the comparison payload');
@@ -184,8 +200,12 @@ test('sync FAST PATH: the tmpdir is removed on the SUCCESS path', () => {
 // ───────────────────────────── sync: the reinstall path ─────────────────────────────
 
 test('sync SLOW PATH: payload differs → npm ci THEN install.js, re-verified, stamp installed', () => {
-  // first comparison differs; the post-install re-verify matches.
-  const { deps, state } = syncDeps({ payloads: [[DIGEST, 'sha256:' + '1'.repeat(64)], [DIGEST, DIGEST]] });
+  // Raw clone ≠ runtime AND projection ≠ runtime ⇒ real drift. The reinstall moves the runtime
+  // onto the projection digest, so the post-install re-verify matches.
+  const STALE = 'sha256:' + '1'.repeat(64);
+  const { deps, state } = syncDeps({
+    digests: { clone: DIGEST, projection: DIGEST, runtime: [STALE, DIGEST] },
+  });
   const r = cli.sync(deps);
   assert.strictEqual(r.code, 0);
   const ciIdx = state.exec.findIndex(isNpmCi);
@@ -199,19 +219,33 @@ test('sync SLOW PATH: payload differs → npm ci THEN install.js, re-verified, s
 });
 
 test('sync SLOW PATH: npm ci runs in the CLONE with a bounded timeout, install.js runs via node', () => {
-  const { deps, state } = syncDeps({ payloads: [[DIGEST, 'sha256:' + '1'.repeat(64)], [DIGEST, DIGEST]] });
+  const STALE = 'sha256:' + '1'.repeat(64);
+  const { deps, state } = syncDeps({
+    digests: { clone: DIGEST, projection: DIGEST, runtime: [STALE, DIGEST] },
+  });
   const calls = [];
+  let real = 0;
   deps.execFileSync = (file, args, opts) => {
     calls.push({ file, args, opts });
     state.exec.push({ file, args });
     if (file === 'git' && args[0] === '-C' && args[2] === 'rev-parse') return TIP + '\n';
+    if (args.some((a) => String(a).includes('install.js')) && !args.includes('--config-dir')) real += 1;
     return '';
+  };
+  // Re-point the digest stub at this test's own install counter.
+  const projRe = /\.enf21-projection/;
+  deps.oracle.payloadDigest = (root) => {
+    const s = String(root);
+    if (projRe.test(s)) return DIGEST;
+    if (s.startsWith(TMP)) return DIGEST;
+    return real === 0 ? STALE : DIGEST;
   };
   cli.sync(deps);
   const ci = calls.find(isNpmCi);
   assert.strictEqual(ci.opts.cwd, TMP);
   assert.strictEqual(ci.opts.timeout, 600000);
-  const inst = calls.find(isInstall);
+  // The REAL install — the projection install is the one carrying --config-dir.
+  const inst = calls.find((c) => isInstall(c) && !c.args.includes('--config-dir'));
   assert.strictEqual(inst.file, process.execPath);
   assert.deepStrictEqual(inst.args, [path.join(TMP, 'bin', 'install.js'), '--claude']);
   assert.strictEqual(inst.opts.timeout, 300000);
@@ -219,7 +253,10 @@ test('sync SLOW PATH: npm ci runs in the CLONE with a bounded timeout, install.j
 
 test('sync SLOW PATH: a post-install re-verify MISMATCH aborts non-zero with NO stamp (T-0ov-06)', () => {
   const bad = 'sha256:' + '1'.repeat(64);
-  const { deps, state } = syncDeps({ payloads: [[DIGEST, bad], [DIGEST, bad]] });
+  // Differs from the clone AND from the projection, and the reinstall does not fix it.
+  const { deps, state } = syncDeps({
+    digests: { clone: DIGEST, projection: DIGEST, runtime: [bad, bad] },
+  });
   const r = cli.sync(deps);
   assert.notStrictEqual(r.code, 0);
   assert.strictEqual(r.reason, 'post-install-mismatch');
@@ -227,20 +264,87 @@ test('sync SLOW PATH: a post-install re-verify MISMATCH aborts non-zero with NO 
   assert.strictEqual(state.rm.length, 1, 'the tmpdir is still removed on the failure path');
 });
 
-test('sync SLOW PATH: the post-install-mismatch abort is SELF-DIAGNOSING, not a dead end', () => {
-  // Measured in a sandboxed HOME (quick task 260730-0ov): gsd-core's installer is NOT a byte-copy —
-  // it rewrites `/gsd:<cmd>` → `/gsd-<cmd>` when the target runtime declares
-  // hostBehaviors.hyphenNameAgentBody (#3583/#3677). Where that fires, this comparison can NEVER be
-  // satisfied, so the abort recurs forever. A user who hits it must be told the cause, and must be
-  // told NOT to hand-write the stamp — forging the evidence defeats the whole gate.
+test('sync SLOW PATH: the post-install-mismatch abort EXCLUDES the transform as the cause', () => {
+  // Post-D-11 both sides of the failing comparison were produced by running the SAME installer on
+  // the SAME tip, so the known `/gsd:` → `/gsd-` rewrite can no longer explain a mismatch here.
+  // The abort must say so — otherwise it sends the reader chasing a cause that is already handled —
+  // and must still forbid hand-writing the stamp, which would forge the gate's own evidence.
   const bad = 'sha256:' + '1'.repeat(64);
-  const { deps, state } = syncDeps({ payloads: [[DIGEST, bad], [DIGEST, bad]] });
+  const { deps, state } = syncDeps({
+    digests: { clone: DIGEST, projection: DIGEST, runtime: [bad, bad] },
+  });
   cli.sync(deps);
   const out = state.logs.join('\n');
-  assert.match(out, /installer is NOT a byte-copy/i, 'the abort names the measured cause');
-  assert.match(out, /hyphenNameAgentBody/, 'it names the exact descriptor flag that drives it');
-  assert.match(out, /Do not work around it by hand-writing/i, 'it forbids forging the stamp');
+  assert.match(out, /already accounted for/i, 'it states the transform is handled, not the cause');
+  assert.match(out, /NOT the known transform/i, 'it explicitly rules the transform out');
+  assert.match(out, /Do not work around it by hand-writing/i, 'it still forbids forging the stamp');
   assert.match(out, /CTK-ADR-0007/, 'it points at the recorded decision');
+  assert.doesNotMatch(out, /abort will recur on every run/i,
+    'the permanent-dead-end language is obsolete — D-11 removed the dead end');
+});
+
+// ───────────────────────── sync: the projection path (D-11) ─────────────────────────
+
+test('sync D-11: runtime matches the PROJECTION → no reinstall, stamp projection-verified', () => {
+  // The measured real-world case: the installer rewrote `/gsd:<cmd>` → `/gsd-<cmd>`, so the raw
+  // clone can never equal the runtime — but the runtime IS at the tip. Before D-11 this reinstalled
+  // and then aborted forever; now it must recognise the runtime as current and mutate NOTHING.
+  const RAW = 'sha256:' + 'a'.repeat(64);
+  const INSTALLED = 'sha256:' + 'b'.repeat(64);
+  const { deps, state } = syncDeps({
+    digests: { clone: RAW, projection: INSTALLED, runtime: INSTALLED },
+  });
+  const r = cli.sync(deps);
+  assert.strictEqual(r.code, 0);
+  assert.strictEqual(state.stamps.length, 1);
+  assert.strictEqual(state.stamps[0].mode, 'projection-verified');
+  assert.strictEqual(state.stamps[0].engine_verified, false,
+    'no real install happened, so the engine is not verified');
+  assert.strictEqual(state.stamps[0].sha, TIP);
+  const realInstall = state.exec.find((c) => isInstall(c) && !c.args.includes('--config-dir'));
+  assert.strictEqual(realInstall, undefined,
+    'the runtime already matches the projection — a REAL install must not run');
+});
+
+test('sync D-11: the projection install is sandboxed — --config-dir AND a redirected HOME', () => {
+  // It runs the real installer purely to observe its transform. If it could reach the user's
+  // ~/.claude it would be performing the very mutation the projection exists to avoid.
+  const RAW = 'sha256:' + 'a'.repeat(64);
+  const INSTALLED = 'sha256:' + 'b'.repeat(64);
+  const calls = [];
+  const { deps } = syncDeps({ digests: { clone: RAW, projection: INSTALLED, runtime: INSTALLED } });
+  const inner = deps.execFileSync;
+  deps.execFileSync = (file, args, opts) => {
+    calls.push({ file, args, opts });
+    return inner(file, args, opts);
+  };
+  cli.sync(deps);
+  const proj = calls.find((c) => isInstall(c) && c.args.includes('--config-dir'));
+  assert.ok(proj, 'a projection install must run');
+  const cfg = proj.args[proj.args.indexOf('--config-dir') + 1];
+  assert.ok(String(cfg).startsWith(TMP), 'the projection config dir must live inside the tmpdir');
+  assert.ok(proj.opts.env && String(proj.opts.env.HOME).startsWith(TMP),
+    'HOME must be redirected into the tmpdir so a homedir() fallback cannot reach ~/.claude');
+});
+
+test('sync D-11: `npm ci` runs at most ONCE even though projection and install both need it', () => {
+  const RAW = 'sha256:' + 'a'.repeat(64);
+  const STALE = 'sha256:' + '1'.repeat(64);
+  const INSTALLED = 'sha256:' + 'b'.repeat(64);
+  const { deps, state } = syncDeps({
+    digests: { clone: RAW, projection: INSTALLED, runtime: [STALE, INSTALLED] },
+  });
+  const r = cli.sync(deps);
+  assert.strictEqual(r.code, 0);
+  assert.strictEqual(state.stamps[0].mode, 'installed');
+  assert.strictEqual(state.exec.filter(isNpmCi).length, 1, '`npm ci` is hoisted, not repeated');
+});
+
+test('sync D-11: the fast path still costs NO projection install', () => {
+  const { deps, state } = syncDeps({ digests: { clone: DIGEST, runtime: DIGEST } });
+  cli.sync(deps);
+  assert.ok(!ran(state, isInstall), 'a raw match must short-circuit before any install');
+  assert.ok(!ran(state, isNpmCi));
 });
 
 // ───────────────────────────── sync: the race guard ─────────────────────────────
