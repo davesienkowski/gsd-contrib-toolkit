@@ -33,16 +33,54 @@ function headCtx(command) {
   return { seg, route: action.route || 'native' };
 }
 
-const liveTemplate = require('/home/dave/repos/gsd-core/scripts/pr-template-policy.cjs');
-const liveTarget = require('/home/dave/repos/gsd-core/scripts/pr-target-policy.cjs');
+// PORTABILITY (2026-07-30): these LIVE requires were hardcoded to `/home/dave/repos/gsd-core/...`,
+// so this file only ever loaded on one machine — CI surfaced it as `Cannot find module` on the
+// first run. Resolve the checkout the way the rest of the toolkit does (GSD_CORE_ROOT, then
+// ~/repos/gsd-core, then ~/gsd-core) and SKIP the whole LIVE-backed file when none is reachable.
+// Skipping is the honest option: fabricating a stand-in for a LIVE gsd-core script would make this
+// suite assert against a fiction (the same reason fault-injection.test.cjs refuses to fake a
+// sentinel layout). CI's `compat` job sets GSD_CORE_ROOT so these RUN for real there.
+const os = require('node:os');
+const path = require('node:path');
+const { resolveGsdCoreRoot } = require('./lib/resolve.cjs');
+
+function liveGsdCoreRootOrNull() {
+  const candidates = [
+    process.env.GSD_CORE_ROOT,
+    path.join(os.homedir(), 'repos', 'gsd-core'),
+    path.join(os.homedir(), 'gsd-core'),
+  ].filter(Boolean);
+  for (const c of candidates) {
+    try {
+      return resolveGsdCoreRoot(c);
+    } catch (_) {
+      /* try the next candidate */
+    }
+  }
+  return null;
+}
+
+const LIVE_ROOT = liveGsdCoreRootOrNull();
+if (!LIVE_ROOT) {
+  test('LIVE-backed suite (gh-pr-create.test.cjs)', {
+    skip:
+      'no gsd-core checkout reachable via GSD_CORE_ROOT / ~/repos/gsd-core / ~/gsd-core — ' +
+      'LIVE-backed cases SKIPPED (never fabricate a stand-in for a LIVE script)',
+  }, () => {});
+  return;
+}
+const liveScript = (rel) => require(path.join(LIVE_ROOT, rel));
+
+const liveTemplate = liveScript('scripts/pr-template-policy.cjs');
+const liveTarget = liveScript('scripts/pr-target-policy.cjs');
 // CF-01: the LIVE conventional-title matcher (evaluatePrTitle) injected into every test so the
 // title gate is exercised hermetically — the SAME single-source script the production runPrGate
 // resolves via requireLiveScript (D-01/D-06/HARD-02: never a forked regex).
-const liveTitle = require('/home/dave/repos/gsd-core/scripts/release-notes/conventional-title.cjs');
+const liveTitle = liveScript('scripts/release-notes/conventional-title.cjs');
 // CF-03: the LIVE docs-required lint (evaluateLint / readFragmentsFromDisk) injected into every
 // test so the docs-required mirror is exercised against the REAL upstream verdict — the SAME
 // single-source script production resolves via requireLiveScript (D-01/D-06/HARD-02: never forked).
-const liveDocsLint = require('/home/dave/repos/gsd-core/scripts/lint-docs-required.cjs');
+const liveDocsLint = liveScript('scripts/lint-docs-required.cjs');
 
 function input(command) {
   return JSON.stringify({ tool_name: 'Bash', tool_input: { command } });

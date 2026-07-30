@@ -13,8 +13,46 @@ const assert = require('node:assert');
 
 const { runEditGate } = require('./gh-edit.cjs');
 
-const liveVersionGate = require('/home/dave/repos/gsd-core/scripts/issue-version-gate.cjs');
-const liveTemplate = require('/home/dave/repos/gsd-core/scripts/pr-template-policy.cjs');
+// PORTABILITY (2026-07-30): these LIVE requires were hardcoded to `/home/dave/repos/gsd-core/...`,
+// so this file only ever loaded on one machine — CI surfaced it as `Cannot find module` on the
+// first run. Resolve the checkout the way the rest of the toolkit does (GSD_CORE_ROOT, then
+// ~/repos/gsd-core, then ~/gsd-core) and SKIP the whole LIVE-backed file when none is reachable.
+// Skipping is the honest option: fabricating a stand-in for a LIVE gsd-core script would make this
+// suite assert against a fiction (the same reason fault-injection.test.cjs refuses to fake a
+// sentinel layout). CI's `compat` job sets GSD_CORE_ROOT so these RUN for real there.
+const os = require('node:os');
+const path = require('node:path');
+const { resolveGsdCoreRoot } = require('./lib/resolve.cjs');
+
+function liveGsdCoreRootOrNull() {
+  const candidates = [
+    process.env.GSD_CORE_ROOT,
+    path.join(os.homedir(), 'repos', 'gsd-core'),
+    path.join(os.homedir(), 'gsd-core'),
+  ].filter(Boolean);
+  for (const c of candidates) {
+    try {
+      return resolveGsdCoreRoot(c);
+    } catch (_) {
+      /* try the next candidate */
+    }
+  }
+  return null;
+}
+
+const LIVE_ROOT = liveGsdCoreRootOrNull();
+if (!LIVE_ROOT) {
+  test('LIVE-backed suite (gh-edit.test.cjs)', {
+    skip:
+      'no gsd-core checkout reachable via GSD_CORE_ROOT / ~/repos/gsd-core / ~/gsd-core — ' +
+      'LIVE-backed cases SKIPPED (never fabricate a stand-in for a LIVE script)',
+  }, () => {});
+  return;
+}
+const liveScript = (rel) => require(path.join(LIVE_ROOT, rel));
+
+const liveVersionGate = liveScript('scripts/issue-version-gate.cjs');
+const liveTemplate = liveScript('scripts/pr-template-policy.cjs');
 
 function input(command) {
   return JSON.stringify({ tool_name: 'Bash', tool_input: { command } });

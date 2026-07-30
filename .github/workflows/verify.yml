@@ -80,6 +80,20 @@ jobs:
   compat:
     name: compat (real gsd-core — HARD-01/HARD-02 execute)
     runs-on: ubuntu-latest
+    # DELIBERATELY no `GSD_CORE_ROOT` here. Setting it looked right and was measured wrong: it makes
+    # the capability-LIFECYCLE tests (install/off/on/remove, contrib-capability.test.cjs) treat this
+    # shallow clone as a usable engine, and they need a BUILT gsd-core — `gsd-core/bin/lib/` ships 17
+    # tracked files but a built checkout has ~166. Result was 21 failures for a purely environmental
+    # reason. Measured locally 2026-07-30 before pushing a second red.
+    #
+    # This job does not need it: fault-injection resolves gsd-core from CWD, and every step below
+    # runs with `working-directory: gsd-core`, so the HARD-01/HARD-02 proofs execute (verified: "8
+    # case(s) executed, 0 skipped") off the sentinel + the 5 SHAPE_CHECKS scripts alone.
+    #
+    # Consequence, stated rather than hidden: the LIVE-backed hook suites (gh-pr-create, gh-edit,
+    # gh-issue-create, issue-dedupe) still SKIP in CI. They skip honestly now instead of crashing on
+    # a hardcoded path, but running them for real needs a built-engine job — logged as follow-up,
+    # not silently pretended.
     steps:
       - name: Check out the toolkit
         uses: actions/checkout@v4

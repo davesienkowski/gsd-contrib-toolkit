@@ -16,7 +16,45 @@ const assert = require('node:assert');
 const { runDedupeGate } = require('./issue-dedupe.cjs');
 
 // The REAL live scorer — we never reimplement the similarity logic; we call it.
-const liveScorer = require('/home/dave/repos/gsd-core/scripts/issue-dedupe.cjs');
+// PORTABILITY (2026-07-30): these LIVE requires were hardcoded to `/home/dave/repos/gsd-core/...`,
+// so this file only ever loaded on one machine — CI surfaced it as `Cannot find module` on the
+// first run. Resolve the checkout the way the rest of the toolkit does (GSD_CORE_ROOT, then
+// ~/repos/gsd-core, then ~/gsd-core) and SKIP the whole LIVE-backed file when none is reachable.
+// Skipping is the honest option: fabricating a stand-in for a LIVE gsd-core script would make this
+// suite assert against a fiction (the same reason fault-injection.test.cjs refuses to fake a
+// sentinel layout). CI's `compat` job sets GSD_CORE_ROOT so these RUN for real there.
+const os = require('node:os');
+const path = require('node:path');
+const { resolveGsdCoreRoot } = require('./lib/resolve.cjs');
+
+function liveGsdCoreRootOrNull() {
+  const candidates = [
+    process.env.GSD_CORE_ROOT,
+    path.join(os.homedir(), 'repos', 'gsd-core'),
+    path.join(os.homedir(), 'gsd-core'),
+  ].filter(Boolean);
+  for (const c of candidates) {
+    try {
+      return resolveGsdCoreRoot(c);
+    } catch (_) {
+      /* try the next candidate */
+    }
+  }
+  return null;
+}
+
+const LIVE_ROOT = liveGsdCoreRootOrNull();
+if (!LIVE_ROOT) {
+  test('LIVE-backed suite (issue-dedupe.test.cjs)', {
+    skip:
+      'no gsd-core checkout reachable via GSD_CORE_ROOT / ~/repos/gsd-core / ~/gsd-core — ' +
+      'LIVE-backed cases SKIPPED (never fabricate a stand-in for a LIVE script)',
+  }, () => {});
+  return;
+}
+const liveScript = (rel) => require(path.join(LIVE_ROOT, rel));
+
+const liveScorer = liveScript('scripts/issue-dedupe.cjs');
 
 // Build a PreToolUse stdin payload for a Bash command.
 function input(command) {
