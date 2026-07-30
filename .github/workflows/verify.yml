@@ -66,8 +66,12 @@ jobs:
       - name: node --test
         run: node --test
 
-      - name: verify-hooks (byte-stable deny/allow proofs)
-        run: node bin/verify-hooks.cjs
+      # NOTE: `verify-hooks` is NOT here either — measured 2026-07-30, without a gsd-core checkout
+      # it proves only 10 of 56 cases ("10 pass, 0 fail, 46 skip") and still exits 0, AND it
+      # OVERWRITES the committed proofs/ corpus with degraded `fixture: null` stubs as a side
+      # effect. A step that proves 10/56 and calls it green is the exact defect this repo exists to
+      # stop, so it runs in `compat` (56/56) instead. `node --test` above already covers the hook
+      # unit suites here.
 
       # NOTE: `verify-capability` is NOT here — it reuses the LIVE gen-capability-registry
       # validators and is deliberately fail-loud when no gsd-core checkout is reachable ("a check
@@ -134,8 +138,18 @@ jobs:
         working-directory: gsd-core
         run: node ../toolkit/hooks/doctor.cjs
 
-      # Lives here, not in `verify`: it reuses the LIVE gen-capability-registry validators and is
-      # fail-loud when no checkout is reachable, so it needs the real gsd-core this job provides.
+      # Both live here, not in `verify`, for the same reason: they reuse LIVE gsd-core scripts and
+      # are only meaningful against a real checkout.
+      #
+      # verify-hooks: 56/56 here vs 10/56 with 46 skips in a checkout-less job (measured).
+      # verify-capability: fail-loud when no checkout is reachable ("a check that did not run is
+      # NEVER reported conformant").
+      - name: verify-hooks (byte-stable deny/allow proofs — all 56 cases)
+        working-directory: toolkit
+        env:
+          GSD_CORE_ROOT: ${{ github.workspace }}/gsd-core
+        run: node bin/verify-hooks.cjs
+
       - name: verify-capability (declared == shipped, LIVE registry validators)
         working-directory: toolkit
         env:
