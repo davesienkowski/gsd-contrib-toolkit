@@ -206,6 +206,11 @@ hooks** layer once installed, a property of those hooks and not of the capabilit
 - `node bin/verify-hooks.cjs` — captures byte-stable deny/allow proof artifacts for
   the gates.
 - `node bin/self-test.cjs` — dog-foods the toolkit against a disposable sandbox.
+  **Run it with your cwd inside a gsd-core checkout** (`cd ~/repos/gsd-core && node
+  /path/to/gsd-contrib-toolkit/bin/self-test.cjs`), the same requirement `hooks/doctor.cjs`
+  has. The HARD-01/HARD-02 fault-injection proofs build their sandbox from a real checkout
+  and SKIP without one — and since 2026-07-30 a skipped load-bearing proof is a **failure**,
+  not a silent pass (EXEC-01). Run from the toolkit root it exits 1 and names the reason.
 - `node bin/verify-capability.cjs` — validates the share-form manifest by reusing
   the LIVE capability-registry validators (no schema reimplementation).
 

@@ -114,7 +114,9 @@ skills drifting from the maintainer's live practice. See the milestone record in
 ## Status
 
 - **Enforcement:** built and self-proven — `verify-hooks` captures byte-stable deny/allow proofs for all
-  wired gates; `self-test` dog-foods the toolkit against a disposable sandbox.
+  wired gates; `self-test` dog-foods the toolkit against a disposable sandbox (run it with cwd inside a
+  gsd-core checkout — the HARD-01/HARD-02 proofs need a real one, and since 2026-07-30 a *skipped*
+  load-bearing proof fails rather than reading as green).
 - **Live proof:** the first toolkit-shepherded contribution landed upstream (issue #1154 → PR #1738,
   merged 2026-06-29) — the pipeline has cleared a real gsd-core contribution end-to-end.
 - **Distribution:** published as a public, git- and npm-installable capability
