@@ -156,6 +156,16 @@ jobs:
           GSD_CORE_ROOT: ${{ github.workspace }}/gsd-core
         run: node bin/verify-capability.cjs
 
+      # CONV-01. `doctor` catches upstream SCRIPT drift; this catches upstream CONVENTION drift —
+      # the handful of policies the toolkit cannot call and therefore REPLICATES locally (branch
+      # prefixes, exempt lists, POLICY-02 npm script names). Those replicas were the blind spot
+      # logged as H-A: in sync as of 2026-07-30, but by hand, with nothing keeping them there.
+      # Running it here (and on the weekly schedule) means an upstream change surfaces on its own
+      # rather than at the moment a gate wrongly denies real work.
+      - name: convention-drift (replicated conventions vs LIVE)
+        working-directory: gsd-core
+        run: node ../toolkit/bin/convention-drift.cjs
+
       # The honest-green gate. self-test's EXEC-01 check re-runs hooks/fault-injection.test.cjs
       # with captured stdout and FAILS unless its cases actually executed with zero skips — so
       # this step cannot report success over an unexecuted HARD-01/HARD-02 proof.
