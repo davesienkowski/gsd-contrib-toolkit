@@ -1,0 +1,125 @@
+name: verify
+
+# CI for gsd-contrib-toolkit (backlog #7 — the repo had no .github/ at all).
+#
+# TWO jobs, deliberately split by what a red result MEANS:
+#
+#   verify  — the toolkit against itself. Deterministic: depends on nothing outside this repo,
+#             so a red here is always "this repo broke".
+#   compat  — the toolkit against a REAL open-gsd/gsd-core checkout. A red here means either
+#             this repo broke OR gsd-core drifted its script shapes — which is exactly the
+#             HARD-02 alarm hooks/lib/doctor.cjs exists to raise ("catches a gsd-core refactor
+#             BEFORE it silently fail-closed-bricks the gates"). Both are worth blocking on.
+#
+# Why this job split is load-bearing, not cosmetic: hooks/fault-injection.test.cjs resolves its
+# source via resolveGsdCoreRoot(process.cwd()), which needs the sentinel layout (scripts/ +
+# gsd-core/bin/lib/ + an identity script). Without a real checkout its 8 HARD-01/HARD-02 cases
+# SKIP. Until 2026-07-30 that skip read as PASS; EXEC-01 (bin/self-test.cjs) now makes an
+# unexecuted load-bearing proof a FAILURE, and `compat` is what supplies the checkout so they
+# genuinely run. That combination is the honest-green requirement for this workflow.
+#
+# DO NOT add `self-test` to the `verify` job "for coverage" — it has no gsd-core checkout, so it
+# would fail by design. `verify` deliberately tolerates the 8 skips; `compat` is where they must
+# execute. Adding it would make people disable EXEC-01 to get green, which is the exact defect
+# this whole workflow exists to prevent.
+#
+# No `npm ci` anywhere: this repo has no package.json, and every file the fault-injection sandbox
+# copies is TRACKED in gsd-core (all four SHAPE_CHECKS scripts, affected-tests-lib.cjs, and the
+# transitive scripts/lib/cli-exit.cjs, scripts/run-tests.cjs, gsd-core/bin/lib/package-identity.cjs).
+# A shallow clone is sufficient — verified 2026-07-30 with `git ls-files --error-unmatch`.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Upstream gsd-core moves without this repo pushing. A weekly run surfaces a shape drift
+    # (HARD-02) on its own schedule rather than waiting for the next commit here.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: verify (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # The suite. The 8 fault-injection cases SKIP here (no gsd-core checkout) — expected and
+      # tolerated; `compat` below is where they must execute.
+      - name: node --test
+        run: node --test
+
+      - name: verify-hooks (byte-stable deny/allow proofs)
+        run: node bin/verify-hooks.cjs
+
+      - name: verify-capability (declared == shipped, LIVE registry validators)
+        run: node bin/verify-capability.cjs
+
+      # Catches the exact failure mode that bit Phase 12 and again on 2026-07-30: editing
+      # hooks/ or hooks/lib/ without regenerating capabilities/contribution-toolkit/.
+      - name: build-capability --check (bundle in sync with canonical source)
+        run: node bin/build-capability.cjs --check
+
+  compat:
+    name: compat (real gsd-core — HARD-01/HARD-02 execute)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the toolkit
+        uses: actions/checkout@v4
+        with:
+          path: toolkit
+
+      # `next` is gsd-core's upstream default branch (not `main`) — see the GSD ADR rule.
+      - name: Check out open-gsd/gsd-core @ next
+        uses: actions/checkout@v4
+        with:
+          repository: open-gsd/gsd-core
+          ref: next
+          path: gsd-core
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Fail EARLY and legibly if the sentinel layout is absent, rather than letting every
+      # downstream proof silently skip and report green. This assertion is the honest-green
+      # backstop for the checkout itself.
+      - name: Assert the gsd-core sentinel layout resolves
+        working-directory: gsd-core
+        run: |
+          node -e "
+            const { resolveGsdCoreRoot } = require('../toolkit/hooks/lib/resolve.cjs');
+            const root = resolveGsdCoreRoot(process.cwd());
+            console.log('gsd-core sentinel resolved at: ' + root);
+          "
+
+      # HARD-02: shape-check every LIVE script the gates call, against the real checkout.
+      # A gsd-core refactor that renames an export or reshapes a return value fails HERE.
+      - name: doctor (LIVE script shape check)
+        working-directory: gsd-core
+        run: node ../toolkit/hooks/doctor.cjs
+
+      # The honest-green gate. self-test's EXEC-01 check re-runs hooks/fault-injection.test.cjs
+      # with captured stdout and FAILS unless its cases actually executed with zero skips — so
+      # this step cannot report success over an unexecuted HARD-01/HARD-02 proof.
+      - name: self-test (EXEC-01 — load-bearing proofs must EXECUTE, not skip)
+        working-directory: gsd-core
+        run: node ../toolkit/bin/self-test.cjs
