@@ -842,7 +842,7 @@ test('remove leaves a FOREIGN symlink (not into our bundle) at a command target 
     const foreignTarget = path.join(sb.commandsDir, names[0]);
     const foreignDest = path.join(sb.root, 'somewhere-else.md');
     fs.writeFileSync(foreignDest, 'foreign\n', 'utf8');
-    fs.rmSync(foreignTarget, { force: true });
+    fs.unlinkSync(foreignTarget); // a SYMLINK — unlink, never rmSync (Node 24 ERR_FS_EISDIR on dir-symlinks)
     fs.symlinkSync(foreignDest, foreignTarget);
 
     drv.runRemove(Object.assign({}, opts, { reason: '17-02 fail-safe proof: foreign symlink survives remove' }));
@@ -943,7 +943,7 @@ test('deliverBundledSkills creates idempotent DIRECTORY symlinks per stem; re-po
     const target = path.join(skillsDir, stem);
     const elsewhere = path.join(sb, 'elsewhere');
     fs.mkdirSync(elsewhere);
-    fs.rmSync(target, { force: true });
+    fs.unlinkSync(target); // a dir-SYMLINK — unlink, never rmSync (Node 24 ERR_FS_EISDIR)
     fs.symlinkSync(elsewhere, target, 'dir');
     const r3 = drv.deliverBundledSkills({ bundleDir: drv.BUNDLE_CAP_DIR, skillsDir });
     assert.strictEqual(r3.linked, 1, 're-pointing a stale symlink counts as linked');
@@ -1112,7 +1112,7 @@ test('promoteBundle symlink mode: absolute dir-symlink capDir→bundleDir whose 
     // A stale symlink (points elsewhere) is RE-POINTED, not errored.
     const elsewhere = path.join(liveRoot, 'elsewhere');
     fs.mkdirSync(elsewhere);
-    fs.rmSync(capDir, { force: true });
+    fs.unlinkSync(capDir); // a dir-SYMLINK — unlink, never rmSync (Node 24 ERR_FS_EISDIR)
     fs.symlinkSync(elsewhere, capDir, 'dir');
     const r3 = drv.promoteBundle({ liveRoot, bundleDir: drv.BUNDLE_CAP_DIR, mode: 'symlink' });
     assert.strictEqual(r3.action, 'relinked', 're-pointing a stale symlink counts as relinked');

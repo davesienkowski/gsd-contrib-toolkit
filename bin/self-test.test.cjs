@@ -92,11 +92,18 @@ test('nodeCheckAll: ok:false and records the failing file', () => {
 // when every case SKIPS. Measured 2026-07-30 from the toolkit root: 8 tests, 0 pass, 8 skipped —
 // and the CLI printed "Self-test PASSED". A green that proves nothing read as a green.
 
-/** A spawn stub whose `--test <file>` runs emit a TAP summary tail. */
+/**
+ * A spawn stub whose `--test <file>` runs emit a TAP summary tail.
+ *
+ * The file is located by scanning for the first NON-FLAG argv entry rather than by index:
+ * executedTestsCheck pins `--test-reporter=tap` (Node 24 defaults to the `spec` reporter even on a
+ * pipe), so the path is no longer at a fixed position and an index-based stub would silently stop
+ * matching — a stub that quietly stops asserting is worse than one that breaks.
+ */
 function makeExecSpawn(tapByFile) {
   return function spawn(_cmd, args) {
-    if (args[0] === '--test') {
-      const file = args[1];
+    if (args.includes('--test')) {
+      const file = args.find((a) => !a.startsWith('--'));
       const tap = tapByFile[file];
       if (!tap) return { status: 0, stdout: '# pass 3\n# fail 0\n# skipped 0\n' };
       return { status: tap.status === undefined ? 0 : tap.status, stdout: tap.stdout };
@@ -173,7 +180,7 @@ test('runSelfTest: an all-skipped mustExecute proof flips overall ok:false', () 
       covered: MUST,
       spawn: (cmd, args) => {
         if (args[0] === '--check') return { status: 0, stderr: '' };
-        if (args[0] === '--test' && args.length > 1) {
+        if (args.includes('--test') && args.some((a) => !a.startsWith('--'))) {
           return { status: 0, stdout: '# tests 8\n# pass 0\n# fail 0\n# skipped 8\n' };
         }
         return { status: 0 };

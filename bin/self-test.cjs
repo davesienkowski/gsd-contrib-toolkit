@@ -196,7 +196,14 @@ function executedTestsCheck(deps) {
     // given an ABSOLUTE file path here, so discovery does not depend on cwd (unlike runTestSuite's
     // repo-wide run, which must stay rooted at repoRoot to discover the suite at all).
     // This mirrors hooks/doctor.cjs's documented usage: run it from inside a gsd-core checkout.
-    const r = spawn(process.execPath, ['--test', abs], { encoding: 'utf8', cwd: probeCwd });
+    // `--test-reporter=tap` is REQUIRED, not cosmetic: Node 24 defaults to the `spec` reporter
+    // (✔/✖ glyphs) even when stdout is a pipe, so parseTapCounts would find no counters, report
+    // UNPROVEN, and fail the self-test on Node 24 for a purely cosmetic reason. Pinning the
+    // reporter makes the counter parse version-independent.
+    const r = spawn(process.execPath, ['--test', '--test-reporter=tap', abs], {
+      encoding: 'utf8',
+      cwd: probeCwd,
+    });
     const counts = r ? parseTapCounts(r.stdout) : null;
 
     if (!counts) {

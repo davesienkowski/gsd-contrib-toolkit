@@ -153,6 +153,33 @@ const PROMOTION_MARKER = '.gsd-contrib-promotion';
 const COMMAND_NAME_RE = /^gsd-.*\.md$/;
 
 /**
+ * Remove a SYMLINK itself, never following it into its target.
+ *
+ * Every call site is already guarded by `lstatSync(...).isSymbolicLink()` (or sits inside an
+ * "already a symlink" branch), so this only ever unlinks a link — the bundle's real
+ * `skills/<stem>/` tree and the promoted capability dir are NEVER recursed into or deleted
+ * (T-17-02-OVERREMOVE).
+ *
+ * This used to be `fs.rmSync(p, { force: true })` — correct on Node 22, but **Node 24 throws
+ * `ERR_FS_EISDIR`** when `rmSync` targets a DIRECTORY symlink without `recursive`. Skills and the
+ * promoted capability dir are delivered as `'dir'` symlinks, so `install` / `off` / `on` / `remove`
+ * all broke on Node 24. `fs.unlinkSync` is the version-stable spelling and states the invariant the
+ * surrounding comments already assert. Measured on both runtimes: link removed, target intact.
+ *
+ * ENOENT is swallowed to preserve the previous `{ force: true }` semantics (an already-absent link
+ * is not an error — the reclaim paths are idempotent and re-runnable).
+ *
+ * @param {string} p absolute path to the symlink to remove.
+ */
+function unlinkSymlink(p) {
+  try {
+    fs.unlinkSync(p);
+  } catch (err) {
+    if (!err || err.code !== 'ENOENT') throw err;
+  }
+}
+
+/**
  * Resolve a gsd-core checkout carrying the sentinel layout (scripts/ + gsd-core/bin/lib/). Mirrors
  * bin/verify-capability.cjs resolveGsdCoreCwd: GSD_CORE_ROOT, then ~/repos/gsd-core, then ~/gsd-core.
  * Returns an absolute root, or null when none is reachable (caller turns null into a LOUD fail —
@@ -214,7 +241,7 @@ function consentStoreHome() {
 // SKILLS (21-01, TOG-02): skills are DIRECTORIES (each skill is a `<stem>/SKILL.md` tree), so
 //   deliverBundledSkills / removeBundledSkills are DIRECTORY-symlink mirrors of the command helpers —
 //   delivered with the explicit `'dir'` symlink type (`fs.symlinkSync(absSource, target, 'dir')`) and
-//   reclaimed by `lstat`+unlink of the LINK itself (`rmSync` WITHOUT `recursive`, so a followed target
+//   reclaimed by `lstat`+`unlinkSymlink` of the LINK itself (so a followed target
 //   is NEVER recursed into / deleted). Both fail-safes are identical (never-clobber a real dir;
 //   reclaim only links into our bundle). These are PRIMITIVES only in 21-01 — not yet wired into the
 //   install/remove lifecycle (that is Plan 21-02).
@@ -402,7 +429,7 @@ function deliverBundledCommands(args = {}) {
         continue;
       }
       // Symlink points elsewhere — re-point it (safe: replacing a symlink, not real data).
-      fs.rmSync(target, { force: true });
+      unlinkSymlink(target);
       fs.symlinkSync(absSource, target);
       linked += 1;
       continue;
@@ -479,7 +506,7 @@ function removeBundledCommands(args = {}) {
     if (current !== absSource) {
       continue; // a FOREIGN symlink (not into our bundle) — leave it untouched (T-17-02-OVERREMOVE)
     }
-    fs.rmSync(target, { force: true });
+    unlinkSymlink(target);
     removed += 1;
   }
   return { removed, names };
@@ -532,7 +559,7 @@ function deliverBundledSkills(args = {}) {
         continue;
       }
       // Symlink points elsewhere — re-point it (safe: replacing a symlink, not real data).
-      fs.rmSync(target, { force: true });
+      unlinkSymlink(target);
       fs.symlinkSync(absSource, target, 'dir');
       linked += 1;
       continue;
@@ -558,9 +585,9 @@ function deliverBundledSkills(args = {}) {
  * each bundled skill stem, if the target is a SYMLINK whose resolved target is the bundle source
  * (points INTO our bundle skills/ dir), unlink it (count "removed"); if absent, no-op; if it is a REAL
  * non-symlink dir/file OR a symlink pointing ELSEWHERE, LEAVE it untouched (T-17-02-OVERREMOVE: only
- * reclaim links into our bundle). CRITICAL: `fs.rmSync(target, { force: true })` WITHOUT `recursive`
+ * reclaim links into our bundle). CRITICAL: `unlinkSymlink(target)` (`fs.unlinkSync`)
  * on an lstat'd symlink removes the LINK only — it NEVER follows into the target dir, so the bundle's
- * real skills/<stem>/ tree is never recursed into or deleted. (Passing `recursive: true` would risk
+ * real skills/<stem>/ tree is never recursed into or deleted. (A recursive removal would risk
  * recursing a followed target — DO NOT.)
  *
  * @param {object} args
@@ -612,9 +639,9 @@ function removeBundledSkills(args = {}) {
     if (current !== absSource) {
       continue; // a FOREIGN symlink (not into our bundle) — leave it untouched (T-17-02-OVERREMOVE)
     }
-    // Unlink the LINK only — rmSync WITHOUT recursive on a symlink removes the link, never follows
-    // into the target dir (the bundle's real skills/<stem>/ tree is never recursed/deleted).
-    fs.rmSync(target, { force: true });
+    // Unlink the LINK only — unlinkSymlink removes the link and never follows into the target dir
+    // (the bundle's real skills/<stem>/ tree is never recursed/deleted).
+    unlinkSymlink(target);
     removed += 1;
   }
   return { removed, names };
@@ -743,7 +770,7 @@ function promoteBundle(args = {}) {
         return { mode, capDir, bundleDir: absSource, action: 'already' }; // idempotent no-op
       }
       // Symlink points elsewhere — re-point it (safe: replacing a symlink, not real data).
-      fs.rmSync(capDir, { force: true });
+      unlinkSymlink(capDir);
       fs.symlinkSync(absSource, capDir, 'dir');
       return { mode, capDir, bundleDir: absSource, action: 'relinked' };
     }
@@ -764,9 +791,9 @@ function promoteBundle(args = {}) {
   // mode === 'copy'
   let action = 'copied';
   if (st && st.isSymbolicLink()) {
-    // A prior symlink promotion (or foreign symlink). Remove the LINK ONLY — rmSync WITHOUT recursive on
-    // a symlink removes the link, NEVER follows into / deletes the target tree (D-02 never-recurse rule).
-    fs.rmSync(capDir, { force: true });
+    // A prior symlink promotion (or foreign symlink). Remove the LINK ONLY — unlinkSymlink removes
+    // the link and NEVER follows into / deletes the target tree (D-02 never-recurse rule).
+    unlinkSymlink(capDir);
     action = 'recopied';
   } else if (st && st.isDirectory()) {
     // A real dir at capDir. Refresh it ONLY if it is OUR OWN prior copy promotion (carries the marker);
