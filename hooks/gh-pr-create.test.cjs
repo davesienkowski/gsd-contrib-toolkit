@@ -1538,3 +1538,49 @@ test('branch policy: the deny reason NAMES the accepted prefixes (actionable, no
   assert.strictEqual(d.permissionDecision, 'deny');
   assert.match(d.permissionDecisionReason, /hotfix\//, 'the reason lists the valid prefixes');
 });
+
+// ─── WR-01: approval labels are read from the CANONICAL UPSTREAM, never the command's target ──
+//
+// CF-02 asks "does a linked issue carry a MAINTAINER-applied approved-* label?". The labels were
+// read from `deps.targetRepo` — whatever the command's `-R`/`--repo` named, falling back to the
+// worktree origin. Both are contributor-controlled: a fork can carry a SELF-applied
+// `approved-feature`, and the gate would have accepted it as maintainer approval. The label only
+// means what CF-02 claims when it is read from open-gsd/gsd-core.
+
+test('WR-01: approval labels are read from open-gsd/gsd-core, NOT the command -R target', () => {
+  const seen = [];
+  runPrGate(
+    input(`gh pr create -R attacker/gsd-core --base next --title 'feat(#39): x' --body "${escapeNl(bodyLinking(39))}"`),
+    deps({
+      targetRepo: { owner: 'attacker', repo: 'gsd-core' },
+      readIssueLabels: (n, repo) => { seen.push(repo); return ['approved-feature']; },
+    })
+  );
+  assert.ok(seen.length > 0, 'the approval read must actually happen');
+  for (const repo of seen) {
+    assert.strictEqual(repo.owner, 'open-gsd', 'approval must be read from canonical upstream');
+    assert.strictEqual(repo.repo, 'gsd-core');
+  }
+});
+
+test('WR-01: a fork that self-applies approved-* cannot satisfy CF-02', () => {
+  const d = runPrGate(
+    input(`gh pr create -R attacker/gsd-core --base next --title 'feat(#39): x' --body "${escapeNl(bodyLinking(39))}"`),
+    deps({
+      targetRepo: { owner: 'attacker', repo: 'gsd-core' },
+      // The fork says approved; upstream does not. Only the upstream answer may count.
+      readIssueLabels: (n, repo) =>
+        repo && repo.owner === 'open-gsd' ? [] : ['approved-feature', 'approved-enhancement'],
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /approved-feature|approved-enhancement/);
+});
+
+test('WR-01 no-regression: a genuine upstream approval still allows', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'feat(#39): x' --body "${escapeNl(bodyLinking(39))}"`),
+    deps({ readIssueLabels: (n, repo) => (repo && repo.owner === 'open-gsd' ? ['approved-feature'] : []) })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});

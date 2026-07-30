@@ -54,6 +54,7 @@ const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = r
 const {
   resolveRootForCommand, requireLiveScript, commandTargetsGsdCore, parseOwnerRepo,
   isConventionalBranch, UPSTREAM_BRANCH_PREFIXES,
+  GSD_CORE_OWNER, GSD_CORE_REPO,
 } = require('./lib/resolve.cjs');
 
 // FailClosed/safeCommand: shared IN-03 helpers from failclosed.cjs.
@@ -615,8 +616,16 @@ function gate(stdinString, deps) {
   if (bucket !== 'Fix') {
     const issues = extractLinkedIssues(body, deps.targetRepo);
     let approved = false;
+    // WR-01: read the approval labels from the CANONICAL UPSTREAM, never from `deps.targetRepo`.
+    // targetRepo is whatever the command's `-R`/`--repo` named, falling back to the worktree
+    // origin — both contributor-controlled. A fork can carry a SELF-applied `approved-feature`,
+    // and reading it there would let the author satisfy their own approval gate. The label only
+    // means what CF-02 claims (MAINTAINER-applied) when it is read from open-gsd/gsd-core, so the
+    // repo is pinned here rather than inherited. Issue NUMBERS still come from the body's linked
+    // refs; only the repo the labels are read FROM is pinned.
+    const approvalRepo = { owner: GSD_CORE_OWNER, repo: GSD_CORE_REPO };
     for (const number of issues) {
-      const labels = deps.readIssueLabels(number, deps.targetRepo); // may throw → fail-closed deny
+      const labels = deps.readIssueLabels(number, approvalRepo); // may throw → fail-closed deny
       if (Array.isArray(labels) && labels.some((l) => APPROVAL_LABELS.includes(l))) {
         approved = true;
         break;
