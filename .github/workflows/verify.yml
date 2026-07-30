@@ -69,8 +69,11 @@ jobs:
       - name: verify-hooks (byte-stable deny/allow proofs)
         run: node bin/verify-hooks.cjs
 
-      - name: verify-capability (declared == shipped, LIVE registry validators)
-        run: node bin/verify-capability.cjs
+      # NOTE: `verify-capability` is NOT here — it reuses the LIVE gen-capability-registry
+      # validators and is deliberately fail-loud when no gsd-core checkout is reachable ("a check
+      # that did not run is NEVER reported conformant"). That makes it a `compat` step by
+      # definition, not a `verify` one. Moving it here to get a green would mean either weakening
+      # that LOUD-on-miss contract or vendoring a fake validator — both worse than the split.
 
       # Catches the exact failure mode that bit Phase 12 and again on 2026-07-30: editing
       # hooks/ or hooks/lib/ without regenerating capabilities/contribution-toolkit/.
@@ -130,6 +133,14 @@ jobs:
       - name: doctor (LIVE script shape check)
         working-directory: gsd-core
         run: node ../toolkit/hooks/doctor.cjs
+
+      # Lives here, not in `verify`: it reuses the LIVE gen-capability-registry validators and is
+      # fail-loud when no checkout is reachable, so it needs the real gsd-core this job provides.
+      - name: verify-capability (declared == shipped, LIVE registry validators)
+        working-directory: toolkit
+        env:
+          GSD_CORE_ROOT: ${{ github.workspace }}/gsd-core
+        run: node bin/verify-capability.cjs
 
       # The honest-green gate. self-test's EXEC-01 check re-runs hooks/fault-injection.test.cjs
       # with captured stdout and FAILS unless its cases actually executed with zero skips — so
