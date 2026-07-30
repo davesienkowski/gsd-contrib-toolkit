@@ -36,7 +36,7 @@ const {
 } = require('./lib/sandbox.cjs');
 const { resolveGsdCoreRoot, hasSentinel } = require('./lib/resolve.cjs');
 const { spawnHook } = require('./lib/proof-harness.cjs');
-const { runDoctor } = require('./lib/doctor.cjs');
+const { runDoctor, SHAPE_CHECKS } = require('./lib/doctor.cjs');
 
 const GH_PR_CREATE_HOOK = path.join(__dirname, 'gh-pr-create.cjs');
 
@@ -247,7 +247,7 @@ test('HARD-01: a REMOVED live script makes gh-pr-create emit a CONCLUSIVE deny n
   }
 });
 
-test('HARD-02 (control): runDoctor on a faithful CLEAN sandbox returns ok:true (4/4 shapes hold)', { skip: SOURCE_ROOT ? false : SKIP_NOTE }, () => {
+test('HARD-02 (control): runDoctor on a faithful CLEAN sandbox returns ok:true (every shape holds)', { skip: SOURCE_ROOT ? false : SKIP_NOTE }, () => {
   const sb = makeSandbox({ sourceRoot: SOURCE_ROOT });
   try {
     const report = runDoctor(sb.root);
@@ -257,7 +257,13 @@ test('HARD-02 (control): runDoctor on a faithful CLEAN sandbox returns ok:true (
       'the doctor must PASS on a faithful copy (proves a later red is meaningful, not always-red): ' +
         JSON.stringify(report.results.filter((r) => !r.ok))
     );
-    assert.strictEqual(report.results.length, 4, 'all four SHAPE_CHECKS run');
+    // DI-32-01: derived, never hardcoded. A literal count here is the same drift that broke the
+    // sandbox manifest — ENF-17 added a fifth SHAPE_CHECK and a hardcoded `4` went red.
+    assert.strictEqual(
+      report.results.length,
+      SHAPE_CHECKS.length,
+      'every SHAPE_CHECKS entry runs (' + SHAPE_CHECKS.length + ' expected)'
+    );
     assert.ok(report.results.every((r) => r.ok === true), 'every shape check holds on the clean copy');
   } finally {
     sb.dispose();

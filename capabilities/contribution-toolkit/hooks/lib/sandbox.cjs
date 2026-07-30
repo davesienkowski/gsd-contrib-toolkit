@@ -32,24 +32,41 @@ const path = require('node:path');
 const { resolveGsdCoreRoot } = require('./resolve.cjs');
 
 /**
- * The LIVE scripts the toolkit gates + doctor call (the four SHAPE_CHECKS scripts), each path
- * relative to the gsd-core root. The sandbox copies exactly these from the real checkout.
- * (issue-version-gate additionally requires gsd-core/bin/lib/package-identity.cjs, copied as a
- * transitive dependency below.)
+ * The LIVE scripts the toolkit gates + doctor call, each path relative to the gsd-core root. The
+ * sandbox copies exactly these from the real checkout.
+ *
+ * DI-32-01 — DERIVED, never hand-maintained. This list was previously a hand-written literal of
+ * four paths while `doctor.cjs`'s SHAPE_CHECKS grew to five (ENF-17 added
+ * `scripts/affected-tests-lib.cjs`). The sandbox then built a "faithful clean" copy that was
+ * MISSING a script the doctor checks, so `runDoctor` returned ok:false on it — which is exactly
+ * what HARD-02's control case reports, making every HARD-02 red meaningless (always-red).
+ *
+ * Deriving from SHAPE_CHECKS fixes the CLASS, not the instance: a future sixth shape check is
+ * copied into the sandbox automatically and can never desync again. `sandbox.test.cjs` pins the
+ * derivation so a refactor back to a literal is caught.
  */
-const SANDBOX_SCRIPTS = Object.freeze([
-  'scripts/issue-version-gate.cjs',
-  'scripts/pr-target-policy.cjs',
-  'scripts/pr-template-policy.cjs',
-  'scripts/issue-dedupe.cjs',
-]);
+const { SHAPE_CHECKS } = require('./doctor.cjs');
+
+const SANDBOX_SCRIPTS = Object.freeze(
+  Array.from(new Set(SHAPE_CHECKS.map((c) => c.script)))
+);
 
 /**
- * Transitive requires (outside scripts/) that a copied script needs to load. issue-version-gate
- * requires `../gsd-core/bin/lib/package-identity.cjs`; without it requireLiveScript would throw
- * for a DEPENDENCY miss, muddying a clean-sandbox proof.
+ * Transitive requires that a copied script needs to LOAD (require-time only — a lazy require
+ * inside a function body is not needed here). Without these, requireLiveScript would throw for a
+ * DEPENDENCY miss, muddying a clean-sandbox proof.
+ *
+ *   - issue-version-gate  → `../gsd-core/bin/lib/package-identity.cjs`
+ *   - affected-tests-lib  → `./lib/cli-exit.cjs` and `./run-tests.cjs` (DI-32-01). run-tests
+ *     additionally requires `./build-hooks.js`, but LAZILY at call time inside a function, so it
+ *     is deliberately NOT copied — the doctor only loads the module and calls the pure
+ *     `resolveRunPlan`.
  */
-const SANDBOX_TRANSITIVE = Object.freeze(['gsd-core/bin/lib/package-identity.cjs']);
+const SANDBOX_TRANSITIVE = Object.freeze([
+  'gsd-core/bin/lib/package-identity.cjs',
+  'scripts/lib/cli-exit.cjs',
+  'scripts/run-tests.cjs',
+]);
 
 /**
  * Resolve `rel` against `root` and assert it stays strictly inside the sandbox. Rejects `../`
@@ -90,8 +107,9 @@ function copyInto(srcAbs, destAbs) {
 }
 
 /**
- * Build a disposable sandbox: a temp dir with the gsd-core sentinel layout, the four SHAPE
- * scripts (+ their transitive lib dep) copied from the real checkout.
+ * Build a disposable sandbox: a temp dir with the gsd-core sentinel layout, EVERY doctor
+ * SHAPE_CHECKS script (derived — see SANDBOX_SCRIPTS) plus their transitive load-time deps,
+ * copied from the real checkout.
  *
  * @param {Object} [opts]
  * @param {string} [opts.sourceRoot] the real gsd-core root to copy from (default:
