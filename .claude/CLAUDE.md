@@ -4,13 +4,14 @@
 
 **GSD-Contrib Toolkit**
 
-A private, self-contained, GSD-update-proof toolkit that makes a *broken* `open-gsd/gsd-core`
+A self-contained, GSD-update-proof toolkit that makes a *broken* `open-gsd/gsd-core`
 contribution physically impossible to submit. It bundles the knowledge (the `core-contribution`
 skill), the triggers (`/gsd-submit`, `/gsd-review-sweep`), and — the new load-bearing layer —
 Claude Code `PreToolUse` hooks the *harness* runs (not the model), which call gsd-core's own gate
 scripts to **deny** filing/pushing a broken issue/PR or editing generated `bin/lib/*.cjs`. For Dave
-(a gsd-core CODEOWNER); private now, structured to graduate into a maintainer-shareable contributor
-toolkit later.
+(a gsd-core CODEOWNER). **Public since 2026-07-31** — the "graduate into a maintainer-shareable
+contributor toolkit" step, published MIT for reference and reuse. The `.planning/` GSD corpus stays
+local and unpublished; the toolkit's own decision record lives in tracked `docs/adr/`.
 
 **Core Value:** Enforce the **outcomes** that matter at the harness boundary — no broken issue/PR/push, no
 generated-file edit — so that even a sloppy, deadline-pressured run is blocked and corrected rather
@@ -19,9 +20,9 @@ than merged red. (Verifier-reach = spec-reach, applied to Dave's own contributio
 ### Constraints
 
 - **Enforcement mechanism**: Claude Code `PreToolUse` hooks returning `permissionDecision:"deny"` — fire before permission checks, unbypassable (even `--dangerously-skip-permissions`). — The only layer that survives model rationalization.
-- **Containment**: One git repo Dave owns (`~/repos/gsd-contrib-toolkit/`); `~/.claude` copies are symlinks back to it; the driver `node bin/contrib-capability.cjs install` is the idempotent re-runnable-repair path (re-run after any GSD update). — A `gsd-ver`/reinstall toggle must never lose the work.
+- **Containment**: One git repo Dave owns (`~/repos/gsd-contrib-toolkit/`); `~/.claude` copies are symlinks back to it; `install.sh` is idempotent and re-runnable after any GSD update. — A `gsd-ver`/reinstall toggle must never lose the work.
 - **Settings scope**: Project-scoped `gsd-core/.claude/settings.json` (gitignored locally) so hooks fire only in the gsd-core repo. — Cleanest blast radius. (Decision below; revisit if a global+cwd-guard proves necessary.)
-- **Privacy**: Nothing committed to or pushed at upstream gsd-core; no upstream repo edits. — Private until proven.
+- **Privacy**: Nothing committed to or pushed at upstream gsd-core; no upstream repo edits. — Held private until proven; the toolkit itself went public MIT on 2026-07-31, but the upstream-containment rule is unchanged and permanent. The `.planning/` corpus (exploratory notes, unsent outreach drafts, session narrative) is deliberately NOT published and is scrubbed from git history.
 - **Honesty**: Hooks lock outcomes, not steps. "Always create todos first" stays model-driven and is documented as such. — Don't oversell determinism.
 - **Don't reinvent**: Reuse GSD's existing commands/skills and trek-e's published directives unless they break things. — Alignment reduces review friction; but alignment ≠ blind adoption (keep the sharper triage wheel).
 
