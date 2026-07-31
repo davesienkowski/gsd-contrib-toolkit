@@ -41,7 +41,7 @@ const MANIFEST_PATH = path.join(BUNDLE_DIR, 'capability.json');
 const BUNDLE_SKILLS_DIR = path.join(BUNDLE_DIR, 'skills');
 
 // The known declared skills — a silent drop of either must fail loud.
-const KNOWN_STEMS = Object.freeze(['gsd-core-contribution', 'maintainer-review-sweep']);
+const KNOWN_STEMS = Object.freeze(['core-contribution', 'maintainer-review-sweep']);
 
 function readManifest() {
   return JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));

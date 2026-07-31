@@ -68,7 +68,7 @@ const EXPECTED_COMMANDS = [
 
 // The 2 bundled skill stems the install/on delivers alongside the commands (21-03 full-surface e2e),
 // named explicitly so a silently-dropped skill is CAUGHT in the end-to-end half too.
-const EXPECTED_SKILL_STEMS = ['gsd-core-contribution', 'maintainer-review-sweep'];
+const EXPECTED_SKILL_STEMS = ['core-contribution', 'maintainer-review-sweep'];
 
 /**
  * WIRED_TOTAL — the hook-registration total, DERIVED AT RUNTIME from the canonical

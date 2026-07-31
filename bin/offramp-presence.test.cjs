@@ -4,7 +4,7 @@
  * bin/offramp-presence.test.cjs — the FLOW-01 Recovery Offramp presence/consistency proof.
  *
  * Phase 19 adds a model-driven "Recovery Offramp" to the three contribution surfaces (the
- * gsd-core-contribution skill + the gsd-submit and gsd-review-sweep commands): on a contribution-gate
+ * core-contribution skill + the gsd-submit and gsd-review-sweep commands): on a contribution-gate
  * DENY (or a skill-surfaced real blocking issue) the contributor is offered two tracked recovery paths —
  * fix inline with /gsd-quick, or route through the GSD pipeline (/gsd-debug, or
  * /gsd-discuss-phase -> /gsd-plan-phase -> /gsd-execute-phase) — instead of a bare dead-stop. The deny
@@ -45,7 +45,7 @@ const BUNDLE_DIR = path.join(REPO_ROOT, 'capabilities', 'contribution-toolkit');
 // The three contribution surfaces, as repo-relative paths so BOTH the canonical root and the bundle
 // root are checked from the same list.
 const SURFACES = Object.freeze([
-  'skills/gsd-core-contribution/SKILL.md',
+  'skills/core-contribution/SKILL.md',
   'commands/gsd-submit.md',
   'commands/gsd-review-sweep.md',
 ]);

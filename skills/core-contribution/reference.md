@@ -1,4 +1,4 @@
-# gsd-core-contribution — reference (commands, gates, templates)
+# core-contribution — reference (commands, gates, templates)
 
 **See also:** the reuse + methodology decisions governing this pipeline live in [docs/REUSE-AND-METHODOLOGY.md](../../docs/REUSE-AND-METHODOLOGY.md) (reuse map, `skills-from-the-artificer` + `trust-but-verify` pre-file review, Pocock `tdd` authoring).
 

@@ -642,7 +642,7 @@ test('docs-projection: internal (non-docs) links like `reference.md` are ignored
 test('docs-projection over the REAL skill files returns exactly the canonical linked docs', () => {
   // Against the real skills/ + manifest defaults. This is an EXACT-SET pin, not a count: it names
   // every repo doc the shipped skills link, so an adopter's installed copy has no dangling link.
-  //   • docs/REUSE-AND-METHODOLOGY.md — linked by gsd-core-contribution (the alignment record).
+  //   • docs/REUSE-AND-METHODOLOGY.md — linked by core-contribution (the alignment record).
   //   • docs/adr/CTK-ADR-0007-…       — linked by BOTH skills' RT0 runtime-freshness step (ENF-21),
   //     which cites the `ask`-on-network-unavailable severity and the recorded review-side non-gate.
   //     Both links project the SAME doc (deduped), and it lands at the link-resolving bundle path

@@ -4,7 +4,7 @@
  * bin/sweep-handoff-presence.test.cjs — the D-01/D-02/D-03 "Authoring hand-off" seam proof.
  *
  * The toolkit's two skills are complementary halves: `maintainer-review-sweep` ADJUDICATES others'
- * work, `gsd-core-contribution` AUTHORS your own. Each declares the other out of scope, but until
+ * work, `core-contribution` AUTHORS your own. Each declares the other out of scope, but until
  * this seam existed neither declared what happens at the MOMENT the sweep stops adjudicating and
  * starts authoring — writing a fix triage surfaced, pushing a correction to a stalled PR, filing a
  * follow-up issue. That fell through the gap and got done ad-hoc, outside the gated P0–P6 pipeline.
@@ -73,7 +73,7 @@ const PACKET_SURFACE = 'skills/maintainer-review-sweep/SKILL.md';
 
 // The receiving half of the seam — the contribution skill, which must acknowledge sweep-originated
 // entry WITHOUT weakening the gate that entry passes through.
-const CONTRIBUTION_SURFACE = 'skills/gsd-core-contribution/SKILL.md';
+const CONTRIBUTION_SURFACE = 'skills/core-contribution/SKILL.md';
 
 // The P1 gate text that must survive VERBATIM (threat T-u5q-01). Both fragments are pre-existing;
 // see the preservation note on the test below.

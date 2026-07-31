@@ -74,7 +74,7 @@ const BUNDLE_DIR = path.join(REPO_ROOT, 'capabilities', CAP_ID);
 const CANONICAL_SKILLS_DIR = path.join(REPO_ROOT, 'skills');
 // The two declared stems whose SKILL.md must materialize at the install root, named explicitly so a
 // silently-dropped skill is caught (the overlay-expected form is asserted per-stem).
-const EXPECTED_STEMS = ['gsd-core-contribution', 'maintainer-review-sweep'];
+const EXPECTED_STEMS = ['core-contribution', 'maintainer-review-sweep'];
 /**
  * WIRED_TOTAL — the hook-registration total, DERIVED AT RUNTIME from the canonical
  * `settings.snippet.json` rather than a hardcoded numeral (which went stale on every newly wired
