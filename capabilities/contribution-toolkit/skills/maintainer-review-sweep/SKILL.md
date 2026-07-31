@@ -60,6 +60,23 @@ Run in order. **Adversarial gate between every phase:** before advancing, state 
 - **Delegate issue-side advancement to `/triage`.** This sweep ranks and relabels issues; for issues that need reproduction, grilling/design (`/grilling` + `/domain-modeling`), an `.out-of-scope/` prior-rejection check, or the needs-info loop, hand off to the `/triage` skill rather than reimplementing its state machine. The sweep identifies and routes; `/triage` advances.
 - **Advancing an issue → follow the triage-assist order (mirror trek-e).** Issue advancement runs in sequence: (1) **settle bug-vs-by-design against the design record** (PRD/ADR/explanation docs — quote the clause; an intended-but-unimplemented behavior is still a `confirmed-bug`, #2045) *before* confirming; (2) for a confirmed bug, post the structured **Agent Brief** (Reproduction empirical → Root cause `file:line` → Fix → Acceptance → Verify → **authorization + scope fence**, #2070/#2118/#2107) — the expensive artifact `ready-for-agent` gates dispatch on; (3) for an enhancement/feature, post the **approval-conditions checklist** (hard caveat + required-before-merge boxes, #860); (4) **route** extension-point-shaped work to `capability-candidate` (deliver as an ADR-857/1239 capability, not a core patch) rather than defaulting to core. Full formats + verified examples in [triage-assist.md](triage-assist.md).
 - **Initial-triage assist for an incoming issue.** For a fast, LIVE-script-backed first call on a single freshly-opened issue (duplicate signal + version-gate finding + suggested canonical role + the `needs-triage` strip), use **[triage-assist.md](triage-assist.md)** (doer: `bin/triage-assist.cjs`). It **complements** this sweep — advisory and surface-only, it mutates nothing without explicit `--apply`, and the suggested role comes ONLY from LIVE `docs/agents/triage-labels.md`. It does not replace the sweep's ranking or the re-review path.
+- **Authoring intent mid-sweep → stop and route to `/gsd-submit`.** The moment this sweep stops *adjudicating* and starts *authoring* — writing a fix for a defect triage surfaced, pushing a correction to a stalled PR, filing a follow-up or spin-off issue, or opening any issue/PR on `open-gsd/gsd-core` — stop and route to **`/gsd-submit`** (the `gsd-core-contribution` skill), carrying the packet in [Authoring hand-off](#authoring-hand-off-sweep--contribution) below. Route to the SKILL, never to a bare `gh issue create`: the skill carries the KNOW-03 security routing, under which a **real exploitable vulnerability** goes to the private advisory at `/security/advisories/new` and **NOT** a public issue — a live vuln is disclosed the moment the public issue opens. This sweep ranks and adjudicates; it does not author.
+
+## Authoring hand-off (sweep → contribution)
+
+**Trigger:** the cross-cutting rule above — adjudicating has turned into authoring.
+**Destination:** `/gsd-submit`, i.e. the `gsd-core-contribution` skill and its gated P0–P6 pipeline.
+
+**The hand-off packet — carry every item, so the contribution path's P0/P1 does not re-derive what this sweep already established:**
+
+1. **The `#number`.** The issue/PR this came out of, plus every related `#number` grouped by the Phase-2 cross-reference — so the contribution is not filed in isolation into a set that already holds a duplicate, a linked PR, or a colliding PR.
+2. **The evidence already captured**, each item with its provenance — *which command, when*. Real check-run conclusions, `git diff`, test output. Per the honesty-of-evidence rule above, anything you did not actually capture crosses the seam as an explicit **"not run"** — never as a synthesized number.
+3. **The design record you opened AND quoted** — the ADR/PRD/explanation clauses from the triage-assist bug-vs-by-design settle and from the re-review ADR/source-of-truth pass. Carry the **quotes themselves**, not "I read it": downstream, P2b must quote the clause again anyway.
+4. **The RT0 verdict** — whether `bin/runtime-sync.cjs check` already ran in this session, and its literal verdict.
+5. **The ball-in-court finding** — which `CHANGES_REQUESTED` review it anchored to, and who owes what.
+6. **The scope fence** — any bound the confirming issue or Agent Brief imposed. The PR must stay strictly inside it; the tempting adjacent fix is its own issue, not a rider.
+
+**Honest scope — this rule is MODEL-DRIVEN and advisory. It is NOT new enforcement, and it adds no hook.** The hard floor already exists and is unchanged: the ENF-21 `PreToolUse` gate DENIES `gh issue create`, `gh pr create`, and `git push` against `open-gsd/gsd-core` regardless of which skill is loaded, and it is **fail-closed**. This rule exists so you arrive at the gated pipeline *deliberately* rather than dead-ending at a deny — the gate is what actually stops a broken submission; this only tells you where to go. That split is consistent with the recorded decisions rather than a revision of them: per CTK-ADR-0001 §Decision.1 (as amended by CTK-ADR-0004 and CTK-ADR-0006) hooks lock outcomes, not steps, and CTK-ADR-0006 §Decision.4 bounds review-side gating to a fixed set of artifact-existence steps — this seam is deliberately not one of them.
 
 ## Quick reference
 
@@ -70,6 +87,7 @@ Run in order. **Adversarial gate between every phase:** before advancing, state 
 | "Re-review #N" | Phase 0 + [re-review.md](re-review.md) on #N |
 | "Clear #N to merge" | re-review.md; stop at merge-readiness unless `merge=#N` given |
 | Ball-in-court of a PR | Phase 6 logic (anchor to latest CHANGES_REQUESTED) |
+| "Found something to fix / file mid-sweep" | `/gsd-submit` with the [hand-off packet](#authoring-hand-off-sweep--contribution) — the sweep adjudicates, it does not author |
 
 ## Common mistakes (red flags — STOP)
 
@@ -87,6 +105,7 @@ Run in order. **Adversarial gate between every phase:** before advancing, state 
 - Collapsing every finding into Blocker-or-Nit → use the middle tiers (**Major** / **Minor**, or High/Medium/Low). A Major that isn't a Blocker is real signal.
 - Passing a test that can run its assertion **zero times** → the vacuous/pass-always trap (re-review.md 4b); demand a `> 0` count assertion.
 - Posting a long multi-section review wall → use the hard size-bounded template (re-review.md); depth goes in the one `<details>`, never clobber the PR/issue history with repeated full dumps.
+- Authoring a fix, pushing a correction, or filing an issue/PR **straight out of the sweep** instead of routing through `/gsd-submit` → the sweep ranks and adjudicates; it does not author. You will hit the fail-closed deny anyway — arrive there on purpose, carrying the [hand-off packet](#authoring-hand-off-sweep--contribution).
 
 ## Validation
 
