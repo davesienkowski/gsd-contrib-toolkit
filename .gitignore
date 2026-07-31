@@ -18,6 +18,13 @@ scratchpad/
 node_modules/
 *.log
 
+# GSD planning corpus — local working state, deliberately NOT published.
+# Held out of the public repo (and scrubbed from history 2026-07-31) because it
+# carries exploratory notes, unsent outreach drafts, and session narrative that
+# are working material rather than part of the shipped toolkit. The ADR trail
+# that DOES belong to the toolkit lives in docs/adr/ and is tracked.
+.planning/
+
 # NOTE: the vendored source-of-truth assets are deliberately NOT ignored.
 # skills/, commands/, hooks/, settings.snippet.json, and README.md
 # are the tracked source of truth a GSD reinstall must never be able to lose.

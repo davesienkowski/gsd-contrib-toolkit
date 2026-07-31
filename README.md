@@ -1,11 +1,23 @@
 # GSD-Contrib Toolkit
 
-A private, self-contained, GSD-update-proof toolkit that makes a *broken*
+A self-contained, GSD-update-proof toolkit that makes a *broken*
 `open-gsd/gsd-core` contribution physically impossible to submit. It bundles the
 contribution knowledge (two skills), the human triggers (five `gsd-*` commands),
 the runnable tools (`bin/`), and — the load-bearing layer — the Claude Code
 `PreToolUse` hooks the *harness* runs (not the model) to **deny** filing or pushing
 a broken issue/PR or editing a generated `bin/lib/*.cjs` artifact.
+
+> **Scope, honestly.** This is one contributor's working toolkit, built around
+> `open-gsd/gsd-core`'s specific intake gates and one maintainer's review
+> conventions. It is published for reference and reuse — read it as a worked
+> example of harness-boundary enforcement, not as a supported product. There is no
+> release cadence and no support commitment. The parts most likely to transfer
+> elsewhere are the *pattern* (`PreToolUse` hooks that gate outcomes, plus
+> LIVE-script reuse instead of reimplemented policy) and the honesty discipline in
+> *What It Does NOT Do* — the specific gates are tuned to one repo.
+>
+> The `.planning/` GSD corpus is intentionally not published; the decision record
+> that belongs to the toolkit lives in [`docs/adr/`](docs/adr/).
 
 This repository is the **owned source of truth**. Every at-risk asset lives here
 and is symlinked back into `~/.claude`, and `node bin/contrib-capability.cjs install`
@@ -374,3 +386,38 @@ The capability install/toggle target is gsd-core's **project**
 `.claude/settings.json` — **never** the global `~/.claude/settings.json`. The
 project scope keeps the enforcement hooks firing only inside the gsd-core
 repository, which is the cleanest blast radius.
+
+## Requirements
+
+- **Node.js 22+** (the test suite runs on `node --test`; CI covers 22 and 24).
+- **Claude Code** for the enforcement layer. `PreToolUse` hooks are a Claude Code
+  harness feature — on other runtimes (Codex, OpenCode, …) both skills run
+  **advisory-only** and the gates do not block. This is stated in each skill and is
+  not a degradation to work around.
+- A local **`open-gsd/gsd-core`** checkout. The gates resolve and invoke that
+  repo's LIVE scripts rather than vendoring copies of its policy, so they need it
+  present (see *What It Uses*).
+- **`gh`** authenticated, for the issue/PR gates and the maintainer assists.
+
+## Contributing
+
+This is a personal toolkit with no support commitment, but issues and PRs are
+welcome — especially corrections. If you spot a claim in this README or in
+[`docs/`](docs/) that the code does not actually do, that is the most valuable
+thing you can report: the project's stated core value is honesty about what is
+enforced versus what is advisory, so an overselling claim is a real defect.
+
+Note that several doc claims are **test-gated**. `docs-hook-counts.test.cjs`
+derives the wired hook set from `settings.snippet.json` and asserts the counts
+appearing in this README, `docs/guides/overview.md`, and the published-capability
+README — so a hook added without a doc update fails CI by design. Run the suite
+with `node --test` before opening a PR.
+
+## License
+
+[MIT](LICENSE) — the same license as `open-gsd/gsd-core`, so anything here can
+graduate upstream without a compatibility question.
+
+This project is not affiliated with or endorsed by the `open-gsd/gsd-core`
+maintainers; it is an independent contributor-side toolkit built against that
+repository's public conventions.
