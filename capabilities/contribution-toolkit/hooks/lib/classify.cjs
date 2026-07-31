@@ -33,6 +33,13 @@
  *   (b) no existing gate starts firing on a new action — every gate keys on an explicit
  *       action-name set, and the two vocabularies are disjoint.
  *
+ * ENF-22 (260731-ih5) adds ONE more verb on the same terms: `git merge`, whose OUTCOME is
+ * a commit even though the verb is not `git commit` — the general lesson recorded in
+ * SEED-enf16-misses-git-merge-implicit-commit ("a gate keyed to a command name covers that
+ * verb, not the outcome"). It lives in its OWN vocabulary tier and required a THIRD
+ * aggregation pass; see classifyAction for why folding it into either existing set would
+ * have disarmed a wired gate.
+ *
  * Pure: no I/O, no process.env.
  *
  * @module hooks/lib/classify
@@ -64,6 +71,21 @@ const LEGACY_MUTATION_ACTIONS = Object.freeze(new Set([
 const REVIEW_SIDE_ACTIONS = Object.freeze(new Set([
   'pr-review', 'pr-merge', 'issue-close', 'issue-comment', 'pr-comment',
 ]));
+
+// ENF-22 (quick task 260731-ih5, origin SEED-enf16-misses-git-merge-implicit-commit):
+// the LOCAL-MERGE action — a git verb whose OUTCOME is a commit even though the verb is
+// not `git commit`. A cleanly-mergeable `git merge <ref>` commits ITSELF, so ENF-16 was
+// never consulted and git's generated subject reached a gsd-core PR branch live on
+// 2026-07-31. Adding the verb here is what makes the outcome gateable at all: a segment
+// classified `other` is unreachable by every gate.
+//
+// It is its OWN tier, deliberately not folded into either set above:
+//   - not LEGACY: a legacy membership would let a merge win PASS 1 and displace a real
+//     `commit`/`push` in a chain, changing six wired gates' existing classifications;
+//   - not REVIEW-SIDE: a review-side membership would let `git merge x && gh pr merge 1`
+//     collapse to `merge` and disarm ENF-20's review-artifact gate (T-ih5-01).
+// See classifyAction's THREE-PASS aggregation for why the separate tier is load-bearing.
+const MERGE_SIDE_ACTIONS = Object.freeze(new Set(['merge']));
 
 // ENF-20 disambiguation contract. GitHub posts a PR *conversation* comment to the
 // ISSUES endpoint (POST /repos/{o}/{r}/issues/{n}/comments) — the pulls endpoint is
@@ -438,6 +460,13 @@ function classifySegment(seg) {
     const verb = args[0];
     if (verb === 'commit') return { action: 'commit' };
     if (verb === 'push') return { action: 'push' };
+    // ENF-22: `git merge` — a verb whose OUTCOME is a commit. PURE VERB classification
+    // only: whether THIS invocation will actually create a commit depends on flags
+    // (`--no-commit`, `--squash`, `--ff-only`, a missing ref), and flag semantics belong
+    // to the gate (git-commit-convention.cjs), never to this module. Routing through
+    // resolveProgram gives the same bypass-form coverage `commit` has for free:
+    // `sudo git merge`, `/usr/bin/git merge`, `GIT_DIR=/x git merge`, `git -C /tmp merge`.
+    if (verb === 'merge') return { action: 'merge' };
     return null; // git status, git add, … → other
   }
 
@@ -740,8 +769,8 @@ function classifyAction(parsed) {
     ? parsed.segments
     : [parsed];
 
-  // ENF-20 TWO-PASS AGGREGATION — the mechanism that makes the six legacy actions'
-  // classification byte-identical BY CONSTRUCTION rather than by luck.
+  // ENF-20 / ENF-22 THREE-PASS AGGREGATION — the mechanism that makes the six legacy
+  // actions' classification byte-identical BY CONSTRUCTION rather than by luck.
   //
   // classifyAction returns ONE result for a whole chain, and six wired gates read that
   // single result directly (issue-dedupe, freshness, git-commit-convention,
@@ -758,10 +787,28 @@ function classifyAction(parsed) {
   // results are therefore a strict subset of the old 'other' outcomes: no pre-existing
   // classification can change.
   //
-  // CONSEQUENCE FOR CALLERS (T3): a gate governing a review-side action must trigger on
-  // hasGovernedSegment(parsed, ['pr-merge']) — the CF-05 all-segments chokepoint — NOT on
-  // classifyAction(parsed).action, which by design still reports the legacy action for a
-  // chain like `gh pr merge … && git push`.
+  // ENF-22 ADDS PASS 3, AND THE REASON IS THE SAME HAZARD ONE TIER DOWN. PASS 2 used to
+  // return the first non-null result of ANY kind. The new `merge` action is non-null, so
+  // under the old shape `git merge x && gh pr merge 1` would collapse to 'merge' — and
+  // review-artifact, which governs {pr-review, pr-merge, pr-comment, issue-comment}, would
+  // short-circuit to allow on a PR MERGE it blocks today. That is the identical
+  // MANUFACTURED-A-BYPASS failure described above, so it gets the identical structural
+  // answer: PASS 2 is NARROWED to an explicit REVIEW_SIDE_ACTIONS test, and PASS 3 returns
+  // the first remaining non-null result (today: only MERGE_SIDE_ACTIONS).
+  //
+  // BYTE-IDENTITY ARGUMENT for the narrowing (the same argument ENF-20 used for PASS 1/2):
+  // every non-null classifySegment result that exists today is in LEGACY_MUTATION_ACTIONS
+  // ∪ REVIEW_SIDE_ACTIONS ∪ {FAIL_CLOSED}. PASS 1 already claims the legacy and failClosed
+  // members, so every result PASS 2 could previously have returned is review-side —
+  // restricting it to REVIEW_SIDE_ACTIONS changes NOTHING that exists. PASS 3 is therefore
+  // reachable only where the old code returned 'other', which makes `merge` a strict
+  // subset of the old 'other' outcomes exactly as review-side was.
+  //
+  // CONSEQUENCE FOR CALLERS (T3 / ENF-22): a gate governing a review-side OR merge action
+  // must trigger on hasGovernedSegment(parsed, ['pr-merge']) / (parsed, ['merge']) — the
+  // CF-05 all-segments chokepoint — NOT on classifyAction(parsed).action, which by design
+  // still reports the legacy action for a chain like `gh pr merge … && git push` or
+  // `git merge … && git push`.
   const results = [];
   for (const seg of segments) {
     results.push(classifySegment(seg));
@@ -776,7 +823,19 @@ function classifyAction(parsed) {
   }
 
   // PASS 2 — review-side actions (ENF-20). Only reachable where the pre-ENF-20 code
-  // returned 'other', so this can never displace an existing classification.
+  // returned 'other', so this can never displace an existing classification. The explicit
+  // REVIEW_SIDE_ACTIONS test (ENF-22) is what stops a merge segment from winning here and
+  // disarming review-artifact; do NOT relax it back to "first non-null of any kind".
+  for (const res of results) {
+    if (res === null) continue;
+    if (REVIEW_SIDE_ACTIONS.has(res.action)) {
+      return { ...res };
+    }
+  }
+
+  // PASS 3 — everything else actionable (ENF-22: `merge`). Reachable only when no legacy,
+  // failClosed, or review-side segment exists — i.e. exactly where the pre-ENF-22 code
+  // returned 'other'.
   for (const res of results) {
     if (res === null) continue;
     return { ...res };
@@ -965,6 +1024,10 @@ module.exports = {
   // (which classifyAction's two-pass aggregation depends on) is assertable in tests.
   LEGACY_MUTATION_ACTIONS,
   REVIEW_SIDE_ACTIONS,
+  // ENF-22: the merge-side (third-tier) vocabulary, exported on the same convention so
+  // git-commit-convention.cjs declares its governed merge action by NAME, and so the
+  // three-way disjointness the aggregation depends on stays assertable in tests.
+  MERGE_SIDE_ACTIONS,
   // ENF-20: a gate governing PR comments MUST govern BOTH names — GitHub posts PR
   // conversation comments to the ISSUES endpoint and the numbering namespace is shared,
   // so `gh api POST /issues/<pr#>/comments` is otherwise a one-line bypass.

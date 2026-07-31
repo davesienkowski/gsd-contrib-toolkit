@@ -3,7 +3,7 @@
 
 /**
  * hooks/git-commit-convention.cjs — PreToolUse(Bash) conventional-commit PREFIX gate
- * (ENF-16, HARD-01 fail-closed, HARD-04 robust-parse).
+ * (ENF-16 deny + ENF-22 ask, HARD-01 fail-closed, HARD-04 robust-parse).
  *
  * The threat: a deadline-pressured (or AI) contributor commits a test fix mislabeled
  * `docs:` (or a commit with no recognized type at all). The prefix is NOT a style nit
@@ -44,6 +44,45 @@
  * — exactly the LINKED_ISSUE_RE / BRANCH_NAME_RE H-A pattern in gh-pr-create.cjs. The
  * recognized-type set is DECLARED in this file (no fenced block copied from gsd-core).
  *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ENF-22 (quick task 260731-ih5) — THE SAME POLICY, ONE VERB WIDER, AT A LOWER
+ * SEVERITY. Origin: `.planning/seeds/SEED-enf16-misses-git-merge-implicit-commit.md`.
+ *
+ * ENF-16 above is keyed to the `git commit` VERB. But a CLEANLY-mergeable
+ * `git merge <ref>` commits ITSELF — no `git commit` is ever issued — so this gate was
+ * never consulted, and on 2026-07-31 git's generated subject
+ * `Merge remote-tracking branch 'origin/next' into fix/2570-…` landed on a gsd-core PR
+ * branch: exactly the shape ENF-16 exists to stop. The seed records the inversion worth
+ * remembering — a CONFLICTED merge is accidentally safe (it forces an explicit
+ * `git commit -F <file>`, which ENF-16 DOES gate); only the CLEAN merge, which feels
+ * lower-risk, evades. The general lesson: a gate keyed to a command NAME covers that
+ * verb, not the OUTCOME.
+ *
+ * WHY `ask` AND NOT `deny` (CTK-ADR-0005 §Decision.2 — the epistemics are the point):
+ * the two rules differ in what they KNOW.
+ *   - ENF-16 judges a subject ASSERTED IN THE COMMAND. Conclusive → deny is admissible.
+ *   - ENF-22 PREDICTS a subject that may never come into existence. A merge that
+ *     fast-forwards creates no commit at all, and this gate is pure — it runs no git
+ *     queries — so it cannot distinguish the two cases. Every fast-forwardable merge is
+ *     a false positive BY CONSTRUCTION, so the FPR is structurally non-zero and
+ *     unmeasured, and CTK-ADR-0005 makes deny inadmissible: "a signal with real recall
+ *     but material noise belongs at `ask`."
+ * The ADR's admissibility test for `ask` is also met: an ask reduces to allow on an
+ * unattended run, so it must never carry a check unsafe to wave through. Waving this one
+ * through yields a git-default merge subject — a changelog/cherry-pick routing defect
+ * recoverable by `git commit --amend -F <file>`, itself POLICY-02-gated.
+ *
+ * SCOPE LOCK — Fix Option 2 ONLY. Nothing in this file parses, validates, or reasons
+ * about a git-GENERATED merge subject (the seed's rejected Option 1). It advises the safe
+ * form instead. An author-supplied `-m`/`-F` on a merge is NOT a generated subject — it is
+ * asserted in the command exactly as for `git commit` — so it routes to the EXISTING
+ * checkPrefix and stays in the conclusive class. Do not add generated-subject parsing here.
+ *
+ * NARROWS-NOT-WEAKENS (D6 ordering, asserted in the suite): the ENF-16 commit path runs
+ * FIRST and its deny is returned unchanged. The merge path is reachable only when the
+ * commit path produced no deny, so no ENF-16 deny that exists today can become an ask.
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
  * Architecture (inherited from Waves 1-2, never re-implemented here):
  *   - argv.parseCommand        → robust char-by-char parse, fail-closed on unparseable
  *   - classify.classifyAction  → `git commit` (and equivalent forms) → action:'commit'
@@ -66,16 +105,28 @@
 
 const path = require('node:path');
 const { parseCommand } = require('./lib/argv.cjs');
-const { classifyAction, findActionSegment, isNonGovernedCommand } = require('./lib/classify.cjs');
-const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
+const {
+  classifyAction, findActionSegment, isNonGovernedCommand,
+  // ENF-22: the merge path must trigger on the CF-05 all-segments chokepoint, not on
+  // classifyAction().action — a chain collapses to its legacy action, so
+  // `git merge x && git push` reports `push` and a first-result trigger misses the merge.
+  hasGovernedSegment, resolveProgram, MERGE_SIDE_ACTIONS,
+} = require('./lib/classify.cjs');
+const { runGate, readHookInput, deny, allow, ask, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveGsdCoreRoot, commandStartDir, ScriptResolveError } = require('./lib/resolve.cjs');
 
 // FailClosed/safeCommand are the shared IN-03 helpers from failclosed.cjs (runGate's
 // catch turns any throw into a DENY unless a logged override is present).
 
-// Only `git commit` is gated. Every other action (push, pr-create, git reads, non-git)
-// passes through as a no-op allow so the gate never over-blocks (T-07-01-OVERBLOCK).
-const TRIGGER_ACTIONS = new Set(['commit']);
+// `git commit` (ENF-16) and `git merge` (ENF-22) are gated. Every other action (push,
+// pr-create, git reads, non-git) passes through as a no-op allow so the gate never
+// over-blocks (T-07-01-OVERBLOCK).
+//
+// This set is consumed by isNonGovernedCommand, which scans ALL chained segments — so a
+// merge hidden after a benign first segment keeps the gate on its resolve→gate path
+// instead of short-circuiting to allow.
+const MERGE_ACTION = 'merge';
+const TRIGGER_ACTIONS = new Set(['commit', MERGE_ACTION]);
 
 // TOOLKIT-OWNED recognized conventional-commit types. DECLARED here (no fenced block copied
 // from gsd-core). This mirrors the type vocabulary gsd-core's release/cherry-pick filter
@@ -241,6 +292,110 @@ function checkPrefix(subject) {
   };
 }
 
+// ENF-22 exemption vocabulary (D5). Each entry is a form that provably cannot produce an
+// UNASSERTED commit, so asking about it would be pure noise — and CTK-ADR-0005 §Decision.5
+// makes noise a first-class budget: a prompt that fires on correct work trains the human to
+// dismiss it, which destroys more value than the signal adds.
+//
+//   --squash   git implies --no-commit; it stages the result and REQUIRES a later
+//              `git commit`, which ENF-16 already gates.
+//   --ff-only  either fast-forwards (no commit at all) or exits with an error. It can
+//              never create a merge commit.
+//
+// DELIBERATELY ABSENT, and both belong in the ask class:
+//   --no-ff    FORCES a merge commit — the strongest case for asking, not an exemption.
+//   --no-edit  accepts git's generated subject — the exact live defect the seed records.
+const MERGE_NO_COMMIT_FLAGS = new Set(['--squash', '--ff-only']);
+
+// Operation-control forms. They take no ref and conclude/discard an IN-PROGRESS merge, so
+// they are outside the locked `git merge <ref>` trigger shape.
+//
+// RECORDED RESIDUAL (honest, not silently dropped): `--continue` DOES create a commit with
+// git's generated subject when concluding a conflicted merge. It is a same-outcome,
+// different-verb route this rule does not cover — the identical class of gap the seed
+// records for `git merge` itself, one level down. Captured as a follow-up seed rather than
+// expanded into here, because the locked scope is a bare `git merge <ref>`.
+const MERGE_CONTROL_FLAGS = new Set(['--abort', '--quit', '--continue']);
+
+/**
+ * ENF-22: decide a `git merge` segment.
+ *
+ * Reads the ORDERED `seg.tokens` (the resilient source: argv folds a long flag and its
+ * following token into one flags entry, so a ref appearing after `--no-commit` is not
+ * reliably a positional), and resolves in this order:
+ *
+ *   1. an operation-control form (`--abort`/`--quit`/`--continue`)          → allow
+ *   2. a flag that makes git skip the commit (`--squash`/`--ff-only`)       → allow
+ *   3. `--no-commit` not overridden by a LATER `--commit` (git is last-wins)→ allow
+ *   4. no ref argument at all (nothing to name in a remediation)            → allow
+ *   5. an AUTHOR-asserted subject (`-m`/`--message`/`-F`/`--file`)          → CONCLUSIVE:
+ *      hand it to the existing ENF-16 checkPrefix, verdict returned unchanged
+ *   6. otherwise                                                            → PREDICTIVE: ask
+ *
+ * @param {Object} seg structured segment from argv.parseCommand
+ * @param {(p:string)=>(string|null)} readMessageFile reads a merge-message file from disk
+ * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
+ */
+function gateMerge(seg, readMessageFile) {
+  const tokens = Array.isArray(seg.tokens) ? seg.tokens : [];
+
+  let sawNoCommit = false;
+  for (const t of tokens) {
+    if (typeof t !== 'string') continue;
+    if (MERGE_CONTROL_FLAGS.has(t)) return allow();
+    if (MERGE_NO_COMMIT_FLAGS.has(t)) return allow();
+    // git resolves a repeated `--no-commit --commit` by LAST occurrence, so scan the
+    // whole ordered list and let the last of the pair decide rather than returning early.
+    //
+    // TRAP — DO NOT "FIX" THIS BY ACCEPTING `-n`: on `git merge`, `-n` is `--no-stat`
+    // (it suppresses the diffstat), NOT an abbreviation of `--no-commit`. It means
+    // `--no-verify` on `git commit`, which is where the false intuition comes from.
+    // Treating `-n` as an exemption would silently disarm ENF-22.
+    if (t === '--no-commit') sawNoCommit = true;
+    else if (t === '--commit') sawNoCommit = false;
+  }
+  if (sawNoCommit) return allow();
+
+  // The ref: resolveProgram already strips git global-option VALUES (`-C <path>`,
+  // `--git-dir <d>`, …) and wrapper builtins, so args[0] is the verb and the rest are the
+  // merge's own non-flag arguments. No ref → git has nothing to merge that we could name
+  // in a remediation (and it commonly errors on no configured upstream) → allow.
+  const { args } = resolveProgram(seg);
+  const refs = args.slice(1);
+  if (refs.length === 0) return allow();
+
+  // CONCLUSIVE class. An author-supplied message is asserted in the command exactly as it
+  // is for `git commit`, so it is judgeable with certainty — reuse ENF-16's own resolution
+  // and shape rule verbatim rather than inventing a second policy. This is NOT Option 1:
+  // nothing here reads a git-GENERATED subject. (May throw FailClosed on `-F -` / a
+  // valueless `-m`, which is the same HARD-04 discipline the commit path applies.)
+  const subject = resolveCommitMessage(seg, readMessageFile);
+  if (subject != null) {
+    const verdict = checkPrefix(subject);
+    return verdict.ok ? allow() : deny(verdict.reason);
+  }
+
+  // PREDICTIVE class → ask (CTK-ADR-0005 §Decision.2).
+  return ask(
+    'ENF-22: this `git merge` will COMMIT BY ITSELF if it does not fast-forward, and the ' +
+      'subject of that commit is generated by git — not asserted by you — so it lands ' +
+      'as `Merge remote-tracking branch \'…\' into …`. gsd-core BUCKETS the ' +
+      'release / hotfix cherry-pick filter on the conventional-commit prefix, so that ' +
+      'subject routes the change into the wrong release lane. ENF-16 never sees it: no ' +
+      '`git commit` is ever issued.\n\n' +
+      'Remediation — split the merge from the commit so the subject is yours:\n' +
+      '  git merge <ref> --no-commit --no-ff\n' +
+      '  git commit -F <message-file>\n' +
+      'That follow-up `git commit` is itself gated by ENF-16, so the prefix is checked ' +
+      'the way every other commit is, and it composes with HARD-04 message-file discipline.\n\n' +
+      'This PROMPTS rather than BLOCKS because a merge that fast-forwards creates no ' +
+      'commit at all, and this hook is pure — it runs no git queries — so it cannot tell ' +
+      'the two cases apart. Approve if you know this one fast-forwards or you intend to ' +
+      'amend the subject afterwards (`git commit --amend -F <file>`, itself POLICY-02-gated). ' +
+      OWNED_NOTE
+  );
+}
+
 /**
  * The pure gate decision with all impure dependencies injected (deps) so it is unit
  * testable without a real gsd-core checkout or filesystem. Wrapped by runGate at the
@@ -265,21 +420,33 @@ function gate(stdinString, deps) {
   if (action.failClosed) {
     throw new FailClosed('unclassifiable mutating call — failing closed (HARD-04)');
   }
-  if (!TRIGGER_ACTIONS.has(action.action)) {
-    return allow(); // not a commit → not our concern → no-op
+  // ── D6 ORDERING RULE: the ENF-16 COMMIT PATH RUNS FIRST ────────────────────────
+  // Its trigger is unchanged (classifyAction().action === 'commit', exactly as before
+  // ENF-22) and its DENY is returned untouched. That is what makes narrows-not-weakens
+  // provable rather than argued: the merge path below is unreachable for any command
+  // this path denies, so no ENF-16 deny can decay into an ask (T-ih5-04).
+  if (action.action === 'commit') {
+    const seg = findActionSegment(parsed, 'commit');
+    const subject = resolveCommitMessage(seg, deps.readMessageFile); // may throw FailClosed
+    // A null subject is an interactive editor commit — nothing asserted to judge.
+    if (subject != null) {
+      const verdict = checkPrefix(subject);
+      if (!verdict.ok) {
+        return deny(verdict.reason);
+      }
+    }
+    // No deny from the commit path → fall through; a chain may still carry a merge.
   }
 
-  const seg = findActionSegment(parsed, 'commit');
-  const subject = resolveCommitMessage(seg, deps.readMessageFile); // may throw FailClosed
-  if (subject == null) {
-    // No asserted message (interactive editor commit) — nothing to judge → allow.
-    return allow();
+  // ── ENF-22 MERGE PATH ──────────────────────────────────────────────────────────
+  // Triggered on the CF-05 all-segments chokepoint, NOT on classifyAction().action: the
+  // classifier collapses a chain to its legacy action by design, so `git merge x &&
+  // git push` reports `push` and a first-result trigger would never see the merge.
+  if (hasGovernedSegment(parsed, MERGE_SIDE_ACTIONS)) {
+    return gateMerge(findActionSegment(parsed, MERGE_ACTION), deps.readMessageFile);
   }
 
-  const verdict = checkPrefix(subject);
-  if (!verdict.ok) {
-    return deny(verdict.reason);
-  }
+  // Neither a commit nor a merge → not our concern → no-op allow.
   return allow();
 }
 
@@ -363,4 +530,9 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { runCommitConventionGate, gate, resolveCommitMessage, checkPrefix, firstLine };
+module.exports = {
+  runCommitConventionGate, gate, resolveCommitMessage, checkPrefix, firstLine,
+  // ENF-22: exported so the docs-hook-counts / capability surface checks and any future
+  // caller can read the governed set by name rather than re-typing string literals.
+  gateMerge, TRIGGER_ACTIONS,
+};
