@@ -91,7 +91,7 @@ gsd-tools query <predicate-query> 2>/dev/null # gsd-tools is the CLI fallback's 
 
 ## MemPalace recall + capture (advisory)
 
-Cross-session memory — the only surface here that remembers *previous sessions* (memtrace and graphify index code, not sessions). Recall at **Phase 0c**, capture at **Phase 7**.
+Cross-session memory — the only surface here that remembers *previous sessions* (memtrace and graphify index code, not sessions). Recall at **P0c** (inside Phase 0, beside the POLICY-03 awareness sweep), capture at **Phase 7**.
 
 **Recall.** Always the CLI form — it works inside a subagent, where the main session's tool-call transport does not exist:
 
