@@ -22,7 +22,7 @@
  *   CONTEXT (UserPromptSubmit's `additionalContext` shape) — NOT a permissionDecision (this
  *   event has no allow/deny). An unrelated prompt injects nothing.
  *
- * The P0–P6 steps mirror the gsd-core-contribution skill's Execution Protocol (the canonical
+ * The P0–P6 steps mirror the core-contribution skill's Execution Protocol (the canonical
  * source). Wording is Claude's discretion per 03-CONTEXT.md; the contract is only that it
  * enumerates P0 through P6.
  *
@@ -56,14 +56,14 @@ function isContributionPrompt(prompt) {
 }
 
 /**
- * The P0–P6 contribution-protocol reminder text (mirrors the gsd-core-contribution skill's
+ * The P0–P6 contribution-protocol reminder text (mirrors the core-contribution skill's
  * Execution Protocol). Enumerates all seven gates the contribution pipeline must clear.
  * @returns {string}
  */
 function buildReminder() {
   return [
     'gsd-core contribution detected — follow the P0–P6 contribution protocol (the',
-    'gsd-core-contribution skill is the source of truth; create it as tool-tracked todos BEFORE',
+    'core-contribution skill is the source of truth; create it as tool-tracked todos BEFORE',
     'any other tool call). This is an ADVISORY reminder, not a gate:',
     '',
     '  P0  Ground in the canon: read CONTRIBUTING.md + the matching issue/PR templates + the',
