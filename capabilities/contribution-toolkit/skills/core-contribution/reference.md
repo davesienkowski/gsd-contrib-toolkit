@@ -89,6 +89,45 @@ gsd-tools query <predicate-query> 2>/dev/null # gsd-tools is the CLI fallback's 
 #    This list feeds the Policy-conformance step (POLICY-01) below — it does NOT pass/fail anything by itself.
 ```
 
+## MemPalace recall + capture (advisory)
+
+Cross-session memory — the only surface here that remembers *previous sessions* (memtrace and graphify index code, not sessions). Recall at **Phase 0c**, capture at **Phase 7**.
+
+**Recall.** Always the CLI form — it works inside a subagent, where the main session's tool-call transport does not exist:
+
+```bash
+mempalace search "<area/#n> <symptom>" --results 5
+```
+
+Search **un-scoped**. One project scatters across up to three wings (`<project>`, `sessions`, `wing_<project>`) and the hook-captured *conversation history* lands in `sessions`, so passing `--wing gsd_core` silently drops it — **a wing-scoped miss is not evidence the memory is absent** (verified live 2026-07-31). **The lock:** a concurrent `mine` fails every other op with `palace ... is held by PID N` — retry once, then skip; it never blocks a contribution.
+
+**Capture.** The staging directory lives **outside every repo**, and that is load-bearing rather than cosmetic: `mine` respects `.gitignore` by default and `mempalace sync` prunes drawers whose source file is gitignored, deleted, or moved — and gsd-core's `.planning/` **is** gitignored. A note staged inside a checkout is either skipped now or pruned later. **Leave the note in place after mining**, for the same reason.
+
+```bash
+STAGE="$HOME/.gsd-contrib-memory"
+mkdir -p "$STAGE/problems"
+# one-time: without a rooms: list, every note lands in `general` (mine has no --room flag)
+[ -f "$STAGE/mempalace.yaml" ] || cat > "$STAGE/mempalace.yaml" <<'YAML'
+rooms:
+  - name: problems
+  - name: decisions
+  - name: technical
+YAML
+# write a REAL note (see the length gotcha below), then:
+mempalace mine "$STAGE" --wing gsd_core --dry-run
+mempalace mine "$STAGE" --wing gsd_core
+```
+
+**Room mapping:** falsified premise / gate rejection → `problems`; sweep verdict and what the exogenous pass caught → `decisions`.
+
+**Three gotchas, each measured live 2026-07-31:**
+
+1. **A short note is SILENTLY skipped.** A 3-line note dry-ran as `Files processed: 0 / Files skipped (read error or too short): 1 / Drawers filed: 0` — a no-op that exits clean. Write a real note (~15+ lines of prose: what was claimed, what actually happened, the verdict, the reusable lesson) and **always `--dry-run` first**; the pass condition is `Files processed: 1` with a non-zero `Drawers filed`.
+2. **`mine` has no `--room` flag** — only `search` takes one. Rooms are detected from folder-path segments matched against the `rooms:` list in the stage's `mempalace.yaml`; with no such file, everything lands in `general`.
+3. **Re-mining the whole stage is safe.** `mine` keys on the source path, so unchanged notes deduplicate instead of filing duplicate drawers — which is *why* the stage path must stay stable.
+
+**Honest scope:** this whole section is **advisory and model-driven**. It adds no hook, no receipt, and no gate. Per CTK-ADR-0001 §Decision.1 a hook can verify at most that a command *ran*, never that its output was read or used — and gating on a recall would fail-closed against the palace lock, making gsd-core un-fileable for an entirely unrelated reason.
+
 ## Policy conformance (POLICY-01)
 
 Run this **pre-file**, after the awareness sweep, on the proposed **diff**. The two skills that run it are **`trust-but-verify`** (open+quote discipline) and **`skills-from-the-artificer`** (law-lenses). Check the diff against the relevant ADRs (from the awareness list) + the `docs/agents/*` contribution norms.

@@ -52,6 +52,7 @@ When this skill activates, **your FIRST action — before any Read, Bash, `gh`, 
 [ ] RT0 Runtime freshness — `node <gsd-contrib-toolkit>/bin/runtime-sync.cjs check`; on drift run `… sync` (no ask). Advisory here; the blocking floor is ENF-21 at file/push time
 [ ] P0  Read CONTRIBUTING.md + matching issue template + PR template + governing ADR(s) + CONTEXT.md
 [ ] P0b ADR/CONTEXT awareness sweep (POLICY-03) — LIST governing ADRs/policies + CONTEXT.md predicates for the changed area BEFORE authoring (grep/gsd-tools over docs/adr/ + CONTEXT.md). Awareness only, NOT a pass/fail gate
+[ ] P0c Prior-art recall (advisory, NOT a gate) — `mempalace search "<area> <symptom>"`, NO wing filter; a wing-scoped miss is not evidence of absence
 [ ] P1  Run trust-but-verify; reproduce the mechanism live on src/*.cts (probe or failing test)   [GATE: reproduced, else WITHDRAW]
 [ ] P2  Run skills-from-the-artificer; apply each firing law to the diff
 [ ] P2b Policy conformance (POLICY-01) — check the DIFF vs the relevant ADRs + docs/agents/* via trust-but-verify (open+QUOTE the ADR) + skills-from-the-artificer law-lenses; surface any LOCKED-decision conflict before filing
@@ -66,6 +67,7 @@ When this skill activates, **your FIRST action — before any Read, Bash, `gh`, 
 [ ] P5b pr-template-policy on the EXACT body                                      [GATE: valid:true, template:fix]
 [ ] P5c gh pr create — title `<type>(#<issue#>): <imperative>` (issue ref in scope, enforced); `area:` (+ security/runtime/no-changelog) label; add changeset
 [ ] P6  Read real check-runs on the head SHA                                     [GATE: Tests ran + green on latest commit]
+[ ] P7  Capture the outcome (advisory, NOT a gate) — file the falsified premise / gate rejection / verdict where the next run will find it
 ```
 
 Epic instead of a single fix? Swap P4–P5 for the **Epic variant** below, but the protocol (todos + gates + evidence) is unchanged.
@@ -86,8 +88,18 @@ Read before authoring: `CONTRIBUTING.md`, the matching **issue** template, the m
 
 **ADR/CONTEXT awareness sweep (POLICY-03) — run BEFORE you author.** Don't just passively read the canon: produce an explicit **LIST** of the governing decisions touching the changed area. Run a `grep`/`gsd-tools` sweep over `docs/adr/` **and** `CONTEXT.md` for the area's keywords/IDs (see the exact commands in [reference.md](reference.md)), and write down (a) the governing **ADRs/policies** that apply and (b) the relevant **`CONTEXT.md` predicates** for the touched area — so the governing decisions are in view up front, not discovered at review. This is **AWARENESS surfaced to the human/agent**: it puts the governing decisions on the table before authoring. It is explicitly **NOT deterministic enforcement** — a `CONTEXT.md` predicate listed here is awareness, **not** a pass/fail gate (the mechanizable, unbypassable floor is **POLICY-02**, Phase 3). The conformance *check* of the diff against this list happens in the pre-file Policy-conformance step below (POLICY-01).
 
+### Phase 0c — Prior-art recall (advisory)
+
+**Has this been here before?** Ask MemPalace — the one surface that remembers *previous sessions* — before you author: was this area already filed, was a premise already falsified here, did a gate already reject a body of this shape? Prior filings are also the **cited precedents** Phase 4a asks for, so the step pays twice. Run `mempalace search "<area/#n> <symptom>" --results 5`. The **CLI** form is deliberate: it works inside a subagent, where the main session's tool-call transport does not exist — a skill that names that transport breaks the moment a subagent follows it.
+
+**Search un-scoped — omit `--wing`.** One project scatters across up to three wings, and the hook-captured *conversation history* lands in `sessions`, so a `--wing gsd_core` probe never sees it (verified live 2026-07-31: the un-scoped form returned a `gsd_contrib_toolkit` drawer **and** a `sessions` drawer; the scoped form drops the second). **A wing-scoped miss is not evidence the memory is absent.**
+
+**The lock:** a concurrent `mine` makes every other mempalace op fail with `palace ... is held by PID N`. Retry once, then skip — it is **never** a reason to block the contribution; nothing downstream depends on this step having run.
+
+**Honest scope:** advisory and model-driven, the same register as P0b's awareness sweep — no gate, no receipt, no pass/fail. Mechanics, the staging recipe, and the verified gotchas are in [reference.md](reference.md).
+
 ### Phase 1 — Verify the finding (trust-but-verify)
-**Invoke the `trust-but-verify` skill by name** and apply it to the finding: reproduce the mechanism on live `src/*.cts` with a throwaway probe or a failing test before you trust the premise. Remember **`bin/lib/*.cjs` is generated** from `src/*.cts` (ADR-457) — author in `src`, `npm run build:lib`. Correct the premise if wrong; record falsified findings rather than filing them. **A sweep-supplied premise is exactly the "a report is a lead, not a fact" case `trust-but-verify` already governs** — inherited evidence narrows *what* you must reproduce; it never discharges the obligation to reproduce it here.
+**Invoke the `trust-but-verify` skill by name** and apply it to the finding: reproduce the mechanism on live `src/*.cts` with a throwaway probe or a failing test before you trust the premise. Remember **`bin/lib/*.cjs` is generated** from `src/*.cts` (ADR-457) — author in `src`, `npm run build:lib`. Correct the premise if wrong; record falsified findings rather than filing them — **P7 is where that record goes**, so the next run inherits the WITHDRAW instead of re-deriving it. **A sweep-supplied premise is exactly the "a report is a lead, not a fact" case `trust-but-verify` already governs** — inherited evidence narrows *what* you must reproduce; it never discharges the obligation to reproduce it here.
 
 ### Phase 2 — Adversarial law pass
 **Invoke the `skills-from-the-artificer` skill by name** on the proposed change; apply each *firing* law's key questions to the concrete diff. Capture any Hyrum's-Law behavior change to disclose in the PR. Don't force-fit laws.
@@ -108,6 +120,19 @@ Branch `fix/<issue#>-slug` → base `next`. **PR title MUST be `<type>(#<issue#>
 
 ### Phase 6 — Confirm CI green on the LATEST commit
 Read **real check-run conclusions** (branch protection is evaluate-mode — "CI green" from the ruleset is not a gate). A **changeset-only commit can skip the Tests workflow**, leaving a stale FAILED run hidden behind green meta-checks — confirm Tests actually ran on the head SHA. Don't chase `BEHIND` (maintainer clears on merge). Fix any failure as a follow-up commit on the same branch.
+
+### Phase 7 — Capture what this run learned (advisory)
+
+**Write down what the next run would pay to know** — reusable across sessions, not a run log: the **falsified premise** (which premise, what actually reproduced against live `src/*.cts`, the WITHDRAW verdict — this is the durable home Phase 1's "record falsified findings" points at), the **gate rejection and its fix** (which gate, what the body was missing), and the filed `#numbers` as precedent for the next Phase 4a.
+
+```bash
+mempalace mine "$HOME/.gsd-contrib-memory" --wing gsd_core --dry-run   # confirm it is not silently skipped
+mempalace mine "$HOME/.gsd-contrib-memory" --wing gsd_core
+```
+
+**The asymmetry (it is the opposite of what feels natural):** **omit `--wing` when you SEARCH** — read wide, the memory may live in another wing — and **pass `--wing` when you MINE**, because the default is the staging directory's name and silently creates a junk wing. Staging path, room mapping, and the three verified gotchas (a short note is silently skipped; `mine` has no `--room`; re-mining is safe) → [reference.md](reference.md).
+
+**Advisory and model-driven, not a gate** — a skipped or failed capture never fails the contribution.
 
 ## Epic variant (trek-e format)
 
@@ -145,6 +170,7 @@ Exact snippets, body skeletons, label sets, and worktree setup → **[reference.
 | "Deadline — I'll file the issue/PR now and run lint:ci + the suite as a follow-up" | A PR that then fails lint/tests is the #1543/#1532 failure — it lands RED on the cut, it doesn't beat the deadline. The gates ARE the fast path. Green locally, THEN push. |
 | "I'll compress per your call and skip the slow gates" | Compress by doing the gates fast (they take seconds), not by skipping them. The only thing you compress is ceremony, never a `[GATE]`. |
 | "The audit verified it against source, so it's real" | Premise ≠ mechanism. Reproduce it live or don't file. (M5/M7/PD-1 were wrong.) |
+| "I searched and got nothing, so there's no prior art" | If you passed `--wing`, you searched one of three wings — the hook-captured conversation lands in `sessions`. A wing-scoped miss is not evidence of absence. Search un-scoped. |
 | "The sweep already reproduced it / already read the ADRs, so P1 is done" | The sweep verified *someone else's diff* against CI; P1 verifies *your finding's mechanism* live. Inherited evidence narrows what you look at — it never discharges the gate. Reproduce it and paste it. |
 | "Module tests pass, ship it" | A deleted call breaks a structural/count test elsewhere (#1543). Run the full suite + `lint:ci`. |
 | "CI shows green on the PR" | Meta-checks aren't Tests; a changeset-only commit can skip Tests and hide a stale FAIL (#1532). Read real check-runs on the head SHA. |
