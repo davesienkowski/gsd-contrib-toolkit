@@ -277,3 +277,128 @@ test('a recognized type without the separator is still DENIED (the original shap
   const d = runCommitConventionGate(input('git commit -m "enhance the parser"'), deps());
   assert.strictEqual(d.permissionDecision, 'deny', 'no `:` after the type -> obvious violation');
 });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ENF-22 (quick task 260731-ih5) — the graded `ask` on a merge that will commit.
+//
+// Origin: SEED-enf16-misses-git-merge-implicit-commit. A CLEANLY-mergeable
+// `git merge origin/next --no-edit` commits ITSELF, so no `git commit` is ever issued
+// and ENF-16 above is never consulted — git's generated subject
+// `Merge remote-tracking branch 'origin/next' into fix/…` landed on a gsd-core PR
+// branch live on 2026-07-31. The inversion the seed records: a CONFLICTED merge is
+// accidentally safe (it forces an explicit `git commit -F <file>`, which ENF-16 DOES
+// gate); only the clean merge slips.
+//
+// Severity is `ask`, not `deny`, and that is CTK-ADR-0005 §Decision.2 doing the work:
+// a merge that FAST-FORWARDS creates no commit at all, and this gate is pure — it runs
+// no git queries — so it cannot tell which case it is looking at. Every fast-forwardable
+// merge would be a false positive by construction, which makes deny inadmissible.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ---- ASK: the predictive class (a merge that will commit, no asserted subject) ----
+
+test('ENF-22: git merge origin/next --no-edit → ASK naming --no-commit and --no-ff (the seed’s command)', () => {
+  const d = runCommitConventionGate(input('git merge origin/next --no-edit'), deps());
+  assert.strictEqual(d.permissionDecision, 'ask', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /--no-commit/);
+  assert.match(d.permissionDecisionReason, /--no-ff/);
+  assert.match(d.permissionDecisionReason, /ENF-22/);
+});
+
+test('ENF-22: git merge origin/next (bare) → ASK', () => {
+  const d = runCommitConventionGate(input('git merge origin/next'), deps());
+  assert.strictEqual(d.permissionDecision, 'ask', d.permissionDecisionReason);
+});
+
+test('ENF-22: git merge origin/next --no-ff → ASK (a forced merge commit is the strongest case)', () => {
+  const d = runCommitConventionGate(input('git merge origin/next --no-ff'), deps());
+  assert.strictEqual(d.permissionDecision, 'ask', d.permissionDecisionReason);
+});
+
+test('ENF-22: git merge -n origin/next → ASK (-n is --no-stat on merge, NEVER an exemption)', () => {
+  // On `git commit`, -n means --no-verify; on `git merge` it means --no-stat. Reading it
+  // as a --no-commit abbreviation would silently disarm the gate.
+  const d = runCommitConventionGate(input('git merge -n origin/next'), deps());
+  assert.strictEqual(d.permissionDecision, 'ask', d.permissionDecisionReason);
+});
+
+test('ENF-22: git merge --no-commit --commit origin/next → ASK (git resolves the pair last-wins)', () => {
+  const d = runCommitConventionGate(input('git merge --no-commit --commit origin/next'), deps());
+  assert.strictEqual(d.permissionDecision, 'ask', d.permissionDecisionReason);
+});
+
+// ---- ALLOW: the D5 exempt forms (each provably cannot create an unasserted commit) ----
+
+test('ENF-22: git merge origin/next --no-commit --no-ff → ALLOW (the remediated form itself)', () => {
+  const d = runCommitConventionGate(input('git merge origin/next --no-commit --no-ff'), deps());
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('ENF-22: git merge --squash origin/next → ALLOW (git implies --no-commit)', () => {
+  const d = runCommitConventionGate(input('git merge --squash origin/next'), deps());
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('ENF-22: git merge --ff-only origin/next → ALLOW (fast-forwards or errors; never a merge commit)', () => {
+  const d = runCommitConventionGate(input('git merge --ff-only origin/next'), deps());
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('ENF-22: git merge --abort / --quit / --continue → ALLOW (operation-control, no ref)', () => {
+  for (const cmd of ['git merge --abort', 'git merge --quit', 'git merge --continue']) {
+    const d = runCommitConventionGate(input(cmd), deps());
+    assert.strictEqual(d.permissionDecision, 'allow', `${cmd}: ${d.permissionDecisionReason}`);
+  }
+});
+
+test('ENF-22: git merge with no ref → ALLOW (nothing to name in a remediation)', () => {
+  const d = runCommitConventionGate(input('git merge'), deps());
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+// ---- The CONCLUSIVE class: an AUTHOR-asserted subject routes to the ENF-16 check ----
+// This is NOT the rejected Fix Option 1: an author-supplied -m is asserted in the command
+// exactly as it is for `git commit`. Nothing here reads or judges a git-GENERATED subject.
+
+test('ENF-22: git merge -m "chore(#2570): merge origin/next" → ALLOW (asserted, well-formed)', () => {
+  const d = runCommitConventionGate(
+    input('git merge -m "chore(#2570): merge origin/next" origin/next'),
+    deps()
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('ENF-22: git merge -m "merged next" → DENY (asserted, malformed — conclusive, so deny is admissible)', () => {
+  const d = runCommitConventionGate(input('git merge -m "merged next" origin/next'), deps());
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /prefix|convention|toolkit/i);
+});
+
+// ---- T-ih5-04: no pre-existing ENF-16 DENY may be weakened to an ask (D6 ordering) ----
+
+test('ENF-22 T-ih5-04: git merge x && git commit -m "wip" → DENY (the commit path runs FIRST and wins)', () => {
+  const d = runCommitConventionGate(input('git merge x && git commit -m "wip"'), deps());
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /prefix|convention|toolkit/i);
+});
+
+test('ENF-22: a merge masked behind a later push is still seen (hasGovernedSegment, not classifyAction)', () => {
+  // classifyAction collapses this chain to the legacy `push`, so a first-result trigger
+  // would miss the merge entirely.
+  const d = runCommitConventionGate(input('git merge origin/next && git push origin HEAD'), deps());
+  assert.strictEqual(d.permissionDecision, 'ask', d.permissionDecisionReason);
+});
+
+// ---- Bypass-form parity: the merge path inherits ENF-16's CR-01/CR-03 coverage ----
+
+test('ENF-22: the four bypass forms of a bare merge each ASK (parity with commit)', () => {
+  for (const cmd of [
+    'sudo git merge origin/next',
+    '/usr/bin/git merge origin/next',
+    'GIT_DIR=/x git merge origin/next',
+    'git -C /tmp merge origin/next',
+  ]) {
+    const d = runCommitConventionGate(input(cmd), deps());
+    assert.strictEqual(d.permissionDecision, 'ask', `${cmd}: ${d.permissionDecisionReason}`);
+  }
+});
