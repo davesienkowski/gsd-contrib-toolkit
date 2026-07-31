@@ -71,6 +71,15 @@ const SWEEP_SURFACES = Object.freeze([
 // points at this one).
 const PACKET_SURFACE = 'skills/maintainer-review-sweep/SKILL.md';
 
+// The receiving half of the seam — the contribution skill, which must acknowledge sweep-originated
+// entry WITHOUT weakening the gate that entry passes through.
+const CONTRIBUTION_SURFACE = 'skills/gsd-core-contribution/SKILL.md';
+
+// The P1 gate text that must survive VERBATIM (threat T-u5q-01). Both fragments are pre-existing;
+// see the preservation note on the test below.
+const P1_GATE_CONDITION = '[GATE: reproduced, else WITHDRAW]';
+const P1_LIVE_REPRO = 'reproduce the mechanism live';
+
 // The six hand-off packet anchors (D-01). Case-insensitive; asserted inside the section only.
 const PACKET_ANCHORS = Object.freeze([
   { label: 'the issue/PR number cue', re: /#\s*numbers?\b/i },
@@ -174,3 +183,77 @@ for (const rel of SWEEP_SURFACES) {
     );
   });
 }
+
+/**
+ * The receiving half: the contribution skill acknowledges a sweep-originated entrant, and does so
+ * WITHOUT weakening P1. Both halves of that sentence are asserted here.
+ */
+function assertReverseLinkPresent(label, body) {
+  const section = extractHandoffSection(label, body);
+  const sectionLower = section.toLowerCase();
+
+  // Test 7 — the reverse link names the other half of the seam, in an arriving-from-a-sweep context.
+  assert.ok(
+    section.includes('maintainer-review-sweep'),
+    label + ' hand-off section must name `maintainer-review-sweep` — the entrant needs to recognise ' +
+      'which path they arrived from'
+  );
+  assert.ok(
+    sectionLower.includes('sweep'),
+    label + ' hand-off section must frame this as arriving FROM a sweep'
+  );
+
+  // Test 8 — the not-a-substitute cue: inherited evidence is an INPUT to P1, never a replacement.
+  // Asserted inside the section (not merely somewhere in the file) so the boundary sits with the
+  // prose that would otherwise read as permission to skip P1.
+  assert.ok(
+    /never a substitute|not a substitute/i.test(section),
+    label + ' hand-off section must state that inherited sweep evidence is NEVER A SUBSTITUTE for ' +
+      'P1 — it narrows what you must reproduce, it never discharges the obligation to reproduce it'
+  );
+}
+
+test(
+  'reverse link present + P1 gate preserved in canonical + bundled: ' + CONTRIBUTION_SURFACE,
+  () => {
+    const canonicalPath = path.join(REPO_ROOT, CONTRIBUTION_SURFACE);
+    const bundledPath = path.join(BUNDLE_DIR, CONTRIBUTION_SURFACE);
+
+    const canonical = fs.readFileSync(canonicalPath);
+    const bundled = fs.readFileSync(bundledPath);
+
+    const canonicalText = canonical.toString('utf8');
+
+    assertReverseLinkPresent('canonical ' + CONTRIBUTION_SURFACE, canonicalText);
+    assertReverseLinkPresent(
+      'bundled capabilities/contribution-toolkit/' + CONTRIBUTION_SURFACE,
+      bundled.toString('utf8')
+    );
+
+    // Test 9 — PRESERVATION ASSERTION, not a new requirement. This text pre-dates the seam and was
+    // deliberately NOT edited; the assertion is green from the start precisely because the reverse
+    // link sits BESIDE the gate rather than inside it. It goes red only if a future edit softens P1
+    // into something inherited sweep evidence could satisfy — the elevation-of-privilege failure
+    // (T-u5q-01) this whole seam must never enable.
+    assert.ok(
+      canonicalText.includes(P1_GATE_CONDITION),
+      CONTRIBUTION_SURFACE + ' must still carry the verbatim P1 gate condition "' +
+        P1_GATE_CONDITION + '" — the reverse link must not weaken it'
+    );
+
+    const p1Line = canonicalText
+      .split('\n')
+      .find((line) => line.includes('P1') && line.includes(P1_GATE_CONDITION));
+    assert.ok(
+      p1Line && p1Line.includes(P1_LIVE_REPRO),
+      'the P1 checklist line must still require you to "' + P1_LIVE_REPRO +
+        '" — inherited evidence is an input to that reproduction, never a replacement for it'
+    );
+
+    // Test 10 — byte-identity.
+    assert.ok(
+      canonical.equals(bundled),
+      'the bundled copy of ' + CONTRIBUTION_SURFACE + ' must be BYTE-IDENTICAL to its canonical source'
+    );
+  }
+);
