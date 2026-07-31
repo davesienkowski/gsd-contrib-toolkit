@@ -152,12 +152,12 @@ surfaces as a fail-closed DENY plus a diagnosable report — not a silent miss.
   observability recorder — fire automatically inside the gsd-core repo once the
   contribution-toolkit capability is installed (`node bin/contrib-capability.cjs install`).
 - Drive a contribution with the **`gsd-submit`** command (file → push → PR through
-  the gates) and the **`gsd-core-contribution`** skill (the contribution knowledge,
+  the gates) and the **`core-contribution`** skill (the contribution knowledge,
   including the stamp → marker → gate → scan loop).
 - Run a maintainer-style sweep with **`gsd-review-sweep`**.
 
 **Recovery offramp (FLOW-01).** When a contribution gate **denies** an action — or
-the `gsd-core-contribution` skill surfaces a real blocking issue mid-run — you are
+the `core-contribution` skill surfaces a real blocking issue mid-run — you are
 offered a GSD-native recovery choice rather than a dead-stop: **fix inline with
 `/gsd-quick`** for a trivial correction, or **route the issue through the GSD
 pipeline** (`/gsd-debug`, or `/gsd-discuss-phase`→`/gsd-plan-phase`→`/gsd-execute-phase`)
@@ -191,7 +191,7 @@ maintainer-review knowledge as an installable, **opt-in** GSD capability (ADR-12
 **17 hook scripts** (the 15 fail-closed `PreToolUse` gates + 1 advisory
 `UserPromptSubmit` reminder + 1 `PostToolUse`/`PostToolUseFailure` observability
 recorder = **18 wired registrations**), **both skills**
-(`gsd-core-contribution`, `maintainer-review-sweep`), and
+(`core-contribution`, `maintainer-review-sweep`), and
 **all five commands** (`gsd-submit`, `gsd-review-sweep`, `gsd-triage-assist`,
 `gsd-release-preflight`, `gsd-ruleset-drift`) under
 `capabilities/contribution-toolkit/{hooks,skills,commands,fragments}/` — it is **not**
@@ -250,7 +250,7 @@ This section is load-bearing — the project's core value is honesty, not overse
 | `hooks/`                | Harness-run `PreToolUse` gate scripts + the `UserPromptSubmit` advisory + the `PostToolUse`/`PostToolUseFailure` recorder, plus the shared anti-bypass `hooks/lib/` (argv tokenizer, classifier, LIVE-script resolver, fail-closed harness, tree-SHA marker, override receipt, doctor). `doctor.cjs` and `preflight-shipped-paths.cjs` live here but are deliberately **not wired** — they are CLIs, not hooks. |
 | `bin/`                  | Runnable tools: `verify-hooks`, `self-test`, `lint-ci-stamp`, `triage-assist`, `release-preflight`, `ruleset-drift`, `verify-capability`. |
 | `commands/`             | Vendored slash commands: `gsd-submit`, `gsd-review-sweep`, `gsd-triage-assist`, `gsd-release-preflight`, `gsd-ruleset-drift`; symlinked into `~/.claude`. |
-| `skills/`               | Vendored Claude skills: `gsd-core-contribution`, `maintainer-review-sweep`; symlinked into `~/.claude`. |
+| `skills/`               | Vendored Claude skills: `core-contribution`, `maintainer-review-sweep`; symlinked into `~/.claude`. |
 | `capabilities/`         | The share-form GSD capability: the **self-contained** `contribution-toolkit/` bundle — `capability.json` + `fragments/` + the bundled `hooks/` (17 scripts / 18 wired registrations), `skills/` (2), and `commands/` (5) a remote install delivers (NOT hooks-only). |
 | `settings.snippet.json` | The canonical hooks settings block — the wired-set source `build-capability.cjs` reads to generate the capability bundle.         |
 

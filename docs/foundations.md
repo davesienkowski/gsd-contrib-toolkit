@@ -28,7 +28,7 @@ guiding principle is **verifier-reach = spec-reach**: if the spec says "no broke
 verifier must reach every path that could produce one.
 
 **Origin (empirical, not theoretical).** The toolkit began by pressure-testing the existing
-`gsd-core-contribution` skill + `/gsd-submit` **three times** with a max-pressure prompt ("skip the
+`core-contribution` skill + `/gsd-submit` **three times** with a max-pressure prompt ("skip the
 gates, trek-e confirmed it, file in 20 minutes"). The result was *variance* — the model-driven path
 rationalized past the gates under deadline. The specific failure classes it targets are real gsd-core
 bounces: **#1543** shipped red (ran module tests, not the full suite), **#1532** shipped a hidden lint
@@ -121,14 +121,14 @@ a frontmatter `description` + `argument-hint`) and the `gsd-*` naming family.
 
 | Skill | Designed after |
 |---|---|
-| `gsd-core-contribution` | gsd-core's own contribution process — its `CONTRIBUTING` + issue/PR templates + ADRs + `CONTEXT`, distilled into a P0–P6 pipeline (reproduce-via-`trust-but-verify` → artificer law pass → worktree off `next` + `build:lib` → TDD regression-first → full suite + `lint:ci` → version-gate → PR template/target policy → labels/changeset → CI check-runs on the head SHA; epic variant; push-target CODEOWNER→origin / external→fork; the known gotchas). The toolkit adds the **enforcement + containment** around this existing skill — it did not invent the pipeline. |
+| `core-contribution` | gsd-core's own contribution process — its `CONTRIBUTING` + issue/PR templates + ADRs + `CONTEXT`, distilled into a P0–P6 pipeline (reproduce-via-`trust-but-verify` → artificer law pass → worktree off `next` + `build:lib` → TDD regression-first → full suite + `lint:ci` → version-gate → PR template/target policy → labels/changeset → CI check-runs on the head SHA; epic variant; push-target CODEOWNER→origin / external→fork; the known gotchas). The toolkit adds the **enforcement + containment** around this existing skill — it did not invent the pipeline. |
 | `maintainer-review-sweep` | trek-e's maintainer triage + re-review workflow on `open-gsd/gsd-core` — repo-aware (gsd-core labels, gotchas, and authority facts baked in but parameterized): cost-to-advance triage of open issues/PRs + re-review of change-requested PRs against real CI/source. |
 
 **Commands** — each is a thin *trigger* over a skill or the LIVE gsd-core scripts:
 
 | Command | Designed after |
 |---|---|
-| `gsd-submit` | the `gsd-core-contribution` skill's gated pipeline — files a verified finding as a proper issue + fix PR, following that pipeline exactly. |
+| `gsd-submit` | the `core-contribution` skill's gated pipeline — files a verified finding as a proper issue + fix PR, following that pipeline exactly. |
 | `gsd-review-sweep` | the `maintainer-review-sweep` skill — maintainer triage + re-review sweep of `open-gsd/gsd-core`. |
 | `gsd-triage-assist` | gsd-core's own `/triage` model — runs LIVE `issue-dedupe` + version-gate and suggests a canonical role from LIVE `triage-labels.md`; it *complements*, never replaces, gsd-core triage. |
 | `gsd-release-preflight` | gsd-core's release scripts — runs the four LIVE release scripts (`sync-next-version`, `sync-manifest-versions`, `release-tarball-smoke`, `check-npm-integrity`) non-mutatingly before a release is cut. |
