@@ -1421,7 +1421,10 @@ const EXISTING_GATE_SETS = {
   'gh-issue-create': ['issue-create'],
   'gh-pr-create': ['pr-create'],
   'gh-edit': ['issue-edit', 'pr-edit'],
-  'git-commit-convention': ['commit'],
+  // ENF-22 (260731-ih5) widened this one gate to {commit, merge}. Every NEW_ACTION_COMMAND
+  // is a review-side gh command, so none of them is governed by `merge` either — the
+  // invariant (b) assertion below holds unchanged against the widened set.
+  'git-commit-convention': ['commit', 'merge'],
   'githooks-seal': ['commit', 'push'],
   'scan-gate': ['push'],
   'lint-ci-marker': ['push', 'pr-create'],
