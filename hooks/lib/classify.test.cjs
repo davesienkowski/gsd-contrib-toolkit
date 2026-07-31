@@ -9,6 +9,8 @@ const {
   hasFailClosedSegment, resolveProgram,
   // ENF-20 (T1): the review-side action vocabulary + the PR-comment collapse contract.
   REVIEW_SIDE_ACTIONS, LEGACY_MUTATION_ACTIONS, PR_COMMENT_EQUIVALENT_ACTIONS,
+  // ENF-22 (260731-ih5): the third-tier action vocabulary.
+  MERGE_SIDE_ACTIONS,
 } = require('./classify.cjs');
 
 const cls = (cmd) => classifyAction(parseCommand(cmd));
@@ -1301,6 +1303,95 @@ test('ENF-20: findActionSegment resolves a review-side target segment', () => {
   const parsed = parseCommand('git status && gh pr review 42 --approve');
   const seg = findActionSegment(parsed, 'pr-review');
   assert.strictEqual(classifyAction({ ok: true, segments: [seg] }).action, 'pr-review');
+});
+
+// ---------------------------------------------------------------------------
+// ENF-22 (quick task 260731-ih5): the `merge` verb, and the THIRD aggregation tier.
+//
+// Origin: SEED-enf16-misses-git-merge-implicit-commit. A CLEANLY-mergeable
+// `git merge <ref>` commits ITSELF — no `git commit` is ever issued — so ENF-16 was
+// never consulted and git's generated subject landed on a gsd-core PR branch. Making
+// the gate reachable at all starts here: `git merge` classified as `other`, and no
+// gate can reach an `other`.
+//
+// The hazard this section locks down is NOT the new verb — it is the aggregation.
+// classifyAction's PASS 2 returned the FIRST non-null result of ANY kind, so a `merge`
+// segment standing before a review-side segment (`git merge x && gh pr merge 1`) would
+// DISPLACE `pr-merge` and silently disarm ENF-20's review-artifact gate: exactly the
+// "MANUFACTURED A BYPASS" failure the module's own comment warns about. PASS 2 is
+// therefore narrowed to REVIEW_SIDE_ACTIONS and a PASS 3 catches everything else.
+// Byte-identity argument: every non-null classifySegment result today is legacy,
+// review-side, or failClosed, so the PASS 2 narrowing is a no-op on the existing
+// corpus and PASS 3 is reachable only where the old code returned `other`.
+//
+// The classifier stays a PURE VERB classifier — no flag semantics live here. Whether a
+// given merge invocation will actually create a commit (`--no-commit`, `--squash`,
+// `--ff-only`, …) is the GATE's judgement, in git-commit-convention.cjs.
+// ---------------------------------------------------------------------------
+
+test('ENF-22: git merge origin/next --no-edit → merge (the seed’s exact failing command)', () => {
+  assert.deepStrictEqual(cls('git merge origin/next --no-edit'), { action: 'merge' });
+});
+
+test('ENF-22: git merge x alone → merge', () => {
+  assert.strictEqual(cls('git merge x').action, 'merge');
+});
+
+test('ENF-22: the four CR-01/CR-03 bypass forms classify merge (parity with commit)', () => {
+  for (const cmd of [
+    'sudo git merge origin/next',
+    '/usr/bin/git merge origin/next',
+    'GIT_DIR=/x git merge origin/next',
+    'git -C /tmp merge origin/next',
+  ]) {
+    assert.strictEqual(cls(cmd).action, 'merge', cmd);
+  }
+});
+
+test('ENF-22: hasGovernedSegment is the correct trigger — a merge masked by a later push', () => {
+  const parsed = parseCommand('git merge x && git push origin main');
+  // classifyAction still collapses the chain to the LEGACY action (byte-identity), so the
+  // gate MUST use the CF-05 all-segments chokepoint to see the merge.
+  assert.strictEqual(classifyAction(parsed).action, 'push');
+  assert.strictEqual(hasGovernedSegment(parsed, ['merge']), true);
+});
+
+test('ENF-22 T-ih5-01: a merge segment must NOT displace a review-side action (ENF-20 stays armed)', () => {
+  // Without the third aggregation tier this collapses to `merge` and review-artifact
+  // (governed on pr-merge) short-circuits to allow — a manufactured bypass.
+  assert.strictEqual(cls('git merge x && gh pr merge 1 --squash').action, 'pr-merge');
+  assert.strictEqual(
+    hasGovernedSegment(parseCommand('git merge x && gh pr merge 1 --squash'), ['pr-merge']),
+    true
+  );
+});
+
+test('ENF-22 regression-preserve: a merge segment does not displace a legacy action', () => {
+  assert.strictEqual(cls('git merge x && git commit -m y').action, 'commit');
+  assert.strictEqual(cls('git merge x && git push origin main').action, 'push');
+});
+
+test('ENF-22 regression-preserve: failClosed still beats a merge segment anywhere in the chain', () => {
+  const r = cls('git merge x && gh api -X POST repos/o/r/issues/weird');
+  assert.strictEqual(r.failClosed, true, JSON.stringify(r));
+  assert.strictEqual(r.action, 'unknown');
+});
+
+test('ENF-22 regression-preserve: non-merge git verbs still classify other', () => {
+  assert.strictEqual(cls('git status').action, 'other');
+  assert.strictEqual(cls('git add .').action, 'other');
+});
+
+test('ENF-22: `merge` is neither a legacy nor a review-side action (the third tier’s reason)', () => {
+  assert.strictEqual(LEGACY_MUTATION_ACTIONS.has('merge'), false);
+  assert.strictEqual(REVIEW_SIDE_ACTIONS.has('merge'), false);
+  assert.deepStrictEqual([...MERGE_SIDE_ACTIONS], ['merge']);
+});
+
+test('ENF-22: findActionSegment resolves the merge segment out of a chain', () => {
+  const parsed = parseCommand('git status && git merge origin/next --no-edit');
+  const seg = findActionSegment(parsed, 'merge');
+  assert.strictEqual(classifyAction({ ok: true, segments: [seg] }).action, 'merge');
 });
 
 // ---------------------------------------------------------------------------
