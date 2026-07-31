@@ -24,7 +24,7 @@ Conventions used below:
 **Synopsis:** `/gsd-submit <finding / bug description, or an audit item like "M-7">`
 
 File a verified finding as a proper `open-gsd/gsd-core` **issue + fix PR**, following the
-[`gsd-core-contribution`](skills-reference.md#gsd-core-contribution) skill's gated P0–P6 pipeline
+[`core-contribution`](skills-reference.md#core-contribution) skill's gated P0–P6 pipeline
 exactly. It loads the skill first, builds the gated todo checklist, and works it top-to-bottom — no
 `[GATE]` todo is marked done without the real command output proving its pass condition.
 

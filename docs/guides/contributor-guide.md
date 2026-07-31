@@ -29,7 +29,7 @@ Published Capability*.)
 ## 1. The one command: `/gsd-submit`
 
 You don't hand-drive the pipeline. You point `/gsd-submit` at the finding and it loads the
-[`gsd-core-contribution`](../skills-reference.md#gsd-core-contribution) skill, builds a **gated todo
+[`core-contribution`](../skills-reference.md#core-contribution) skill, builds a **gated todo
 checklist (P0–P6)**, and works it top-to-bottom:
 
 ```text

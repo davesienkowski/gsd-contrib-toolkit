@@ -4,7 +4,7 @@
  * bin/advisory-banner-presence.test.cjs — the RUN-02 advisory-degradation banner presence/parity proof.
  *
  * Phase 22 (RUN-02) adds a static, copy-convert-surviving advisory-degradation SECTION to BOTH canonical
- * skills' SKILL.md (gsd-core-contribution + maintainer-review-sweep): "PreToolUse enforcement is a Claude
+ * skills' SKILL.md (core-contribution + maintainer-review-sweep): "PreToolUse enforcement is a Claude
  * Code harness feature. On non-Claude runtimes (Codex, OpenCode, …) this toolkit runs advisory-only — the
  * gates are not enforced; treat its guidance as advice, not a hard block." Because it is STATIC SKILL.md
  * content it survives the native copy-convert into non-Claude dialects, so a non-Claude install surfaces it
@@ -52,7 +52,7 @@ const BUNDLE_DIR = path.join(REPO_ROOT, 'capabilities', 'contribution-toolkit');
 // The two skill SKILL.md surfaces, as repo-relative paths so BOTH the canonical root and the bundle
 // root are checked from the same list.
 const SKILL_SURFACES = Object.freeze([
-  'skills/gsd-core-contribution/SKILL.md',
+  'skills/core-contribution/SKILL.md',
   'skills/maintainer-review-sweep/SKILL.md',
 ]);
 

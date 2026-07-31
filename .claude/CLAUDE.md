@@ -5,7 +5,7 @@
 **GSD-Contrib Toolkit**
 
 A private, self-contained, GSD-update-proof toolkit that makes a *broken* `open-gsd/gsd-core`
-contribution physically impossible to submit. It bundles the knowledge (the `gsd-core-contribution`
+contribution physically impossible to submit. It bundles the knowledge (the `core-contribution`
 skill), the triggers (`/gsd-submit`, `/gsd-review-sweep`), and — the new load-bearing layer —
 Claude Code `PreToolUse` hooks the *harness* runs (not the model), which call gsd-core's own gate
 scripts to **deny** filing/pushing a broken issue/PR or editing generated `bin/lib/*.cjs`. For Dave

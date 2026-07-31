@@ -861,7 +861,7 @@ test('remove leaves a FOREIGN symlink (not into our bundle) at a command target 
 // probes, so they run unconditionally (no SKIP).
 
 /** The 2 bundled skill stems (data-driven from the REAL bundle skills/ dir). */
-const EXPECTED_SKILL_STEMS = ['gsd-core-contribution', 'maintainer-review-sweep'];
+const EXPECTED_SKILL_STEMS = ['core-contribution', 'maintainer-review-sweep'];
 
 test('claudeSkillsDir resolves ${CLAUDE_DIR:-~/.claude}/skills with skillsDir>claudeDir>CLAUDE_DIR precedence', () => {
   // Default: <homedir>/.claude/skills (no CLAUDE_DIR override in scope).

@@ -8,7 +8,7 @@ versus what it builds itself (the per-command reuse map, ALIGN-03); and (2) wher
 trek-e's methodology — the artificer law-lenses + `trust-but-verify` on the pre-file review step
 (ALIGN-01) and Matt Pocock's `tdd` on the authoring path (ALIGN-02) — versus where it stays
 gsd-core-native (triage, on gsd-core's own repo-model). Phases 3–6 consume THIS record instead of
-re-deciding reuse or methodology. Plan 02-02 wires the `gsd-core-contribution` skill and the
+re-deciding reuse or methodology. Plan 02-02 wires the `core-contribution` skill and the
 `gsd-submit` / `gsd-review-sweep` commands to reference it.
 
 ## Reuse Map
@@ -83,14 +83,14 @@ filed — explicitly invokes two skills by name, not as optional prose:
   that survived the max-pressure prompt tests where model-driven prose rationalized past the gates.
 
 Both skills are invoked together at the pre-file review step and are wired into the
-`gsd-core-contribution` skill's review section by plan 02-02 so they are part of the documented
+`core-contribution` skill's review section by plan 02-02 so they are part of the documented
 contribution path.
 
 ### Authoring path
 
 Per **ALIGN-02**, contribution code/fix authoring adopts Matt Pocock's **`tdd`** skill (red → green):
 write the failing test first, then the minimal fix to pass it. This replaces the
-`superpowers:test-driven-development` sub-skill currently named in the `gsd-core-contribution` skill's
+`superpowers:test-driven-development` sub-skill currently named in the `core-contribution` skill's
 Phase 3 (the swap is performed by plan 02-02). `tdd` is cited here by its exact resolvable skill name
 so a downstream verifier matches it.
 

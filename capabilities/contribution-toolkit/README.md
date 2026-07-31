@@ -56,7 +56,7 @@ hooks-only artifact:
 | `PreToolUse` gates (fail-closed — these block) | 15 | `gh-issue-create`, `gh-pr-create`, `gh-edit`, `issue-dedupe`, `policy-invariants`, `lint-ci-marker`, `git-commit-convention`, `containment`, `freshness`, `githooks-seal`, `scan-gate`, `protocol-artifact`, `review-artifact`, `runtime-drift`, `binlib-edit` |
 | `UserPromptSubmit` advisory (never denies) | 1 | `protocol-reminder` |
 | `PostToolUse` + `PostToolUseFailure` observability (never denies) | 1 script / 2 registrations | `tool-recorder` — the one hook wired on two events |
-| Skills | 2 | `gsd-core-contribution`, `maintainer-review-sweep` |
+| Skills | 2 | `core-contribution`, `maintainer-review-sweep` |
 | Commands | 5 | `gsd-submit`, `gsd-review-sweep`, `gsd-triage-assist`, `gsd-release-preflight`, `gsd-ruleset-drift` |
 | Loop contribution | 1 | an advisory `plan:pre` fragment, gated by the default-off `workflow.gsd_contrib_enforcement` flag |
 
@@ -72,7 +72,7 @@ the gates follow.
 | **CODEOWNER** (repo owner) | The full enforcement pipeline applied to your *own* contributions: no broken issue/PR/push and no generated-file edits can leave your machine. Plus every maintainer + contributor capability below. |
 | **Maintainer** | `gsd-triage-assist` (LIVE dedupe + version-gate + canonical role suggestion), `gsd-release-preflight` (runs the four LIVE release scripts before a release is cut), `gsd-ruleset-drift` (declared `.github/rulesets/` vs live branch protection), and the `maintainer-review-sweep` skill (cost-to-advance triage + re-review of change-requested PRs). |
 | **Contributor** | `gsd-submit` files a verified finding as a proper issue + fix PR through the repo's intake gates; gates enforce well-formed issues/PRs, version/template policy, conventional commits, a green `lint:ci` stamp before push, CI-check-run-green before PR, secret/scan cleanliness, and no edits to generated `bin/lib/*.cjs`. |
-| **Collaborator** | The same gates as a contributor, plus advisory guidance from the `gsd-core-contribution` skill and a GSD-native [recovery offramp](#recovery-offramp) when a gate denies — so a block becomes a tracked, resumable fix, not a dead stop. |
+| **Collaborator** | The same gates as a contributor, plus advisory guidance from the `core-contribution` skill and a GSD-native [recovery offramp](#recovery-offramp) when a gate denies — so a block becomes a tracked, resumable fix, not a dead stop. |
 
 > Enforcement is a **Claude Code** property (see [Per-runtime behavior](#per-runtime-behavior)). On
 > other runtimes the skills + commands still deliver, but the toolkit runs **advisory-only**.
@@ -165,7 +165,7 @@ observability). Neither ever denies.
 
 ## Recovery offramp
 
-When a gate **denies** — or the `gsd-core-contribution` skill surfaces a real blocking issue
+When a gate **denies** — or the `core-contribution` skill surfaces a real blocking issue
 mid-run — you are offered a GSD-native recovery rather than a dead stop: **fix inline with
 `/gsd-quick`** for a trivial correction, or **route the issue through the GSD pipeline**
 (`/gsd-debug`, or `/gsd-discuss-phase`→`/gsd-plan-phase`→`/gsd-execute-phase`) as a tracked,

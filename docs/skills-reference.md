@@ -10,7 +10,7 @@ The toolkit ships **two** skills. A skill captures a gsd-core *process*; it is i
 
 ---
 
-## `gsd-core-contribution`
+## `core-contribution`
 
 **What it is:** the gsd-core contribution pipeline — turning a verified finding into a properly-filed
 `open-gsd/gsd-core` **bug/fix issue + pull request** that passes the repo's intake gates and matches
@@ -44,9 +44,9 @@ gate is green.
 
 **How it's used:**
 - `/gsd-submit <finding>` — the primary trigger.
-- Auto-triggers on the phrases above, or invoke `skill: "gsd-core-contribution"` directly.
+- Auto-triggers on the phrases above, or invoke `skill: "core-contribution"` directly.
 
-**Sub-files:** [`reference.md`](../skills/gsd-core-contribution/reference.md) — commands, gate
+**Sub-files:** [`reference.md`](../skills/core-contribution/reference.md) — commands, gate
 definitions, and templates.
 
 ---

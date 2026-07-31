@@ -41,7 +41,7 @@ After a re-review verdict, set the PR's review-state label to match:
 
 These are driven by GitHub Actions; let the workflows own them:
 - `possible-duplicate` — duplicate-check/sweep loop (24h reporter window; a non-bot reply clears it → `needs-maintainer-review`). Exempt-from-auto-close: `priority: critical`, `pinned`, `confirmed-bug`, `confirmed`, `fix-pending`.
-- `needs-version` — version-gate. Applied by `version-gate.yml` when a bug report lacks a valid `### GSD Version`; the report is auto-closed `not_planned`. **`version-exempt` is referenced in gate code/docs as the intended maintainer opt-out but is NOT a live label** (verified `gh label list` 2026-07-10 — only `needs-version` exists; the `gsd-core-contribution` skill notes the same). So the *only* working version-gate bypass today is a valid `### GSD Version` value — do **not** try to apply `version-exempt` (it 404s); surface the missing-label gap to trek-e instead.
+- `needs-version` — version-gate. Applied by `version-gate.yml` when a bug report lacks a valid `### GSD Version`; the report is auto-closed `not_planned`. **`version-exempt` is referenced in gate code/docs as the intended maintainer opt-out but is NOT a live label** (verified `gh label list` 2026-07-10 — only `needs-version` exists; the `core-contribution` skill notes the same). So the *only* working version-gate bypass today is a valid `### GSD Version` value — do **not** try to apply `version-exempt` (it 404s); surface the missing-label gap to trek-e instead.
 
 ## Prefer canonical over duplicate (known drift — don't worsen)
 
