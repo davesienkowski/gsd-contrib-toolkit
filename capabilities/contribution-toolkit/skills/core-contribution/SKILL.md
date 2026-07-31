@@ -53,7 +53,7 @@ When this skill activates, **your FIRST action — before any Read, Bash, `gh`, 
 [ ] P0  Read CONTRIBUTING.md + matching issue template + PR template + governing ADR(s) + CONTEXT.md
 [ ] P0b ADR/CONTEXT awareness sweep (POLICY-03) — LIST governing ADRs/policies + CONTEXT.md predicates for the changed area BEFORE authoring (grep/gsd-tools over docs/adr/ + CONTEXT.md). Awareness only, NOT a pass/fail gate
 [ ] P0c Prior-art recall (advisory, NOT a gate) — `mempalace search "<area> <symptom>"`, NO wing filter; a wing-scoped miss is not evidence of absence
-[ ] P1  Run trust-but-verify; reproduce the mechanism live on src/*.cts (probe or failing test)   [GATE: reproduced, else WITHDRAW]
+[ ] P1  Run trust-but-verify; reproduce the mechanism live on src/*.cts (probe or failing test)   [GATE: reproduced, else WITHDRAW] — a WITHDRAW runs P7's capture NOW, before you stop; you will not reach the bottom of this list
 [ ] P2  Run skills-from-the-artificer; apply each firing law to the diff
 [ ] P2b Policy conformance (POLICY-01) — check the DIFF vs the relevant ADRs + docs/agents/* via trust-but-verify (open+QUOTE the ADR) + skills-from-the-artificer law-lenses; surface any LOCKED-decision conflict before filing
 [ ] P3a Worktree off origin/next; hooks rewired; node_modules linked; build:lib
@@ -99,7 +99,7 @@ Read before authoring: `CONTRIBUTING.md`, the matching **issue** template, the m
 **Honest scope:** advisory and model-driven, the same register as P0b's awareness sweep — no gate, no receipt, no pass/fail. Mechanics, the staging recipe, and the verified gotchas are in [reference.md](reference.md).
 
 ### Phase 1 — Verify the finding (trust-but-verify)
-**Invoke the `trust-but-verify` skill by name** and apply it to the finding: reproduce the mechanism on live `src/*.cts` with a throwaway probe or a failing test before you trust the premise. Remember **`bin/lib/*.cjs` is generated** from `src/*.cts` (ADR-457) — author in `src`, `npm run build:lib`. Correct the premise if wrong; record falsified findings rather than filing them — **P7 is where that record goes**, so the next run inherits the WITHDRAW instead of re-deriving it. **A sweep-supplied premise is exactly the "a report is a lead, not a fact" case `trust-but-verify` already governs** — inherited evidence narrows *what* you must reproduce; it never discharges the obligation to reproduce it here.
+**Invoke the `trust-but-verify` skill by name** and apply it to the finding: reproduce the mechanism on live `src/*.cts` with a throwaway probe or a failing test before you trust the premise. Remember **`bin/lib/*.cjs` is generated** from `src/*.cts` (ADR-457) — author in `src`, `npm run build:lib`. Correct the premise if wrong; record falsified findings rather than filing them — **P7 is where that record goes**, so the next run inherits the WITHDRAW instead of re-deriving it. **On a WITHDRAW, run P7's capture right here, before you stop** — a withdrawn finding never reaches the bottom of the checklist, so a capture deferred to the end is a capture that never happens. This is the case the capture exists for: a falsified premise is the most expensive thing to re-derive and the cheapest thing to inherit (M5, M7 and PD-1 were each falsified *after* someone spent the reproduction effort). **A sweep-supplied premise is exactly the "a report is a lead, not a fact" case `trust-but-verify` already governs** — inherited evidence narrows *what* you must reproduce; it never discharges the obligation to reproduce it here.
 
 ### Phase 2 — Adversarial law pass
 **Invoke the `skills-from-the-artificer` skill by name** on the proposed change; apply each *firing* law's key questions to the concrete diff. Capture any Hyrum's-Law behavior change to disclose in the PR. Don't force-fit laws.
@@ -122,6 +122,8 @@ Branch `fix/<issue#>-slug` → base `next`. **PR title MUST be `<type>(#<issue#>
 Read **real check-run conclusions** (branch protection is evaluate-mode — "CI green" from the ruleset is not a gate). A **changeset-only commit can skip the Tests workflow**, leaving a stale FAILED run hidden behind green meta-checks — confirm Tests actually ran on the head SHA. Don't chase `BEHIND` (maintainer clears on merge). Fix any failure as a follow-up commit on the same branch.
 
 ### Phase 7 — Capture what this run learned (advisory)
+
+**P7 runs on every exit, not just the successful one.** It is numbered last because that is where a *filed* contribution ends, but a run that WITHDRAWs at P1, or dies on a red gate at P3d/P4b/P5b, never gets here by walking the list — so run this capture at the point you stop. A capture that only fires on the happy path records exactly the runs whose lesson was cheapest.
 
 **Write down what the next run would pay to know** — reusable across sessions, not a run log: the **falsified premise** (which premise, what actually reproduced against live `src/*.cts`, the WITHDRAW verdict — this is the durable home Phase 1's "record falsified findings" points at), the **gate rejection and its fix** (which gate, what the body was missing), and the filed `#numbers` as precedent for the next Phase 4a.
 
