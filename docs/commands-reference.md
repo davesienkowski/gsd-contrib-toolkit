@@ -162,4 +162,4 @@ bypasses the gate or abuses `GSD_CONTRIB_OVERRIDE`.
 ## See also
 
 - [skills-reference.md](skills-reference.md) — the two skills the commands drive.
-- [reuse-and-methodology.md](reuse-and-methodology.md) — the reuse map governing what each path delegates to.
+- [reuse-and-methodology.md](REUSE-AND-METHODOLOGY.md) — the reuse map governing what each path delegates to.

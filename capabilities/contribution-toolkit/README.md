@@ -13,7 +13,7 @@ native capability system, tracked by gsd-core's ledger + consent.
 
 - **Repo:** `github.com/davesienkowski/gsd-contribution-toolkit`
 - **Latest release:** `#v2.1.3`
-- **Install:** [§ Install](#install) · **Architecture:** [docs/cross-runtime-delivery-model.md](docs/cross-runtime-delivery-model.md)
+- **Install:** [§ Install](#install) · **Architecture:** [docs/cross-runtime-delivery-model.md](https://github.com/davesienkowski/gsd-contrib-toolkit/blob/main/docs/cross-runtime-delivery-model.md)
 - **Reviewers (gsd-core maintainers):** start at [§ For reviewers](#for-reviewers).
 
 ---
@@ -124,7 +124,7 @@ the hooks *are* the enforcement).
    unreadable body, or a missing LIVE script denies rather than allows.
 2. **Reuse, never reimplement.** Each gate resolves and calls the LIVE gsd-core gate script (issue
    version-gate, PR template policy, `lint:ci`, the scan scripts, etc.). See
-   [docs/reuse-and-methodology.md](docs/reuse-and-methodology.md).
+   [docs/reuse-and-methodology.md](docs/REUSE-AND-METHODOLOGY.md).
 3. **Accountable override.** A deliberate bypass rides on the existing per-worktree, append-only
    `GSD_CONTRIB_OVERRIDE` receipt (a logged reason-string, never silent) — no new mechanism.
 
@@ -135,12 +135,12 @@ Delivery is **per-runtime**, and what it enforces depends on the runtime:
 | Layer | Claude Code | Other runtimes (Codex, OpenCode, …) |
 |---|---|---|
 | Skills | delivered | delivered via the native `skills[]` contribution (copy-convert) |
-| Commands | delivered | Claude-only today (no third-party slash-command surface — see [upstream](docs/upstream-feature-requests.md)) |
+| Commands | delivered | Claude-only today (no third-party slash-command surface — see [upstream](https://github.com/davesienkowski/gsd-contrib-toolkit/blob/main/docs/upstream/trek-e-capability-feature-requests.md)) |
 | `PreToolUse` enforcement | **full** | **none** → toolkit runs **advisory-only** |
 
 Enforcement is a Claude-harness property; everywhere else the toolkit is advice, not a hard block.
 Each skill carries an explicit advisory-only note. Full model:
-[docs/cross-runtime-delivery-model.md](docs/cross-runtime-delivery-model.md).
+[docs/cross-runtime-delivery-model.md](https://github.com/davesienkowski/gsd-contrib-toolkit/blob/main/docs/cross-runtime-delivery-model.md).
 
 ## What the gates cover
 
@@ -193,19 +193,19 @@ Please read this as written — don't over-read it:
   load-bearing decisions (harness-boundary enforcement; capability-native distribution via `hooks[]`;
   the v2.3 full-surface/cross-runtime model), each independently challengeable. Accepted but open to
   maintainer revision.
-- [docs/foundations.md](docs/foundations.md) — **what the toolkit is built on** and how it was
+- [docs/foundations.md](https://github.com/davesienkowski/gsd-contrib-toolkit/blob/main/docs/foundations.md) — **what the toolkit is built on** and how it was
   designed: trek-e's methodology, the skills-artificer law-lenses, the LIVE gsd-core machinery it
   reuses, the lineage of every command/skill, and how the design serves gsd-core's contribution goals.
-- [docs/skills-reference.md](docs/skills-reference.md) — the **2 skills**: what each is capable of, when
+- [docs/skills-reference.md](https://github.com/davesienkowski/gsd-contrib-toolkit/blob/main/docs/skills-reference.md) — the **2 skills**: what each is capable of, when
   it triggers, the pipeline it runs, and how to invoke it.
-- [docs/commands-reference.md](docs/commands-reference.md) — the **5 commands**: what each does, the
+- [docs/commands-reference.md](https://github.com/davesienkowski/gsd-contrib-toolkit/blob/main/docs/commands-reference.md) — the **5 commands**: what each does, the
   **accepted arguments/parameters**, examples, and the mutation-safety model.
-- [docs/cross-runtime-delivery-model.md](docs/cross-runtime-delivery-model.md) — the per-runtime
+- [docs/cross-runtime-delivery-model.md](https://github.com/davesienkowski/gsd-contrib-toolkit/blob/main/docs/cross-runtime-delivery-model.md) — the per-runtime
   delivery model, symlink-vs-copy-convert, enforcement-is-Claude-only, the `off`-vs-`remove`
   lifecycle, and why slash-commands are Claude-only (ADR-959).
-- [docs/reuse-and-methodology.md](docs/reuse-and-methodology.md) — the reuse map (delegate / wrap /
+- [docs/reuse-and-methodology.md](docs/REUSE-AND-METHODOLOGY.md) — the reuse map (delegate / wrap /
   leave-alone) and methodology alignment with trek-e's published practices.
-- [docs/upstream-feature-requests.md](docs/upstream-feature-requests.md) — two capability-framework
+- [docs/upstream-feature-requests.md](https://github.com/davesienkowski/gsd-contrib-toolkit/blob/main/docs/upstream/trek-e-capability-feature-requests.md) — two capability-framework
   asks for gsd-core maintainers (an opt-in symlink/`link` delivery mode; a third-party
   slash-command overlay surface), each citing this toolkit as the reference implementation.
 
@@ -213,7 +213,7 @@ Please read this as written — don't over-read it:
 
 If you maintain gsd-core and are reviewing this toolkit:
 
-- Start with [docs/foundations.md](docs/foundations.md) — it lays out what the toolkit is assembled
+- Start with [docs/foundations.md](https://github.com/davesienkowski/gsd-contrib-toolkit/blob/main/docs/foundations.md) — it lays out what the toolkit is assembled
   from (your methodology, the artificer lenses, the LIVE gsd-core machinery), the lineage of every
   command/skill, how it was designed, and how its design maps to what gsd-core is driving for.
 - Then [docs/adr/](docs/adr/) — the three decisions are stated as challengeable ADRs (Accepted, but
@@ -222,7 +222,7 @@ If you maintain gsd-core and are reviewing this toolkit:
 - The bundle conforms to the LIVE capability validators (tri-surface `declared == shipped` parity
   across hooks + skills + commands) — see the manifest `capability.json`.
 - The two things that would let this capability go *fully native* and *cross-runtime* are written up
-  in [docs/upstream-feature-requests.md](docs/upstream-feature-requests.md) — they are framework
+  in [docs/upstream-feature-requests.md](https://github.com/davesienkowski/gsd-contrib-toolkit/blob/main/docs/upstream/trek-e-capability-feature-requests.md) — they are framework
   additions, not changes this toolkit can make on its own.
 - The honesty contract above is deliberate and enforced by the publish-time conformance check; the
   capability is never presented as carrying harness-wide enforcement on its own.
@@ -235,4 +235,6 @@ If you maintain gsd-core and are reviewing this toolkit:
   the bundle logic is byte-identical to v2.1.0.
 - **Source toolkit:** [`gsd-contrib-toolkit`](https://github.com/davesienkowski/gsd-contrib-toolkit)
   (public, MIT), through the v2.3 milestone.
-- See [CHANGELOG.md](CHANGELOG.md) for the release history.
+- **Release history:** the published
+  [tags on `gsd-contribution-toolkit`](https://github.com/davesienkowski/gsd-contribution-toolkit/tags)
+  (`v1.0.0` … `v2.1.3`). There is no `CHANGELOG.md` — the tags are the record.

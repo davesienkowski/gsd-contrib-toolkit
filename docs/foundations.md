@@ -42,7 +42,7 @@ Everything else in the toolkit is in service of doing that *without reinventing 
 
 The toolkit adopts trek-e's published methodology where it is sharper than a hand-rolled equivalent,
 and stays gsd-core-native where that is more correct. (Full detail:
-[reuse-and-methodology.md](reuse-and-methodology.md).)
+[reuse-and-methodology.md](REUSE-AND-METHODOLOGY.md).)
 
 - **Pre-file review (ALIGN-01)** invokes two named, resolvable skills rather than optional prose:
   - **`skills-from-the-artificer`** — the adversarial/verify lens trek-e runs (see Foundation B).
@@ -106,7 +106,7 @@ What it builds on, concretely:
   slash-commands, and there is no third-party slash-command overlay. The toolkit respects that
   boundary: its five `gsd-*` slash-commands ride as bundled `.md` delivered to Claude, and it does not
   misdeclare them as CLI commands. (This is also why cross-runtime slash-commands are an upstream ask —
-  see [upstream-feature-requests.md](upstream-feature-requests.md).)
+  see [upstream-feature-requests.md](upstream/trek-e-capability-feature-requests.md).)
 - **Reuse map (ALIGN-03).** Each GSD command gets one verdict — delegate / wrap / leave-alone — so the
   toolkit calls `gsd-pr-branch` and `gsd-code-review` rather than reimplementing them, and stays out of
   `gsd-ship`/`gsd-inbox` where their generic behavior would lose repo fidelity.
@@ -188,6 +188,6 @@ source rather than rediscovered.
 - [README](../README.md) — what it is, what's included, capabilities by role, install.
 - [cross-runtime-delivery-model.md](cross-runtime-delivery-model.md) — per-runtime behavior and the
   enforcement model.
-- [reuse-and-methodology.md](reuse-and-methodology.md) — the full reuse map + methodology alignment.
-- [upstream-feature-requests.md](upstream-feature-requests.md) — the capability-framework asks for
+- [reuse-and-methodology.md](REUSE-AND-METHODOLOGY.md) — the full reuse map + methodology alignment.
+- [upstream-feature-requests.md](upstream/trek-e-capability-feature-requests.md) — the capability-framework asks for
   gsd-core maintainers.
