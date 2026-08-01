@@ -93,8 +93,9 @@ Generative-Fix-Divergence anti-pattern, the Agent Brief `ready-for-agent` handof
 machine, the bug-vs-by-design triage gate, and the `capability-candidate` routing stance. These are kept
 current by periodic **primary-source-verified** sweeps of the live repo (each convention traced to an
 actual review/comment body, then adversarially re-checked) — the discipline that guards against the
-skills drifting from the maintainer's live practice. See the milestone record in
-[`.planning/MILESTONES.md`](../../.planning/MILESTONES.md) (v2.7).
+skills drifting from the maintainer's live practice. The most recent such sweep shipped as the v2.7
+milestone; its record lives in the unpublished local `.planning/` corpus rather than in this
+repository (see the scope note in the [README](../../README.md)).
 
 ## Containment & safety model
 

@@ -44,6 +44,34 @@ function trackedMarkdown() {
     .filter(Boolean);
 }
 
+/**
+ * Every path git tracks, as repo-relative POSIX strings.
+ *
+ * Link targets are resolved against THIS, not against the filesystem — because the filesystem lies
+ * about what a reader can actually reach. `.planning/` is gitignored but still present in a
+ * maintainer's working tree, so `fs.existsSync` happily green-lights a link to it while the same
+ * link 404s for every visitor to the public repo and fails in a fresh CI clone. That exact link
+ * (`docs/guides/overview.md` -> `../../.planning/MILESTONES.md`) shipped public on 2026-07-31 and
+ * was caught only by CI. Checking tracked-ness makes that class fail locally too.
+ */
+let trackedSetCache = null;
+function trackedPaths() {
+  if (trackedSetCache) return trackedSetCache;
+  trackedSetCache = new Set(
+    execFileSync('git', ['-C', REPO_ROOT, 'ls-files'], { encoding: 'utf8' }).split('\n').filter(Boolean)
+  );
+  return trackedSetCache;
+}
+
+/** True when `rel` is a tracked file, or a directory containing at least one tracked file. */
+function isTracked(rel) {
+  const norm = rel.split(path.sep).join('/').replace(/\/+$/, '');
+  if (trackedPaths().has(norm)) return true;
+  const prefix = `${norm}/`;
+  for (const p of trackedPaths()) if (p.startsWith(prefix)) return true;
+  return false;
+}
+
 /** GitHub heading text -> anchor slug. See SLUG NOTE above. */
 function slug(heading) {
   return heading
@@ -114,8 +142,19 @@ test('every relative markdown link resolves to a real path (case-sensitively)', 
       const filePart = target.split('#')[0];
       if (!filePart) continue;
       const resolved = path.resolve(path.dirname(abs), filePart);
+      const repoRel = path.relative(REPO_ROOT, resolved);
+      if (repoRel.startsWith('..') || path.isAbsolute(repoRel)) {
+        broken.push(`${loc}  [${target}]  -> escapes the repository root`);
+        continue;
+      }
       if (!fs.existsSync(resolved)) {
-        broken.push(`${loc}  [${target}]  -> missing ${path.relative(REPO_ROOT, resolved)}`);
+        broken.push(`${loc}  [${target}]  -> missing ${repoRel}`);
+        continue;
+      }
+      // Present on disk is NOT enough: a gitignored path (e.g. .planning/) exists in a maintainer's
+      // working tree but is unreachable for every reader of the published repo.
+      if (!isTracked(repoRel)) {
+        broken.push(`${loc}  [${target}]  -> ${repoRel} exists locally but is NOT tracked by git (unreachable for readers)`);
         continue;
       }
       // fs.existsSync is case-INSENSITIVE on macOS/Windows; compare the real dirent name so a
