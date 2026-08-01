@@ -230,6 +230,16 @@ hooks** layer once installed, a property of those hooks and not of the capabilit
 
 This section is load-bearing — the project's core value is honesty, not overselling.
 
+- **This is not a security control, and "unbypassable" is scoped.** The gates bind **the model inside
+  a session**, not a human at a keyboard. The word "unbypassable" throughout this README means *the
+  model cannot talk its way past a `PreToolUse` deny* — including under
+  `--dangerously-skip-permissions`. It does **not** mean tamper-proof: anyone with filesystem access
+  can run `contrib-capability off --reason …`, edit gsd-core's `.claude/settings.json`, or delete the
+  hooks outright, and every one of those is documented here on purpose. The design assumes the
+  operator knows every bypass, because the operator *is* the person being bound — this is a
+  self-binding commitment device (Ulysses and the mast), not a perimeter. Do not deploy it as a
+  control against an untrusted party; it was never designed to survive one, and publishing it costs
+  nothing precisely because its value never depended on the design being secret.
 - **Hooks lock outcomes, not steps — narrowed, not withdrawn.** The gates enforce
   *what must not ship*. They do **not** directly enforce *how* you work — e.g.
   todo-first discipline stays model-driven (the skill plus the advisory
@@ -398,6 +408,27 @@ repository, which is the cleanest blast radius.
   repo's LIVE scripts rather than vendoring copies of its policy, so they need it
   present (see *What It Uses*).
 - **`gh`** authenticated, for the issue/PR gates and the maintainer assists.
+
+**Optional.** **MemPalace** — a separate third-party cross-session memory tool, providing the
+`mempalace` CLI (verified against 3.6.0) — powers the advisory recall/capture steps (contribution
+P0c/P7, sweep 1b/10). It is **not required** — those
+steps are advisory, nothing downstream depends on them, and if the `mempalace` CLI is absent the
+correct behaviour is to skip the step and carry on, exactly as when a concurrent `mine` holds the
+palace lock. No gate consults it and no test requires it.
+
+## Stability
+
+The repo is public for reference and reuse, so it is worth saying plainly what you may build on:
+
+| Surface | Stability |
+|---|---|
+| The **capability install contract** — `capability install <git-or-npm-source> --scope project --shared-file …` | Stable. Versioned and tagged; the npm channel is integrity-pinned. |
+| **`bin/contrib-capability.cjs`** verbs (`install`/`on`/`off`/`status`/`remove`) and the `--reason` requirement | Stable. |
+| The **override receipt contract** — `GSD_CONTRIB_OVERRIDE` as a reason string, append-only JSONL | Stable. |
+| **Internal step IDs** (`P0`…`P7`, sweep phase numbers), **hook counts**, and **`bin/` script names** | **Not stable — treat as internal.** They renumber whenever a step is added; `P0–P6` became `P0–P7` on 2026-07-31. Don't script against them. |
+| **`hooks/lib/*`** internals | Not stable. |
+
+Nothing here carries a deprecation window — see the scope note at the top.
 
 ## Contributing
 

@@ -30,7 +30,7 @@ Published Capability*.)
 
 You don't hand-drive the pipeline. You point `/gsd-submit` at the finding and it loads the
 [`core-contribution`](../skills-reference.md#core-contribution) skill, builds a **gated todo
-checklist (P0–P6)**, and works it top-to-bottom:
+checklist (P0–P7)**, and works it top-to-bottom:
 
 ```text
 /gsd-submit the version-gate regex accepts a trailing newline — see issue #1549
@@ -47,7 +47,7 @@ identify a specific defect + location, the command asks **one** clarifying quest
 > gates" does **not** waive a single step — the skill names that pressure as the exact rationalization it
 > guards against.
 
-## 2. What the pipeline does (P0–P6)
+## 2. What the pipeline does (P0–P7)
 
 The skill runs these as tool-tracked todos; a `[GATE]` todo may **not** be checked off without pasting
 the real command output proving its pass condition.
@@ -55,12 +55,19 @@ the real command output proving its pass condition.
 | Phase | What happens | Gate / proof |
 |---|---|---|
 | **P0** | Ground in canon: read `CONTRIBUTING.md`, the matching issue + PR templates, the governing ADR(s), `CONTEXT.md`. List governing ADRs/policies for the touched area **before** authoring. | — (awareness) |
-| **P1** | **Verify the finding** — reproduce the mechanism live with a probe or failing test. | `[GATE]` reproduced, else **withdraw** |
+| **P0c** | **Prior-art recall** *(advisory)* — ask MemPalace whether this area was already filed, a premise already falsified, or a gate already tripped. Prior filings double as the precedents P4 asks for. Search **un-scoped**. | — (advisory) |
+| **P1** | **Verify the finding** — reproduce the mechanism live with a probe or failing test. | `[GATE]` reproduced, else **withdraw** (and capture per P7 *before* stopping) |
 | **P2 / P2b** | Adversarial **law pass** (`skills-from-the-artificer`) + **policy conformance** (`trust-but-verify`, open+quote the ADRs) on the diff. | surface any LOCKED-decision conflict before filing |
 | **P3** | **TDD the fix in a worktree** off `origin/next`: regression test **written first and watched FAIL**, then GREEN; run the full relevant suites + `npm run lint:ci` + the per-surface QA matrix. | `[GATE]` pasted RED output; `[GATE]` all green, lint exit 0 |
 | **P4** | **File the issue** — body = `### GSD Version` + user-impact + repro + root cause + fix; run the version-gate on the exact body. Apply your labels **alongside** the bot auto-tags (never strip `needs-triage`). | `[GATE]` `valid-version` |
 | **P5** | **Open the PR** — branch `fix/<issue#>-slug` → base `next`; title `<type>(#<issue#>): <imperative>`; fix-template body + `Fixes #<issue#>`; add a changeset. Run pr-template-policy on the exact body. | `[GATE]` `valid:true, template:fix` |
 | **P6** | **Confirm CI green** — read **real check-run conclusions** on the latest head SHA (branch protection is evaluate-mode, so the ruleset "green" is not a gate). | `[GATE]` Tests ran + green on latest commit |
+| **P7** | **Capture what this run learned** *(advisory)* — the falsified premise, the gate rejection and its fix, the filed `#numbers`. Runs on **every** exit, not just the successful one. | — (advisory) |
+
+> **Why P7 is not just "the last step":** the checklist is worked top-to-bottom, so a P1 withdrawal or a
+> red gate at P3/P4/P5 never *reaches* the bottom. Those are exactly the runs whose lesson is most
+> expensive to re-derive — a falsified premise costs a full reproduction to rediscover. So the capture
+> fires at the point you stop, not only when you succeed.
 
 > **Ordering note:** P3 (local TDD) runs *before* P4/P5 deliberately — the harness enforcement gate fires
 > on the **PR/push** (P5), not on local worktree work (P3), and the P4 issue body needs the empirical

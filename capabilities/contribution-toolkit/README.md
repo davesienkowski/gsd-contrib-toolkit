@@ -233,5 +233,6 @@ If you maintain gsd-core and are reviewing this toolkit:
   with a `--check` drift gate and validated against the LIVE gsd-core capability validators before
   publish). The v2.1.x line is **docs releases** (v2.1.1 README; v2.1.2 foundations + ADRs; v2.1.3 skills/commands reference) —
   the bundle logic is byte-identical to v2.1.0.
-- **Source toolkit:** `gsd-contrib-toolkit` (private), through the v2.3 milestone.
+- **Source toolkit:** [`gsd-contrib-toolkit`](https://github.com/davesienkowski/gsd-contrib-toolkit)
+  (public, MIT), through the v2.3 milestone.
 - See [CHANGELOG.md](CHANGELOG.md) for the release history.

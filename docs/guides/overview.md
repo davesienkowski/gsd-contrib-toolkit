@@ -8,7 +8,7 @@ walkthrough see the [Contributor Guide](contributor-guide.md) and [Maintainer Gu
 
 ## What it is, in one sentence
 
-A private, GSD-update-proof toolkit that makes a **broken `open-gsd/gsd-core` contribution physically
+A GSD-update-proof toolkit that makes a **broken `open-gsd/gsd-core` contribution physically
 impossible to submit** — and gives the maintainer a LIVE-script-backed triage/review pipeline — by
 combining contribution *knowledge* (skills), human *triggers* (commands), runnable *tools* (`bin/`), and
 the load-bearing layer: **Claude Code `PreToolUse` hooks the harness runs, not the model.**
@@ -106,7 +106,8 @@ skills drifting from the maintainer's live practice. See the milestone record in
   the gsd-core checkout.
 - **Reversible & accountable.** Toggling `off`/`remove` *genuinely* removes the enforcement (the gates
   *are* the enforcement) and requires a non-empty `--reason`, writing a receipt. Nothing is pushed to
-  upstream gsd-core; the toolkit stays private.
+  upstream gsd-core — that containment rule is permanent and unchanged, and is separate from the
+  toolkit's own repository, which is public MIT.
 - **Honest limits.** The **share-form capability is advisory-only** (`gates[]` empty) — only the
   installed **personal PreToolUse hooks** are the harness-wide, unbypassable layer. Don't read the
   capability as unbypassable.

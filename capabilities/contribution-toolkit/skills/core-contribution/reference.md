@@ -93,6 +93,8 @@ gsd-tools query <predicate-query> 2>/dev/null # gsd-tools is the CLI fallback's 
 
 Cross-session memory — the only surface here that remembers *previous sessions* (memtrace and graphify index code, not sessions). Recall at **P0c** (inside Phase 0, beside the POLICY-03 awareness sweep), capture at **Phase 7**.
 
+> **Optional dependency.** MemPalace is a separate third-party tool, not shipped or required by this toolkit. If `mempalace` is not on `PATH`, skip P0c and P7 — no gate consults them, no test requires them, and nothing downstream breaks. Everything below assumes you have chosen to install it.
+
 **Recall.** Always the CLI form — it works inside a subagent, where the main session's tool-call transport does not exist:
 
 ```bash

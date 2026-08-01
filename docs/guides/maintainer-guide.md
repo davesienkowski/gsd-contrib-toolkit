@@ -50,6 +50,10 @@ The pipeline (an adversarial gate between every phase; re-fetch live state befor
 1. **Scope** — repo, default branch (`next`), exclude-author (the lead maintainer — filter for *action*,
    never hide their high-severity/security items), merge token.
 2. **Discover** — list open issues + PRs.
+   - **2b. Prior-adjudication recall** *(advisory)* — before ranking, ask MemPalace what a past session
+     already concluded about the surfaced `#numbers`: already adjudicated? a PR on this defect already
+     cleared or blocked, and on what evidence? Search **un-scoped** — a wing-scoped miss is not evidence
+     of absence. If a concurrent `mine` holds the palace, retry once then skip; it never stops the sweep.
 3. **Cross-reference in-flight work** — duplicate/overlapping issues, issue↔PR links, PR↔PR file
    collisions; group related `#numbers` so nothing is handled in isolation.
 4. **Prioritize** — quick-fix vs. highest user impact; surface data-loss/security/runtime-broken first.
@@ -62,6 +66,16 @@ The pipeline (an adversarial gate between every phase; re-fetch live state befor
 8. **Authority reality** — role, CODEOWNERS, and **rulesets** (note `enforcement: evaluate` = audit-only,
    so CI "green" from the ruleset is *not* a gate — read real check-runs yourself).
 9. **Present & select** — show the ranked buckets and await your pick; then per-PR re-review.
+10. **Capture the outcome** *(advisory)* — file the verdict, its evidence, and specifically the
+    **exogenous-pass delta**: what the fresh reviewer caught that your own pass missed. That delta is the
+    most reusable thing a sweep produces, and it otherwise evaporates with the session. A failed capture
+    never blocks or changes a verdict.
+
+> **The recall/capture pair is advisory and model-driven** — no hook, no gate, no receipt. Per
+> [CTK-ADR-0001 §Decision.1](../adr/CTK-ADR-0001-harness-boundary-enforcement.md) hooks lock *outcomes*,
+> not steps. Note also the **`--wing` asymmetry**: omit it when you *search* (hook-captured conversation
+> lands in a separate `sessions` wing), but pass it when you *mine*, because it defaults to the staging
+> directory's name and silently creates a junk wing.
 
 ## 2. Triaging an incoming issue — `/gsd-triage-assist`
 
@@ -108,6 +122,9 @@ load-bearing moves:
 
 - **Re-fetch live state + treadmill guard.** PR HEAD OID, reviews, labels, real CI conclusions. Stop
   after ≥2 AI rounds with no new substantive change (dismiss-stale-on-push loop).
+- **Recall prior rounds** *(advisory, step 2)*. What did a *previous session* conclude about this PR,
+  and why? This is distinct from the treadmill guard above, which counts rounds **posted on GitHub** —
+  the timeline does not carry the reasoning, only the artifacts.
 - **Merge-no-op / revert detection.** Confirm the PR still changes what it claims (a conflict resolved to
   the base side can silently revert it).
 - **Generated-vs-source (ADR-457).** `bin/lib/*.cjs` is generated from `src/*.ts` — a direct edit is a
