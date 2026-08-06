@@ -719,6 +719,25 @@ test('isToolkitArtifact flags .planning + toolkit files, not gsd-core source', (
   assert.ok(!isToolkitArtifact('docs/adr/0001.md'));
 });
 
+// The broad `hooks/*.cjs` toolkit pattern over-matched gsd-core's OWN repo-root hook.
+// `hooks/managed-hooks-registry.cjs` is tracked on open-gsd/gsd-core@next and named in
+// that repo's CLAUDE.md component table; `git ls-files 'hooks/*.cjs'` there returns it
+// and nothing else. Blocking it wedged every gsd-core commit that merged `next` forward
+// — including one whose staged blob was byte-identical to origin/next's, i.e. a pure
+// upstream carry that introduced nothing. Unstaging it was not a valid workaround
+// either: that silently drops upstream's version and corrupts the merge.
+test('isToolkitArtifact does NOT flag gsd-core own repo-root hooks/managed-hooks-registry.cjs', () => {
+  assert.ok(!isToolkitArtifact('hooks/managed-hooks-registry.cjs'),
+    'gsd-core tracks exactly one hooks/*.cjs of its own; blocking it wedges every merge-forward');
+  // The exemption must be EXACT — every other toolkit hook stays blocked.
+  assert.ok(isToolkitArtifact('hooks/containment.cjs'));
+  assert.ok(isToolkitArtifact('hooks/scan-gate.cjs'));
+  assert.ok(isToolkitArtifact('hooks/gh-pr-create.cjs'));
+  // ...and a lookalike must not slip through on a prefix/suffix match.
+  assert.ok(isToolkitArtifact('hooks/managed-hooks-registry-extra.cjs'));
+  assert.ok(isToolkitArtifact('hooks/not-managed-hooks-registry.cjs'));
+});
+
 test('isUpstreamRemote recognizes open-gsd/gsd-core across URL forms', () => {
   assert.ok(isUpstreamRemote('https://github.com/open-gsd/gsd-core.git'));
   assert.ok(isUpstreamRemote('git@github.com:open-gsd/gsd-core.git'));

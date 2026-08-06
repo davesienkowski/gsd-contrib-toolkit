@@ -55,13 +55,33 @@ const TOOLKIT_PATTERNS = Object.freeze([
 ]);
 
 /**
- * gsd-core's OWN generated files live under `gsd-core/bin/lib/*.cjs`; do not let the broad
- * `hooks/*.cjs` toolkit pattern misfire on a path like `gsd-core/bin/lib/x.cjs` (it would
- * not match `hooks/` anyway, but guard explicitly against a `.../hooks/` inside gsd-core that
- * is legitimately gsd-core's — there is none today, but keep the predicate honest).
+ * gsd-core's OWN files, exempted from the toolkit patterns above.
+ *
+ * 1. Generated engine modules under `gsd-core/bin/lib/*.cjs` — the broad `hooks/*.cjs`
+ *    pattern would not match that path anyway, but keep the predicate explicit.
+ *
+ * 2. ⚠️ `hooks/managed-hooks-registry.cjs` — gsd-core has a repo-root `hooks/` directory of
+ *    its OWN, and this file lives in it. An earlier revision of this comment asserted
+ *    "there is none today"; that was FALSE, and the `hooks/*.cjs` pattern therefore blocked
+ *    a genuine gsd-core file. Measured 2026-08-05 on `open-gsd/gsd-core@next`:
+ *    `git ls-files 'hooks/*.cjs'` returns exactly this one path, and the repo's own
+ *    CLAUDE.md names it in the component table.
+ *
+ *    The failure was not theoretical: it denied every gsd-core commit that merged `next`
+ *    forward, including one whose staged blob was BYTE-IDENTICAL to `origin/next`'s — a
+ *    pure upstream carry introducing nothing. And the deny's own advice ("unstage them")
+ *    was actively wrong there: unstaging drops upstream's version and corrupts the merge.
+ *    The `GSD_CONTRIB_OVERRIDE` receipt is no escape either — `runGateInner` rescues
+ *    ERRORS only and never flips an intentional policy deny.
+ *
+ *    The exemption is deliberately an EXACT basename match, not a `hooks/managed-*` prefix:
+ *    every other toolkit hook must stay blocked, and a lookalike like
+ *    `hooks/managed-hooks-registry-extra.cjs` must not slip through. Locked by
+ *    `containment.test.cjs`.
  */
 const GSD_CORE_OWN = Object.freeze([
   /(^|\/)gsd-core\/bin\/lib\//,
+  /(^|\/)hooks\/managed-hooks-registry\.cjs$/,
 ]);
 
 /**
