@@ -209,6 +209,80 @@ test('commandStartDir: missing baseCwd → defaults to process.cwd()', () => {
   assert.strictEqual(res.commandStartDir(parsed), process.cwd());
 });
 
+// --- commandStartDir: follow `git -C <dir>` ONLY under the opt-in `{followGitC:true}` (ENF-21
+//     narrowing). A `git -C <other-repo> push` from a gsd-core SESSION cwd must resolve the OTHER
+//     tree, not the session's — otherwise the runtime-freshness gate false-fires on a push to an
+//     unrelated repo. The default (no opt) must NOT follow `-C`, so the commit-convention gate's
+//     CR-01 over-deny is preserved. ---
+const FGC = { followGitC: true };
+
+test('commandStartDir: default does NOT follow `git -C` (preserves commit-convention over-deny)', () => {
+  const parsed = parseCommand('git -C /home/dave/repos/gsd-handover push origin main');
+  assert.strictEqual(res.commandStartDir(parsed, BASE), BASE);
+});
+
+test('commandStartDir(followGitC): `git -C <abs>` → returns the -C target', () => {
+  const parsed = parseCommand('git -C /home/dave/repos/gsd-handover push origin main');
+  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/dave/repos/gsd-handover');
+});
+
+test('commandStartDir(followGitC): relative `git -C` resolves against the base cwd', () => {
+  const parsed = parseCommand('git -C ../gsd-handover push');
+  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/dave/repos/gsd-handover');
+});
+
+test('commandStartDir(followGitC): a SUBCOMMAND -C (git log -C) is NOT a chdir', () => {
+  const parsed = parseCommand('git log -C 50');
+  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), BASE);
+});
+
+test('commandStartDir(followGitC): a global -C before a subcommand -C uses only the global one', () => {
+  const parsed = parseCommand('git -C /home/dave/repos/gsd-handover log -C 50');
+  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/dave/repos/gsd-handover');
+});
+
+test('commandStartDir(followGitC): multiple global -C apply cumulatively', () => {
+  const parsed = parseCommand('git -C /home/dave/repos -C gsd-handover push');
+  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/dave/repos/gsd-handover');
+});
+
+test('commandStartDir(followGitC): `git -c k=v -C <abs>` skips the -c value and follows -C', () => {
+  const parsed = parseCommand('git -c user.name=x -C /home/dave/repos/gsd-handover push');
+  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/dave/repos/gsd-handover');
+});
+
+test('resolveRootForCommand(followGitC): `git -C <non-gsd-core>` from a gsd-core cwd → null', () => {
+  const gsdRoot = makeFixtureRoot();
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), 'not-gsd-core-'));
+  // Before the -C fix this false-resolved to the session cwd (gsdRoot) and gated the push.
+  assert.strictEqual(
+    res.resolveRootForCommand('git -C ' + other + ' push origin main', gsdRoot, FGC),
+    null
+  );
+  fs.rmSync(other, { recursive: true, force: true });
+  fs.rmSync(gsdRoot, { recursive: true, force: true });
+});
+
+test('resolveRootForCommand(followGitC): `git -C <gsd-core-checkout>` → that root (still gated)', () => {
+  const gsdRoot = makeFixtureRoot();
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'session-'));
+  assert.strictEqual(res.resolveRootForCommand('git -C ' + gsdRoot + ' push', base, FGC), gsdRoot);
+  fs.rmSync(base, { recursive: true, force: true });
+  fs.rmSync(gsdRoot, { recursive: true, force: true });
+});
+
+test('resolveRootForCommand default (no opt): `git -C <non-gsd-core>` still resolves the session root', () => {
+  const gsdRoot = makeFixtureRoot();
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), 'not-gsd-core-'));
+  // Default behavior unchanged: no -C following, so the session (gsdRoot) is resolved.
+  assert.strictEqual(
+    res.resolveRootForCommand('git -C ' + other + ' commit -m "x"', gsdRoot),
+    gsdRoot
+  );
+  fs.rmSync(other, { recursive: true, force: true });
+  fs.rmSync(gsdRoot, { recursive: true, force: true });
+});
+
 // --- resolveRootForCommand: root-or-null for a parsed command's effective cwd ---
 
 test('resolveRootForCommand: cd into a gsd-core checkout → returns that root', () => {

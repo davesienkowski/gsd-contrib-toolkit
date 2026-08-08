@@ -157,18 +157,79 @@ function expandHome(p) {
  * @param {string} [baseCwd] defaults to process.cwd()
  * @returns {string} absolute effective cwd
  */
-function commandStartDir(parsed, baseCwd) {
+// git GLOBAL options (before the subcommand) that CONSUME the following token as their value.
+// The pre-subcommand scan in gitGlobalChdirs must skip these so their value is not mistaken for
+// the subcommand (which would stop the scan early and miss a later `-C`). `-C` is handled
+// separately below — it IS the chdir.
+const GIT_GLOBAL_VALUE_OPTS = Object.freeze([
+  '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--super-prefix', '--config-env',
+]);
+
+/**
+ * Directories named by git's GLOBAL `-C <dir>` option(s) — the ones that appear BEFORE the
+ * subcommand. git applies multiple `-C` cumulatively, so they are returned in order.
+ *
+ * A SUBCOMMAND-level `-C` (`git log -C` / `git blame -C` copy detection, `git commit -C <commit>`
+ * reuse-message) is NOT a chdir and is deliberately excluded: the scan stops at the first bare
+ * (non-option) token, which is the subcommand. `seg.shortFlags.C` cannot be used for this — the
+ * parser collapses a global and a subcommand `-C` into the same key (`git log -C 50` → C:"50"),
+ * so a subcommand `-C` would false-resolve as a chdir. Structured tokens only (HARD-04-safe).
+ *
+ * @param {{program?:string, tokens?:Array}} seg
+ * @returns {string[]}
+ */
+function gitGlobalChdirs(seg) {
+  const tokens = Array.isArray(seg && seg.tokens) ? seg.tokens : [];
+  if (tokens[0] !== 'git') return [];
+  const dirs = [];
+  let i = 1;
+  while (i < tokens.length) {
+    const tok = tokens[i];
+    if (typeof tok !== 'string') break;
+    if (tok === '-C') {
+      const v = tokens[i + 1];
+      if (typeof v === 'string' && v.length > 0) dirs.push(v);
+      i += 2;
+      continue;
+    }
+    if (GIT_GLOBAL_VALUE_OPTS.includes(tok)) { i += 2; continue; } // global opt + its value token
+    if (tok.startsWith('--') && tok.includes('=')) { i += 1; continue; } // --opt=value (attached)
+    if (tok.startsWith('-') && tok.length > 1) { i += 1; continue; } // any other -flag / short cluster
+    break; // first bare token = the subcommand → stop
+  }
+  return dirs;
+}
+
+// `opts.followGitC` is OPT-IN and default-off ON PURPOSE. Following `git -C <dir>` narrows a gate
+// to the tree the git command actually runs in — correct for the ENF-21 PUSH gate (a
+// `git -C <other-repo> push` is not a gsd-core contribution). But the ENF-16 commit-convention gate
+// DELIBERATELY over-denies `git -C <path> commit -m "<bad msg>"` (CR-01 anti-bypass: a bad-message
+// commit must not escape via a global opt), so it must NOT follow `-C`. Different threat models on
+// the same helper → the caller opts in; the default preserves every existing gate's behavior.
+function commandStartDir(parsed, baseCwd, opts) {
+  const followGitC = !!(opts && opts.followGitC);
   let cwd = path.resolve(baseCwd == null ? process.cwd() : String(baseCwd));
   if (!parsed || parsed.ok !== true || !Array.isArray(parsed.segments)) return cwd;
   for (const seg of parsed.segments) {
-    if (!seg || seg.program !== 'cd') continue;
-    // `cd <dir>` — take the first non-flag argument. Prefer the classified
-    // positional; fall back to the raw second token for robustness.
-    const target =
-      (Array.isArray(seg.positionals) && seg.positionals[0]) ||
-      (Array.isArray(seg.tokens) && seg.tokens[1]) ||
-      '';
-    if (target) cwd = path.resolve(cwd, expandHome(String(target)));
+    if (!seg) continue;
+    if (seg.program === 'cd') {
+      // `cd <dir>` — persistent for all later segments. Prefer the classified positional; fall
+      // back to the raw second token for robustness.
+      const target =
+        (Array.isArray(seg.positionals) && seg.positionals[0]) ||
+        (Array.isArray(seg.tokens) && seg.tokens[1]) ||
+        '';
+      if (target) cwd = path.resolve(cwd, expandHome(String(target)));
+      continue;
+    }
+    if (followGitC && seg.program === 'git') {
+      // `git -C <dir>` changes the tree the git invocation runs in — follow it exactly as `cd`,
+      // or a `git -C <other-repo> push` from a gsd-core session cwd false-resolves to the session
+      // tree and gates a non-gsd-core push (the ENF-21 false positive this fixes).
+      for (const dir of gitGlobalChdirs(seg)) {
+        cwd = path.resolve(cwd, expandHome(String(dir)));
+      }
+    }
   }
   return cwd;
 }
@@ -186,9 +247,9 @@ function commandStartDir(parsed, baseCwd) {
  * @param {string} [baseCwd] the hook's process.cwd()
  * @returns {string|null} absolute gsd-core root, or null if the command's cwd is not one
  */
-function resolveRootForCommand(command, baseCwd) {
+function resolveRootForCommand(command, baseCwd, opts) {
   try {
-    return resolveGsdCoreRoot(commandStartDir(parseCommand(command), baseCwd));
+    return resolveGsdCoreRoot(commandStartDir(parseCommand(command), baseCwd, opts));
   } catch (err) {
     if (err instanceof ScriptResolveError) return null;
     throw err;
