@@ -1,0 +1,267 @@
+#!/usr/bin/env bash
+#
+# gsd-refresh - one safe command to bring the GLOBAL gsd-core install to origin/next
+#               and re-apply local mods, with a pre-sync snapshot and rollback.
+#
+# WHY THIS EXISTS
+#   Two half-tools already do parts of the job but neither owns it:
+#     * runtime-sync.cjs sync   installs origin/next but SILENTLY reverts every local mod
+#     * ~/.gsd/local-mods/*.sh  re-apply the mods but are manual, dry-run-by-default,
+#                               and (on their own) leave no way to undo a bad sync
+#   gsd-refresh chains them into ONE action, adds the missing safety net (a pre-sync
+#   snapshot + `--rollback`), and turns the after-the-fact drift report into a fail-loud
+#   ASSERTION so a mod that did not land is caught, not discovered later.
+#
+# WHAT IT DELIBERATELY DOES NOT DO
+#   * It does NOT mutate anything from a hook. The real reinstall (npm ci + install.js)
+#     overruns a harness timeout and must be a visible, explicit command (see the
+#     runtime-sync.cjs header, decision D-08). This is that command.
+#   * It does NOT restart your session. Agent/skill/hook definitions load at session
+#     start, so it writes a restart sentinel and tells you to restart. Nothing is live
+#     until you do.
+#
+# Phase 1 MVP (DESIGN-gsd-refresh.md, section 5). Later phases: nudge hook, native
+# conversion of grants/deletions, gsd-patch-tracked residue.
+#
+set -uo pipefail
+
+# --------------------------------------------------------------------------- config
+CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+LOCAL_MODS="${GSD_LOCAL_MODS:-$HOME/.gsd/local-mods}"
+RUNTIME_SYNC="${GSD_RUNTIME_SYNC:-$HOME/repos/gsd-contrib-toolkit/bin/runtime-sync.cjs}"
+AUDIT="$LOCAL_MODS/audit-local-mods.sh"
+SNAP_ROOT="${GSD_REFRESH_SNAPSHOTS:-$HOME/.gsd/gsd-refresh-snapshots}"
+SENTINEL="$CFG/.gsd-refresh-restart-required"
+KEEP_SNAPSHOTS="${GSD_REFRESH_KEEP:-3}"
+
+# Directories under $CFG that can carry local mods (snapshot + restore targets).
+MOD_DIRS=(gsd-core agents skills hooks)
+
+# Re-apply scripts, in order. Each defaults to a dry run and needs --apply.
+REAPPLY=(grant-memtrace-to-agents.sh remove-mempalace.sh j2-dispatch-event-schema-version.sh install-planning-track-hooks.sh)
+
+# Expected post-reapply mod baseline (the assertion oracle). Override via a baseline
+# file at $LOCAL_MODS/.gsd-refresh-baseline (KEY=VALUE), or env, or `gsd-refresh rebaseline`.
+EXPECTED_MODIFIED="${GSD_REFRESH_EXPECT_MODIFIED:-12}"
+EXPECTED_MISSING="${GSD_REFRESH_EXPECT_MISSING:-3}"
+BASELINE_FILE="$LOCAL_MODS/.gsd-refresh-baseline"
+[ -f "$BASELINE_FILE" ] && . "$BASELINE_FILE"
+
+# --------------------------------------------------------------------------- helpers
+c_red=$'\033[31m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_dim=$'\033[2m'; c_rst=$'\033[0m'
+say()  { printf '%s\n' "$*"; }
+ok()   { printf '%s%s%s\n' "$c_grn" "$*" "$c_rst"; }
+warn() { printf '%s%s%s\n' "$c_yel" "$*" "$c_rst"; }
+err()  { printf '%s%s%s\n' "$c_red" "$*" "$c_rst" >&2; }
+die()  { err "ERROR: $*"; exit 1; }
+
+preflight() {
+  [ -d "$CFG" ]           || die "config dir not found: $CFG"
+  [ -f "$RUNTIME_SYNC" ]  || die "runtime-sync.cjs not found: $RUNTIME_SYNC"
+  [ -f "$AUDIT" ]         || die "audit-local-mods.sh not found: $AUDIT"
+  command -v node >/dev/null 2>&1 || die "node not on PATH"
+  local s missing=0
+  for s in "${REAPPLY[@]}"; do
+    [ -f "$LOCAL_MODS/$s" ] || { err "missing re-apply script: $LOCAL_MODS/$s"; missing=1; }
+  done
+  [ "$missing" = 0 ] || die "one or more re-apply scripts are missing"
+}
+
+# audit -> "MODIFIED MISSING" (two integers), or empty on parse failure.
+audit_counts() {
+  bash "$AUDIT" 2>/dev/null | awk '
+    /^MODIFIED/ { for (i=1;i<=NF;i++) if ($i ~ /^[0-9]+$/) m=$i }
+    /^MISSING/  { for (i=1;i<=NF;i++) if ($i ~ /^[0-9]+$/) d=$i }
+    END { if (m!="" && d!="") print m, d }'
+}
+
+snapshot() {
+  local id="snap-$(date +%Y%m%d-%H%M%S)"
+  local dest="$SNAP_ROOT/$id"
+  mkdir -p "$dest" || die "cannot create snapshot dir $dest"
+  local d
+  for d in "${MOD_DIRS[@]}"; do
+    [ -e "$CFG/$d" ] && cp -a "$CFG/$d" "$dest/" || true
+  done
+  # record provenance
+  {
+    echo "created=$(date -Iseconds)"
+    echo "manifest_version=$(grep -m1 '\"version\"' "$CFG/gsd-file-manifest.json" 2>/dev/null | tr -dc '0-9.' )"
+    printf 'audit='; audit_counts
+  } > "$dest/.snapshot-meta" 2>/dev/null || true
+  # prune to KEEP_SNAPSHOTS most recent
+  local old
+  ls -1dt "$SNAP_ROOT"/snap-* 2>/dev/null | tail -n +"$((KEEP_SNAPSHOTS+1))" | while read -r old; do
+    rm -rf "$old"
+  done
+  printf '%s' "$id"
+}
+
+list_snapshots() {
+  [ -d "$SNAP_ROOT" ] || { say "(no snapshots yet)"; return 0; }
+  local any=0 s
+  for s in $(ls -1dt "$SNAP_ROOT"/snap-* 2>/dev/null); do
+    any=1
+    printf '  %s  %s\n' "$(basename "$s")" "$c_dim$(grep -h '^created=' "$s/.snapshot-meta" 2>/dev/null | cut -d= -f2-)$c_rst"
+  done
+  [ "$any" = 1 ] || say "(no snapshots yet)"
+}
+
+restore_snapshot() {
+  local id="${1:-}"
+  [ -d "$SNAP_ROOT" ] || die "no snapshots directory"
+  if [ -z "$id" ]; then
+    id="$(ls -1dt "$SNAP_ROOT"/snap-* 2>/dev/null | head -1 | xargs -r basename)"
+    [ -n "$id" ] || die "no snapshots to roll back to"
+  fi
+  local src="$SNAP_ROOT/$id"
+  [ -d "$src" ] || die "snapshot not found: $id"
+  warn "About to ROLL BACK the global install from snapshot: $id"
+  warn "This will replace $CFG/{$(IFS=,; echo "${MOD_DIRS[*]}")} with the snapshot copy."
+  confirm || { say "Aborted."; return 1; }
+  local d
+  for d in "${MOD_DIRS[@]}"; do
+    if [ -e "$src/$d" ]; then
+      rm -rf "$CFG/$d" && cp -a "$src/$d" "$CFG/" || die "restore failed for $d"
+    fi
+  done
+  : > "$SENTINEL"
+  ok "Rolled back to $id."
+  say "${c_yel}RESTART your session${c_rst} for the restored definitions to load."
+}
+
+reapply() {
+  local s rc=0
+  for s in "${REAPPLY[@]}"; do
+    say "  -> $s --apply"
+    if ! bash "$LOCAL_MODS/$s" --apply; then
+      err "re-apply script failed: $s"
+      rc=1
+    fi
+  done
+  return $rc
+}
+
+assert_mods() {
+  local counts m d
+  counts="$(audit_counts)"
+  [ -n "$counts" ] || { err "could not parse audit output"; return 3; }
+  m="${counts% *}"; d="${counts#* }"
+  say "  audit: MODIFIED=$m (expect $EXPECTED_MODIFIED)  MISSING=$d (expect $EXPECTED_MISSING)"
+  if [ "$m" = "$EXPECTED_MODIFIED" ] && [ "$d" = "$EXPECTED_MISSING" ]; then
+    ok "  mod baseline verified."
+    return 0
+  fi
+  err "  MOD BASELINE MISMATCH - a mod may not have landed, or upstream changed the file set."
+  err "  Full audit follows; investigate, then re-run, or 'gsd-refresh rebaseline' if this is the new truth."
+  bash "$AUDIT" >&2
+  return 3
+}
+
+confirm() {
+  [ "${ASSUME_YES:-0}" = 1 ] && return 0
+  local reply
+  printf '%sContinue? [y/N] %s' "$c_yel" "$c_rst"
+  read -r reply || return 1
+  case "$reply" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+}
+
+# --------------------------------------------------------------------------- commands
+cmd_check() {
+  preflight
+  say "== gsd-refresh --check (read-only, mutates nothing) =="
+  say "-- runtime freshness (runtime-sync check) --"
+  node "$RUNTIME_SYNC" check || true
+  say "-- current local mods (audit) --"
+  bash "$AUDIT" || true
+  say "-- restart sentinel --"
+  [ -f "$SENTINEL" ] && warn "  present: a refresh happened; a session restart is still pending." \
+                     || say  "  none: no refresh pending."
+  say "-- snapshots --"; list_snapshots
+}
+
+cmd_refresh() {
+  preflight
+  say "== gsd-refresh =="
+  warn "This will SYNC the global install from origin/next (reinstall the payload) and"
+  warn "re-apply your local mods. A snapshot is taken first so it is reversible."
+  say  "  config dir : $CFG"
+  say  "  snapshots  : $SNAP_ROOT (keep $KEEP_SNAPSHOTS)"
+  confirm || { say "Aborted."; exit 1; }
+
+  say; say "[1/4] snapshotting current install ..."
+  local snap; snap="$(snapshot)"
+  ok "  saved: $snap"
+
+  say "[2/4] syncing from origin/next ..."
+  if ! node "$RUNTIME_SYNC" sync; then
+    err "sync FAILED. Your install may be partial."
+    err "Roll back with:  gsd-refresh --rollback $snap"
+    exit 2
+  fi
+
+  say "[3/4] re-applying local mods ..."
+  if ! reapply; then
+    err "one or more mods failed to re-apply."
+    err "Roll back with:  gsd-refresh --rollback $snap"
+    exit 2
+  fi
+
+  say "[4/4] verifying mod baseline ..."
+  if ! assert_mods; then
+    err "verification failed. Snapshot kept: $snap"
+    err "Roll back with:  gsd-refresh --rollback $snap"
+    exit 3
+  fi
+
+  : > "$SENTINEL"
+  say
+  ok "Refresh complete and verified."
+  warn ">> RESTART your Claude Code session now - the new agents/skills/hooks are on disk"
+  warn ">> but will not be LIVE until the session reloads them."
+}
+
+cmd_rebaseline() {
+  preflight
+  local counts m d
+  counts="$(audit_counts)" || die "could not read audit"
+  [ -n "$counts" ] || die "could not parse audit output"
+  m="${counts% *}"; d="${counts#* }"
+  printf 'EXPECTED_MODIFIED=%s\nEXPECTED_MISSING=%s\n' "$m" "$d" > "$BASELINE_FILE"
+  ok "Baseline set: MODIFIED=$m MISSING=$d  ($BASELINE_FILE)"
+}
+
+usage() {
+  cat <<EOF
+gsd-refresh - refresh the global gsd-core install to origin/next, keep local mods
+
+USAGE
+  gsd-refresh [--yes]         sync + re-apply mods + verify (with pre-sync snapshot)
+  gsd-refresh --check         read-only: drift + current mods + pending restart + snapshots
+  gsd-refresh --rollback [id] restore the latest (or named) snapshot; then restart
+  gsd-refresh --list          list snapshots
+  gsd-refresh rebaseline      record the current mod counts as the assertion baseline
+  gsd-refresh --help
+
+FLAGS
+  --yes    skip confirmation prompts (for 'run often' use)
+
+NOTES
+  * Nothing is LIVE until you restart your session (definitions load at session start).
+  * The real mutation is here, never in a hook (see runtime-sync.cjs D-08).
+  * Snapshots: $SNAP_ROOT (keep last $KEEP_SNAPSHOTS)
+EOF
+}
+
+# --------------------------------------------------------------------------- dispatch
+ASSUME_YES=0
+case "${1:-}" in
+  --yes|-y)      ASSUME_YES=1; cmd_refresh ;;
+  ""|refresh)    cmd_refresh ;;
+  --check|check) cmd_check ;;
+  --rollback)    shift; restore_snapshot "${1:-}" ;;
+  --list|list)   list_snapshots ;;
+  rebaseline)    cmd_rebaseline ;;
+  --help|-h)     usage ;;
+  *)             err "unknown argument: $1"; usage; exit 1 ;;
+esac
