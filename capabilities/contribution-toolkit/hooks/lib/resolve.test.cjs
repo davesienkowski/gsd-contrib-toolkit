@@ -216,9 +216,14 @@ test('commandStartDir: missing baseCwd → defaults to process.cwd()', () => {
 //     CR-01 over-deny is preserved. ---
 const FGC = { followGitC: true };
 
-test('commandStartDir: default does NOT follow `git -C` (preserves commit-convention over-deny)', () => {
+test('commandStartDir: default FOLLOWS `git -C`', () => {
   const parsed = parseCommand('git -C /home/dave/repos/gsd-handover push origin main');
-  assert.strictEqual(res.commandStartDir(parsed, BASE), BASE);
+  assert.strictEqual(res.commandStartDir(parsed, BASE), '/home/dave/repos/gsd-handover');
+});
+
+test('commandStartDir: {followGitC:false} opts OUT — resolves base (commit-convention over-deny)', () => {
+  const parsed = parseCommand('git -C /home/dave/repos/gsd-handover commit -m "x"');
+  assert.strictEqual(res.commandStartDir(parsed, BASE, { followGitC: false }), BASE);
 });
 
 test('commandStartDir(followGitC): `git -C <abs>` → returns the -C target', () => {
@@ -271,12 +276,12 @@ test('resolveRootForCommand(followGitC): `git -C <gsd-core-checkout>` → that r
   fs.rmSync(gsdRoot, { recursive: true, force: true });
 });
 
-test('resolveRootForCommand default (no opt): `git -C <non-gsd-core>` still resolves the session root', () => {
+test('resolveRootForCommand {followGitC:false}: `git -C <non-gsd-core>` still resolves the session root', () => {
   const gsdRoot = makeFixtureRoot();
   const other = fs.mkdtempSync(path.join(os.tmpdir(), 'not-gsd-core-'));
-  // Default behavior unchanged: no -C following, so the session (gsdRoot) is resolved.
+  // The commit-convention opt-out: no -C following, so the session (gsdRoot) is resolved and gated.
   assert.strictEqual(
-    res.resolveRootForCommand('git -C ' + other + ' commit -m "x"', gsdRoot),
+    res.resolveRootForCommand('git -C ' + other + ' commit -m "x"', gsdRoot, { followGitC: false }),
     gsdRoot
   );
   fs.rmSync(other, { recursive: true, force: true });

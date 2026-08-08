@@ -196,13 +196,11 @@ function runLintCiMarkerGate(stdinString, deps = {}) {
       !resolved.runAffectedTier;
     if (needsRoot && !resolved.worktreeRoot) {
       try {
-        // Follow `git -C <dir>` (same opt-in narrowing as ENF-21 runtime-drift): resolve the tree
-        // the push actually runs in, not the session cwd. Without it, a `git -C <other-repo> push`
-        // from a gsd-core session false-resolves to the session tree and gates a non-gsd-core push
-        // against the session's marker. Only push/pr-create reach here (gh pr-create has no git
-        // segment, so `-C` following is inert for it); the commit-convention gate is untouched.
+        // Follows `git -C <dir>` by default (see commandStartDir): resolve the tree the push
+        // actually runs in, not the session cwd, so a `git -C <other-repo> push` is not gated
+        // against the session's marker (ENF-05 narrowing). Only push/pr-create reach here.
         resolved.worktreeRoot = resolveGsdCoreRoot(
-          commandStartDir(parseCommand(ctx.command), process.cwd(), { followGitC: true })
+          commandStartDir(parseCommand(ctx.command), process.cwd())
         );
       } catch (err) {
         // Not a gsd-core checkout (e.g. a commit in another repo) → not this gate's

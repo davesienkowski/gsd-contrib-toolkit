@@ -200,12 +200,10 @@ function runRuntimeDriftGate(stdinString, deps = {}) {
   return runGate(() => {
     const resolved = Object.assign({}, deps);
     if (!resolved.resolveRoot) {
-      // ENF-21 narrowing: follow `git -C <dir>` so a `git -C <other-repo> push` from a gsd-core
-      // session cwd resolves the OTHER tree and passes through, instead of false-gating a push to
-      // an unrelated repo. This is opt-in per-gate (see commandStartDir) — the commit-convention
-      // gate must NOT follow `-C` (its CR-01 anti-bypass over-denies redirected commits).
-      resolved.resolveRoot = (command) =>
-        resolveRootForCommand(command, process.cwd(), { followGitC: true });
+      // Follows `git -C <dir>` by default (see commandStartDir), so a `git -C <other-repo> push`
+      // from a gsd-core session cwd resolves the OTHER tree and passes through instead of
+      // false-gating a push to an unrelated repo (ENF-21 narrowing).
+      resolved.resolveRoot = (command) => resolveRootForCommand(command, process.cwd());
     }
     if (!resolved.runtimeDigest) {
       resolved.runtimeDigest = () => runtimeStamp.runtimeDigest(runtimeStamp.RUNTIME_ROOT);

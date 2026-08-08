@@ -200,14 +200,17 @@ function gitGlobalChdirs(seg) {
   return dirs;
 }
 
-// `opts.followGitC` is OPT-IN and default-off ON PURPOSE. Following `git -C <dir>` narrows a gate
-// to the tree the git command actually runs in — correct for the ENF-21 PUSH gate (a
-// `git -C <other-repo> push` is not a gsd-core contribution). But the ENF-16 commit-convention gate
-// DELIBERATELY over-denies `git -C <path> commit -m "<bad msg>"` (CR-01 anti-bypass: a bad-message
-// commit must not escape via a global opt), so it must NOT follow `-C`. Different threat models on
-// the same helper → the caller opts in; the default preserves every existing gate's behavior.
+// Following `git -C <dir>` is the DEFAULT: a gate resolves the tree the git command actually runs
+// in, so a `git -C <other-repo> push` from a gsd-core session cwd is not mis-gated against the
+// session's tree. The whole push-gate family (runtime-drift/ENF-21, lint-ci-marker/ENF-05,
+// containment/ENF-07, protocol-artifact, githooks-seal, policy-invariants, review-artifact,
+// scan-gate) wants this, and gh commands have no `-C` so it is inert for the gh gates.
+//
+// The ONE opt-OUT is `{followGitC:false}`: the ENF-16 commit-convention gate DELIBERATELY
+// over-denies `git -C <path> commit -m "<bad msg>"` (CR-01 anti-bypass — a bad-message commit must
+// not escape via a global opt), so it must keep resolving the session cwd, not the `-C` target.
 function commandStartDir(parsed, baseCwd, opts) {
-  const followGitC = !!(opts && opts.followGitC);
+  const followGitC = !(opts && opts.followGitC === false);
   let cwd = path.resolve(baseCwd == null ? process.cwd() : String(baseCwd));
   if (!parsed || parsed.ok !== true || !Array.isArray(parsed.segments)) return cwd;
   for (const seg of parsed.segments) {

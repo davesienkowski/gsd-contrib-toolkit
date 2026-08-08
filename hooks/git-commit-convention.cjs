@@ -487,10 +487,14 @@ function runCommitConventionGate(stdinString, deps = {}) {
     // Resolve the gsd-core root from the command's OWN cwd (it may `cd` into a worktree).
     // A commit in a non-gsd-core checkout is not our concern → allow. An injected
     // worktreeRoot short-circuits the filesystem walk so the unit suite stays hermetic.
+    //
+    // CR-01 opt-OUT of `git -C` following (the ONE default-flip exception): a redirected
+    // bad-message commit (`git -C /tmp commit -m "<bad>"`) must still resolve the gsd-core session
+    // cwd and be gated, not escape via a global opt. Every OTHER gate follows `-C` by default.
     if (!resolved.worktreeRoot) {
       try {
         resolved.worktreeRoot = resolveGsdCoreRoot(
-          commandStartDir(parseCommand(ctx.command), process.cwd())
+          commandStartDir(parseCommand(ctx.command), process.cwd(), { followGitC: false })
         );
       } catch (err) {
         if (err instanceof ScriptResolveError) return allow();
