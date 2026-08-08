@@ -321,6 +321,66 @@ test('WR-05 no-regression: all deps incl runAffectedTier injected + worktreeRoot
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
 });
 
+// ---- ENF-21-class narrowing: follow `git -C <dir>` so a push to a NON-gsd-core repo from a
+//      gsd-core SESSION cwd resolves the OTHER tree (→ not a gsd-core checkout → allow), instead of
+//      gating it against the session's marker. This is what blocked the toolkit's own push. ----
+
+function makeGsdCoreSentinel() {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-core-fixture-'));
+  fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'gsd-core', 'bin', 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'scripts', 'pr-target-policy.cjs'), 'module.exports = {};\n');
+  return root;
+}
+
+test('lint-ci-marker: `git -C <non-gsd-core> push` from a gsd-core cwd → allow (follows -C)', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const gsdRoot = makeGsdCoreSentinel();
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), 'not-gsd-core-'));
+  const prevCwd = process.cwd();
+  try {
+    process.chdir(gsdRoot);
+    // Omit worktreeRoot + runAffectedTier so the resolver runs. readMarkerExists:false would DENY
+    // if resolution landed on the gsd-core session cwd — so an `allow` proves the -C follow
+    // short-circuited (the -C target is not a gsd-core checkout → ScriptResolveError → allow).
+    const d = runLintCiMarkerGate(input('git -C ' + other + ' push origin main'), {
+      readTreeSha: () => 'sha',
+      readWorkingTreeStatus: () => '',
+      readMarkerExists: () => false,
+      overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
+    });
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  } finally {
+    process.chdir(prevCwd);
+    fs.rmSync(gsdRoot, { recursive: true, force: true });
+    fs.rmSync(other, { recursive: true, force: true });
+  }
+});
+
+test('lint-ci-marker: plain `git push` from a gsd-core cwd is still gated (no -C to follow)', () => {
+  const fs = require('node:fs');
+  const gsdRoot = makeGsdCoreSentinel();
+  const prevCwd = process.cwd();
+  try {
+    process.chdir(gsdRoot);
+    const d = runLintCiMarkerGate(input('git push origin main'), {
+      readTreeSha: () => 'sha',
+      readWorkingTreeStatus: () => '',
+      readMarkerExists: () => false, // no marker → must still DENY (gsd-core protection preserved)
+      overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
+    });
+    assert.strictEqual(d.permissionDecision, 'deny', 'a gsd-core push with no marker must still gate');
+  } finally {
+    process.chdir(prevCwd);
+    fs.rmSync(gsdRoot, { recursive: true, force: true });
+  }
+});
+
 // ---- the pure gate fn is directly callable (read-only, deps fully injected) ----
 
 test('pure gate() denies a no-marker push without touching real git', () => {
