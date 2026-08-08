@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+#
+# gsd-plan-track - version a gsd-core checkout's .planning/ (main + worktrees) in a
+#                  SEPARATE private git repo that shares each checkout's working tree,
+#                  linked to code history by a commit sha stamp, and structurally
+#                  incapable of leaking .planning into an upstream PR.
+#
+# MODEL (see DESIGN-planning-tracking.md, and the explore session 2026-08-07)
+#   * One bare repo: ~/.gsd-planning.git, remote 'planning' -> gsd-core-planning (private).
+#   * BRANCH PER PLANNING ROOT: the main checkout -> 'main'; each worktree that has its
+#     OWN .planning -> 'wt/<worktree-name>'. A worktree with no local .planning REMAPS to
+#     the main root (GSD's own resolveWorktreeContext behavior) -> 'main'.
+#   * Root/branch resolution mirrors GSD's rule: local .planning wins; else a linked
+#     worktree remaps to dirname(git-common-dir).
+#   * Commits use plumbing (write-tree/commit-tree/update-ref) with a THROWAWAY index,
+#     so many worktrees can commit to their own branches with no shared-index race and
+#     no working-tree checkout of the bare repo.
+#   * The planning repo has NO origin/fork remote -> .planning cannot reach an upstream PR.
+#
+# WHY IT COEXISTS WITH GSD (verified against src/, 2026-08-07)
+#   commit_docs:false blocks staging .planning into the CODE repo (src/commands.cts:820)
+#   and GSD reads .planning purely on the filesystem. This tool commits into a DIFFERENT
+#   git-dir, so nothing about GSD's flow changes. Drift/verify/base-branch read the code
+#   repo's .git, which this tool never touches.
+#
+set -uo pipefail
+
+# --------------------------------------------------------------------------- config
+GITDIR="${GSD_PLAN_GITDIR:-$HOME/.gsd-planning.git}"
+PLAN_DIR="${GSD_PLAN_DIR:-.planning}"
+REMOTE_NAME="planning"
+REMOTE_URL="${GSD_PLAN_REMOTE:-https://github.com/davesienkowski/gsd-core-planning.git}"
+MAIN_CHECKOUT="${GSD_PLAN_WORKTREE:-$HOME/repos/gsd-core}"
+
+# Pathspecs excluded from tracking: regenerable / transient / bulky.
+PLAN_EXCLUDES=(
+  ":(exclude)$PLAN_DIR/.gsd-trace.jsonl"
+  ":(exclude)$PLAN_DIR/.mempalace-stage/"
+  ":(exclude)$PLAN_DIR/graphs/"
+)
+
+# --------------------------------------------------------------------------- helpers
+c_red=$'\033[31m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_dim=$'\033[2m'; c_rst=$'\033[0m'
+say(){ printf '%s\n' "$*"; }
+ok(){ printf '%s%s%s\n' "$c_grn" "$*" "$c_rst"; }
+warn(){ printf '%s%s%s\n' "$c_yel" "$*" "$c_rst"; }
+err(){ printf '%s%s%s\n' "$c_red" "$*" "$c_rst" >&2; }
+die(){ err "ERROR: $*"; exit 1; }
+
+pg(){ git --git-dir="$GITDIR" "$@"; }               # planning repo (bare, no work-tree)
+require_init(){ [ -d "$GITDIR" ] || die "not initialized. Run: gsd-plan-track init"; }
+
+# Resolve the effective planning ROOT and BRANCH for a given directory, mirroring
+# GSD's resolveWorktreeContext. Sets globals REPLY_ROOT, REPLY_BRANCH.
+resolve_root(){
+  local cwd="${1:-$PWD}" gd cd_ mainroot
+  gd="$(git -C "$cwd" rev-parse --git-dir 2>/dev/null)" || { REPLY_ROOT=""; REPLY_BRANCH=""; return 1; }
+  cd_="$(git -C "$cwd" rev-parse --git-common-dir 2>/dev/null)" || { REPLY_ROOT=""; REPLY_BRANCH=""; return 1; }
+  case "$gd" in /*) ;; *) gd="$cwd/$gd";; esac
+  case "$cd_" in /*) ;; *) cd_="$cwd/$cd_";; esac
+  gd="$(readlink -f "$gd")"; cd_="$(readlink -f "$cd_")"
+  mainroot="$(dirname "$cd_")"
+  if [ "$gd" = "$cd_" ]; then
+    REPLY_ROOT="$mainroot"; REPLY_BRANCH="main"                 # main worktree
+  elif [ -e "$cwd/$PLAN_DIR" ]; then
+    REPLY_ROOT="$cwd"; REPLY_BRANCH="wt/$(basename "$gd")"      # worktree with own .planning
+  else
+    REPLY_ROOT="$mainroot"; REPLY_BRANCH="main"                 # worktree remaps to main
+  fi
+  return 0
+}
+
+code_sha(){ git -C "${1:-$PWD}" rev-parse --short HEAD 2>/dev/null; }
+
+# Commit the .planning at <root> to <branch> with <msg>. Race-free (throwaway index),
+# no working-tree checkout. Returns 0 on commit, 10 if nothing changed, 1 on error.
+snapshot_root(){
+  local root="$1" branch="$2" msg="$3"
+  [ -d "$root/$PLAN_DIR" ] || { err "no $PLAN_DIR in $root"; return 1; }
+  local tmpidx tree parent ptree commit
+  # A NON-EXISTENT path: git initializes a fresh index. A pre-created (0-byte) file
+  # is rejected as a corrupt index and makes add/write-tree fail silently.
+  tmpidx="$(mktemp -u "${TMPDIR:-/tmp}/gsdplan.idx.XXXXXX")" || return 1
+  GIT_INDEX_FILE="$tmpidx" git --git-dir="$GITDIR" --work-tree="$root" -C "$root" \
+    add -A -f -- "$PLAN_DIR" "${PLAN_EXCLUDES[@]}" 2>/dev/null
+  tree="$(GIT_INDEX_FILE="$tmpidx" git --git-dir="$GITDIR" write-tree 2>/dev/null)"
+  rm -f "$tmpidx"
+  [ -n "$tree" ] || { err "write-tree failed for $root"; return 1; }
+  parent="$(pg rev-parse -q --verify "refs/heads/$branch" 2>/dev/null || true)"
+  if [ -n "$parent" ]; then
+    ptree="$(pg rev-parse "refs/heads/$branch^{tree}" 2>/dev/null)"
+    [ "$tree" = "$ptree" ] && return 10       # nothing changed
+  fi
+  commit="$(printf '%s\n' "$msg" | pg commit-tree "$tree" ${parent:+-p "$parent"} 2>/dev/null)"
+  [ -n "$commit" ] || { err "commit-tree failed (is user.name/email set?)"; return 1; }
+  pg update-ref "refs/heads/$branch" "$commit"
+}
+
+# --------------------------------------------------------------------------- commands
+cmd_init(){
+  [ -d "$MAIN_CHECKOUT/.git" ] || [ -f "$MAIN_CHECKOUT/.git" ] || die "$MAIN_CHECKOUT is not a git checkout"
+  [ -d "$MAIN_CHECKOUT/$PLAN_DIR" ] || die "no $PLAN_DIR/ in $MAIN_CHECKOUT"
+  git -C "$MAIN_CHECKOUT" check-ignore "$PLAN_DIR" >/dev/null 2>&1 || die "HYRUM GUARD: code repo no longer ignores $PLAN_DIR - unsafe"
+  if [ -d "$GITDIR" ]; then warn "Already initialized at $GITDIR."; exit 0; fi
+
+  say "Initializing planning repo:"
+  say "  git-dir  : $GITDIR"
+  say "  remote   : $REMOTE_NAME -> $REMOTE_URL"
+  git init --bare -b main "$GITDIR" >/dev/null 2>&1 || git init --bare "$GITDIR" >/dev/null
+  pg config core.excludesFile /dev/null
+  pg config advice.addIgnoredFile false
+  # identity for commit-tree (fall back to global)
+  pg config user.name  "$(git config --get user.name  2>/dev/null || echo 'gsd-plan-track')"
+  pg config user.email "$(git config --get user.email 2>/dev/null || echo 'gsd-plan-track@localhost')"
+  pg remote add "$REMOTE_NAME" "$REMOTE_URL" 2>/dev/null || pg remote set-url "$REMOTE_NAME" "$REMOTE_URL"
+
+  say "Snapshotting main checkout -> branch 'main' ..."
+  resolve_root "$MAIN_CHECKOUT"
+  snapshot_root "$REPLY_ROOT" main "plan: initial snapshot [code $(code_sha "$MAIN_CHECKOUT")]" \
+    && ok "  main branch initialized." || die "initial snapshot failed"
+  say
+  warn "REMOTE NOT PUSHED YET. Create the private repo, then push (both yours to run):"
+  say  "  gh repo create davesienkowski/gsd-core-planning --private --description 'gsd-core .planning history'"
+  say  "  gsd-plan-track push"
+}
+
+# Manual snapshot of the current directory's planning root.
+cmd_commit(){
+  require_init
+  resolve_root "$PWD" || die "not inside a git checkout"
+  git -C "$PWD" check-ignore "$PLAN_DIR" >/dev/null 2>&1 || \
+    git -C "$REPLY_ROOT" check-ignore "$PLAN_DIR" >/dev/null 2>&1 || die "HYRUM GUARD: $PLAN_DIR not ignored"
+  local msg="${1:-plan: update}" sha; sha="$(code_sha "$PWD")"
+  case "$(snapshot_root "$REPLY_ROOT" "$REPLY_BRANCH" "$msg [code $sha]"; echo $?)" in
+    *0) ok "Committed to $REPLY_BRANCH: $msg [code $sha]" ;;
+    *10) say "Nothing to commit on $REPLY_BRANCH - $PLAN_DIR unchanged." ;;
+    *) die "commit failed" ;;
+  esac
+}
+
+# Automatic snapshot for the git-commit hook (quiet, non-fatal, local only).
+cmd_auto_commit(){
+  [ -d "$GITDIR" ] || exit 0                       # not set up -> silent no-op
+  resolve_root "${1:-$PWD}" 2>/dev/null || exit 0
+  git -C "$REPLY_ROOT" check-ignore "$PLAN_DIR" >/dev/null 2>&1 || exit 0   # guard, silent
+  local sha; sha="$(code_sha "${1:-$PWD}")"
+  snapshot_root "$REPLY_ROOT" "$REPLY_BRANCH" "plan: auto [code ${sha:-unknown}]" >/dev/null 2>&1 || true
+  exit 0
+}
+
+cmd_push(){
+  require_init
+  warn "Pushing ALL planning branches to the PRIVATE remote ($REMOTE_URL)."
+  if [ "${ASSUME_YES:-0}" != 1 ]; then
+    printf '%sContinue? [y/N] %s' "$c_yel" "$c_rst"; read -r r || exit 1
+    case "$r" in y|Y|yes|YES) ;; *) say "Aborted."; exit 1 ;; esac
+  fi
+  pg push "$REMOTE_NAME" --all || die "push failed (does the remote repo exist? gh repo create it first)"
+  ok "Pushed all branches to $REMOTE_NAME."
+}
+
+cmd_at(){
+  require_init
+  local sha="${1:-}"; [ -n "$sha" ] || die "usage: gsd-plan-track at <code-sha>"
+  say "Planning commits stamped with code $sha (all branches):"
+  pg log --oneline --all --grep "\[code ${sha}" || say "  (none)"
+}
+
+cmd_branches(){
+  require_init
+  say "Planning branches (root -> branch, commit count):"
+  pg for-each-ref --format='%(refname:short)' refs/heads/ | while read -r b; do
+    printf '  %-24s %s commit(s)  %s\n' "$b" "$(pg rev-list --count "$b" 2>/dev/null)" "$c_dim$(pg log -1 --format='%h %s' "$b" 2>/dev/null)$c_rst"
+  done
+}
+
+cmd_check(){
+  say "== gsd-plan-track --check =="
+  say "  git-dir : $GITDIR $([ -d "$GITDIR" ] && echo '(initialized)' || echo '(NOT initialized)')"
+  resolve_root "$PWD" 2>/dev/null && say "  here    : root=$REPLY_ROOT  branch=$REPLY_BRANCH" || say "  here    : (not a git checkout)"
+  if git -C "$PWD" check-ignore "$PLAN_DIR" >/dev/null 2>&1; then ok "  hyrum   : OK ($PLAN_DIR ignored by code repo)"; else err "  hyrum   : FAIL ($PLAN_DIR not ignored)"; fi
+  if [ -d "$GITDIR" ]; then
+    say "  remote  : $(pg remote get-url "$REMOTE_NAME" 2>/dev/null || echo '(none)')"
+    say "  branches: $(pg for-each-ref refs/heads/ | wc -l | tr -d ' ')"
+    cmd_branches | tail -n +2
+  fi
+}
+
+usage(){
+  cat <<EOF
+gsd-plan-track - track .planning/ (main + worktrees) in a separate private repo
+
+USAGE
+  gsd-plan-track init             create the planning repo + snapshot main (no push)
+  gsd-plan-track commit ["msg"]   manual snapshot of the current dir's planning root
+  gsd-plan-track auto-commit [dir] hook entry: quiet snapshot of dir's root (local)
+  gsd-plan-track push [--yes]     push ALL branches to the private remote (yours to run)
+  gsd-plan-track at <code-sha>    find planning commit(s) matching a code sha
+  gsd-plan-track branches | check
+  gsd-plan-track git <args...>    raw git against the planning repo (the 'gplan' escape hatch)
+
+MODEL
+  main checkout -> branch 'main'; each worktree with its own .planning -> 'wt/<name>';
+  worktrees without local .planning remap to 'main' (GSD's own rule).
+
+SAFETY
+  Excludes graphs/ (regenerable), .gsd-trace.jsonl, .mempalace-stage/. No origin/fork
+  remote, so .planning cannot reach an upstream PR. Refuses if the code repo stops
+  ignoring $PLAN_DIR (hyrum guard).
+
+Config (env): GSD_PLAN_GITDIR, GSD_PLAN_DIR, GSD_PLAN_REMOTE, GSD_PLAN_WORKTREE
+EOF
+}
+
+# --------------------------------------------------------------------------- dispatch
+ASSUME_YES=0
+[ "${2:-}" = "--yes" ] && ASSUME_YES=1
+case "${1:-}" in
+  init)            cmd_init ;;
+  commit)          cmd_commit "${2:-}" ;;
+  auto-commit)     cmd_auto_commit "${2:-}" ;;
+  push)            cmd_push ;;
+  at)              cmd_at "${2:-}" ;;
+  branches)        cmd_branches ;;
+  --check|check)   cmd_check ;;
+  git)             shift; require_init; pg "$@" ;;
+  --help|-h|"")    usage ;;
+  *)               err "unknown command: $1"; usage; exit 1 ;;
+esac
