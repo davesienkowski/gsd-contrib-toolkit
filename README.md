@@ -193,7 +193,17 @@ reusing LIVE gsd-core scripts and surfaced through a `/gsd-*` command:
   `.github/rulesets/` against live `gh api` state, read-only; LIVE sync behind
   `--apply`.
 
-The **`maintainer-review-sweep`** skill backs these assists.
+The **`maintainer-review-sweep`** skill backs these assists. It mirrors the
+review/triage side of the lead maintainer's own now-published process
+([`review-open-prs.md`, `triage-review.md`, `bug-fixer.md`, `feature-builder.md`](https://github.com/The-Artificer-of-Ciphers-LLC/skills-from-the-artificer/tree/main/commands)):
+the two-orthogonal-passes gate, multi-tier severity, Generative-Fix-Divergence,
+the memtrace graph passes + co-change completeness gate, the external-tool gate,
+and the test-quality ruleset. It **deliberately diverges** on autonomy — trek-e's
+directives can merge unattended (`bug-fixer` always, `feature-builder`/`review`
+behind an `AUTONOMOUS` flag), whereas this toolkit keeps all authoring behind the
+human-gated `core-contribution` pipeline and its fail-closed push gate
+(CTK-ADR-0001) and never self-merges — and inverts his memtrace-first stance where
+this environment's `get_impact` floor makes grep the authority for callers.
 
 ### Share-Form Capability
 
