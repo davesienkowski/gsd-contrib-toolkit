@@ -87,6 +87,11 @@ const liveChangesetLint = liveScript('scripts/changeset/lint.cjs');
 // CF-10: the LIVE capability-manifest validators — the SAME script bin/verify-capability.cjs
 // reuses, so the unit suite exercises the real upstream schema rather than a stub.
 const liveCapRegistry = liveScript('scripts/gen-capability-registry.cjs');
+// BUG-4645: gsd-core extracted require-issue-link into a callable policy (evaluateIssueLink,
+// #3211). The gate CALLS it so the docs/tests-only follow-up exemption (`Refs #N`) is mirrored
+// faithfully instead of the old closing-keyword-only fork. Injected into the docs-only cases so
+// they exercise the REAL upstream verdict, exactly as production resolves it via requireLiveScript.
+const liveIssueLink = liveScript('scripts/require-issue-link-policy.cjs');
 
 function input(command) {
   return JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
@@ -1730,4 +1735,68 @@ test('CF-10: a THROW from the live validator fails closed (HARD-01)', () => {
     )
   );
   assert.strictEqual(d.permissionDecision, 'deny');
+});
+
+// ---------------------------------------------------------------------------
+// BUG-4645 — docs-only PR misfire. The gate wrongly denied a docs-only PR on
+// TWO counts, neither faithful to gsd-core's LIVE policy:
+//   (1) pr-template Carve-out 1 (all changed files under the tooling/docs
+//       allowlist -> template skipped) could never fire because the changed-file
+//       set was never wired into the evaluatePrTemplate call.
+//   (2) the linked-issue check used a forked closing-keyword-only regex, so a
+//       docs-only PR using the `Refs #N` form gsd-core explicitly accepts
+//       (require-issue-link.yml -> require-issue-link-policy.cjs OK_FOLLOWUP_REFERENCE)
+//       was denied.
+// The docs-only cases wire the changed-file set (production reads it from the
+// real PR diff) and the LIVE require-issue-link-policy, exactly as production does.
+function docsOnlyDeps(over = {}) {
+  return deps(
+    Object.assign(
+      {
+        // Production wiring: changedFiles is NOT injected — it is derived from the
+        // real PR diff via readChangedFiles. (The default deps() injects a src/ file;
+        // undefined here forces the derive path the production gate takes.)
+        changedFiles: undefined,
+        readChangedFiles: () => ['docs/adr/4629-state-write-intent.md'],
+        liveIssueLink,
+      },
+      over
+    )
+  );
+}
+
+test('BUG-4645: docs-only PR with `Refs #N` + a valid template is ALLOWED (LIVE follow-up-reference exemption)', () => {
+  const body = GOOD_PR_BODY.replace('Fixes #12', 'Refs #12');
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'fix(#12): x' --body "${escapeNl(body)}"`),
+    docsOnlyDeps()
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('BUG-4645: docs-only PR with a non-template body is ALLOWED via pr-template Carve-out 1 (tooling/docs paths)', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'fix(#12): x' --body "Closes #12"`),
+    docsOnlyDeps()
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('BUG-4645 guard: a src-touching PR with `Refs #N` (no closing keyword) is still DENIED (exemption is docs/tests-only)', () => {
+  const body = GOOD_PR_BODY.replace('Fixes #12', 'Refs #12');
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'fix(#12): x' --body "${escapeNl(body)}"`),
+    docsOnlyDeps({ readChangedFiles: () => ['src/index.cts'] })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /require-issue-link|closing keyword|Refs/i);
+});
+
+test('BUG-4645 bootstrap: with NO live issue-link script wired, the legacy closing-keyword check still enforces', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'fix(#12): x' --body "${escapeNl(NO_LINK_BODY)}"`),
+    docsOnlyDeps({ liveIssueLink: null })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /missing a linked issue/i);
 });
