@@ -49,15 +49,48 @@ const SCANS = Object.freeze([
 /** Actions that trigger the ENF-09 scans. Push only (not commit / pr-create). */
 const TRIGGER_ACTIONS = new Set(['push']);
 
-/** Default diff range scanned: the changes about to be pushed (HEAD's diff). */
-const SCAN_DIFF_BASE = 'HEAD';
+/**
+ * Resolve the base ref for the scan's `<base>...HEAD` range — the changes ABOUT TO BE PUSHED.
+ *
+ * BUG-4629: this was the literal `'HEAD'`, which made secret-scan run `git diff HEAD...HEAD`
+ * (a ref compared to itself) → always EMPTY → exit 66 (EXIT_NO_INPUT) → HARD-01 fail-closed on
+ * EVERY clean committed push. The scan must instead diff HEAD against the branch base, so the
+ * three-dot `<base>...HEAD` (merge-base(base,HEAD)...HEAD) covers exactly the commits this push
+ * introduces. Preference order, each verified to exist before use:
+ *   1. the remote default branch (`origin/HEAD` → e.g. `origin/next`) — the eventual PR base;
+ *   2. the branch's configured upstream (`@{upstream}`);
+ *   3. `origin/next` (this toolkit governs open-gsd/gsd-core, whose trunk is `next`);
+ *   4. `HEAD~1` — last resort, scans the tip commit's own diff (always non-empty for a real push).
+ *
+ * @param {string} root absolute gsd-core worktree root.
+ * @returns {string} a base ref suitable for `secret-scan.sh --diff <base>`.
+ */
+function resolveScanBase(root) {
+  const { execFileSync } = require('node:child_process');
+  const git = (args) => {
+    try {
+      return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      return '';
+    }
+  };
+  const exists = (ref) => ref && git(['rev-parse', '--verify', '--quiet', ref + '^{commit}']) !== '';
+
+  const originHead = git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']); // e.g. "origin/next"
+  if (exists(originHead)) return originHead;
+  const upstream = git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']);
+  if (upstream && !upstream.includes('@{u}') && exists(upstream)) return upstream;
+  if (exists('origin/next')) return 'origin/next';
+  return 'HEAD~1';
+}
 
 /** Max characters of a failed scan's output kept in the deny reason. */
 const TAIL_LIMIT = 600;
 
 /**
  * Run the SCANS as LIVE gsd-core shell scripts in the gsd-core worktree, with NO shell
- * (execFileSync of `bash <absScript> --diff HEAD` — an argv array, never a shell line).
+ * (execFileSync of `bash <absScript> --diff <base>` — an argv array, never a shell line;
+ * `<base>` is resolveScanBase(root), never the literal `HEAD` — see BUG-4629).
  * Returns one result per scan. Exit 0 = clean; exit 1 = findings (ok:false, a real hit).
  * Exit 2 (usage error) OR a spawn/infra failure (bash missing / script missing → no numeric
  * status) is re-thrown as FailClosed so runGate fails closed (HARD-01) — a mis-invoked or
@@ -70,10 +103,11 @@ const TAIL_LIMIT = 600;
 function runScansLive(root, scans) {
   const { execFileSync } = require('node:child_process');
   const path = require('node:path');
+  const base = resolveScanBase(root);
   return scans.map((scan) => {
     const absPath = path.join(root, scan.script);
     try {
-      execFileSync('bash', [absPath, '--diff', SCAN_DIFF_BASE], {
+      execFileSync('bash', [absPath, '--diff', base], {
         cwd: root,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -83,11 +117,19 @@ function runScansLive(root, scans) {
     } catch (err) {
       // execFileSync throws on a nonzero exit AND on a spawn failure. Distinguish:
       //   exit 1            → real findings hit → DENY (ok:false).
+      //   exit 66           → EXIT_NO_INPUT: ran, scope established, ZERO files in it → PASS.
       //   exit 2 (usage)    → we called it wrong → INFRA → fail closed.
       //   no numeric status → could not even spawn (bash/script missing) → fail closed.
       if (err && typeof err.status === 'number' && err.status === 1) {
         const out = (err.stdout || '') + (err.stderr || '');
         return { script: scan.script, ok: false, code: 1, tail: tailOf(out) };
+      }
+      // BUG-4629: an empty diff scope cannot carry a secret, so exit 66 is clean, not an infra
+      // failure. Pre-fix, base='HEAD' made secret-scan run `git diff HEAD...HEAD` (always empty)
+      // → 66 → fail-closed on every clean committed push. resolveScanBase() now yields a real
+      // base; 66 remains possible only when HEAD genuinely has no commits beyond base.
+      if (err && typeof err.status === 'number' && err.status === 66) {
+        return { script: scan.script, ok: true, code: 66, tail: '' };
       }
       const status = err && typeof err.status === 'number' ? ' (exit ' + err.status + ')' : '';
       throw new FailClosed(
@@ -208,6 +250,7 @@ module.exports = {
   runScanGate,
   gate,
   runScansLive,
+  resolveScanBase,
   SCANS,
   TRIGGER_ACTIONS,
 };

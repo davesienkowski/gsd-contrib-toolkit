@@ -250,3 +250,39 @@ test('CF-05: echo hi && git log (read-only chain) → allow, no scans run (must-
   assert.strictEqual(d.permissionDecision, 'allow');
   assert.deepStrictEqual(ran, []);
 });
+
+// ─────────────────────────── BUG-4629 regression coverage ───────────────────────────
+// Pre-fix, SCAN_DIFF_BASE was the literal 'HEAD', so secret-scan ran `git diff HEAD...HEAD`
+// (a ref vs itself) → always empty → exit 66 (EXIT_NO_INPUT) → HARD-01 fail-closed on EVERY
+// clean committed push. Two guarantees now: resolveScanBase never yields 'HEAD', and a genuine
+// empty scope (exit 66) is a PASS, not an infra fail-closed.
+const os = require('node:os');
+const fs = require('node:fs');
+const nodePath = require('node:path');
+const { runScansLive, resolveScanBase } = require('./scan-gate.cjs');
+
+test('BUG-4629: resolveScanBase never returns the literal HEAD (the HEAD...HEAD bug)', () => {
+  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'scanbase-'));
+  try {
+    // Not a git repo → every git() probe fails → safe fallback, which must be HEAD~1, never HEAD.
+    const base = resolveScanBase(dir);
+    assert.notStrictEqual(base, 'HEAD', 'base must not be the degenerate HEAD (would make <base>...HEAD empty)');
+    assert.strictEqual(base, 'HEAD~1', 'non-git dir falls back to HEAD~1 (the tip commit diff), never HEAD');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('BUG-4629: runScansLive treats a scan exit 66 (empty scope) as a PASS, not fail-closed', () => {
+  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'scan66-'));
+  try {
+    const rel = 'scripts/fake-empty-scan.sh';
+    fs.mkdirSync(nodePath.join(dir, 'scripts'), { recursive: true });
+    fs.writeFileSync(nodePath.join(dir, rel), '#!/usr/bin/env bash\nexit 66\n', { mode: 0o755 });
+    const results = runScansLive(dir, [{ script: rel, describe: 'fake empty scan' }]);
+    assert.strictEqual(results[0].ok, true, 'exit 66 (empty scope) is clean, not a hit or infra failure');
+    assert.strictEqual(results[0].code, 66);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
