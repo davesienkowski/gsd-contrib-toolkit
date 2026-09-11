@@ -89,6 +89,9 @@ const OWNED_NOTE =
  * workflow's `if:` exempts OWNER/MEMBER/COLLABORATOR, so it never fires for a maintainer's own PR
  * at all. Extending here would DENY fix PRs that upstream would accept without complaint — an
  * over-block with no upstream counterpart. The D-04 Fix-bucket pass-through stays.
+ *
+ * BUG-4645: the Internal bucket is exempt for the SAME reason (see the CF-02 block in gate()). CF-02
+ * now enforces ONLY the Feature/Enhancement buckets — the unsolicited-PR case auto-close exists for.
  */
 const APPROVAL_LABELS = ['approved-feature', 'approved-enhancement', 'confirmed-bug'];
 
@@ -542,11 +545,35 @@ function gate(stdinString, deps) {
   const { headOwner, headBranch } = splitHead(rawHead);
   const head = headBranch; // every head-dependent check evaluates the branch portion
 
+  // BUG-4645: the confirmed-complete changed-file set drives BOTH of gsd-core's docs-only
+  // carve-outs — pr-template's tooling-paths skip (Carve-out 1) AND require-issue-link's
+  // tests/docs-only follow-up exemption. It was never wired into the template call (deps.changedFiles
+  // arrived undefined in production), so a docs-only PR was denied for "no template". Prefer an
+  // injected list (tests); otherwise read the REAL PR diff via readChangedFiles (default `git diff
+  // --name-only origin/<base>...HEAD`). A local git diff is authoritative and unpaginated, so the
+  // total equals the list length (satisfies gsd-core's #3211 fileListIsComplete). base may be
+  // unresolved here (its own HARD-04 deny fires just below); only read the diff once base is known —
+  // otherwise leave the list null so BOTH carve-outs correctly DECLINE to exempt (byte-for-byte the
+  // pre-fix behavior). A readChangedFiles throw propagates → runGate fail-closed deny (HARD-01: an
+  // unreadable diff cannot confirm docs scope). The later CF-03/CF-09/CF-10 checks keep their OWN
+  // readChangedFiles read (deps may inject the two lists differently); this list feeds only the two
+  // carve-outs above.
+  let policyChangedFiles = Array.isArray(deps.changedFiles) ? deps.changedFiles : null;
+  if (policyChangedFiles == null && base != null && base !== '') {
+    policyChangedFiles = deps.readChangedFiles(deps.root, base); // throw → fail-closed deny (HARD-01)
+  }
+  const policyChangedFilesTotal = Number.isInteger(deps.changedFilesTotal)
+    ? deps.changedFilesTotal
+    : Array.isArray(policyChangedFiles)
+      ? policyChangedFiles.length
+      : undefined;
+
   // (1) ENF-02 — LIVE template policy (call, never reimplement).
   const tmpl = deps.liveTemplate.evaluatePrTemplate(
     body,
     deps.authorAssociation || 'OWNER',
-    deps.changedFiles
+    policyChangedFiles || undefined,
+    policyChangedFilesTotal
   );
   if (!tmpl || tmpl.valid !== true) {
     return deny(
@@ -598,11 +625,43 @@ function gate(stdinString, deps) {
     );
   }
 
-  // (3) ENF-10 — TOOLKIT-OWNED linked-issue check (H-A).
-  if (!LINKED_ISSUE_RE.test(body)) {
+  // (3) ENF-10 — linked-issue check. gsd-core extracted require-issue-link into a CALLABLE
+  // policy (scripts/require-issue-link-policy.cjs → evaluateIssueLink, #3211), so this now CALLS
+  // the LIVE policy (D-01/D-06/HARD-02) instead of the old closing-keyword-only fork. That fork
+  // (BUG-4645) denied a docs-only PR using the `Refs #N` form gsd-core explicitly accepts for a
+  // tests-only or docs-only follow-up (every changed file under tests/, docs/, or a root-level
+  // *.md). BOOTSTRAP: require-issue-link.yml itself falls back to a closing-keyword grep when the
+  // script is absent on the base checkout, so when deps.liveIssueLink is null (missing script) we
+  // do the SAME — the legacy LINKED_ISSUE_RE, enforcing not skipping. A script that EXISTS but
+  // reshaped is NOT tolerated (requireLiveScript threw in runPrGate → fail-closed).
+  if (deps.liveIssueLink && typeof deps.liveIssueLink.evaluateIssueLink === 'function') {
+    // sameRepo drives ONLY the backmerge exemption; a cross-repo head (headOwner present and not
+    // the target owner) is a fork → false. authorLogin is unobservable pre-create → '' (never the
+    // dependabot login, so that exemption never mis-fires for a human contributor). The changed-file
+    // set is the SAME confirmed-complete list the template carve-out used above.
+    const sameRepo =
+      headOwner === '' || (deps.targetRepo != null && headOwner === deps.targetRepo.owner);
+    const linkVerdict = deps.liveIssueLink.evaluateIssueLink({
+      prBody: body,
+      headRef: head,
+      sameRepo,
+      authorLogin: '',
+      changedFiles: policyChangedFiles || [],
+      changedFilesTotal: policyChangedFilesTotal,
+    });
+    if (!linkVerdict || linkVerdict.ok !== true) {
+      return deny(
+        'PR body is missing a valid issue link (LIVE require-issue-link verdict `' +
+          ((linkVerdict && linkVerdict.reason) || 'fail_no_issue_reference') +
+          '`). Use a closing keyword (`Closes #123` / `Fixes #123` / `Resolves #123`); the ' +
+          'non-closing `Refs #123` form is accepted ONLY for a tests-only or docs-only PR (every ' +
+          'changed file under `tests/`, `docs/`, or a root-level `*.md`). This CALLS gsd-core’s LIVE ' +
+          'require-issue-link-policy (evaluateIssueLink), never a forked regex (D-01/D-06/HARD-02).'
+      );
+    }
+  } else if (!LINKED_ISSUE_RE.test(body)) {
     return deny(
-      'PR body is missing a linked issue (e.g. `Fixes #123` / `Closes #123`). ' +
-        OWNED_NOTE
+      'PR body is missing a linked issue (e.g. `Fixes #123` / `Closes #123`). ' + OWNED_NOTE
     );
   }
 
@@ -625,14 +684,26 @@ function gate(stdinString, deps) {
   // auto-close-unsolicited-prs.yml (which closes an enh/feat PR at open time when its linked
   // issue lacks an approval label). We surface that DENY BEFORE the PR opens. The enh/feat
   // discriminator is the LIVE classifyBucket (D-01 reuse — reusing the SAME title resolved for
-  // CF-01, never a forked regex). Fix-bucket PRs are UNAFFECTED (D-04): they fall through. For a
-  // Feature/Enhancement, at least one linked issue must carry a maintainer-applied
-  // `approved-feature` / `approved-enhancement` label; the labels are read via the injected
-  // deps.readIssueLabels(number, targetRepo) — a throw propagates to runGate → fail-closed deny
-  // (HARD-01), so an unreadable label set can never be presented as "approved" (D-04). This adds
-  // a NEW toolkit check and weakens no existing deny surface (D-06).
+  // CF-01, never a forked regex). Fix AND Internal buckets are UNAFFECTED: they fall through
+  // (D-04 for Fix; BUG-4645 added the Internal exemption). For a Feature/Enhancement, at least one
+  // linked issue must carry a maintainer-applied `approved-feature` / `approved-enhancement` label;
+  // the labels are read via the injected deps.readIssueLabels(number, targetRepo) — a throw
+  // propagates to runGate → fail-closed deny (HARD-01), so an unreadable label set can never be
+  // presented as "approved" (D-04). This adds a NEW toolkit check and weakens no existing deny
+  // surface (D-06).
+  //
+  // BUG-4645: the Internal bucket (docs/chore/test/ci/refactor/perf/revert) is exempt for the SAME
+  // reason Fix is — the LIVE auto-close `if:` exempts OWNER/MEMBER/COLLABORATOR, so it never fires
+  // for a maintainer's own PR, and enforcing CF-02 on a maintainer's docs/chore PR is an over-block
+  // with no upstream counterpart (it is what forced the docs-only ADR PR's exempt-marker workaround).
+  // A pre-create hook cannot observe the PR's author_association (no PR exists yet) and does not
+  // resolve the local user's repo permission, so this exemption is keyed on the bucket, not the
+  // association. TRADEOFF (accepted, single-maintainer toolkit): a NON-maintainer using this toolkit
+  // could open an Internal-bucket PR that gsd-core's auto-close would then close — the CI-whiplash
+  // this gate normally prevents. Feature/Enhancement enforcement (the unsolicited-PR case that
+  // matters) is unchanged.
   const bucket = deps.liveTitle.classifyBucket(title);
-  if (bucket !== 'Fix') {
+  if (bucket !== 'Fix' && bucket !== 'Internal') {
     const issues = extractLinkedIssues(body, deps.targetRepo);
     let approved = false;
     // WR-01: read the approval labels from the CANONICAL UPSTREAM, never from `deps.targetRepo`.
@@ -940,6 +1011,20 @@ function runPrGate(stdinString, deps = {}) {
       // bin/verify-capability.cjs, which already reuses this exact script — but that only ever
       // validated the toolkit's OWN bundle. This applies it to a manifest the PR is CHANGING.
       resolved.liveCapRegistry = requireLiveScript(root, 'scripts/gen-capability-registry.cjs');
+    }
+    if (!resolved.liveIssueLink) {
+      // BUG-4645: gsd-core extracted require-issue-link into a callable policy
+      // (scripts/require-issue-link-policy.cjs → evaluateIssueLink, #3211). CALL it (D-01/D-06/HARD-02)
+      // so the docs/tests-only follow-up exemption (`Refs #N`) is mirrored faithfully. BOOTSTRAP: the
+      // LIVE require-issue-link.yml itself falls back to a closing-keyword grep when the script is
+      // ABSENT on the base checkout (`[ ! -f … ]`), so a missing script here must NOT fail closed —
+      // leave liveIssueLink null and gate() uses the legacy LINKED_ISSUE_RE. existsSync mirrors that
+      // guard exactly; a script that EXISTS but fails to load still throws (a reshape must not be
+      // silently tolerated), unlike the other six live scripts which are unconditionally required.
+      const issueLinkRel = 'scripts/require-issue-link-policy.cjs';
+      resolved.liveIssueLink = require('node:fs').existsSync(path.join(root, issueLinkRel))
+        ? requireLiveScript(root, issueLinkRel)
+        : null;
     }
     if (!resolved.branch) {
       resolved.branch = currentBranch(root);
