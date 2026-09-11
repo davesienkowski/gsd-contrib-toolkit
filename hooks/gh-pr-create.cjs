@@ -89,6 +89,9 @@ const OWNED_NOTE =
  * workflow's `if:` exempts OWNER/MEMBER/COLLABORATOR, so it never fires for a maintainer's own PR
  * at all. Extending here would DENY fix PRs that upstream would accept without complaint — an
  * over-block with no upstream counterpart. The D-04 Fix-bucket pass-through stays.
+ *
+ * BUG-4645: the Internal bucket is exempt for the SAME reason (see the CF-02 block in gate()). CF-02
+ * now enforces ONLY the Feature/Enhancement buckets — the unsolicited-PR case auto-close exists for.
  */
 const APPROVAL_LABELS = ['approved-feature', 'approved-enhancement', 'confirmed-bug'];
 
@@ -681,14 +684,26 @@ function gate(stdinString, deps) {
   // auto-close-unsolicited-prs.yml (which closes an enh/feat PR at open time when its linked
   // issue lacks an approval label). We surface that DENY BEFORE the PR opens. The enh/feat
   // discriminator is the LIVE classifyBucket (D-01 reuse — reusing the SAME title resolved for
-  // CF-01, never a forked regex). Fix-bucket PRs are UNAFFECTED (D-04): they fall through. For a
-  // Feature/Enhancement, at least one linked issue must carry a maintainer-applied
-  // `approved-feature` / `approved-enhancement` label; the labels are read via the injected
-  // deps.readIssueLabels(number, targetRepo) — a throw propagates to runGate → fail-closed deny
-  // (HARD-01), so an unreadable label set can never be presented as "approved" (D-04). This adds
-  // a NEW toolkit check and weakens no existing deny surface (D-06).
+  // CF-01, never a forked regex). Fix AND Internal buckets are UNAFFECTED: they fall through
+  // (D-04 for Fix; BUG-4645 added the Internal exemption). For a Feature/Enhancement, at least one
+  // linked issue must carry a maintainer-applied `approved-feature` / `approved-enhancement` label;
+  // the labels are read via the injected deps.readIssueLabels(number, targetRepo) — a throw
+  // propagates to runGate → fail-closed deny (HARD-01), so an unreadable label set can never be
+  // presented as "approved" (D-04). This adds a NEW toolkit check and weakens no existing deny
+  // surface (D-06).
+  //
+  // BUG-4645: the Internal bucket (docs/chore/test/ci/refactor/perf/revert) is exempt for the SAME
+  // reason Fix is — the LIVE auto-close `if:` exempts OWNER/MEMBER/COLLABORATOR, so it never fires
+  // for a maintainer's own PR, and enforcing CF-02 on a maintainer's docs/chore PR is an over-block
+  // with no upstream counterpart (it is what forced the docs-only ADR PR's exempt-marker workaround).
+  // A pre-create hook cannot observe the PR's author_association (no PR exists yet) and does not
+  // resolve the local user's repo permission, so this exemption is keyed on the bucket, not the
+  // association. TRADEOFF (accepted, single-maintainer toolkit): a NON-maintainer using this toolkit
+  // could open an Internal-bucket PR that gsd-core's auto-close would then close — the CI-whiplash
+  // this gate normally prevents. Feature/Enhancement enforcement (the unsolicited-PR case that
+  // matters) is unchanged.
   const bucket = deps.liveTitle.classifyBucket(title);
-  if (bucket !== 'Fix') {
+  if (bucket !== 'Fix' && bucket !== 'Internal') {
     const issues = extractLinkedIssues(body, deps.targetRepo);
     let approved = false;
     // WR-01: read the approval labels from the CANONICAL UPSTREAM, never from `deps.targetRepo`.

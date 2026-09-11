@@ -1800,3 +1800,27 @@ test('BUG-4645 bootstrap: with NO live issue-link script wired, the legacy closi
   assert.strictEqual(d.permissionDecision, 'deny');
   assert.match(d.permissionDecisionReason, /missing a linked issue/i);
 });
+
+// BUG-4645 (CF-02 arm): the Internal bucket (docs/chore/test/ci/refactor/perf/revert) is exempt
+// from CF-02, like the Fix bucket (D-04). Rationale is the SAME one already documented for Fix:
+// gsd-core's auto-close-unsolicited-prs.yml `if:` exempts OWNER/MEMBER/COLLABORATOR, so it never
+// fires for a maintainer's own PR — enforcing CF-02 on a maintainer's docs/chore PR is an
+// over-block with no upstream counterpart (it is what forced the docs-only ADR PR's workaround).
+test('CF-02: an Internal-bucket PR (docs) with an unapproved linked issue → ALLOW (Internal exempt like Fix)', () => {
+  let read = false;
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'docs(#12): x' --body "${escapeNl(GOOD_PR_BODY)}"`),
+    deps({ readIssueLabels: () => { read = true; return []; } })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.strictEqual(read, false, 'the approval-label read must be SKIPPED for an Internal-bucket PR');
+});
+
+test('CF-02 guard: a Feature-bucket PR with an unapproved linked issue still DENIES (enforcement preserved)', () => {
+  const d = runPrGate(
+    input(`gh pr create --base next --title 'feat(#39): x' --body "${escapeNl(bodyLinking(39))}"`),
+    deps({ readIssueLabels: () => [] })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /approved-feature|approved-enhancement/);
+});
