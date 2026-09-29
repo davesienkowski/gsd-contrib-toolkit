@@ -130,6 +130,3 @@ Run in order. **Adversarial gate between every phase:** before advancing, state 
 - Posting a long multi-section review wall → use the hard size-bounded template (re-review.md); depth goes in the one `<details>`, never clobber the PR/issue history with repeated full dumps.
 - Authoring a fix, pushing a correction, or filing an issue/PR **straight out of the sweep** instead of routing through `/gsd-submit` → the sweep ranks and adjudicates; it does not author. You will hit the fail-closed deny anyway — arrive there on purpose, carrying the [hand-off packet](#authoring-hand-off-sweep--contribution).
 
-## Validation
-
-Live-validated 2026-06-20 (RED→GREEN→REFACTOR per `superpowers:writing-skills`): on **#1409** the CI-attribution heuristic produced a wrong APPROVE (a coverage-table misread) — caught when the contributor's rebase falsified the "stale-base, rebase clears it" claim, corrected to Request-changes, and step 4a hardened to demand the literal failing assertion. On **#1418** it correctly Request-changed a changeset `product-name-purity` blocker that the prior reviewer's review predated. Both runs exercised the discover→re-review path end-to-end.
