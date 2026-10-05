@@ -13,6 +13,16 @@
  *   - a doc/test/non-bin-lib file → ALLOW
  *   - a bin/lib path whose leaf is NOT .cjs (e.g. bin/lib/README.md) → ALLOW (segment+leaf accurate)
  *   - missing/absent file_path → fail-closed DENY (HARD-01)
+ *
+ * Real-git coverage (Phase 35, BINLIB-01..04) uses makeFixtureRepo(): a real temporary git repo
+ * holding a TRACKED hand-written bin/lib/capability-validator.cjs and a per-file GITIGNORED
+ * (emitted) bin/lib/emitted.cjs, exercised through the default git check-ignore probe:
+ *   - BINLIB-01: tracked or untracked-not-ignored bin/lib/*.cjs → ALLOW (in-process + spawned)
+ *   - BINLIB-02: ignored bin/lib/*.cjs → DENY, reason byte-identical to binLibDenyReason
+ *   - BINLIB-03: undecidable (dir absent, not a work tree, git missing, git hang, odd seam
+ *     values) → DENY, ADR-457 reason + "could not be determined" note
+ *   - BINLIB-04: the tracked-file ALLOW was recorded RED against the pre-fix gate
+ *   - T-35-02 env redirect, T-35-03 argv metacharacters, T-35-05 dot segments
  */
 
 const test = require('node:test');
@@ -116,7 +126,11 @@ test('nested .../packages/x/bin/lib/foo.cjs Edit → deny (glob matches any dept
 });
 
 test('relative bin/lib/*.cjs path → deny (no leading slash)', () => {
-  const d = runBinlibGate(input('bin/lib/state.cjs'), deps());
+  // Hermetic: the payload cwd is a path that does not exist, so the resolved target's directory
+  // is absent and the git probe is undecidable → deny (BINLIB-03), independent of where the
+  // suite runs.
+  const ghostCwd = path.join(os.tmpdir(), 'binlib-ghost-cwd-' + process.pid + '-does-not-exist');
+  const d = runBinlibGate(input('bin/lib/state.cjs', 'Edit', ghostCwd), deps());
   assert.strictEqual(d.permissionDecision, 'deny');
 });
 
@@ -269,6 +283,229 @@ test('BINLIB-01 end-to-end: spawned binlib-edit entrypoint allows the tracked fi
     });
     assert.strictEqual(r.conclusive, true, r.reason);
     assert.strictEqual(r.decision, 'allow', r.reason);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+// --- BINLIB-01/03 + T-35-0x: undecidable fail-closed matrix and probe hardening ------------
+
+const UNDECIDABLE = /could not be determined/;
+
+/**
+ * Spawn the real hook entrypoint with a CUSTOM env (proof-harness spawnHook always passes
+ * process.env). `env` overrides are layered on a copy of process.env; the verdict-log kill
+ * switch keeps these runs out of the user's real verdict log (it never changes a decision).
+ */
+function spawnHookWithEnv(stdin, { cwd, env = {} } = {}) {
+  const fullEnv = Object.assign({}, process.env, { GSD_CONTRIB_NO_VERDICT_LOG: '1' }, env);
+  const started = Date.now();
+  const r = spawnSync(process.execPath, [path.join(__dirname, 'binlib-edit.cjs')], {
+    input: stdin,
+    encoding: 'utf8',
+    cwd,
+    env: fullEnv,
+  });
+  const ms = Date.now() - started;
+  assert.strictEqual(r.error, undefined, r.error && r.error.message);
+  assert.strictEqual(r.status, 0, 'hook exited ' + r.status + ': ' + r.stderr);
+  const out = JSON.parse(r.stdout).hookSpecificOutput;
+  return { decision: out.permissionDecision, reason: out.permissionDecisionReason, ms };
+}
+
+function assertUndecidableDeny(decision, reason, filePath) {
+  assert.strictEqual(decision, 'deny');
+  assert.ok(
+    reason.startsWith(binLibDenyReason(filePath)),
+    'undecidable reason must keep the full ADR-457 reason as its prefix: ' + reason
+  );
+  assert.match(reason, UNDECIDABLE);
+  assert.doesNotMatch(reason, /\.cts/);
+}
+
+test('BINLIB-01: a brand-new, untracked, not-ignored bin/lib/*.cjs → allow (gsd-core ignores per file)', () => {
+  const fx = makeFixtureRepo();
+  try {
+    const fresh = path.join(fx.libDir, 'brand-new.cjs');
+    fs.writeFileSync(fresh, "'use strict';\n");
+    const d = runBinlibGate(input(fresh, 'Write', fx.root), deps());
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('BINLIB-03: candidate under an ABSENT directory → deny with the undecidable note', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-absent-'));
+  try {
+    const fp = path.join(base, 'does-not-exist', 'gsd-core', 'bin', 'lib', 'x.cjs');
+    const d = runBinlibGate(input(fp, 'Edit', base), deps());
+    assertUndecidableDeny(d.permissionDecision, d.permissionDecisionReason, fp);
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('BINLIB-03: candidate in an existing directory that is NOT a git work tree (exit 128) → deny with the note', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-norepo-'));
+  try {
+    const libDir = path.join(base, 'bin', 'lib');
+    fs.mkdirSync(libDir, { recursive: true });
+    const fp = path.join(libDir, 'x.cjs');
+    fs.writeFileSync(fp, "'use strict';\n");
+    const d = runBinlibGate(input(fp, 'Edit', base), deps());
+    assertUndecidableDeny(d.permissionDecision, d.permissionDecisionReason, fp);
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('BINLIB-03: git MISSING from PATH → spawned hook denies even the TRACKED file, with the note', () => {
+  const fx = makeFixtureRepo();
+  const emptyBin = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-nogit-'));
+  try {
+    const r = spawnHookWithEnv(input(fx.tracked, 'Edit', fx.root), {
+      cwd: fx.root,
+      env: { PATH: emptyBin },
+    });
+    assertUndecidableDeny(r.decision, r.reason, fx.tracked);
+  } finally {
+    fs.rmSync(emptyBin, { recursive: true, force: true });
+    fx.cleanup();
+  }
+});
+
+test('BINLIB-03: git HANGS past the probe timeout → spawned hook denies the TRACKED file, with the note, under 10 s', () => {
+  const fx = makeFixtureRepo();
+  const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-hang-'));
+  try {
+    const shim = path.join(shimDir, 'git');
+    // exec is required: a grandchild sleep holding the stderr pipe would keep spawnSync
+    // waiting past its timeout.
+    fs.writeFileSync(shim, '#!/bin/sh\nexec sleep 30\n');
+    fs.chmodSync(shim, 0o755);
+    const r = spawnHookWithEnv(input(fx.tracked, 'Edit', fx.root), {
+      cwd: fx.root,
+      env: { PATH: shimDir + path.delimiter + process.env.PATH },
+    });
+    assertUndecidableDeny(r.decision, r.reason, fx.tracked);
+    assert.ok(r.ms < 10000, 'hook took ' + r.ms + ' ms (must stay under the 10 s hook timeout)');
+  } finally {
+    fs.rmSync(shimDir, { recursive: true, force: true });
+    fx.cleanup();
+  }
+});
+
+test('BINLIB-03: injected checkIgnore seam — only the exact string not-ignored allows', () => {
+  const fp = '/g/gsd-core/bin/lib/seam.cjs';
+  for (const v of ['unknown', 'IGNORED', '', undefined, 'not-ignored ', 'allow']) {
+    const d = runBinlibGate(input(fp), deps({ checkIgnore: () => v }));
+    assertUndecidableDeny(d.permissionDecision, d.permissionDecisionReason, fp);
+  }
+  const thrown = runBinlibGate(
+    input(fp),
+    deps({
+      checkIgnore: () => {
+        throw new Error('probe exploded');
+      },
+    })
+  );
+  assert.strictEqual(thrown.permissionDecision, 'deny');
+  const ignored = runBinlibGate(input(fp), deps({ checkIgnore: () => 'ignored' }));
+  assert.strictEqual(ignored.permissionDecision, 'deny');
+  assert.strictEqual(ignored.permissionDecisionReason, binLibDenyReason(fp));
+  const ok = runBinlibGate(input(fp), deps({ checkIgnore: () => 'not-ignored' }));
+  assert.strictEqual(ok.permissionDecision, 'allow');
+});
+
+test('BINLIB-03: classifyCheckIgnore maps only exit 0/1; every other result is unknown', () => {
+  const { classifyCheckIgnore } = require('./binlib-edit.cjs');
+  const timeout = Object.assign(new Error('spawnSync git ETIMEDOUT'), { code: 'ETIMEDOUT' });
+  const enoent = Object.assign(new Error('spawnSync git ENOENT'), { code: 'ENOENT' });
+  assert.strictEqual(classifyCheckIgnore({ status: 0 }), 'ignored');
+  assert.strictEqual(classifyCheckIgnore({ status: 1 }), 'not-ignored');
+  assert.strictEqual(classifyCheckIgnore({ status: null, signal: 'SIGTERM', error: timeout }), 'unknown');
+  assert.strictEqual(classifyCheckIgnore({ status: null, signal: 'SIGTERM' }), 'unknown');
+  assert.strictEqual(classifyCheckIgnore({ error: enoent }), 'unknown');
+  assert.strictEqual(classifyCheckIgnore({ status: 128 }), 'unknown');
+  assert.strictEqual(classifyCheckIgnore({ status: 2 }), 'unknown');
+  assert.strictEqual(classifyCheckIgnore({ status: 0, error: enoent }), 'unknown');
+});
+
+test('BINLIB-01: a non-candidate (sdk/src/query/decisions.cts) is allowed without ever probing git', () => {
+  let calls = 0;
+  const d = runBinlibGate(
+    input('/g/gsd-core/sdk/src/query/decisions.cts'),
+    deps({
+      checkIgnore: () => {
+        calls += 1;
+        return 'ignored';
+      },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls, 0);
+});
+
+test('T-35-02: an inherited GIT_INDEX_FILE that force-adds the emitted file cannot turn its deny into an allow', () => {
+  const fx = makeFixtureRepo();
+  try {
+    const altIndex = path.join(fx.root, '.git', 'binlib-alt-index');
+    fixtureGit(
+      fx.root,
+      ['add', '-f', 'gsd-core/bin/lib/emitted.cjs'],
+      Object.assign({}, FIXTURE_GIT_ENV, { GIT_INDEX_FILE: altIndex })
+    );
+    const r = spawnHookWithEnv(input(fx.ignored, 'Edit', fx.root), {
+      cwd: fx.root,
+      env: { GIT_INDEX_FILE: altIndex },
+    });
+    assert.strictEqual(r.decision, 'deny', 'GIT_INDEX_FILE redirect opened a bypass');
+    assert.strictEqual(r.reason, binLibDenyReason(fx.ignored));
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('T-35-05: dot-segment path <libDir>/../lib/emitted.cjs still reaches git and denies', () => {
+  const fx = makeFixtureRepo();
+  try {
+    const fp = fx.libDir + '/../lib/emitted.cjs';
+    const d = runBinlibGate(input(fp, 'Edit', fx.root), deps());
+    assert.strictEqual(d.permissionDecision, 'deny');
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('T-35-05: dot-segment path <libDir>/./emitted.cjs still reaches git and denies', () => {
+  const fx = makeFixtureRepo();
+  try {
+    const fp = fx.libDir + '/./emitted.cjs';
+    const d = runBinlibGate(input(fp, 'Edit', fx.root), deps());
+    assert.strictEqual(d.permissionDecision, 'deny');
+  } finally {
+    fx.cleanup();
+  }
+});
+
+function findNamed(dir, name) {
+  const hits = [];
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (e.name === name) hits.push(p);
+    if (e.isDirectory()) hits.push(...findNamed(p, name));
+  }
+  return hits;
+}
+
+test('T-35-03: shell metacharacters in the leaf reach git as one argv element and execute nothing', () => {
+  const fx = makeFixtureRepo();
+  try {
+    const fp = path.join(fx.libDir, '$(touch PWNED).cjs');
+    const d = runBinlibGate(input(fp, 'Write', fx.root), deps());
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+    assert.deepStrictEqual(findNamed(fx.root, 'PWNED'), []);
   } finally {
     fx.cleanup();
   }
