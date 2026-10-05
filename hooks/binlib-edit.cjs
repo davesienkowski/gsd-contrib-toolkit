@@ -41,10 +41,18 @@
  */
 
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const { runGate, readHookInput, deny, allow, emit, FailClosed } = require('./lib/failclosed.cjs');
 
 // FailClosed: shared IN-03 helper from failclosed.cjs (binlib-edit has no safeCommand —
 // it uses safeFilePath; Write/Edit gates read file_path, not command).
+
+/**
+ * Upper bound for the `git check-ignore` probe. The settings.snippet.json hook timeout for
+ * this gate is 10 s; the probe is capped well under it so a hung git resolves to a deny
+ * instead of the harness killing the hook.
+ */
+const CHECK_IGNORE_TIMEOUT_MS = 3000;
 
 /**
  * Split a path into its segments, tolerant of either separator (the harness may hand us a
@@ -99,12 +107,68 @@ function binLibDenyReason(filePath) {
 }
 
 /**
+ * Resolve the Write/Edit target to an absolute, normalized path. An absolute file_path is
+ * normalized as-is; a relative one is resolved against the payload `cwd`, falling back to
+ * process.cwd() when the payload carries none.
+ *
+ * @param {string} filePath
+ * @param {string} [payloadCwd]
+ * @returns {string}
+ */
+function resolveTargetPath(filePath, payloadCwd) {
+  if (path.isAbsolute(filePath)) return path.resolve(filePath);
+  const base = typeof payloadCwd === 'string' && payloadCwd.length > 0 ? payloadCwd : process.cwd();
+  return path.resolve(base, filePath);
+}
+
+/**
+ * Map a `git check-ignore -q` spawnSync result to a verdict. Exit 0 = ignored (generated),
+ * exit 1 = not ignored (tracked, or untracked and not ignored: hand-written). Everything else
+ * (spawn error, null status from a timeout/signal, 128 "not a git repository", any other
+ * code) is 'unknown'.
+ *
+ * @param {{error?:Error, status?:(number|null)}} result
+ * @returns {'ignored'|'not-ignored'|'unknown'}
+ */
+function classifyCheckIgnore(result) {
+  if (!result || result.error) return 'unknown';
+  if (result.status === 0) return 'ignored';
+  if (result.status === 1) return 'not-ignored';
+  return 'unknown';
+}
+
+/**
+ * The default probe: `git check-ignore -q -- <abs>` run from the target's own directory, so
+ * the answer comes from the repository (or worktree) that actually holds the file. argv array,
+ * never a shell string; `--` before the path. Plain check-ignore (no --no-index), so a TRACKED
+ * file reports not-ignored even when a pattern matches it. Read-only: takes no index lock.
+ *
+ * @param {string} absPath
+ * @returns {'ignored'|'not-ignored'|'unknown'}
+ */
+function checkIgnoreLive(absPath) {
+  try {
+    const result = spawnSync('git', ['check-ignore', '-q', '--', absPath], {
+      cwd: path.dirname(absPath),
+      timeout: CHECK_IGNORE_TIMEOUT_MS,
+      encoding: 'utf8',
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    return classifyCheckIgnore(result);
+  } catch (_) {
+    return 'unknown';
+  }
+}
+
+/**
  * The pure gate decision over a PreToolUse(Write|Edit) payload.
  *
  * @param {string} stdinString raw PreToolUse JSON
+ * @param {Object} [deps]
+ * @param {(absPath:string) => string} [deps.checkIgnore] probe seam (default checkIgnoreLive)
  * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
  */
-function gate(stdinString) {
+function gate(stdinString, deps = {}) {
   const input = readHookInput(stdinString); // throws on malformed JSON → fail closed
 
   // SELF-FILTER (defense-in-depth): this gate governs ONLY Write|Edit. Any other tool (Bash,
@@ -125,10 +189,20 @@ function gate(stdinString) {
     );
   }
 
-  if (isGeneratedBinLib(filePath)) {
-    return deny(binLibDenyReason(filePath));
+  // Stage 1: the segment matcher picks candidates. A non-candidate never reaches git.
+  if (!isGeneratedBinLib(filePath)) {
+    return allow();
   }
-  return allow();
+
+  // Stage 2: git decides. Only the exact verdict 'not-ignored' (tracked, or untracked and not
+  // ignored = hand-written) allows; ignored and every undecidable answer deny (HARD-01).
+  const abs = resolveTargetPath(filePath, input.cwd);
+  const checkIgnore = deps.checkIgnore || checkIgnoreLive;
+  const verdict = checkIgnore(abs);
+  if (verdict === 'not-ignored') {
+    return allow();
+  }
+  return deny(binLibDenyReason(filePath));
 }
 
 /**
@@ -139,6 +213,9 @@ function gate(stdinString) {
  * @param {Object} [deps]
  * @param {string} [deps.worktreeRoot]
  * @param {{checkOverride:Function, writeReceipt:Function}} [deps.overrideImpl]
+ * @param {(absPath:string) => ('ignored'|'not-ignored'|'unknown')} [deps.checkIgnore]
+ *   generated-vs-hand-written probe (default checkIgnoreLive: `git check-ignore -q -- <abs>`).
+ *   Only the exact string 'not-ignored' allows; any other value, or a throw, denies.
  * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
  */
 function runBinlibGate(stdinString, deps = {}) {
@@ -150,7 +227,7 @@ function runBinlibGate(stdinString, deps = {}) {
     worktreeRoot: deps.worktreeRoot,
     overrideImpl: deps.overrideImpl,
   };
-  return runGate(() => gate(stdinString), ctx);
+  return runGate(() => gate(stdinString, deps), ctx);
 }
 
 /**
@@ -184,4 +261,14 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { runBinlibGate, gate, isGeneratedBinLib, binLibDenyReason, pathSegments };
+module.exports = {
+  runBinlibGate,
+  gate,
+  isGeneratedBinLib,
+  binLibDenyReason,
+  pathSegments,
+  resolveTargetPath,
+  classifyCheckIgnore,
+  checkIgnoreLive,
+  CHECK_IGNORE_TIMEOUT_MS,
+};
