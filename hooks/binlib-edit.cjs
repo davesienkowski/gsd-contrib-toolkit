@@ -15,19 +15,25 @@
  *
  * STAGE 1 — candidate filter (pure, cheap). Segment-accuracy (threat T-03-04-SUBSTR /
  * edge-probe EP-1 class): the match is NOT a naive `includes('bin/lib')` substring. A `bin`
- * PATH SEGMENT must be immediately followed by a `lib` SEGMENT, immediately followed by a
- * `*.cjs` LEAF that is the direct child of that `lib`. So:
+ * PATH SEGMENT must be immediately followed by a `lib` SEGMENT (both compared case-insensitively,
+ * like the `.cjs` leaf, because a case-insensitive filesystem aliases `BIN/Lib` to `bin/lib`,
+ * MN-03), and the `*.cjs` LEAF must sit anywhere BELOW that `lib` (MJ-02: gsd-core emits
+ * generated CJS into `bin/lib/observability/`, `bin/lib/installer-migrations/`, … and tracks
+ * hand-written vendor files in `bin/lib/vendor/`; git, not depth, tells them apart). So:
  *   - `.../bin/lib/decisions.cjs`            → CANDIDATE (segment pair + .cjs leaf)
- *   - `.../packages/x/bin/lib/foo.cjs`       → CANDIDATE (any depth)
+ *   - `.../packages/x/bin/lib/foo.cjs`       → CANDIDATE (any depth above the pair)
+ *   - `.../bin/lib/sub/nested.cjs`           → CANDIDATE (any depth below the pair)
+ *   - `.../BIN/Lib/x.CJS`                    → CANDIDATE (case-insensitive)
  *   - `src/bin-lib-notes.md`                 → ALLOW (substring, not a segment pair)
  *   - `src/mybin/libfoo.cjs`                 → ALLOW (bin/lib split across one segment)
  *   - `.../bin/lib/README.md`                → ALLOW (segment pair but leaf is not .cjs)
- *   - `.../bin/lib/sub/nested.cjs`           → ALLOW (.cjs is not a direct lib child)
+ *   - `.../bin/x/lib/y.cjs`                  → ALLOW (bin and lib are not adjacent)
  *   - `.../lib/bin/x.cjs`                     → ALLOW (wrong order: must be bin then lib)
  * The filter runs on the RAW file_path and on the RESOLVED absolute path (T-35-05), so a
  * dot-segment path such as `bin/lib/../lib/x.cjs` or `bin/lib/./x.cjs` still becomes a
- * candidate. Normalization cannot un-match a raw candidate (its last three segments hold no
- * `.`/`..`), so this is a strict superset. A non-candidate is ALLOWED without running git.
+ * candidate. A raw-only candidate whose `..` segments resolve out of bin/lib has no bin/lib
+ * ancestor to check in Stage 2 and is denied as undecidable. A non-candidate is ALLOWED without
+ * running git.
  *
  * STAGE 2 — discriminator: `git check-ignore -q -- <abs>` (argv array, no shell, `--` before
  * the path), run with cwd = the target's own directory so the answer comes from the repo or
@@ -123,11 +129,12 @@ function pathSegments(filePath) {
 }
 
 /**
- * Is this file_path a generated `**\/bin/lib/*.cjs` artifact, by SEGMENT-accurate match?
+ * Is this file_path a candidate generated `**\/bin/lib/**\/*.cjs` artifact, by SEGMENT-accurate
+ * match?
  *
- * Requires a `bin` segment immediately followed by a `lib` segment, with the `*.cjs` leaf
- * as the DIRECT child of that `lib` (i.e. exactly one segment after `lib`, and it is the
- * final segment, and it ends in `.cjs`). Never a naive substring test.
+ * Requires a `bin` segment immediately followed by a `lib` segment (case-insensitive, MN-03),
+ * with a `*.cjs` leaf (case-insensitive) as the LAST segment somewhere below that `lib` (MJ-02).
+ * Never a naive substring test.
  *
  * @param {string} filePath
  * @returns {boolean}
@@ -136,12 +143,13 @@ function isGeneratedBinLib(filePath) {
   const segs = pathSegments(filePath);
   // Need at least bin / lib / leaf, with the leaf as the LAST segment.
   if (segs.length < 3) return false;
-  const leafIdx = segs.length - 1;
-  // bin and lib must be the two segments immediately preceding the leaf.
-  if (segs[leafIdx - 2] !== 'bin') return false;
-  if (segs[leafIdx - 1] !== 'lib') return false;
-  const leaf = segs[leafIdx];
-  return typeof leaf === 'string' && leaf.toLowerCase().endsWith('.cjs');
+  const leaf = segs[segs.length - 1];
+  if (typeof leaf !== 'string' || !leaf.toLowerCase().endsWith('.cjs')) return false;
+  // A bin/lib pair with at least the leaf after it (i + 2 <= last index).
+  for (let i = 0; i + 2 < segs.length; i++) {
+    if (segs[i].toLowerCase() === 'bin' && segs[i + 1].toLowerCase() === 'lib') return true;
+  }
+  return false;
 }
 
 /**
