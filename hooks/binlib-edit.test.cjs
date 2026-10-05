@@ -17,12 +17,77 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
+const os = require('node:os');
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 
-const { runBinlibGate } = require('./binlib-edit.cjs');
+const { runBinlibGate, binLibDenyReason } = require('./binlib-edit.cjs');
+const { spawnHook } = require('./lib/proof-harness.cjs');
 
-function input(filePath, toolName = 'Edit') {
+function input(filePath, toolName = 'Edit', cwd) {
   const tool_input = filePath === undefined ? {} : { file_path: filePath };
-  return JSON.stringify({ tool_name: toolName, tool_input });
+  const payload = { tool_name: toolName, tool_input };
+  if (cwd !== undefined) payload.cwd = cwd;
+  return JSON.stringify(payload);
+}
+
+// --- real temporary git repo fixture (BINLIB-01..04) ---------------------------------------
+// Fixture git runs with the repo-redirecting variables removed and the host config shut out,
+// so neither the developer's GIT_DIR/GIT_INDEX_FILE nor ~/.gitconfig can shape the fixture.
+const FIXTURE_GIT_ENV = (() => {
+  const env = Object.assign({}, process.env);
+  for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']) delete env[k];
+  env.GIT_CONFIG_GLOBAL = '/dev/null';
+  env.GIT_CONFIG_NOSYSTEM = '1';
+  return env;
+})();
+
+function fixtureGit(cwd, argv, env = FIXTURE_GIT_ENV) {
+  const r = spawnSync('git', argv, { cwd, env, encoding: 'utf8' });
+  if (r.error || r.status !== 0) {
+    throw new Error(
+      'fixture git ' + argv.join(' ') + ' failed (status ' + r.status + '): ' +
+        ((r.error && r.error.message) || r.stderr || '')
+    );
+  }
+  return r;
+}
+
+/**
+ * A real git repo shaped like gsd-core: a TRACKED hand-written bin/lib/capability-validator.cjs
+ * and a GITIGNORED (emitted) bin/lib/emitted.cjs, ignored by a per-file .gitignore line
+ * (gsd-core .gitignore:203 style). Callers MUST cleanup() in a finally block.
+ */
+function makeFixtureRepo() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-git-'));
+  try {
+    const libDir = path.join(root, 'gsd-core', 'bin', 'lib');
+    fixtureGit(root, ['init', '-q']);
+    fs.writeFileSync(path.join(root, '.gitignore'), '/gsd-core/bin/lib/emitted.cjs\n');
+    fs.mkdirSync(libDir, { recursive: true });
+    const tracked = path.join(libDir, 'capability-validator.cjs');
+    const ignored = path.join(libDir, 'emitted.cjs');
+    fs.writeFileSync(tracked, "'use strict';\nmodule.exports = { handWritten: true };\n");
+    fs.writeFileSync(ignored, "'use strict';\nmodule.exports = { emitted: true };\n");
+    fixtureGit(root, ['add', '.gitignore', 'gsd-core/bin/lib/capability-validator.cjs']);
+    fixtureGit(root, [
+      '-c', 'user.name=binlib-test',
+      '-c', 'user.email=binlib-test@example.invalid',
+      '-c', 'commit.gpgsign=false',
+      'commit', '-q', '-m', 'fixture',
+    ]);
+    return {
+      root,
+      libDir,
+      tracked,
+      ignored,
+      cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
+    };
+  } catch (err) {
+    fs.rmSync(root, { recursive: true, force: true });
+    throw err;
+  }
 }
 
 function deps(over = {}) {
@@ -160,4 +225,51 @@ test('fail-closed deny is override-escapable (HARD-03)', () => {
   };
   const d = runBinlibGate(input(undefined), deps(over));
   assert.strictEqual(d.permissionDecision, 'allow');
+});
+
+// --- BINLIB-01..04: real-git discriminator (tracked = hand-written, ignored = generated) -----
+
+test('BINLIB-01/BINLIB-04: Edit of a TRACKED hand-written bin/lib/capability-validator.cjs in a real git repo → allow', () => {
+  const fx = makeFixtureRepo();
+  try {
+    const d = runBinlibGate(input(fx.tracked, 'Edit', fx.root), deps());
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('BINLIB-01: Write of the tracked hand-written bin/lib/*.cjs → allow', () => {
+  const fx = makeFixtureRepo();
+  try {
+    const d = runBinlibGate(input(fx.tracked, 'Write', fx.root), deps());
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('BINLIB-02: Edit of a GITIGNORED (emitted) bin/lib/*.cjs → deny with the byte-identical ADR-457 reason', () => {
+  const fx = makeFixtureRepo();
+  try {
+    const d = runBinlibGate(input(fx.ignored, 'Edit', fx.root), deps());
+    assert.strictEqual(d.permissionDecision, 'deny');
+    assert.strictEqual(d.permissionDecisionReason, binLibDenyReason(fx.ignored));
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('BINLIB-01 end-to-end: spawned binlib-edit entrypoint allows the tracked file', () => {
+  const fx = makeFixtureRepo();
+  try {
+    const r = spawnHook(path.join(__dirname, 'binlib-edit.cjs'), {
+      stdin: input(fx.tracked, 'Edit', fx.root),
+      cwd: fx.root,
+    });
+    assert.strictEqual(r.conclusive, true, r.reason);
+    assert.strictEqual(r.decision, 'allow', r.reason);
+  } finally {
+    fx.cleanup();
+  }
 });
