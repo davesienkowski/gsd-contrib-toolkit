@@ -37,7 +37,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const { runBinlibGate, binLibDenyReason } = require('./binlib-edit.cjs');
+const { runBinlibGate, binLibDenyReason, REPO_REDIRECT_ENV } = require('./binlib-edit.cjs');
 
 function input(filePath, toolName = 'Edit', cwd) {
   const tool_input = filePath === undefined ? {} : { file_path: filePath };
@@ -47,11 +47,12 @@ function input(filePath, toolName = 'Edit', cwd) {
 }
 
 // --- real temporary git repo fixture (BINLIB-01..04) ---------------------------------------
-// Fixture git runs with the repo-redirecting variables removed and the host config shut out,
-// so neither the developer's GIT_DIR/GIT_INDEX_FILE nor ~/.gitconfig can shape the fixture.
+// Fixture git runs with the same variables the hook's probe scrubs (REPO_REDIRECT_ENV: repo
+// redirects, pathspec modes, ceiling) removed and the host config shut out, so neither the
+// developer's GIT_DIR/GIT_INDEX_FILE/GIT_*_PATHSPECS nor ~/.gitconfig can shape the fixture.
 const FIXTURE_GIT_ENV = (() => {
   const env = Object.assign({}, process.env);
-  for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']) delete env[k];
+  for (const k of REPO_REDIRECT_ENV) delete env[k];
   env.GIT_CONFIG_GLOBAL = '/dev/null';
   env.GIT_CONFIG_NOSYSTEM = '1';
   return env;
