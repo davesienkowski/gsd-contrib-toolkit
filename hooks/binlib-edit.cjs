@@ -51,6 +51,16 @@
  *     to and including `bin`                                         → undecidable
  *   - `git rev-parse --show-toplevel` (same cwd, same scrubbed env) is not a STRICT ancestor of
  *     realpath(`bin`) (equal to it, inside it, or unrelated)         → undecidable
+ *   - TOP (that toplevel) is NESTED: some directory strictly above TOP holds a `.git` entry
+ *     (the nearest one is A), and TOP is not a genuine linked worktree of A's repository. Genuine
+ *     means TOP/.git is a FILE whose `gitdir:` realpath is <A's common git dir>/worktrees/<name>,
+ *     and that worktrees/<name>/gitdir file points back to realpath(TOP/.git). A's common git
+ *     dir is A/.git when it is a directory. When A is itself a linked worktree (A/.git is a
+ *     file), it is the dir that file's `gitdir:` names, or that dir's `commondir`. This covers
+ *     harness worktrees under <repo>/.claude/worktrees/ and under an Orca worktree. An
+ *     independent nested repo (TOP/.git a directory) or any other gitdir file at or above `bin`
+ *     inside an enclosing repo                                       → undecidable
+ *     (MJ-01 variant: a `gitdir:` file or `git init` at <repo>/gsd-core, one level above `bin`)
  *   - `git config --get core.worktree` (same cwd and env) is set, or gives any answer other than
  *     "unset" (exit 1)                                               → undecidable
  * realpath(`bin`) is compared because git realpaths the toplevel; a repository reached through
@@ -88,7 +98,10 @@
  * Each of those routes leaves a visible .gitignore or index change in the contribution diff.
  * The verdict still depends on git's repository discovery. The pinning checks above close the
  * known invisible routes into a different repository (nested repo, `gitdir:` file, core.worktree)
- * at or below `bin`. A `.git` entry is not itself a candidate, so the Write that plants one is
+ * at or below `bin`, and, inside an enclosing repository, above it too. Not covered: hand-crafting
+ * a fake linked-worktree entry inside the enclosing repo's own `.git/worktrees/` (git refuses
+ * `worktree add` on the non-empty package dir, so this needs direct writes under `.git/`), and a
+ * repository whose OUTERMOST boundary is planted above the real one. A `.git` entry is not itself a candidate, so the Write that plants one is
  * allowed, but the Edit of the emitted file that follows is denied. Not covered (pre-existing):
  * a symlink OUTSIDE bin/lib that names an emitted file (e.g. `/tmp/x.cjs -> …/bin/lib/e.cjs` or
  * `bin/lib2 -> lib`) is never a candidate, and Bash writes are outside this gate's Write/Edit
@@ -310,6 +323,95 @@ function hasGitEntryUpTo(startDir, stopDir) {
 }
 
 /**
+ * Does `p` exist as an entry of any type? Any lstat error other than "absent" counts as present
+ * (fail-closed).
+ *
+ * @param {string} p
+ * @returns {boolean}
+ */
+function entryExists(p) {
+  try {
+    fs.lstatSync(p);
+    return true;
+  } catch (err) {
+    return !err || (err.code !== 'ENOENT' && err.code !== 'ENOTDIR');
+  }
+}
+
+/**
+ * The nearest directory STRICTLY above `dir` that holds a `.git` entry, or null.
+ *
+ * @param {string} dir
+ * @returns {string|null}
+ */
+function nearestEnclosingRepo(dir) {
+  let d = path.dirname(dir);
+  for (;;) {
+    if (entryExists(path.join(d, '.git'))) return d;
+    const up = path.dirname(d);
+    if (up === d) return null;
+    d = up;
+  }
+}
+
+/**
+ * The directory named by a `.git` file's `gitdir:` line, resolved against the file's directory.
+ * Throws when the file has no such line.
+ *
+ * @param {string} gitFile
+ * @returns {string}
+ */
+function readGitdirFile(gitFile) {
+  const m = /^gitdir:[ \t]*(.+?)[ \t]*$/m.exec(fs.readFileSync(gitFile, 'utf8'));
+  if (!m) throw new Error('no gitdir line in ' + gitFile);
+  return path.resolve(path.dirname(gitFile), m[1]);
+}
+
+/**
+ * realpath of repository A's common git dir: A/.git when it is a directory; for a linked
+ * worktree (A/.git a file), its gitdir's `commondir`, else the gitdir itself.
+ *
+ * @param {string} repoDir
+ * @returns {string}
+ */
+function commonGitDirOf(repoDir) {
+  const dotGit = path.join(repoDir, '.git');
+  if (fs.lstatSync(dotGit).isDirectory()) return fs.realpathSync(dotGit);
+  const gitdir = readGitdirFile(dotGit);
+  const commondirFile = path.join(gitdir, 'commondir');
+  if (entryExists(commondirFile)) {
+    const rel = fs.readFileSync(commondirFile, 'utf8').trim();
+    return fs.realpathSync(path.resolve(gitdir, rel));
+  }
+  return fs.realpathSync(gitdir);
+}
+
+/**
+ * MJ-01 variant: is the discovered toplevel `top` safe with respect to enclosing repositories?
+ * True when no directory strictly above `top` holds a `.git` entry, or when `top` is a genuine
+ * linked worktree of the nearest enclosing repository A. Genuine means top/.git is a file whose
+ * gitdir realpath is <A common dir>/worktrees/<name>, and that entry's `gitdir` file points back
+ * to realpath(top/.git). Anything else, including any error, is false (fail-closed).
+ *
+ * @param {string} top
+ * @returns {boolean}
+ */
+function enclosingRepoAllows(top) {
+  try {
+    const enclosing = nearestEnclosingRepo(top);
+    if (enclosing === null) return true;
+    const topGit = path.join(top, '.git');
+    if (!fs.lstatSync(topGit).isFile()) return false;
+    const gitdir = fs.realpathSync(readGitdirFile(topGit));
+    if (path.dirname(gitdir) !== path.join(commonGitDirOf(enclosing), 'worktrees')) return false;
+    const back = fs.readFileSync(path.join(gitdir, 'gitdir'), 'utf8').trim();
+    return fs.realpathSync(path.resolve(gitdir, back)) === fs.realpathSync(topGit);
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
  * Is `ancestor` a STRICT ancestor directory of `descendant`?
  *
  * @param {string} ancestor
@@ -348,7 +450,8 @@ function runGitProbe(argv, cwd, env, deadline) {
 /**
  * The default probe. It first PINS the repository (MJ-01): no `.git` entry between the target's
  * directory and the bin/lib pair's `bin`, a discovered toplevel that is a strict ancestor of
- * realpath(`bin`), and no core.worktree. Only then does it run `git check-ignore -q -- <abs>`
+ * realpath(`bin`) and is not nested inside an enclosing repository unless it is a genuine linked
+ * worktree of it (enclosingRepoAllows), and no core.worktree. Only then does it run `git check-ignore -q -- <abs>`
  * from the target's own directory. argv arrays, never a shell string; `--` before the path.
  * Plain check-ignore (no --no-index), so a TRACKED file reports not-ignored even when a pattern
  * matches it. Read-only: takes no index lock. Every spawn runs with the repo-redirecting
@@ -373,6 +476,7 @@ function checkIgnoreLive(absPath) {
     if (!top || top.error || top.status !== 0) return 'unknown';
     const toplevel = String(top.stdout).replace(/\r?\n$/, '');
     if (!isStrictAncestor(toplevel, realBin)) return 'unknown';
+    if (!enclosingRepoAllows(toplevel)) return 'unknown';
 
     const worktree = runGitProbe(['config', '--get', 'core.worktree'], cwd, env, deadline);
     if (!worktree || worktree.error || worktree.status !== 1) return 'unknown';
@@ -503,6 +607,7 @@ module.exports = {
   binDirOf,
   hasGitEntryUpTo,
   isStrictAncestor,
+  enclosingRepoAllows,
   probeEnv,
   binLibUndecidableReason,
   CHECK_IGNORE_TIMEOUT_MS,
