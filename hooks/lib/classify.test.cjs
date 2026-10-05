@@ -1616,3 +1616,25 @@ for (const [gate, allowCmd, denyCmd] of SPAWN_CASES) {
     }
   });
 }
+
+// ---------------------------------------------------------------------------
+// GTEST-01 (36-02): gsd-test is deliberately NOT a classifyAction action. The shared detector
+// (hooks/lib/gsd-test-detect.cjs) is a separate predicate, so a gsd-test segment in a chain must
+// never displace a merge/review-side action (the ENF-22 lesson). These rows lock that.
+// ---------------------------------------------------------------------------
+
+test('GTEST-01 ENF-22 displacement: a gsd-test segment does not displace a later pr-merge', () => {
+  assert.strictEqual(cls('gsd-test -base next -head HEAD && gh pr merge 1').action, 'pr-merge');
+});
+
+test('GTEST-01 ENF-22 displacement: a gsd-test segment does not displace an earlier pr-review', () => {
+  assert.strictEqual(cls('gh pr review 1 --approve; gsd-test -head HEAD').action, 'pr-review');
+});
+
+test('GTEST-01 ENF-22 displacement: a lone gsd-test dispatch classifies as other', () => {
+  assert.strictEqual(cls('gsd-test -head HEAD').action, 'other');
+});
+
+test('GTEST-01 ENF-22 displacement: hasGovernedSegment still finds pr-merge after gsd-test', () => {
+  assert.strictEqual(hasGovernedSegment(parseCommand('gsd-test x && gh pr merge 1'), ['pr-merge']), true);
+});
