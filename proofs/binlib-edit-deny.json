@@ -11,7 +11,7 @@
     "hookSpecificOutput": {
       "hookEventName": "PreToolUse",
       "permissionDecision": "deny",
-      "permissionDecisionReason": "This file is a GENERATED artifact (`/g/gsd-core/bin/lib/decisions.cjs`). Editing a `bin/lib/*.cjs` by hand is overwritten by the next `build:lib` (ADR-457: generated CJS has a single source). Edit the `src/*.ts` source instead, then run `build:lib` to regenerate. (ENF-03) Whether it is generated or hand-written could not be determined (git check-ignore gave no answer: directory absent, not a git work tree, git missing or erroring, or timed out), so it is treated as generated (fail-closed, HARD-01 / BINLIB-03)."
+      "permissionDecisionReason": "This file is a GENERATED artifact (`/g/gsd-core/bin/lib/decisions.cjs`). Editing a `bin/lib/*.cjs` by hand is overwritten by the next `build:lib` (ADR-457: generated CJS has a single source). Edit the `src/*.cts` source instead, then run `build:lib` to regenerate. (ENF-03) Whether it is generated or hand-written could not be determined (git check-ignore gave no answer: directory absent, not a git work tree, a nested or redirected repository at or below bin/, git missing or erroring, or timed out), so it is treated as generated (fail-closed, HARD-01 / BINLIB-03)."
     }
   }
 }
