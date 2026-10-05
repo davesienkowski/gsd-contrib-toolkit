@@ -790,3 +790,112 @@ test('MJ-01: binDirOf picks the OUTERMOST bin of a bin/lib pair; isStrictAncesto
   assert.strictEqual(isStrictAncestor('/r/..gsd', '/r/..gsd/bin'), true);
   assert.strictEqual(isStrictAncestor('', '/r/gsd-core/bin'), false);
 });
+
+// --- MJ-01 variant: a repository boundary ABOVE bin, nested inside an enclosing repo ---------
+
+function commitAll(cwd) {
+  fixtureGit(cwd, [
+    '-c', 'user.name=binlib-test',
+    '-c', 'user.email=binlib-test@example.invalid',
+    '-c', 'commit.gpgsign=false',
+    'commit', '-q', '--allow-empty', '-m', 'wt',
+  ]);
+}
+
+test('MJ-01 variant: a planted `gitdir:` file at <repo>/gsd-core/.git (above bin) pointing at a crafted repo → deny', () => {
+  const fx = makeFixtureRepo();
+  const fake = makeFakeGitDir();
+  try {
+    fs.writeFileSync(path.join(fx.root, 'gsd-core', '.git'), 'gitdir: ' + path.join(fake, '.git') + '\n');
+    assertRedirectDenied(fx, fx.ignored, 'gitdir file above bin');
+  } finally {
+    fs.rmSync(fake, { recursive: true, force: true });
+    fx.cleanup();
+  }
+});
+
+test('MJ-01 variant: a `gitdir:` file above bin borrowing a REAL worktree of the enclosing repo that does not point back → deny', () => {
+  const fx = makeFixtureRepo();
+  try {
+    const w = path.join(fx.root, '.claude', 'worktrees', 'w');
+    fixtureGit(fx.root, ['worktree', 'add', '-q', '--detach', w]);
+    fs.writeFileSync(
+      path.join(fx.root, 'gsd-core', '.git'),
+      'gitdir: ' + path.join(fx.root, '.git', 'worktrees', 'w') + '\n'
+    );
+    assertRedirectDenied(fx, fx.ignored, 'borrowed worktree gitdir above bin');
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('MJ-01 variant: an independent `git init` at <repo>/gsd-core (above bin) → deny', () => {
+  const fx = makeFixtureRepo();
+  try {
+    fixtureGit(path.join(fx.root, 'gsd-core'), ['init', '-q']);
+    assertRedirectDenied(fx, fx.ignored, 'independent nested repo above bin');
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('MJ-01 variant: a real linked worktree INSIDE the repo (<repo>/.claude/worktrees/w) keeps normal verdicts', () => {
+  const fx = makeFixtureRepo();
+  try {
+    const w = path.join(fx.root, '.claude', 'worktrees', 'w');
+    fixtureGit(fx.root, ['worktree', 'add', '-q', '--detach', w]);
+    const wLib = path.join(w, 'gsd-core', 'bin', 'lib');
+    const wEmitted = path.join(wLib, 'emitted.cjs');
+    fs.writeFileSync(wEmitted, "'use strict';\n");
+    const t = realGate(input(path.join(wLib, 'capability-validator.cjs'), 'Edit', w));
+    assert.strictEqual(t.permissionDecision, 'allow', t.permissionDecisionReason);
+    const e = realGate(input(wEmitted, 'Edit', w));
+    assert.strictEqual(e.permissionDecision, 'deny');
+    assert.strictEqual(e.permissionDecisionReason, binLibDenyReason(wEmitted));
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('MJ-01 variant: a linked worktree OUTSIDE the repo (Orca workspaces layout) keeps normal verdicts', () => {
+  const fx = makeFixtureRepo();
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-orca-'));
+  try {
+    const w = path.join(ws, 'workspaces', 'gsd-core', 'W1');
+    fixtureGit(fx.root, ['worktree', 'add', '-q', '--detach', w]);
+    const wLib = path.join(w, 'gsd-core', 'bin', 'lib');
+    const wEmitted = path.join(wLib, 'emitted.cjs');
+    fs.writeFileSync(wEmitted, "'use strict';\n");
+    const t = realGate(input(path.join(wLib, 'capability-validator.cjs'), 'Edit', w));
+    assert.strictEqual(t.permissionDecision, 'allow', t.permissionDecisionReason);
+    const e = realGate(input(wEmitted, 'Edit', w));
+    assert.strictEqual(e.permissionDecisionReason, binLibDenyReason(wEmitted));
+  } finally {
+    fixtureGit(fx.root, ['worktree', 'prune']);
+    fs.rmSync(ws, { recursive: true, force: true });
+    fx.cleanup();
+  }
+});
+
+test('MJ-01 variant: a harness worktree nested in an OUTSIDE linked worktree (<orca-wt>/.claude/worktrees/x) keeps normal verdicts', () => {
+  const fx = makeFixtureRepo();
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-orca-'));
+  try {
+    const outer = path.join(ws, 'W1');
+    fixtureGit(fx.root, ['worktree', 'add', '-q', '--detach', outer]);
+    commitAll(outer);
+    const inner = path.join(outer, '.claude', 'worktrees', 'x');
+    fixtureGit(outer, ['worktree', 'add', '-q', '--detach', inner]);
+    const lib = path.join(inner, 'gsd-core', 'bin', 'lib');
+    const emitted = path.join(lib, 'emitted.cjs');
+    fs.writeFileSync(emitted, "'use strict';\n");
+    const t = realGate(input(path.join(lib, 'capability-validator.cjs'), 'Edit', inner));
+    assert.strictEqual(t.permissionDecision, 'allow', t.permissionDecisionReason);
+    const e = realGate(input(emitted, 'Edit', inner));
+    assert.strictEqual(e.permissionDecisionReason, binLibDenyReason(emitted));
+  } finally {
+    fixtureGit(fx.root, ['worktree', 'prune']);
+    fs.rmSync(ws, { recursive: true, force: true });
+    fx.cleanup();
+  }
+});
