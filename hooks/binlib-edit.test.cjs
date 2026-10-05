@@ -7,8 +7,8 @@
  * injected so the unit suite is hermetic (no filesystem / no env reads).
  *
  * Coverage (plan <behavior>):
- *   - a `**\/bin/lib/*.cjs` Edit/Write (top-level AND nested) → DENY, reason names src/*.ts + ADR-457
- *   - a `src/*.ts` source path → ALLOW (the correct file to edit)
+ *   - a `**\/bin/lib/**\/*.cjs` Edit/Write (top-level AND nested) → DENY, reason names src/*.cts + ADR-457
+ *   - a `src/*.cts` source path → ALLOW (the correct file to edit)
  *   - a `bin/lib` SUBSTRING that is not a path SEGMENT (e.g. src/bin-lib-notes.md) → ALLOW
  *   - a doc/test/non-bin-lib file → ALLOW
  *   - a bin/lib path whose leaf is NOT .cjs (e.g. bin/lib/README.md) → ALLOW (segment+leaf accurate)
@@ -23,6 +23,11 @@
  *     values) → DENY, ADR-457 reason + "could not be determined" note
  *   - BINLIB-04: the tracked-file ALLOW was recorded RED against the pre-fix gate
  *   - T-35-02 env redirect, T-35-03 argv metacharacters, T-35-05 dot segments
+ *   - 35-02 review fixes: MJ-01 redirected repository discovery (nested `git init`, planted
+ *     `gitdir:` files in lib/ or bin/, repo-local core.worktree) → undecidable DENY; MJ-02 any
+ *     .cjs at any depth below bin/lib is a candidate (ignored nested → DENY, tracked nested
+ *     vendor → ALLOW); MN-01 inherited pathspec-mode / ceiling env cannot false-deny; MN-03
+ *     case-insensitive bin/lib segments; NT-03 the reason names src/*.cts; NT-04 symlink guards
  */
 
 const test = require('node:test');
@@ -97,20 +102,36 @@ function fixtureGit(cwd, argv, env = FIXTURE_GIT_ENV) {
 /**
  * A real git repo shaped like gsd-core: a TRACKED hand-written bin/lib/capability-validator.cjs
  * and a GITIGNORED (emitted) bin/lib/emitted.cjs, ignored by a per-file .gitignore line
- * (gsd-core .gitignore:203 style). Callers MUST cleanup() in a finally block.
+ * (gsd-core .gitignore:203 style). It also carries the nested shapes gsd-core really has (MJ-02):
+ * a GITIGNORED bin/lib/observability/emitted-nested.cjs and a TRACKED vendor file
+ * bin/lib/vendor/js-yaml.cjs. Callers MUST cleanup() in a finally block.
  */
 function makeFixtureRepo() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-git-'));
   try {
-    const libDir = path.join(root, 'gsd-core', 'bin', 'lib');
+    const binDir = path.join(root, 'gsd-core', 'bin');
+    const libDir = path.join(binDir, 'lib');
     fixtureGit(root, ['init', '-q']);
-    fs.writeFileSync(path.join(root, '.gitignore'), '/gsd-core/bin/lib/emitted.cjs\n');
-    fs.mkdirSync(libDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(root, '.gitignore'),
+      '/gsd-core/bin/lib/emitted.cjs\n/gsd-core/bin/lib/observability/emitted-nested.cjs\n'
+    );
+    fs.mkdirSync(path.join(libDir, 'observability'), { recursive: true });
+    fs.mkdirSync(path.join(libDir, 'vendor'), { recursive: true });
     const tracked = path.join(libDir, 'capability-validator.cjs');
     const ignored = path.join(libDir, 'emitted.cjs');
+    const nestedIgnored = path.join(libDir, 'observability', 'emitted-nested.cjs');
+    const nestedTracked = path.join(libDir, 'vendor', 'js-yaml.cjs');
     fs.writeFileSync(tracked, "'use strict';\nmodule.exports = { handWritten: true };\n");
     fs.writeFileSync(ignored, "'use strict';\nmodule.exports = { emitted: true };\n");
-    fixtureGit(root, ['add', '.gitignore', 'gsd-core/bin/lib/capability-validator.cjs']);
+    fs.writeFileSync(nestedIgnored, "'use strict';\nmodule.exports = { emitted: 'nested' };\n");
+    fs.writeFileSync(nestedTracked, "'use strict';\nmodule.exports = { vendor: true };\n");
+    fixtureGit(root, [
+      'add',
+      '.gitignore',
+      'gsd-core/bin/lib/capability-validator.cjs',
+      'gsd-core/bin/lib/vendor/js-yaml.cjs',
+    ]);
     fixtureGit(root, [
       '-c', 'user.name=binlib-test',
       '-c', 'user.email=binlib-test@example.invalid',
@@ -119,9 +140,12 @@ function makeFixtureRepo() {
     ]);
     return {
       root,
+      binDir,
       libDir,
       tracked,
       ignored,
+      nestedIgnored,
+      nestedTracked,
       cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
     };
   } catch (err) {
@@ -140,13 +164,14 @@ function deps(over = {}) {
   );
 }
 
-test('top-level bin/lib/*.cjs Edit → deny, reason names src/*.ts + ADR-457', () => {
+test('top-level bin/lib/*.cjs Edit → deny, reason names src/*.cts + ADR-457 (NT-03)', () => {
   const d = realGate(input('/home/x/gsd-core/bin/lib/decisions.cjs'));
   assert.strictEqual(d.permissionDecision, 'deny');
-  // ADR-457 source extension is `.ts` (a TS `src/` tree built by tsc), matching the
-  // sibling freshness.cjs gate — NOT `.cts` (CONFLICT-02 / F-01).
-  assert.match(d.permissionDecisionReason, /src\/\*\.ts/);
-  assert.doesNotMatch(d.permissionDecisionReason, /\.cts/);
+  // NT-03 (35-02): gsd-core's src/ tree is `.cts` (measured 2026-10-05: 240 `.cts`, 0 `.ts` in
+  // src/). CONFLICT-02 (phase 06) chose `.ts` when no src/ tree existed yet; the live tree now
+  // settles it, so the reason names `src/*.cts`.
+  assert.match(d.permissionDecisionReason, /`src\/\*\.cts`/);
+  assert.doesNotMatch(d.permissionDecisionReason, /src\/\*\.ts\b/);
   assert.match(d.permissionDecisionReason, /457/);
 });
 
@@ -189,9 +214,10 @@ test('bin/lib/README.md (segment pair but leaf is not .cjs) → allow', () => {
   assert.strictEqual(d.permissionDecision, 'allow');
 });
 
-test('bin/lib/sub/nested.cjs (.cjs not the direct child of lib) → allow (leaf must be a direct lib child)', () => {
-  const d = realGate(input('/g/gsd-core/bin/lib/sub/nested.cjs'));
-  assert.strictEqual(d.permissionDecision, 'allow');
+test('MJ-02: bin/lib/sub/nested.cjs is a candidate; this path does not exist, so it is undecidable → deny with the note', () => {
+  const fp = '/g/gsd-core/bin/lib/sub/nested.cjs';
+  const d = realGate(input(fp));
+  assertUndecidableDeny(d.permissionDecision, d.permissionDecisionReason, fp);
 });
 
 test('a doc file → allow', () => {
@@ -353,7 +379,7 @@ function assertUndecidableDeny(decision, reason, filePath) {
     'undecidable reason must keep the full ADR-457 reason as its prefix: ' + reason
   );
   assert.match(reason, UNDECIDABLE);
-  assert.doesNotMatch(reason, /\.cts/);
+  assert.match(reason, /`src\/\*\.cts`/);
 }
 
 test('BINLIB-01: a brand-new, untracked, not-ignored bin/lib/*.cjs → allow (gsd-core ignores per file)', () => {
@@ -540,6 +566,210 @@ test('T-35-03: shell metacharacters in the leaf reach git as one argv element an
     // The verdict is not the point (MN-02): only that git answered without a shell running.
     assert.ok(['allow', 'deny'].includes(d.permissionDecision), d.permissionDecision);
     assert.deepStrictEqual(findNamed(fx.root, 'PWNED'), []);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+// --- 35-02 review fixes -----------------------------------------------------------------------
+
+/** git check-ignore exactly as the pre-fix probe ran it (cwd = the file's dir), isolated. */
+function rawCheckIgnore(absPath) {
+  return spawnSync('git', ['check-ignore', '-q', '--', absPath], {
+    cwd: path.dirname(absPath),
+    env: FIXTURE_GIT_ENV,
+    encoding: 'utf8',
+  }).status;
+}
+
+function assertRedirectDenied(fx, target, label) {
+  // Precondition: the route really is a bypass of the bare check-ignore probe (exit 1, "not
+  // ignored"), not a 128 that would deny for an unrelated reason.
+  assert.strictEqual(rawCheckIgnore(target), 1, label + ': route must make raw check-ignore exit 1');
+  const d = realGate(input(target, 'Edit', fx.root));
+  assertUndecidableDeny(d.permissionDecision, d.permissionDecisionReason, target);
+}
+
+test('MJ-01: a nested `git init` in bin/lib cannot redirect discovery into an allow (undecidable deny)', () => {
+  const fx = makeFixtureRepo();
+  try {
+    fixtureGit(fx.libDir, ['init', '-q']);
+    assertRedirectDenied(fx, fx.ignored, 'nested git init in lib');
+  } finally {
+    fx.cleanup();
+  }
+});
+
+function makeFakeGitDir() {
+  const fake = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-fake-'));
+  fixtureGit(fake, ['init', '-q']);
+  return fake;
+}
+
+test('MJ-01: a planted `gitdir:` file at bin/lib/.git cannot redirect discovery into an allow', () => {
+  const fx = makeFixtureRepo();
+  const fake = makeFakeGitDir();
+  try {
+    fs.writeFileSync(path.join(fx.libDir, '.git'), 'gitdir: ' + path.join(fake, '.git') + '\n');
+    assertRedirectDenied(fx, fx.ignored, 'gitdir file in lib');
+  } finally {
+    fs.rmSync(fake, { recursive: true, force: true });
+    fx.cleanup();
+  }
+});
+
+test('MJ-01: a planted `gitdir:` file one level up at bin/.git cannot redirect discovery into an allow', () => {
+  const fx = makeFixtureRepo();
+  const fake = makeFakeGitDir();
+  try {
+    fs.writeFileSync(path.join(fx.binDir, '.git'), 'gitdir: ' + path.join(fake, '.git') + '\n');
+    assertRedirectDenied(fx, fx.ignored, 'gitdir file in bin');
+  } finally {
+    fs.rmSync(fake, { recursive: true, force: true });
+    fx.cleanup();
+  }
+});
+
+test('MJ-01: a repo-local core.worktree re-rooting the work tree cannot turn the emitted deny into an allow', () => {
+  const fx = makeFixtureRepo();
+  try {
+    fixtureGit(fx.root, ['config', 'core.worktree', path.join(fx.root, 'gsd-core')]);
+    assertRedirectDenied(fx, fx.ignored, 'core.worktree');
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('MJ-01: a nested `git init` deeper in bin/lib (observability/) cannot redirect a nested candidate', () => {
+  const fx = makeFixtureRepo();
+  try {
+    fixtureGit(path.dirname(fx.nestedIgnored), ['init', '-q']);
+    assertRedirectDenied(fx, fx.nestedIgnored, 'nested git init in lib/observability');
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('MJ-01: the untouched fixture still allows the tracked file and denies the emitted one (no false deny)', () => {
+  const fx = makeFixtureRepo();
+  try {
+    assert.strictEqual(realGate(input(fx.tracked, 'Edit', fx.root)).permissionDecision, 'allow');
+    const d = realGate(input(fx.ignored, 'Edit', fx.root));
+    assert.strictEqual(d.permissionDecisionReason, binLibDenyReason(fx.ignored));
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('MJ-02: a GITIGNORED nested bin/lib/observability/*.cjs (emitted) → deny with the ADR-457 reason', () => {
+  const fx = makeFixtureRepo();
+  try {
+    const d = realGate(input(fx.nestedIgnored, 'Edit', fx.root));
+    assert.strictEqual(d.permissionDecision, 'deny');
+    assert.strictEqual(d.permissionDecisionReason, binLibDenyReason(fx.nestedIgnored));
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('MJ-02: a TRACKED nested vendor file bin/lib/vendor/js-yaml.cjs → allow (git decides, not depth)', () => {
+  const fx = makeFixtureRepo();
+  try {
+    const d = realGate(input(fx.nestedTracked, 'Edit', fx.root));
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('MJ-02/MN-03: candidate matching is any depth below bin/lib and case-insensitive on bin and lib', () => {
+  const { isGeneratedBinLib } = require('./binlib-edit.cjs');
+  for (const p of [
+    '/g/gsd-core/bin/lib/x.cjs',
+    '/g/gsd-core/bin/lib/observability/logger.cjs',
+    '/g/gsd-core/bin/lib/a/b/c.CJS',
+    '/g/gsd-core/BIN/Lib/active-workstream-store.cjs',
+    'C:\\g\\gsd-core\\Bin\\LIB\\sub\\x.cjs',
+  ]) {
+    assert.strictEqual(isGeneratedBinLib(p), true, p);
+  }
+  for (const p of [
+    '/g/gsd-core/bin/lib/README.md',
+    '/g/gsd-core/bin/lib',
+    '/g/gsd-core/bin/lib.cjs',
+    '/g/gsd-core/lib/bin/x.cjs',
+    '/g/gsd-core/bin/x/lib/y.cjs',
+    '/repo/src/mybin/libfoo.cjs',
+  ]) {
+    assert.strictEqual(isGeneratedBinLib(p), false, p);
+  }
+});
+
+test('MN-03: a case-variant BIN/Lib path reaches the probe (case-insensitive filesystems alias it)', () => {
+  let calls = 0;
+  const fp = '/g/gsd-core/BIN/Lib/active-workstream-store.cjs';
+  const d = runBinlibGate(
+    input(fp),
+    deps({
+      checkIgnore: () => {
+        calls += 1;
+        return 'ignored';
+      },
+    })
+  );
+  assert.strictEqual(calls, 1);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(d.permissionDecisionReason, binLibDenyReason(fp));
+});
+
+for (const [k, v] of [
+  ['GIT_GLOB_PATHSPECS', '1'],
+  ['GIT_NOGLOB_PATHSPECS', '1'],
+  ['GIT_ICASE_PATHSPECS', '1'],
+  ['GIT_LITERAL_PATHSPECS', '1'],
+  ['GIT_CEILING_DIRECTORIES', null],
+]) {
+  test('MN-01: an inherited ' + k + ' cannot false-deny the tracked file or open the emitted one', () => {
+    const fx = makeFixtureRepo();
+    try {
+      const env = { [k]: v === null ? fx.root : v };
+      const ok = spawnHookWithEnv(input(fx.tracked, 'Edit', fx.root), { cwd: fx.root, env });
+      assert.strictEqual(ok.decision, 'allow', k + ': ' + ok.reason);
+      const no = spawnHookWithEnv(input(fx.ignored, 'Edit', fx.root), { cwd: fx.root, env });
+      assert.strictEqual(no.decision, 'deny');
+      assert.strictEqual(no.reason, binLibDenyReason(fx.ignored), k);
+    } finally {
+      fx.cleanup();
+    }
+  });
+}
+
+test('NT-04: through a symlinked repo ROOT the verdict is normal (tracked allow, emitted deny)', () => {
+  const fx = makeFixtureRepo();
+  const linkBase = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-link-'));
+  try {
+    const link = path.join(linkBase, 'repolink');
+    fs.symlinkSync(fx.root, link, 'dir');
+    const rel = (p) => path.join(link, path.relative(fx.root, p));
+    const t = realGate(input(rel(fx.tracked), 'Edit', link));
+    assert.strictEqual(t.permissionDecision, 'allow', t.permissionDecisionReason);
+    const e = realGate(input(rel(fx.ignored), 'Edit', link));
+    assert.strictEqual(e.permissionDecision, 'deny');
+    assert.strictEqual(e.permissionDecisionReason, binLibDenyReason(rel(fx.ignored)));
+  } finally {
+    fs.rmSync(linkBase, { recursive: true, force: true });
+    fx.cleanup();
+  }
+});
+
+test('NT-04: through an in-worktree symlinked alias of bin/lib the emitted file is denied', () => {
+  const fx = makeFixtureRepo();
+  try {
+    const aliasBin = path.join(fx.root, 'alias', 'bin');
+    fs.mkdirSync(aliasBin, { recursive: true });
+    fs.symlinkSync(path.join('..', '..', 'gsd-core', 'bin', 'lib'), path.join(aliasBin, 'lib'), 'dir');
+    const d = realGate(input(path.join(aliasBin, 'lib', 'emitted.cjs'), 'Edit', fx.root));
+    assert.strictEqual(d.permissionDecision, 'deny');
   } finally {
     fx.cleanup();
   }
