@@ -69,9 +69,14 @@
  * the first non-answer stops the remaining probes. Every probe is read-only (no index lock), so
  * concurrent or interrupted invocations cannot mutate a repo.
  *
- * ENV SCRUB (T-35-02): the probe runs with GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE and
+ * ENV SCRUB (T-35-02, MN-01): the probe runs with GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE and
  * GIT_COMMON_DIR removed. Measured 2026-10-05: an inherited GIT_INDEX_FILE pointing at an
- * alternate index with the emitted file force-added makes check-ignore exit 1 — a fail-open.
+ * alternate index with the emitted file force-added makes check-ignore exit 1, a fail-open.
+ * GIT_GLOB_PATHSPECS, GIT_NOGLOB_PATHSPECS, GIT_ICASE_PATHSPECS, GIT_LITERAL_PATHSPECS and
+ * GIT_CEILING_DIRECTORIES are removed too. Measured 2026-10-05 (git 2.43): each pathspec mode
+ * makes check-ignore exit 128 ("pathspec magic not supported by this command"), and a ceiling
+ * at or above the repo root stops discovery (exit 128). Either way every candidate was
+ * false-denied, including tracked hand-written files.
  *
  * DIVERGENCE (recorded): the discriminator idea comes from Trek-e's
  * `emitted-cjs-read-guard.cjs`, which fails OPEN when git cannot answer. This gate fails
@@ -120,12 +125,24 @@ const { runGate, readHookInput, deny, allow, emit, FailClosed } = require('./lib
 const CHECK_IGNORE_TIMEOUT_MS = 3000;
 
 /**
- * Inherited variables that redirect git to a different repository, work tree or index. Any of
- * them could make the probe answer for something other than the file's own repository (an
- * alternate GIT_INDEX_FILE with the emitted file force-added turns exit 0 into exit 1), so the
- * probe never sees them (T-35-02).
+ * Inherited variables the probe never sees. The first four redirect git to a different
+ * repository, work tree or index, which could make the probe answer for something other than the
+ * file's own repository (an alternate GIT_INDEX_FILE with the emitted file force-added turns
+ * exit 0 into exit 1; T-35-02). The rest change how git reads the path or finds the repository:
+ * the four pathspec modes make check-ignore exit 128, and GIT_CEILING_DIRECTORIES can stop
+ * discovery before the repo root. Either way every candidate would be false-denied (MN-01).
  */
-const REPO_REDIRECT_ENV = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR'];
+const REPO_REDIRECT_ENV = [
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_COMMON_DIR',
+  'GIT_GLOB_PATHSPECS',
+  'GIT_NOGLOB_PATHSPECS',
+  'GIT_ICASE_PATHSPECS',
+  'GIT_LITERAL_PATHSPECS',
+  'GIT_CEILING_DIRECTORIES',
+];
 
 /**
  * A shallow copy of env with exactly the REPO_REDIRECT_ENV keys removed. Every other variable,
