@@ -1,72 +1,667 @@
 'use strict';
 
 /**
- * hooks/lib/gsd-test-detect.cjs — the shared gsd-test dispatch detector (GTEST-01).
+ * hooks/lib/gsd-test-detect.cjs — the shared gsd-test dispatch detector (GTEST-01, GTEST-03).
  *
  * ONE pure predicate both gsd-test dispatch gates (ENF-23 clean-tree, ENF-24 viability) call
- * FIRST: no dispatch -> null -> the gate allows before any filesystem, git or docker work
- * (RES-01 action-first ordering; 36-CONTEXT Addendum 2 — `isNonGovernedCommand` cannot serve,
- * because gsd-test is deliberately NOT a classifyAction action).
+ * FIRST: no entry -> the gate allows before any filesystem, git or docker work (RES-01
+ * action-first ordering; 36-CONTEXT Addendum 2 — `isNonGovernedCommand` cannot serve, because
+ * gsd-test is deliberately NOT a classifyAction action: a new action could displace a merge or
+ * review-side action in a chained command and disarm ENF-20, the ENF-22 lesson).
  *
- * TRACER FORM (36-01). This recognises the plain dispatch only: a segment whose resolved
- * program (classify.resolveProgram — leading env assignments, wrapper builtins, basename) is
- * `gsd-test`, and reports whether its output is piped from argv's per-segment `nextOp`.
- * 36-02 expands it to every variant (Go flag walker, informational invocations, `set -o
- * pipefail`, `bash -c` payloads, `|&`/`(`/`&` residue, the unparseable-command rule). The
- * returned shape is already the final one so the gates do not change when it grows.
+ * Built on the EXISTING parsers only: `argv.parseCommand` for the command and, recursively, for
+ * each `bash -c` payload (heredoc bodies are already opaque there; no new stripping code), and
+ * `classify.resolveProgram` for env assignments, wrapper builtins and the program basename.
  *
- * Pure: no fs, no child_process, no env reads. Never executes the command it classifies.
+ * `nohup` and `time` are NOT classify WRAPPER_BUILTINS (verified 2026-10-05: `nohup gsd-test`
+ * resolves to program `nohup`). They are peeled HERE, detector-locally, by re-running
+ * resolveProgram on the token tail; classify.cjs stays byte-unchanged, because widening its
+ * wrapper set would reclassify every existing gate's input.
+ *
+ * Entries (findGsdTestDispatches):
+ *   { kind: 'uncertain', reason }  — the command names gsd-test but cannot be attributed
+ *                                    (unparseable, ambiguous wrapper, over-deep `-c`,
+ *                                    unbalanced substitution, shell expansion in flag
+ *                                    position). Gates fail closed on it (HARD-01).
+ *   { kind: 'dispatch', seg, segIndex, args, flags, unresolved, informational, background,
+ *     pipedOut, pipefail, pipeMasked, viaDashC, depth, prefixes }
+ *
+ * Pure: no fs, no child_process, no env reads (env and homedir are always passed in). Never
+ * executes the command it classifies. Never throws on a string input.
  *
  * @module hooks/lib/gsd-test-detect
  */
 
-const { parseCommand } = require('./argv.cjs');
+const path = require('node:path');
+const { parseCommand, classifyTokens } = require('./argv.cjs');
 const { resolveProgram } = require('./classify.cjs');
+const { commandStartDir } = require('./resolve.cjs');
+
+/** HARD-01 word test for uncertain input: gsd-test as a whole word, not gsd-test-other. */
+const GSD_TEST_WORD = /(^|[^\w-])gsd-test(?![\w-])/;
+
+/** `bash -c "bash -c '...'"` is depth 2; a payload deeper than this is graded uncertain. */
+const MAX_DASH_C_DEPTH = 2;
+
+/** Bound on the detector-local nohup/time peel (T-36-08). */
+const MAX_PEELS = 4;
+
+/** gsd-test v1.8.0 `--help`: flags that take a value (Addendum 1). */
+const VALUE_FLAGS = new Set([
+  'base', 'bench', 'config', 'exclude', 'head', 'node', 'scratch', 'source', 'targets',
+]);
+
+/** gsd-test v1.8.0 `--help`: boolean flags (Addendum 1). */
+const BOOLEAN_FLAGS = new Set([
+  'json-events', 'probe-benches', 'quiet', 'verbose', 'version', 'help', 'h',
+]);
+
+/** A dispatch carrying any of these (truthy) only prints information; both gates pass it. */
+const INFORMATIONAL_FLAGS = new Set(['version', 'help', 'h', 'probe-benches']);
+
+/** Go's flag package reads these boolean values as false. */
+const GO_FALSE = new Set(['false', '0', 'f', 'F', 'FALSE', 'False']);
+
+/** Shells whose `-c` payload is re-parsed through parseCommand. */
+const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh']);
 
 /**
- * Find the first gsd-test dispatch in a raw Bash command.
+ * Leading lone tokens that are not the program: group openers, the `|&` residue, negation,
+ * and the compound-command keywords whose body follows on the same segment (`then gsd-test`,
+ * `do gsd-test`). Rule 2 hardening: argv splits `if x; then gsd-test | tail; fi` into a
+ * `then gsd-test` segment, which would otherwise resolve to program `then`.
+ */
+const LEADING_NOISE = new Set(['(', '{', '&', '!', 'then', 'do', 'else', 'if', 'elif', 'while', 'until']);
+
+/**
+ * Shell redirect token: optional fd digits, the operator, then an optional attached target.
+ * An operator-only token consumes the following token as its target.
+ */
+const REDIRECT = /^\d*(&>>|&>|>>|>&|>\||<<<|<<|<&|<>|>|<)([\s\S]*)$/;
+
+/** True when a string carries a parameter / command expansion the detector cannot resolve. */
+function hasExpansion(s) {
+  return typeof s === 'string' && (s.includes('$') || s.includes('`'));
+}
+
+function countChar(s, ch) {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) if (s[i] === ch) n += 1;
+  return n;
+}
+
+/** Paren balance and backtick parity of a (possibly multi-token) substitution value. */
+function substitutionOpen(value) {
+  return countChar(value, '(') - countChar(value, ')') > 0 || countChar(value, '`') % 2 === 1;
+}
+
+/**
+ * The Go-flag walker (Addendum 1; checker item 2) over the raw tokens AFTER the gsd-test
+ * program token. Go's flag package accepts `-f v`, `--f v`, `-f=v`, `--f=v`; a value flag takes
+ * the next token unconditionally; parsing stops at `--` and at the first non-flag argument.
+ *
+ * Substitution attribution: a value that opens `$(` or a backtick consumes the following tokens
+ * until balanced, so flags after `--head $(git rev-parse HEAD)` are still read. When the tokens
+ * run out first, or a token in flag/positional position (or a flag NAME) carries `$` or a
+ * backtick, the list cannot be attributed and `uncertainReason` is set (gates fail closed).
+ *
+ * @param {string[]} tokens
+ * @returns {{flags:Object, unresolved:Set<string>, positionals:string[], background:boolean,
+ *   uncertainReason:(string|null)}}
+ */
+function walkGoFlags(tokens) {
+  const toks = Array.isArray(tokens) ? tokens.filter((t) => typeof t === 'string') : [];
+  const flags = {};
+  const unresolved = new Set();
+  const positionals = [];
+  let background = false;
+  let uncertainReason = null;
+
+  /** Index just past a redirect at `k` (operator-only consumes its target), or -1. */
+  const redirectEnd = (k) => {
+    const m = REDIRECT.exec(toks[k]);
+    if (!m) return -1;
+    return m[2] === '' ? k + 2 : k + 1;
+  };
+
+  /** Collect the remaining tokens (minus redirects; a lone & ends the command) as positionals. */
+  const collectRest = (k) => {
+    while (k < toks.length) {
+      const r = redirectEnd(k);
+      if (r !== -1) { k = r; continue; }
+      if (toks[k] === '&') { background = true; break; }
+      positionals.push(toks[k]);
+      k += 1;
+    }
+  };
+
+  let i = 0;
+  while (i < toks.length) {
+    const t = toks[i];
+
+    const r = redirectEnd(i);
+    if (r !== -1) { i = r; continue; }
+
+    if (t === '&') {
+      // A lone `&` backgrounds the dispatch; anything after it is another command.
+      background = true;
+      break;
+    }
+
+    if (t === '--') {
+      collectRest(i + 1);
+      break;
+    }
+
+    const isFlag = t.startsWith('-') && t !== '-';
+    if (!isFlag) {
+      if (hasExpansion(t)) {
+        // `gsd-test $EXTRA --head x`, `"$@"`: the shell may expand this into any flags.
+        uncertainReason = 'unresolvable shell expansion in gsd-test arguments';
+        break;
+      }
+      collectRest(i); // first literal positional: Go stops flag parsing here
+      break;
+    }
+
+    const body = t.startsWith('--') ? t.slice(2) : t.slice(1);
+    const eq = body.indexOf('=');
+    const name = eq === -1 ? body : body.slice(0, eq);
+    if (hasExpansion(name)) {
+      uncertainReason = 'unresolvable shell expansion in gsd-test arguments';
+      break;
+    }
+
+    if (VALUE_FLAGS.has(name)) {
+      let value;
+      if (eq !== -1) {
+        value = body.slice(eq + 1);
+        i += 1;
+      } else {
+        let j = i + 1;
+        // The shell removes redirects before Go sees argv, so the value is the next
+        // non-redirect token.
+        for (let rr = redirectEnd(j); rr !== -1; rr = redirectEnd(j)) j = rr;
+        if (j >= toks.length || toks[j] === '&') {
+          // Go exits 2 ("flag needs an argument"); grade it uncertain rather than absent.
+          uncertainReason = `missing value for the -${name} flag`;
+          break;
+        }
+        value = toks[j];
+        i = j + 1;
+      }
+      if (value.includes('$(') || value.includes('`')) {
+        while (substitutionOpen(value)) {
+          if (i >= toks.length) {
+            uncertainReason = `unbalanced command substitution in the -${name} value`;
+            break;
+          }
+          value += ' ' + toks[i];
+          i += 1;
+        }
+        if (uncertainReason) break;
+      }
+      flags[name] = value;
+      if (hasExpansion(value)) unresolved.add(name);
+      continue;
+    }
+
+    // Boolean (known or unknown — Go would reject an unknown flag; it is recorded, never
+    // used to attribute a later token).
+    if (eq === -1) {
+      flags[name] = true;
+    } else {
+      const v = body.slice(eq + 1);
+      flags[name] = BOOLEAN_FLAGS.has(name) ? !GO_FALSE.has(v) : v;
+    }
+    i += 1;
+  }
+
+  return { flags, unresolved, positionals, background, uncertainReason };
+}
+
+/**
+ * Normalise one segment's raw tokens for program resolution (Addendum 3): drop leading lone
+ * noise tokens, strip leading `(`/`{`/`&` characters from the first token, move an attached
+ * trailing `&` to its own token, and strip group closers from the LAST token by paren balance
+ * (so `$(git rev-parse HEAD))` keeps the substitution's own `)`).
+ *
+ * @param {string[]} raw
+ * @returns {{tokens:string[], openers:string[], post:number}} `openers` are the group types
+ *   opened before the program ('sub' | 'brace'); `post` is the net paren/brace depth change of
+ *   the rest of the segment (negative when it closes groups).
+ */
+function normalizeSegment(raw) {
+  const tokens = Array.isArray(raw) ? raw.filter((t) => typeof t === 'string') : [];
+  const openers = [];
+  let t = tokens.slice();
+
+  for (let guard = 0; guard < 64 && t.length > 0; guard++) {
+    const first = t[0];
+    if (LEADING_NOISE.has(first)) {
+      if (first === '(') openers.push('sub');
+      if (first === '{') openers.push('brace');
+      t.shift();
+      continue;
+    }
+    const m = /^[({&]+/.exec(first);
+    if (m) {
+      for (const ch of m[0]) {
+        if (ch === '(') openers.push('sub');
+        if (ch === '{') openers.push('brace');
+      }
+      const rest = first.slice(m[0].length);
+      if (rest === '') { t.shift(); continue; }
+      t[0] = rest;
+    }
+    break;
+  }
+
+  // Depth change of the remaining tokens, counted before any trailing strip.
+  let post = 0;
+  for (const tok of t) {
+    if (tok === '{') { post += 1; continue; }
+    if (tok === '}') { post -= 1; continue; }
+    post += countChar(tok, '(') - countChar(tok, ')');
+  }
+
+  // Attached trailing `&` (`2>&1&`, `HEAD&`) -> background token.
+  if (t.length > 0) {
+    const last = t[t.length - 1];
+    if (last.length > 1 && last.endsWith('&') && !/[<>]&$/.test(last) && !last.endsWith('&&')) {
+      t[t.length - 1] = last.slice(0, -1);
+      t.push('&');
+    }
+  }
+
+  // Strip group closers by balance from the last non-`&` token.
+  let opens = 0;
+  let closes = 0;
+  for (const tok of t) { opens += countChar(tok, '('); closes += countChar(tok, ')'); }
+  const bgTail = t.length > 0 && t[t.length - 1] === '&';
+  let li = bgTail ? t.length - 2 : t.length - 1;
+  while (li >= 0 && closes > opens && t[li].endsWith(')')) {
+    t[li] = t[li].slice(0, -1);
+    closes -= 1;
+    if (t[li] === '') { t.splice(li, 1); li -= 1; }
+  }
+
+  return { tokens: t, openers, post };
+}
+
+/**
+ * Index of the program token `prog` in `tokens`: the first token whose basename is `prog` and
+ * at which resolveProgram over the prefix resolves to it (so `sudo -u bash bash -c` picks the
+ * second `bash`). Falls back to the first basename match.
+ */
+function programIndex(tokens, prog) {
+  let fallback = -1;
+  for (let i = 0; i < tokens.length; i++) {
+    if (path.basename(tokens[i]) !== prog) continue;
+    if (fallback === -1) fallback = i;
+    if (resolveProgram({ tokens: tokens.slice(0, i + 1) }).prog === prog) return i;
+  }
+  return fallback;
+}
+
+/**
+ * resolveProgram plus the detector-local nohup/time peel, bounded to MAX_PEELS.
+ *
+ * @param {string[]} tokens normalised segment tokens
+ * @returns {{prog:string, idx:number, ambiguous:boolean}}
+ */
+function resolveSegmentProgram(tokens) {
+  let offset = 0;
+  for (let peel = 0; peel <= MAX_PEELS; peel++) {
+    const sub = tokens.slice(offset);
+    const r = resolveProgram({ tokens: sub });
+    if (r.ambiguous) return { prog: r.prog, idx: -1, ambiguous: true };
+    if (r.prog !== 'nohup' && r.prog !== 'time') {
+      const idx = programIndex(sub, r.prog);
+      return { prog: r.prog, idx: idx === -1 ? -1 : offset + idx, ambiguous: false };
+    }
+    if (peel === MAX_PEELS) break; // still a nohup/time after the bound -> cannot resolve
+    const at = programIndex(sub, r.prog);
+    if (at === -1) return { prog: r.prog, idx: -1, ambiguous: false };
+    let next = at + 1;
+    if (r.prog === 'time') while (sub[next] === '-p') next += 1;
+    if (sub[next] === '--') next += 1;
+    if (next >= sub.length) return { prog: r.prog, idx: -1, ambiguous: false }; // bare nohup/time
+    offset += next;
+  }
+  return { prog: '', idx: -1, ambiguous: true };
+}
+
+/**
+ * Walk a shell's options (`bash -o pipefail -lc '<payload>'`).
+ *
+ * @param {string[]} after tokens after the shell program token
+ * @returns {{dashC:boolean, payload:(string|undefined), shellPipefail:boolean}}
+ */
+function readShellOptions(after) {
+  let dashC = false;
+  let shellPipefail = false;
+  let i = 0;
+  while (i < after.length) {
+    const t = after[i];
+    if (t === '--') { i += 1; break; }
+    if ((t.startsWith('-') || t.startsWith('+')) && t.length > 1 && !t.startsWith('--') && !t.startsWith('++')) {
+      const on = t[0] === '-';
+      const letters = t.slice(1);
+      if (letters.includes('c')) dashC = true;
+      let consumed = 0;
+      for (const L of letters) {
+        if (L === 'o' || L === 'O') {
+          const v = after[i + 1 + consumed];
+          if (L === 'o' && v === 'pipefail') shellPipefail = on;
+          consumed += 1;
+        }
+      }
+      i += 1 + consumed;
+      continue;
+    }
+    if (t.startsWith('--')) { i += 1; continue; } // --login, --norc, ...
+    break;
+  }
+  return { dashC, payload: dashC ? after[i] : undefined, shellPipefail };
+}
+
+/**
+ * Pipefail state change for a `set` segment, token-based only: a token beginning with a
+ * single `-` (or `+`) that contains `o`, followed by the token `pipefail`.
+ *
+ * @returns {boolean|null} true / false when the segment turns pipefail on / off, else null
+ */
+function setPipefailChange(tokens, idx) {
+  let change = null;
+  for (let k = idx + 1; k < tokens.length - 1; k++) {
+    const t = tokens[k];
+    if (!/^[-+][^-+]/.test(t) || !t.slice(1).includes('o')) continue;
+    if (tokens[k + 1] === 'pipefail') change = t[0] === '-';
+  }
+  return change;
+}
+
+/**
+ * Group-aware pipe attribution (GTEST-03). Walks forward from the dispatch's segment through
+ * the depth profile: separators inside a deeper construct (`$( ... )`) are skipped; at the
+ * dispatch's level only its own statement's operator counts; when a group containing the
+ * dispatch closes, the closing segment's operator decides for the whole group.
+ */
+function attributePipe(segments, profile, index) {
+  let level = profile[index].level;
+  let inStatement = true;
+  for (let k = index; k < segments.length; k++) {
+    const after = profile[k].after;
+    const op = segments[k].nextOp;
+    if (after > level) continue;
+    if (after === level) {
+      if (inStatement && op === '|') return true;
+      if (op !== '|') inStatement = false;
+      if (!inStatement && level <= 0) return false;
+      continue;
+    }
+    // A group containing the dispatch closed: the group as a whole is now the statement.
+    level = after;
+    if (op === '|') return true;
+    inStatement = false;
+    if (level <= 0) return false;
+  }
+  return false;
+}
+
+/** Build a parseCommand-shaped segment from normalised tokens. */
+function toSeg(tokens, nextOp) {
+  const seg = classifyTokens(tokens.slice());
+  seg.nextOp = nextOp === undefined ? null : nextOp;
+  return seg;
+}
+
+/**
+ * Scan one parsed command (top level or a `-c` payload).
+ *
+ * @param {{ok:true, segments:Object[]}} parsed
+ * @param {{depth:number, inheritedPipefail:boolean, outerMasked:boolean, prefixes:Object[]}} st
+ * @returns {Object[]} entries
+ */
+function scanParsed(parsed, st) {
+  const segments = parsed.segments;
+  const out = [];
+
+  // Pass 1: normalise and compute the depth profile (relative; may dip below 0 on a stray `)`).
+  const norm = segments.map((s) => normalizeSegment(s.tokens));
+  const profile = [];
+  let depth = 0;
+  for (const n of norm) {
+    const level = depth + n.openers.length;
+    const after = level + n.post;
+    profile.push({ before: depth, level, after });
+    depth = after;
+  }
+
+  // Pass 2: classify each segment. Frames track which `cd` prefixes persist to a later segment:
+  // a closed `( ... )` subshell discards its segments; a closed `{ ...; }` keeps them.
+  const frames = [{ type: 'top', segs: [] }];
+  const prefixNow = () => ({ ok: true, segments: [].concat(...frames.map((f) => f.segs)) });
+  let runningPipefail = false;
+
+  for (let i = 0; i < segments.length; i++) {
+    const n = norm[i];
+    for (const type of n.openers) frames.push({ type, segs: [] });
+
+    if (n.tokens.length > 0) {
+      const r = resolveSegmentProgram(n.tokens);
+      const pipefail = runningPipefail || st.inheritedPipefail;
+
+      if (r.ambiguous) {
+        if (GSD_TEST_WORD.test(n.tokens.join(' '))) {
+          out.push({ kind: 'uncertain', reason: 'ambiguous wrapper around a gsd-test mention' });
+        }
+      } else if (r.prog === 'gsd-test' && r.idx !== -1) {
+        const w = walkGoFlags(n.tokens.slice(r.idx + 1));
+        if (w.uncertainReason) {
+          out.push({ kind: 'uncertain', reason: w.uncertainReason });
+        } else {
+          const pipedOut = attributePipe(segments, profile, i);
+          let informational = false;
+          for (const f of INFORMATIONAL_FLAGS) if (w.flags[f] !== undefined && w.flags[f] !== false) informational = true;
+          out.push({
+            kind: 'dispatch',
+            seg: toSeg(n.tokens, segments[i].nextOp),
+            segIndex: i,
+            args: w.positionals,
+            flags: w.flags,
+            unresolved: w.unresolved,
+            informational,
+            background: w.background,
+            pipedOut,
+            pipefail,
+            pipeMasked: (pipedOut && !pipefail) || st.outerMasked,
+            viaDashC: st.depth > 0,
+            depth: st.depth,
+            prefixes: st.prefixes.concat([prefixNow()]),
+          });
+        }
+      } else if (SHELLS.has(r.prog) && r.idx !== -1) {
+        const opt = readShellOptions(n.tokens.slice(r.idx + 1));
+        if (opt.dashC && typeof opt.payload === 'string') {
+          if (st.depth + 1 > MAX_DASH_C_DEPTH) {
+            if (GSD_TEST_WORD.test(opt.payload)) {
+              out.push({ kind: 'uncertain', reason: `bash -c payload nested deeper than ${MAX_DASH_C_DEPTH}` });
+            }
+          } else {
+            const pipedOut = attributePipe(segments, profile, i);
+            const inner = scanCommand(opt.payload, {
+              depth: st.depth + 1,
+              inheritedPipefail: opt.shellPipefail,
+              outerMasked: (pipedOut && !pipefail) || st.outerMasked,
+              prefixes: st.prefixes.concat([prefixNow()]),
+            });
+            for (const e of inner) out.push(e);
+          }
+        }
+      } else if (r.prog === 'set' && r.idx !== -1 && profile[i].level <= 0) {
+        // Only a top-level `set` persists; one inside `( ... )` does not reach later segments
+        // (a `{ ...; }` one does, but ignoring it only ever keeps a pipe masked: fail-safe).
+        const change = setPipefailChange(n.tokens, r.idx);
+        if (change !== null) runningPipefail = change;
+      }
+    }
+
+    // Record this segment as a prefix candidate for later segments, then apply its closers.
+    frames[frames.length - 1].segs.push(toSeg(n.tokens, segments[i].nextOp));
+    if (n.post > 0) {
+      for (let k = 0; k < n.post; k++) frames.push({ type: 'sub', segs: [] });
+    } else {
+      for (let k = 0; k < -n.post && frames.length > 1; k++) {
+        const f = frames.pop();
+        if (f.type === 'brace') frames[frames.length - 1].segs.push(...f.segs);
+      }
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Parse a payload through the existing parser and scan it (the `bash -c` recursion).
+ * An unparseable payload that names gsd-test is uncertain (HARD-01).
+ */
+function scanCommand(payload, st) {
+  if (typeof payload !== 'string' || payload.trim().length === 0) return [];
+  const parsed = parseCommand(payload);
+  if (!parsed.ok) {
+    return GSD_TEST_WORD.test(payload)
+      ? [{ kind: 'uncertain', reason: `unparseable bash -c payload names gsd-test (${parsed.reason})` }]
+      : [];
+  }
+  return scanParsed(parsed, st).map((e) => (e.kind === 'dispatch' ? Object.assign(e, { viaDashC: true }) : e));
+}
+
+/**
+ * Every gsd-test dispatch (and every uncertain gsd-test mention) in a raw Bash command, in
+ * order.
  *
  * @param {string} command raw tool_input.command
- * @returns {null|{
- *   kind: 'dispatch',
- *   seg: Object,
- *   segIndex: number,
- *   pipedOut: boolean,
- *   pipefail: boolean,
- *   pipeMasked: boolean,
- *   informational: boolean,
- *   flags: Object,
- *   unresolved: Set<string>,
- *   prefixes: Array<{ok:true, segments:Object[]}>
- * }} null when the command is not a gsd-test dispatch
+ * @param {Object} [opts] internal recursion state ({depth, inheritedPipefail, outerMasked,
+ *   prefixes}); callers pass nothing
+ * @returns {Object[]} entries
+ */
+function findGsdTestDispatches(command, opts) {
+  if (typeof command !== 'string' || command.trim().length === 0) return [];
+  const o = opts || {};
+  const st = {
+    depth: Number.isInteger(o.depth) ? o.depth : 0,
+    inheritedPipefail: Boolean(o.inheritedPipefail),
+    outerMasked: Boolean(o.outerMasked),
+    prefixes: Array.isArray(o.prefixes) ? o.prefixes : [],
+  };
+  try {
+    const parsed = parseCommand(command);
+    if (!parsed.ok) {
+      return GSD_TEST_WORD.test(command)
+        ? [{ kind: 'uncertain', reason: `unparseable command names gsd-test (${parsed.reason})` }]
+        : [];
+    }
+    return scanParsed(parsed, st);
+  } catch (err) {
+    // Defensive: the detector must never throw into a gate.
+    return GSD_TEST_WORD.test(command)
+      ? [{ kind: 'uncertain', reason: `detector error (${err && err.message ? err.message : 'unknown'})` }]
+      : [];
+  }
+}
+
+/**
+ * The first `kind: 'dispatch'` entry, or null. Never returns an uncertain entry (the tracer
+ * gate reads this until 36-03 switches it to the plural form).
+ *
+ * @param {string} command
+ * @returns {Object|null}
  */
 function findGsdTestDispatch(command) {
-  if (typeof command !== 'string' || command.trim().length === 0) return null;
-
-  const parsed = parseCommand(command);
-  // 36-02 adds the uncertain rule for an unparseable command that names gsd-test.
-  if (!parsed.ok) return null;
-
-  for (let segIndex = 0; segIndex < parsed.segments.length; segIndex++) {
-    const seg = parsed.segments[segIndex];
-    if (resolveProgram(seg).prog !== 'gsd-test') continue;
-    const pipedOut = seg.nextOp === '|';
-    return {
-      kind: 'dispatch',
-      seg,
-      segIndex,
-      pipedOut,
-      pipefail: false,
-      pipeMasked: pipedOut,
-      informational: false,
-      flags: {},
-      unresolved: new Set(),
-      // The segments BEFORE the dispatch, in parseCommand shape, so a gate can compute the
-      // dispatch's start dir with resolve.commandStartDir (a `cd X &&` prefix is honoured).
-      prefixes: [{ ok: true, segments: parsed.segments.slice(0, segIndex) }],
-    };
-  }
+  for (const e of findGsdTestDispatches(command)) if (e.kind === 'dispatch') return e;
   return null;
 }
 
-module.exports = { findGsdTestDispatch };
+/**
+ * Static expansion of a flag value: `~`, `~/`, a leading `$HOME`/`${HOME}`, a leading
+ * `$XDG_CONFIG_HOME`/`${XDG_CONFIG_HOME}`. Anything else still carrying `$` or a backtick (or a
+ * `~user` form) cannot be resolved -> null.
+ *
+ * @param {string} value
+ * @param {{env?:Object, homedir?:string}} ctx
+ * @returns {string|null}
+ */
+function expandStatic(value, ctx) {
+  if (typeof value !== 'string') return null;
+  const env = (ctx && ctx.env) || {};
+  const homedir = ctx && typeof ctx.homedir === 'string' ? ctx.homedir : null;
+  let v = value;
+
+  if (v === '~' || v.startsWith('~/')) {
+    if (!homedir) return null;
+    v = v === '~' ? homedir : path.join(homedir, v.slice(2));
+  } else if (v.startsWith('~')) {
+    return null; // ~user
+  } else {
+    const home = /^(?:\$HOME|\$\{HOME\})(?=\/|$)/.exec(v);
+    const xdg = /^(?:\$XDG_CONFIG_HOME|\$\{XDG_CONFIG_HOME\})(?=\/|$)/.exec(v);
+    if (home) {
+      const h = env.HOME || homedir;
+      if (!h) return null;
+      v = h + v.slice(home[0].length);
+    } else if (xdg) {
+      const x = env.XDG_CONFIG_HOME;
+      if (typeof x !== 'string' || x.length === 0) return null;
+      v = x + v.slice(xdg[0].length);
+    }
+  }
+  return hasExpansion(v) ? null : v;
+}
+
+/**
+ * The directory a dispatch starts in: fold commandStartDir over its prefixes (outer prefix
+ * first, then each `-c` payload prefix). `git -C` never persists ({followGitC:false}); segments
+ * after the dispatch are never consulted.
+ *
+ * @param {Object} dispatch a `kind:'dispatch'` entry
+ * @param {string} cwd
+ * @returns {string}
+ */
+function startDirFor(dispatch, cwd) {
+  let dir = cwd;
+  const prefixes = dispatch && Array.isArray(dispatch.prefixes) ? dispatch.prefixes : [];
+  for (const p of prefixes) dir = commandStartDir(p, dir, { followGitC: false });
+  return dir;
+}
+
+/**
+ * The tree a dispatch tests: `-source` (statically expanded, resolved against the start dir) or
+ * the start dir. null when `-source` cannot be resolved.
+ *
+ * @param {Object} dispatch
+ * @param {string} cwd
+ * @param {{env?:Object, homedir?:string}} ctx
+ * @returns {string|null}
+ */
+function treeDirFor(dispatch, cwd, ctx) {
+  const start = startDirFor(dispatch, cwd);
+  const source = dispatch && dispatch.flags ? dispatch.flags.source : undefined;
+  if (typeof source !== 'string') return start;
+  const expanded = expandStatic(source, ctx);
+  if (expanded === null) return null;
+  return path.resolve(start, expanded);
+}
+
+module.exports = {
+  findGsdTestDispatches,
+  findGsdTestDispatch,
+  walkGoFlags,
+  expandStatic,
+  startDirFor,
+  treeDirFor,
+  INFORMATIONAL_FLAGS,
+  MAX_DASH_C_DEPTH,
+  GSD_TEST_WORD,
+};
