@@ -36,20 +36,38 @@
  * running git.
  *
  * STAGE 2 — discriminator: `git check-ignore -q -- <abs>` (argv array, no shell, `--` before
- * the path), run with cwd = the target's own directory so the answer comes from the repo or
- * worktree that actually holds the file. Plain check-ignore (no --no-index): a TRACKED file is
- * reported not-ignored even when a pattern matches it — tracked means hand-written.
+ * the path), run with cwd = the target's own directory. Plain check-ignore (no --no-index): a
+ * TRACKED file is reported not-ignored even when a pattern matches it — tracked means
+ * hand-written.
+ *
+ * REPOSITORY PINNING (MJ-01, 35-02). check-ignore answers for whatever repository git DISCOVERS
+ * from the target's directory, and in-repo state that never shows in `git status` can move that
+ * discovery to a repository that does not ignore the emitted file: a nested `git init` in
+ * bin/lib, a planted `gitdir:` file at bin/lib/.git or bin/.git, or a repo-local core.worktree
+ * that re-roots the work tree so the root-anchored per-file .gitignore line no longer matches.
+ * Each of those turned exit 0 into exit 1 (an allow). So before check-ignore runs, with `bin` =
+ * the outermost `bin` directory of a bin/lib pair above the target:
+ *   - a `.git` entry (file, directory or link) in any directory from the target's directory up
+ *     to and including `bin`                                         → undecidable
+ *   - `git rev-parse --show-toplevel` (same cwd, same scrubbed env) is not a STRICT ancestor of
+ *     realpath(`bin`) (equal to it, inside it, or unrelated)         → undecidable
+ *   - `git config --get core.worktree` (same cwd and env) is set, or gives any answer other than
+ *     "unset" (exit 1)                                               → undecidable
+ * realpath(`bin`) is compared because git realpaths the toplevel; a repository reached through
+ * a symlinked root therefore keeps its normal verdict.
+ *
  *   - exit 0 (ignored → generated)                         → DENY, ADR-457 reason unchanged
  *   - exit 1 (tracked, or untracked and not ignored)       → ALLOW
  *   - anything else: spawn error, git missing, timeout or null status, exit 128 (not a git
- *     work tree), directory absent, or an injected seam value other than 'not-ignored'
- *                                                          → DENY, ADR-457 reason + a
+ *     work tree), directory absent, a repository-pinning failure above, or an injected seam
+ *     value other than 'not-ignored'                       → DENY, ADR-457 reason + a
  *     "could not be determined" note (HARD-01, BINLIB-03). Returned as a policy deny, exactly
  *     like the pre-v2.8 deny-all behavior, so GSD_CONTRIB_OVERRIDE (thrown errors only) cannot
  *     flip it.
- * The probe is capped at CHECK_IGNORE_TIMEOUT_MS = 3000 ms, well under this gate's 10 s hook
- * timeout in settings.snippet.json, so a hung git resolves to the undecidable deny. It is
- * read-only (no index lock), so concurrent or interrupted invocations cannot mutate a repo.
+ * All git spawns share ONE deadline of CHECK_IGNORE_TIMEOUT_MS = 3000 ms, well under this gate's
+ * 10 s hook timeout in settings.snippet.json, so a hung git resolves to the undecidable deny and
+ * the first non-answer stops the remaining probes. Every probe is read-only (no index lock), so
+ * concurrent or interrupted invocations cannot mutate a repo.
  *
  * ENV SCRUB (T-35-02): the probe runs with GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE and
  * GIT_COMMON_DIR removed. Measured 2026-10-05: an inherited GIT_INDEX_FILE pointing at an
@@ -63,6 +81,13 @@
  * not ignored. A newly generated .cjs whose per-file .gitignore line has not been added yet is
  * ALLOWED, as is a generated file force-added to the index or un-ignored by a .gitignore edit.
  * Each of those routes leaves a visible .gitignore or index change in the contribution diff.
+ * The verdict still depends on git's repository discovery. The pinning checks above close the
+ * known invisible routes into a different repository (nested repo, `gitdir:` file, core.worktree)
+ * at or below `bin`. A `.git` entry is not itself a candidate, so the Write that plants one is
+ * allowed, but the Edit of the emitted file that follows is denied. Not covered (pre-existing):
+ * a symlink OUTSIDE bin/lib that names an emitted file (e.g. `/tmp/x.cjs -> …/bin/lib/e.cjs` or
+ * `bin/lib2 -> lib`) is never a candidate, and Bash writes are outside this gate's Write/Edit
+ * scope.
  *
  * HARD-01/03: the whole decision runs inside runGate, so a malformed payload, an absent
  * or non-string `file_path`, or any thrown error FAILS CLOSED (deny) — escapable only by
@@ -79,6 +104,7 @@
  * @module hooks/binlib-edit
  */
 
+const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { runGate, readHookInput, deny, allow, emit, FailClosed } = require('./lib/failclosed.cjs');
@@ -179,8 +205,9 @@ function binLibUndecidableReason(filePath) {
   return (
     binLibDenyReason(filePath) +
     ' Whether it is generated or hand-written could not be determined (git check-ignore gave ' +
-    'no answer: directory absent, not a git work tree, git missing or erroring, or timed out), ' +
-    'so it is treated as generated (fail-closed, HARD-01 / BINLIB-03).'
+    'no answer: directory absent, not a git work tree, a nested or redirected repository at or ' +
+    'below bin/, git missing or erroring, or timed out), so it is treated as generated ' +
+    '(fail-closed, HARD-01 / BINLIB-03).'
   );
 }
 
@@ -216,24 +243,125 @@ function classifyCheckIgnore(result) {
 }
 
 /**
- * The default probe: `git check-ignore -q -- <abs>` run from the target's own directory, so
- * the answer comes from the repository (or worktree) that actually holds the file. argv array,
- * never a shell string; `--` before the path. Plain check-ignore (no --no-index), so a TRACKED
- * file reports not-ignored even when a pattern matches it. Read-only: takes no index lock.
- * Runs with the repo-redirecting variables scrubbed (probeEnv).
+ * The OUTERMOST ancestor directory of absPath named `bin` (case-insensitive) whose child on the
+ * path is named `lib`, with absPath somewhere below that `lib`. null when there is none (a
+ * raw-only candidate whose `..` segments resolved out of bin/lib).
+ *
+ * @param {string} absPath
+ * @returns {string|null}
+ */
+function binDirOf(absPath) {
+  let found = null;
+  let child = path.dirname(absPath);
+  let parent = path.dirname(child);
+  while (parent !== child) {
+    if (
+      path.basename(parent).toLowerCase() === 'bin' &&
+      path.basename(child).toLowerCase() === 'lib'
+    ) {
+      found = parent;
+    }
+    child = parent;
+    parent = path.dirname(parent);
+  }
+  return found;
+}
+
+/**
+ * Does any directory from startDir up to and including stopDir hold a `.git` entry of any type
+ * (MJ-01)? Any lstat error other than "absent" counts as present (fail-closed). Reaching the
+ * filesystem root without meeting stopDir also counts as present.
+ *
+ * @param {string} startDir
+ * @param {string} stopDir
+ * @returns {boolean}
+ */
+function hasGitEntryUpTo(startDir, stopDir) {
+  let d = startDir;
+  for (;;) {
+    try {
+      fs.lstatSync(path.join(d, '.git'));
+      return true;
+    } catch (err) {
+      if (!err || (err.code !== 'ENOENT' && err.code !== 'ENOTDIR')) return true;
+    }
+    if (d === stopDir) return false;
+    const up = path.dirname(d);
+    if (up === d) return true;
+    d = up;
+  }
+}
+
+/**
+ * Is `ancestor` a STRICT ancestor directory of `descendant`?
+ *
+ * @param {string} ancestor
+ * @param {string} descendant
+ * @returns {boolean}
+ */
+function isStrictAncestor(ancestor, descendant) {
+  if (typeof ancestor !== 'string' || ancestor.length === 0) return false;
+  const rel = path.relative(ancestor, descendant);
+  return (
+    rel.length > 0 && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel)
+  );
+}
+
+/**
+ * One read-only git spawn against the shared deadline. null when the deadline has passed.
+ *
+ * @param {string[]} argv
+ * @param {string} cwd
+ * @param {Object} env
+ * @param {number} deadline epoch ms
+ * @returns {Object|null} spawnSync result
+ */
+function runGitProbe(argv, cwd, env, deadline) {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) return null;
+  return spawnSync('git', argv, {
+    cwd,
+    timeout: remaining,
+    encoding: 'utf8',
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+/**
+ * The default probe. It first PINS the repository (MJ-01): no `.git` entry between the target's
+ * directory and the bin/lib pair's `bin`, a discovered toplevel that is a strict ancestor of
+ * realpath(`bin`), and no core.worktree. Only then does it run `git check-ignore -q -- <abs>`
+ * from the target's own directory. argv arrays, never a shell string; `--` before the path.
+ * Plain check-ignore (no --no-index), so a TRACKED file reports not-ignored even when a pattern
+ * matches it. Read-only: takes no index lock. Every spawn runs with the repo-redirecting
+ * variables scrubbed (probeEnv) and against one shared CHECK_IGNORE_TIMEOUT_MS deadline; the
+ * first non-answer returns 'unknown' without running the rest.
  *
  * @param {string} absPath
  * @returns {'ignored'|'not-ignored'|'unknown'}
  */
 function checkIgnoreLive(absPath) {
   try {
-    const result = spawnSync('git', ['check-ignore', '-q', '--', absPath], {
-      cwd: path.dirname(absPath),
-      timeout: CHECK_IGNORE_TIMEOUT_MS,
-      encoding: 'utf8',
-      env: probeEnv(process.env),
-      stdio: ['ignore', 'ignore', 'pipe'],
-    });
+    const deadline = Date.now() + CHECK_IGNORE_TIMEOUT_MS;
+    const cwd = path.dirname(absPath);
+    const env = probeEnv(process.env);
+
+    const binDir = binDirOf(absPath);
+    if (binDir === null) return 'unknown';
+    if (hasGitEntryUpTo(cwd, binDir)) return 'unknown';
+    const realBin = fs.realpathSync(binDir);
+
+    const top = runGitProbe(['rev-parse', '--show-toplevel'], cwd, env, deadline);
+    if (!top || top.error || top.status !== 0) return 'unknown';
+    const toplevel = String(top.stdout).replace(/\r?\n$/, '');
+    if (!isStrictAncestor(toplevel, realBin)) return 'unknown';
+
+    const worktree = runGitProbe(['config', '--get', 'core.worktree'], cwd, env, deadline);
+    if (!worktree || worktree.error || worktree.status !== 1) return 'unknown';
+
+    const result = runGitProbe(['check-ignore', '-q', '--', absPath], cwd, env, deadline);
+    if (!result) return 'unknown';
     return classifyCheckIgnore(result);
   } catch (_) {
     return 'unknown';
@@ -355,6 +483,9 @@ module.exports = {
   resolveTargetPath,
   classifyCheckIgnore,
   checkIgnoreLive,
+  binDirOf,
+  hasGitEntryUpTo,
+  isStrictAncestor,
   probeEnv,
   binLibUndecidableReason,
   CHECK_IGNORE_TIMEOUT_MS,

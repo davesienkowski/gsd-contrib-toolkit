@@ -774,3 +774,18 @@ test('NT-04: through an in-worktree symlinked alias of bin/lib the emitted file 
     fx.cleanup();
   }
 });
+
+test('MJ-01: binDirOf picks the OUTERMOST bin of a bin/lib pair; isStrictAncestor is strict', () => {
+  const { binDirOf, isStrictAncestor } = require('./binlib-edit.cjs');
+  assert.strictEqual(binDirOf('/r/gsd-core/bin/lib/x.cjs'), '/r/gsd-core/bin');
+  assert.strictEqual(binDirOf('/r/gsd-core/bin/lib/obs/x.cjs'), '/r/gsd-core/bin');
+  assert.strictEqual(binDirOf('/r/BIN/Lib/x.cjs'), '/r/BIN');
+  assert.strictEqual(binDirOf('/a/bin/lib/b/bin/lib/x.cjs'), '/a/bin');
+  assert.strictEqual(binDirOf('/r/gsd-core/bin/x.cjs'), null);
+  assert.strictEqual(isStrictAncestor('/r', '/r/gsd-core/bin'), true);
+  assert.strictEqual(isStrictAncestor('/r/gsd-core/bin', '/r/gsd-core/bin'), false);
+  assert.strictEqual(isStrictAncestor('/r/gsd-core/bin/lib', '/r/gsd-core/bin'), false);
+  assert.strictEqual(isStrictAncestor('/elsewhere', '/r/gsd-core/bin'), false);
+  assert.strictEqual(isStrictAncestor('/r/..gsd', '/r/..gsd/bin'), true);
+  assert.strictEqual(isStrictAncestor('', '/r/gsd-core/bin'), false);
+});
