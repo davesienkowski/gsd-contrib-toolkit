@@ -88,7 +88,7 @@ wired set exactly.
 | `protocol-artifact.cjs` | Bash | filing/pushing on a contribution branch without the P1-P3 protocol artifacts | reads the branch diff + the LIVE `gsd-test` run |
 | `review-artifact.cjs` | Bash | re-reviewing/approving/merging a PR without the four mechanizable re-review artifacts (step 8 two orthogonal passes, step 13 merge gate, step 1 treadmill guard, step 10 exogenous check), keyed to PR + HEAD OID | reads the review artifacts + the LIVE `gh` CI conclusions |
 | `runtime-drift.cjs` | Bash | filing/pushing to `open-gsd/gsd-core` while the installed `~/.claude/gsd-core` runtime is unstamped, digest-mismatched, or behind `origin/next` (ENF-21; `ask`, never deny, when the upstream tip is unobtainable) | (toolkit-owned stamp + `git ls-remote` — no LIVE script) |
-| `binlib-edit.cjs` | Write/Edit | editing a generated `bin/lib/*.cjs` instead of `src/*.ts` | (generated-path candidate + read-only `git check-ignore` discriminator: ignored → deny, tracked or not ignored → allow, undecidable → deny — no LIVE script) |
+| `binlib-edit.cjs` | Write/Edit | editing a generated `bin/lib/**/*.cjs` instead of its `src/*.cts` source | (generated-path candidate + repository pinning + read-only `git check-ignore` discriminator: ignored → deny, tracked or not ignored → allow, undecidable or redirected repository → deny — no LIVE script) |
 | `protocol-reminder.cjs` | UserPromptSubmit | *(advisory only — reminds, never denies)* | — |
 | `tool-recorder.cjs` | PostToolUse + PostToolUseFailure | *(observability only — records, never denies; the one hook wired on two events)* | — |
 
