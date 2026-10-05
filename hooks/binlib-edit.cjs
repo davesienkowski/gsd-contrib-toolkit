@@ -3,27 +3,60 @@
 
 /**
  * hooks/binlib-edit.cjs — PreToolUse(Write|Edit) generated-file gate
- * (ENF-03, ADR-457, HARD-01/03 fail-closed).
+ * (ENF-03, ADR-457, HARD-01/03 fail-closed, BINLIB-01..04).
  *
  * The #1 zero-source bounce in a gsd-core contribution is editing a GENERATED
  * `bin/lib/*.cjs` artifact instead of its `src/*.ts` source (PROJECT.md, ADR-457):
  * the hand-edit is silently overwritten by the next `build:lib`, so the change looks
- * applied but evaporates. This gate makes that physically impossible — a
- * PreToolUse(Write|Edit) whose `tool_input.file_path` resolves to any
- * `**\/bin/lib/*.cjs` leaf is DENIED, with a reason pointing the author at the
- * `src/*.ts` source + ADR-457.
+ * applied but evaporates. This gate makes that physically impossible. Not every
+ * `bin/lib/*.cjs` is generated, though: gsd-core also TRACKS a handful of hand-written
+ * `bin/lib/*.cjs` with no `src/` twin (e.g. `capability-validator.cjs`), and generated
+ * output is gitignored PER FILE. So the decision runs in two stages.
  *
- * Segment-accuracy (threat T-03-04-SUBSTR / edge-probe EP-1 class): the match is NOT a
- * naive `includes('bin/lib')` substring. A `bin` PATH SEGMENT must be immediately
- * followed by a `lib` SEGMENT, immediately followed by a `*.cjs` LEAF that is the direct
- * child of that `lib`. So:
- *   - `.../bin/lib/decisions.cjs`            → DENY  (segment pair + .cjs leaf)
- *   - `.../packages/x/bin/lib/foo.cjs`       → DENY  (any depth)
+ * STAGE 1 — candidate filter (pure, cheap). Segment-accuracy (threat T-03-04-SUBSTR /
+ * edge-probe EP-1 class): the match is NOT a naive `includes('bin/lib')` substring. A `bin`
+ * PATH SEGMENT must be immediately followed by a `lib` SEGMENT, immediately followed by a
+ * `*.cjs` LEAF that is the direct child of that `lib`. So:
+ *   - `.../bin/lib/decisions.cjs`            → CANDIDATE (segment pair + .cjs leaf)
+ *   - `.../packages/x/bin/lib/foo.cjs`       → CANDIDATE (any depth)
  *   - `src/bin-lib-notes.md`                 → ALLOW (substring, not a segment pair)
  *   - `src/mybin/libfoo.cjs`                 → ALLOW (bin/lib split across one segment)
  *   - `.../bin/lib/README.md`                → ALLOW (segment pair but leaf is not .cjs)
  *   - `.../bin/lib/sub/nested.cjs`           → ALLOW (.cjs is not a direct lib child)
  *   - `.../lib/bin/x.cjs`                     → ALLOW (wrong order: must be bin then lib)
+ * The filter runs on the RAW file_path and on the RESOLVED absolute path (T-35-05), so a
+ * dot-segment path such as `bin/lib/../lib/x.cjs` or `bin/lib/./x.cjs` still becomes a
+ * candidate. Normalization cannot un-match a raw candidate (its last three segments hold no
+ * `.`/`..`), so this is a strict superset. A non-candidate is ALLOWED without running git.
+ *
+ * STAGE 2 — discriminator: `git check-ignore -q -- <abs>` (argv array, no shell, `--` before
+ * the path), run with cwd = the target's own directory so the answer comes from the repo or
+ * worktree that actually holds the file. Plain check-ignore (no --no-index): a TRACKED file is
+ * reported not-ignored even when a pattern matches it — tracked means hand-written.
+ *   - exit 0 (ignored → generated)                         → DENY, ADR-457 reason unchanged
+ *   - exit 1 (tracked, or untracked and not ignored)       → ALLOW
+ *   - anything else: spawn error, git missing, timeout or null status, exit 128 (not a git
+ *     work tree), directory absent, or an injected seam value other than 'not-ignored'
+ *                                                          → DENY, ADR-457 reason + a
+ *     "could not be determined" note (HARD-01, BINLIB-03). Returned as a policy deny, exactly
+ *     like the pre-v2.8 deny-all behavior, so GSD_CONTRIB_OVERRIDE (thrown errors only) cannot
+ *     flip it.
+ * The probe is capped at CHECK_IGNORE_TIMEOUT_MS = 3000 ms, well under this gate's 10 s hook
+ * timeout in settings.snippet.json, so a hung git resolves to the undecidable deny. It is
+ * read-only (no index lock), so concurrent or interrupted invocations cannot mutate a repo.
+ *
+ * ENV SCRUB (T-35-02): the probe runs with GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE and
+ * GIT_COMMON_DIR removed. Measured 2026-10-05: an inherited GIT_INDEX_FILE pointing at an
+ * alternate index with the emitted file force-added makes check-ignore exit 1 — a fail-open.
+ *
+ * DIVERGENCE (recorded): the discriminator idea comes from Trek-e's
+ * `emitted-cjs-read-guard.cjs`, which fails OPEN when git cannot answer. This gate fails
+ * CLOSED per CTK-ADR-0001 §Decision.2: an unanswerable probe never becomes an allow.
+ *
+ * ACCEPTED RESIDUAL (flagged assumption A-01, threat T-35-07): "hand-written" means tracked or
+ * not ignored. A newly generated .cjs whose per-file .gitignore line has not been added yet is
+ * ALLOWED, as is a generated file force-added to the index or un-ignored by a .gitignore edit.
+ * Each of those routes leaves a visible .gitignore or index change in the contribution diff.
  *
  * HARD-01/03: the whole decision runs inside runGate, so a malformed payload, an absent
  * or non-string `file_path`, or any thrown error FAILS CLOSED (deny) — escapable only by
@@ -53,6 +86,27 @@ const { runGate, readHookInput, deny, allow, emit, FailClosed } = require('./lib
  * instead of the harness killing the hook.
  */
 const CHECK_IGNORE_TIMEOUT_MS = 3000;
+
+/**
+ * Inherited variables that redirect git to a different repository, work tree or index. Any of
+ * them could make the probe answer for something other than the file's own repository (an
+ * alternate GIT_INDEX_FILE with the emitted file force-added turns exit 0 into exit 1), so the
+ * probe never sees them (T-35-02).
+ */
+const REPO_REDIRECT_ENV = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR'];
+
+/**
+ * A shallow copy of env with exactly the REPO_REDIRECT_ENV keys removed. Every other variable,
+ * including other GIT_* config such as GIT_CONFIG_GLOBAL, is kept.
+ *
+ * @param {Object} env
+ * @returns {Object}
+ */
+function probeEnv(env) {
+  const out = Object.assign({}, env);
+  for (const k of REPO_REDIRECT_ENV) delete out[k];
+  return out;
+}
 
 /**
  * Split a path into its segments, tolerant of either separator (the harness may hand us a
@@ -107,6 +161,22 @@ function binLibDenyReason(filePath) {
 }
 
 /**
+ * The BINLIB-03 deny reason for a candidate whose generated/hand-written status could not be
+ * determined: the full ADR-457 reason, unchanged, with an explanatory note appended.
+ *
+ * @param {string} filePath
+ * @returns {string}
+ */
+function binLibUndecidableReason(filePath) {
+  return (
+    binLibDenyReason(filePath) +
+    ' Whether it is generated or hand-written could not be determined (git check-ignore gave ' +
+    'no answer: directory absent, not a git work tree, git missing or erroring, or timed out), ' +
+    'so it is treated as generated (fail-closed, HARD-01 / BINLIB-03).'
+  );
+}
+
+/**
  * Resolve the Write/Edit target to an absolute, normalized path. An absolute file_path is
  * normalized as-is; a relative one is resolved against the payload `cwd`, falling back to
  * process.cwd() when the payload carries none.
@@ -142,6 +212,7 @@ function classifyCheckIgnore(result) {
  * the answer comes from the repository (or worktree) that actually holds the file. argv array,
  * never a shell string; `--` before the path. Plain check-ignore (no --no-index), so a TRACKED
  * file reports not-ignored even when a pattern matches it. Read-only: takes no index lock.
+ * Runs with the repo-redirecting variables scrubbed (probeEnv).
  *
  * @param {string} absPath
  * @returns {'ignored'|'not-ignored'|'unknown'}
@@ -152,6 +223,7 @@ function checkIgnoreLive(absPath) {
       cwd: path.dirname(absPath),
       timeout: CHECK_IGNORE_TIMEOUT_MS,
       encoding: 'utf8',
+      env: probeEnv(process.env),
       stdio: ['ignore', 'ignore', 'pipe'],
     });
     return classifyCheckIgnore(result);
@@ -189,20 +261,25 @@ function gate(stdinString, deps = {}) {
     );
   }
 
-  // Stage 1: the segment matcher picks candidates. A non-candidate never reaches git.
-  if (!isGeneratedBinLib(filePath)) {
+  // Stage 1: the segment matcher picks candidates, on the raw AND the resolved path (T-35-05).
+  // A non-candidate never reaches git.
+  const abs = resolveTargetPath(filePath, input.cwd);
+  if (!isGeneratedBinLib(filePath) && !isGeneratedBinLib(abs)) {
     return allow();
   }
 
   // Stage 2: git decides. Only the exact verdict 'not-ignored' (tracked, or untracked and not
-  // ignored = hand-written) allows; ignored and every undecidable answer deny (HARD-01).
-  const abs = resolveTargetPath(filePath, input.cwd);
+  // ignored = hand-written) allows. 'ignored' is the unchanged ADR-457 deny; every other answer
+  // is undecidable and denies with the note (HARD-01, BINLIB-03).
   const checkIgnore = deps.checkIgnore || checkIgnoreLive;
   const verdict = checkIgnore(abs);
   if (verdict === 'not-ignored') {
     return allow();
   }
-  return deny(binLibDenyReason(filePath));
+  if (verdict === 'ignored') {
+    return deny(binLibDenyReason(filePath));
+  }
+  return deny(binLibUndecidableReason(filePath));
 }
 
 /**
@@ -270,5 +347,8 @@ module.exports = {
   resolveTargetPath,
   classifyCheckIgnore,
   checkIgnoreLive,
+  probeEnv,
+  binLibUndecidableReason,
   CHECK_IGNORE_TIMEOUT_MS,
+  REPO_REDIRECT_ENV,
 };
