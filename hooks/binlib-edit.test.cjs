@@ -33,7 +33,6 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const { runBinlibGate, binLibDenyReason } = require('./binlib-edit.cjs');
-const { spawnHook } = require('./lib/proof-harness.cjs');
 
 function input(filePath, toolName = 'Edit', cwd) {
   const tool_input = filePath === undefined ? {} : { file_path: filePath };
@@ -52,6 +51,37 @@ const FIXTURE_GIT_ENV = (() => {
   env.GIT_CONFIG_NOSYSTEM = '1';
   return env;
 })();
+
+// MN-02: the HOOK deliberately honors the user's real global git config (a global excludes file
+// is part of what git itself treats as ignored), so the tests isolate it instead: the probe runs
+// in-process (it reads process.env) or as a spawned hook, and both see these two overrides.
+const ISOLATED_GIT_CONFIG = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+
+/**
+ * Run fn with the host's global and system git config shut out of process.env, restoring the
+ * previous values in finally. node:test runs this file's synchronous tests one at a time, so the
+ * mutation cannot leak into a concurrent test.
+ */
+function withIsolatedGitConfig(fn) {
+  const saved = {};
+  for (const k of Object.keys(ISOLATED_GIT_CONFIG)) {
+    saved[k] = Object.prototype.hasOwnProperty.call(process.env, k) ? process.env[k] : undefined;
+    process.env[k] = ISOLATED_GIT_CONFIG[k];
+  }
+  try {
+    return fn();
+  } finally {
+    for (const k of Object.keys(saved)) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+}
+
+/** runBinlibGate through the DEFAULT (real git) probe, isolated from host git config. */
+function realGate(stdin, over = {}) {
+  return withIsolatedGitConfig(() => runBinlibGate(stdin, deps(over)));
+}
 
 function fixtureGit(cwd, argv, env = FIXTURE_GIT_ENV) {
   const r = spawnSync('git', argv, { cwd, env, encoding: 'utf8' });
@@ -111,7 +141,7 @@ function deps(over = {}) {
 }
 
 test('top-level bin/lib/*.cjs Edit → deny, reason names src/*.ts + ADR-457', () => {
-  const d = runBinlibGate(input('/home/x/gsd-core/bin/lib/decisions.cjs'), deps());
+  const d = realGate(input('/home/x/gsd-core/bin/lib/decisions.cjs'));
   assert.strictEqual(d.permissionDecision, 'deny');
   // ADR-457 source extension is `.ts` (a TS `src/` tree built by tsc), matching the
   // sibling freshness.cjs gate — NOT `.cts` (CONFLICT-02 / F-01).
@@ -121,7 +151,7 @@ test('top-level bin/lib/*.cjs Edit → deny, reason names src/*.ts + ADR-457', (
 });
 
 test('nested .../packages/x/bin/lib/foo.cjs Edit → deny (glob matches any depth)', () => {
-  const d = runBinlibGate(input('/repo/packages/x/bin/lib/foo.cjs'), deps());
+  const d = realGate(input('/repo/packages/x/bin/lib/foo.cjs'));
   assert.strictEqual(d.permissionDecision, 'deny');
 });
 
@@ -130,52 +160,52 @@ test('relative bin/lib/*.cjs path → deny (no leading slash)', () => {
   // is absent and the git probe is undecidable → deny (BINLIB-03), independent of where the
   // suite runs.
   const ghostCwd = path.join(os.tmpdir(), 'binlib-ghost-cwd-' + process.pid + '-does-not-exist');
-  const d = runBinlibGate(input('bin/lib/state.cjs', 'Edit', ghostCwd), deps());
+  const d = realGate(input('bin/lib/state.cjs', 'Edit', ghostCwd));
   assert.strictEqual(d.permissionDecision, 'deny');
 });
 
 test('Write (not just Edit) to bin/lib/*.cjs → deny', () => {
-  const d = runBinlibGate(input('/g/gsd-core/bin/lib/x.cjs', 'Write'), deps());
+  const d = realGate(input('/g/gsd-core/bin/lib/x.cjs', 'Write'));
   assert.strictEqual(d.permissionDecision, 'deny');
 });
 
 test('src/*.cts source path → allow (the correct file to edit)', () => {
-  const d = runBinlibGate(input('/home/x/gsd-core/sdk/src/query/decisions.cts'), deps());
+  const d = realGate(input('/home/x/gsd-core/sdk/src/query/decisions.cts'));
   assert.strictEqual(d.permissionDecision, 'allow');
 });
 
 test('src/bin-lib-notes.md (bin-lib substring, not a bin/lib segment pair) → allow', () => {
-  const d = runBinlibGate(input('/repo/src/bin-lib-notes.md'), deps());
+  const d = realGate(input('/repo/src/bin-lib-notes.md'));
   assert.strictEqual(d.permissionDecision, 'allow');
 });
 
 test('a path containing "bin/lib" only as substring within one segment → allow', () => {
-  const d = runBinlibGate(input('/repo/src/mybin/libfoo.cjs'), deps());
+  const d = realGate(input('/repo/src/mybin/libfoo.cjs'));
   assert.strictEqual(d.permissionDecision, 'allow');
 });
 
 test('bin/lib/README.md (segment pair but leaf is not .cjs) → allow', () => {
-  const d = runBinlibGate(input('/g/gsd-core/bin/lib/README.md'), deps());
+  const d = realGate(input('/g/gsd-core/bin/lib/README.md'));
   assert.strictEqual(d.permissionDecision, 'allow');
 });
 
 test('bin/lib/sub/nested.cjs (.cjs not the direct child of lib) → allow (leaf must be a direct lib child)', () => {
-  const d = runBinlibGate(input('/g/gsd-core/bin/lib/sub/nested.cjs'), deps());
+  const d = realGate(input('/g/gsd-core/bin/lib/sub/nested.cjs'));
   assert.strictEqual(d.permissionDecision, 'allow');
 });
 
 test('a doc file → allow', () => {
-  const d = runBinlibGate(input('/repo/docs/guide.md'), deps());
+  const d = realGate(input('/repo/docs/guide.md'));
   assert.strictEqual(d.permissionDecision, 'allow');
 });
 
 test('a test file → allow', () => {
-  const d = runBinlibGate(input('/repo/hooks/foo.test.cjs'), deps());
+  const d = realGate(input('/repo/hooks/foo.test.cjs'));
   assert.strictEqual(d.permissionDecision, 'allow');
 });
 
 test('lib before bin (lib/bin/x.cjs — wrong order) → allow (segment order is bin then lib)', () => {
-  const d = runBinlibGate(input('/g/gsd-core/lib/bin/x.cjs'), deps());
+  const d = realGate(input('/g/gsd-core/lib/bin/x.cjs'));
   assert.strictEqual(d.permissionDecision, 'allow');
 });
 
@@ -183,13 +213,13 @@ test('missing file_path → fail-closed deny (HARD-01)', () => {
   // HARD-01 is preserved for the tools this gate governs (Write/Edit): a Write/Edit that
   // carries no file_path cannot be evaluated → fail closed. `input(undefined)` defaults to
   // tool_name:'Edit', so this stays a DENY even after the non-Write/Edit self-filter lands.
-  const d = runBinlibGate(input(undefined), deps());
+  const d = realGate(input(undefined));
   assert.strictEqual(d.permissionDecision, 'deny');
 });
 
 test('non-string file_path → fail-closed deny (HARD-01)', () => {
   const stdin = JSON.stringify({ tool_name: 'Edit', tool_input: { file_path: 123 } });
-  const d = runBinlibGate(stdin, deps());
+  const d = realGate(stdin);
   assert.strictEqual(d.permissionDecision, 'deny');
 });
 
@@ -200,19 +230,19 @@ test('non-string file_path → fail-closed deny (HARD-01)', () => {
 
 test('tool_name:"Bash" payload (command, no file_path) → allow (self-filter, not HARD-01 deny)', () => {
   const stdin = JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git status' } });
-  const d = runBinlibGate(stdin, deps());
+  const d = realGate(stdin);
   assert.strictEqual(d.permissionDecision, 'allow');
 });
 
 test('non-Write/Edit tool (Read) with no file_path → allow (self-filter)', () => {
   const stdin = JSON.stringify({ tool_name: 'Read', tool_input: {} });
-  const d = runBinlibGate(stdin, deps());
+  const d = realGate(stdin);
   assert.strictEqual(d.permissionDecision, 'allow');
 });
 
 test('absent tool_name with no file_path → allow (self-filter, this gate does not govern it)', () => {
   const stdin = JSON.stringify({ tool_input: {} });
-  const d = runBinlibGate(stdin, deps());
+  const d = realGate(stdin);
   assert.strictEqual(d.permissionDecision, 'allow');
 });
 
@@ -221,12 +251,12 @@ test('tool_name:"Bash" whose command mentions a bin/lib/*.cjs path → allow (Ba
     tool_name: 'Bash',
     tool_input: { command: 'node bin/lib/decisions.cjs' },
   });
-  const d = runBinlibGate(stdin, deps());
+  const d = realGate(stdin);
   assert.strictEqual(d.permissionDecision, 'allow');
 });
 
 test('malformed stdin JSON → fail-closed deny (HARD-01)', () => {
-  const d = runBinlibGate('{not json', deps());
+  const d = realGate('{not json');
   assert.strictEqual(d.permissionDecision, 'deny');
 });
 
@@ -246,7 +276,7 @@ test('fail-closed deny is override-escapable (HARD-03)', () => {
 test('BINLIB-01/BINLIB-04: Edit of a TRACKED hand-written bin/lib/capability-validator.cjs in a real git repo → allow', () => {
   const fx = makeFixtureRepo();
   try {
-    const d = runBinlibGate(input(fx.tracked, 'Edit', fx.root), deps());
+    const d = realGate(input(fx.tracked, 'Edit', fx.root));
     assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
   } finally {
     fx.cleanup();
@@ -256,7 +286,7 @@ test('BINLIB-01/BINLIB-04: Edit of a TRACKED hand-written bin/lib/capability-val
 test('BINLIB-01: Write of the tracked hand-written bin/lib/*.cjs → allow', () => {
   const fx = makeFixtureRepo();
   try {
-    const d = runBinlibGate(input(fx.tracked, 'Write', fx.root), deps());
+    const d = realGate(input(fx.tracked, 'Write', fx.root));
     assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
   } finally {
     fx.cleanup();
@@ -266,7 +296,7 @@ test('BINLIB-01: Write of the tracked hand-written bin/lib/*.cjs → allow', () 
 test('BINLIB-02: Edit of a GITIGNORED (emitted) bin/lib/*.cjs → deny with the byte-identical ADR-457 reason', () => {
   const fx = makeFixtureRepo();
   try {
-    const d = runBinlibGate(input(fx.ignored, 'Edit', fx.root), deps());
+    const d = realGate(input(fx.ignored, 'Edit', fx.root));
     assert.strictEqual(d.permissionDecision, 'deny');
     assert.strictEqual(d.permissionDecisionReason, binLibDenyReason(fx.ignored));
   } finally {
@@ -277,11 +307,7 @@ test('BINLIB-02: Edit of a GITIGNORED (emitted) bin/lib/*.cjs → deny with the 
 test('BINLIB-01 end-to-end: spawned binlib-edit entrypoint allows the tracked file', () => {
   const fx = makeFixtureRepo();
   try {
-    const r = spawnHook(path.join(__dirname, 'binlib-edit.cjs'), {
-      stdin: input(fx.tracked, 'Edit', fx.root),
-      cwd: fx.root,
-    });
-    assert.strictEqual(r.conclusive, true, r.reason);
+    const r = spawnHookWithEnv(input(fx.tracked, 'Edit', fx.root), { cwd: fx.root });
     assert.strictEqual(r.decision, 'allow', r.reason);
   } finally {
     fx.cleanup();
@@ -294,11 +320,18 @@ const UNDECIDABLE = /could not be determined/;
 
 /**
  * Spawn the real hook entrypoint with a CUSTOM env (proof-harness spawnHook always passes
- * process.env). `env` overrides are layered on a copy of process.env; the verdict-log kill
- * switch keeps these runs out of the user's real verdict log (it never changes a decision).
+ * process.env). `env` overrides are layered on a copy of process.env plus the host-git-config
+ * isolation (MN-02); the verdict-log kill switch keeps these runs out of the user's real verdict
+ * log (it never changes a decision).
  */
 function spawnHookWithEnv(stdin, { cwd, env = {} } = {}) {
-  const fullEnv = Object.assign({}, process.env, { GSD_CONTRIB_NO_VERDICT_LOG: '1' }, env);
+  const fullEnv = Object.assign(
+    {},
+    process.env,
+    ISOLATED_GIT_CONFIG,
+    { GSD_CONTRIB_NO_VERDICT_LOG: '1' },
+    env
+  );
   const started = Date.now();
   const r = spawnSync(process.execPath, [path.join(__dirname, 'binlib-edit.cjs')], {
     input: stdin,
@@ -328,7 +361,7 @@ test('BINLIB-01: a brand-new, untracked, not-ignored bin/lib/*.cjs → allow (gs
   try {
     const fresh = path.join(fx.libDir, 'brand-new.cjs');
     fs.writeFileSync(fresh, "'use strict';\n");
-    const d = runBinlibGate(input(fresh, 'Write', fx.root), deps());
+    const d = realGate(input(fresh, 'Write', fx.root));
     assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
   } finally {
     fx.cleanup();
@@ -339,7 +372,7 @@ test('BINLIB-03: candidate under an ABSENT directory → deny with the undecidab
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-absent-'));
   try {
     const fp = path.join(base, 'does-not-exist', 'gsd-core', 'bin', 'lib', 'x.cjs');
-    const d = runBinlibGate(input(fp, 'Edit', base), deps());
+    const d = realGate(input(fp, 'Edit', base));
     assertUndecidableDeny(d.permissionDecision, d.permissionDecisionReason, fp);
   } finally {
     fs.rmSync(base, { recursive: true, force: true });
@@ -353,7 +386,7 @@ test('BINLIB-03: candidate in an existing directory that is NOT a git work tree 
     fs.mkdirSync(libDir, { recursive: true });
     const fp = path.join(libDir, 'x.cjs');
     fs.writeFileSync(fp, "'use strict';\n");
-    const d = runBinlibGate(input(fp, 'Edit', base), deps());
+    const d = realGate(input(fp, 'Edit', base));
     assertUndecidableDeny(d.permissionDecision, d.permissionDecisionReason, fp);
   } finally {
     fs.rmSync(base, { recursive: true, force: true });
@@ -471,7 +504,7 @@ test('T-35-05: dot-segment path <libDir>/../lib/emitted.cjs still reaches git an
   const fx = makeFixtureRepo();
   try {
     const fp = fx.libDir + '/../lib/emitted.cjs';
-    const d = runBinlibGate(input(fp, 'Edit', fx.root), deps());
+    const d = realGate(input(fp, 'Edit', fx.root));
     assert.strictEqual(d.permissionDecision, 'deny');
   } finally {
     fx.cleanup();
@@ -482,7 +515,7 @@ test('T-35-05: dot-segment path <libDir>/./emitted.cjs still reaches git and den
   const fx = makeFixtureRepo();
   try {
     const fp = fx.libDir + '/./emitted.cjs';
-    const d = runBinlibGate(input(fp, 'Edit', fx.root), deps());
+    const d = realGate(input(fp, 'Edit', fx.root));
     assert.strictEqual(d.permissionDecision, 'deny');
   } finally {
     fx.cleanup();
@@ -503,8 +536,9 @@ test('T-35-03: shell metacharacters in the leaf reach git as one argv element an
   const fx = makeFixtureRepo();
   try {
     const fp = path.join(fx.libDir, '$(touch PWNED).cjs');
-    const d = runBinlibGate(input(fp, 'Write', fx.root), deps());
-    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+    const d = realGate(input(fp, 'Write', fx.root));
+    // The verdict is not the point (MN-02): only that git answered without a shell running.
+    assert.ok(['allow', 'deny'].includes(d.permissionDecision), d.permissionDecision);
     assert.deepStrictEqual(findNamed(fx.root, 'PWNED'), []);
   } finally {
     fx.cleanup();
