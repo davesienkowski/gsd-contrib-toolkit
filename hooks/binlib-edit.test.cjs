@@ -298,6 +298,30 @@ test('fail-closed deny is override-escapable (HARD-03)', () => {
   assert.strictEqual(d.permissionDecision, 'allow');
 });
 
+test('BINLIB-02: an ACTIVE override cannot flip the policy deny of an ignored (generated) file', () => {
+  const over = {
+    checkIgnore: () => 'ignored',
+    overrideImpl: {
+      checkOverride: () => ({ override: true, reason: 'rebuilding generated file by hand' }),
+      writeReceipt: () => {},
+    },
+  };
+  const d = runBinlibGate(input('/repo/gsd-core/bin/lib/emitted.cjs'), deps(over));
+  assert.strictEqual(d.permissionDecision, 'deny');
+});
+
+test('BINLIB-03: an ACTIVE override cannot flip the undecidable deny', () => {
+  const over = {
+    checkIgnore: () => 'unknown',
+    overrideImpl: {
+      checkOverride: () => ({ override: true, reason: 'rebuilding generated file by hand' }),
+      writeReceipt: () => {},
+    },
+  };
+  const d = runBinlibGate(input('/repo/gsd-core/bin/lib/emitted.cjs'), deps(over));
+  assert.strictEqual(d.permissionDecision, 'deny');
+});
+
 // --- BINLIB-01..04: real-git discriminator (tracked = hand-written, ignored = generated) -----
 
 test('BINLIB-01/BINLIB-04: Edit of a TRACKED hand-written bin/lib/capability-validator.cjs in a real git repo → allow', () => {
