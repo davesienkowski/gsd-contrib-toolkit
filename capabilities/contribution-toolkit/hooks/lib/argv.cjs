@@ -225,14 +225,22 @@ const SEGMENT_SEPARATORS = [';', '&&', '||', '|'];
 /**
  * Split a raw command string into segments on UNQUOTED `;`, `&&`, `||`, `|`,
  * respecting quote and escape state so a separator inside `-m "a ; b"` does NOT
- * split. Returns the list of raw segment strings (trimmed). Throws on unbalanced
- * quote (same fail-closed contract as tokenize).
+ * split, and record the operator that FOLLOWS each segment (`nextOp`: '&&', '||',
+ * ';', '|', or null for the last). Throws on unbalanced quote (same fail-closed
+ * contract as tokenize).
+ *
+ * GTEST-03 (36-01): the operator record is ADDITIVE. The splitting rules are the
+ * exact rules splitSegments always had — newline, a lone `&` and `|&` are NOT
+ * separators (36-CONTEXT Addendum 3; every Bash gate's classification depends on
+ * them). The trim + drop-empty filter runs in lockstep: a dropped empty piece takes
+ * its own op with it and leaves the previous kept segment's op unchanged, so
+ * `a |` yields one segment whose nextOp is '|'.
  *
  * @param {string} str
- * @returns {string[]}
+ * @returns {Array<{text:string, nextOp:(string|null)}>}
  * @throws {Error} on unbalanced quote / dangling escape
  */
-function splitSegments(str) {
+function splitSegmentsWithOps(str) {
   const segments = [];
   let cur = '';
   let inSingle = false;
@@ -303,14 +311,14 @@ function splitSegments(str) {
     // Unquoted: check separators. Two-char first.
     const two = str.slice(i, i + 2);
     if (two === '&&' || two === '||') {
-      segments.push(cur);
+      segments.push({ text: cur, nextOp: two });
       cur = '';
       i += 1; // consume second char
       continue;
     }
     if (ch === ';' || ch === '|') {
       // Note: '|' here is unquoted; a doubled '||' was already handled above.
-      segments.push(cur);
+      segments.push({ text: cur, nextOp: ch });
       cur = '';
       continue;
     }
@@ -324,9 +332,28 @@ function splitSegments(str) {
   if (escaped) {
     throw new Error('dangling escape');
   }
-  segments.push(cur);
+  segments.push({ text: cur, nextOp: null });
 
-  return segments.map((s) => s.trim()).filter((s) => s.length > 0);
+  return segments
+    .map((s) => ({ text: s.text.trim(), nextOp: s.nextOp }))
+    .filter((s) => s.text.length > 0);
+}
+
+/**
+ * Split a raw command string into segments on UNQUOTED `;`, `&&`, `||`, `|`,
+ * respecting quote and escape state so a separator inside `-m "a ; b"` does NOT
+ * split. Returns the list of raw segment strings (trimmed). Throws on unbalanced
+ * quote (same fail-closed contract as tokenize).
+ *
+ * Unchanged contract: identical signature and identical string[] to before GTEST-03;
+ * it is now the text projection of splitSegmentsWithOps.
+ *
+ * @param {string} str
+ * @returns {string[]}
+ * @throws {Error} on unbalanced quote / dangling escape
+ */
+function splitSegments(str) {
+  return splitSegmentsWithOps(str).map((s) => s.text);
 }
 
 /**
@@ -456,18 +483,22 @@ function parseCommand(str) {
       return { ok: false, reason: 'whitespace-only command' };
     }
 
-    const rawSegments = splitSegments(str);
+    const rawSegments = splitSegmentsWithOps(str);
     if (rawSegments.length === 0) {
       return { ok: false, reason: 'no command after segment split' };
     }
 
     const segments = [];
-    for (const seg of rawSegments) {
-      const tokens = tokenize(seg);
+    for (const piece of rawSegments) {
+      const tokens = tokenize(piece.text);
       if (tokens.length === 0) {
         return { ok: false, reason: 'empty segment after tokenize' };
       }
-      segments.push(classifyTokens(tokens));
+      const seg = classifyTokens(tokens);
+      // GTEST-03: additive field — the operator that FOLLOWS this segment ('|', '||', '&&',
+      // ';' or null). classifyTokens' own output shape is unchanged.
+      seg.nextOp = piece.nextOp;
+      segments.push(seg);
     }
 
     const first = segments[0];
@@ -490,4 +521,4 @@ function parseCommand(str) {
   }
 }
 
-module.exports = { tokenize, parseCommand, splitSegments, classifyTokens };
+module.exports = { tokenize, parseCommand, splitSegments, splitSegmentsWithOps, classifyTokens };

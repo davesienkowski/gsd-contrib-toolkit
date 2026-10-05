@@ -299,3 +299,62 @@ test('env-prefix: an env-ONLY command neither throws nor becomes a gated program
   assert.strictEqual(p.program, '');
   assert.deepStrictEqual(p.subcommands, []);
 });
+
+// ---------------------------------------------------------------------------
+// GTEST-03 nextOp: every parsed segment records the operator that FOLLOWS it
+// ('|', '||', '&&', ';' or null). Additive only: splitSegments' string[] contract
+// and every splitting rule are unchanged (36-CONTEXT Addendum 3).
+// ---------------------------------------------------------------------------
+
+const { splitSegments: splitSegmentsForNextOp } = require('./argv.cjs');
+
+test('GTEST-03 nextOp: `a | b` records | then null', () => {
+  const p = parseCommand('a | b');
+  assert.strictEqual(p.ok, true, p.reason);
+  assert.strictEqual(p.segments.length, 2);
+  assert.strictEqual(p.segments[0].nextOp, '|');
+  assert.strictEqual(p.segments[1].nextOp, null);
+});
+
+test('GTEST-03 nextOp: `a || b` records ||, `a && b` records &&, `a ; b` records ;', () => {
+  for (const [cmd, op] of [['a || b', '||'], ['a && b', '&&'], ['a ; b', ';']]) {
+    const p = parseCommand(cmd);
+    assert.strictEqual(p.ok, true, p.reason);
+    assert.strictEqual(p.segments.length, 2, cmd);
+    assert.strictEqual(p.segments[0].nextOp, op, cmd);
+    assert.strictEqual(p.segments[1].nextOp, null, cmd);
+  }
+});
+
+test('GTEST-03 nextOp: a quoted separator does not split and leaves nextOp null', () => {
+  const p = parseCommand('echo "a | b"');
+  assert.strictEqual(p.ok, true, p.reason);
+  assert.strictEqual(p.segments.length, 1);
+  assert.strictEqual(p.segments[0].nextOp, null);
+});
+
+test('GTEST-03 nextOp: a heredoc body separator does not split and leaves nextOp null', () => {
+  const p = parseCommand('cat <<EOF\na | b\nEOF');
+  assert.strictEqual(p.ok, true, p.reason);
+  assert.strictEqual(p.segments.length, 1);
+  assert.strictEqual(p.segments[0].nextOp, null);
+});
+
+test('GTEST-03 nextOp: splitSegments still returns the identical string[]', () => {
+  assert.deepStrictEqual(splitSegmentsForNextOp('a | b && c'), ['a', 'b', 'c']);
+});
+
+test('GTEST-03 nextOp: `a |& b` records | and keeps the unchanged `&` residue (Addendum 3)', () => {
+  const p = parseCommand('a |& b');
+  assert.strictEqual(p.ok, true, p.reason);
+  assert.strictEqual(p.segments.length, 2);
+  assert.strictEqual(p.segments[0].nextOp, '|');
+  assert.strictEqual(p.segments[1].tokens[0], '&');
+});
+
+test('GTEST-03 nextOp: a dropped empty trailing piece keeps the previous op (`a |`)', () => {
+  const p = parseCommand('a |');
+  assert.strictEqual(p.ok, true, p.reason);
+  assert.strictEqual(p.segments.length, 1);
+  assert.strictEqual(p.segments[0].nextOp, '|');
+});
