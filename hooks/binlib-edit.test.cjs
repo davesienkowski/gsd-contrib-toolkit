@@ -334,6 +334,33 @@ test('BINLIB-01/BINLIB-04: Edit of a TRACKED hand-written bin/lib/capability-val
   }
 });
 
+/** Byte snapshot of everything a mutating git call could touch: all of .git/ plus the worktree. */
+function snapshotRepo(root) {
+  const out = {};
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else out[path.relative(root, p)] = fs.readFileSync(p).toString('base64');
+    }
+  };
+  walk(root);
+  return out;
+}
+
+test('BINLIB-04: the gate is read-only — .git/ (index, refs, HEAD, config) and the worktree are byte-unchanged', () => {
+  const fx = makeFixtureRepo();
+  try {
+    const before = snapshotRepo(fx.root);
+    for (const fp of [fx.tracked, fx.ignored, fx.nestedIgnored, fx.nestedTracked]) {
+      for (const tool of ['Edit', 'Write']) realGate(input(fp, tool, fx.root));
+    }
+    assert.deepStrictEqual(snapshotRepo(fx.root), before);
+  } finally {
+    fx.cleanup();
+  }
+});
+
 test('BINLIB-01: Write of the tracked hand-written bin/lib/*.cjs → allow', () => {
   const fx = makeFixtureRepo();
   try {
