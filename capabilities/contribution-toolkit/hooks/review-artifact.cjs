@@ -617,6 +617,7 @@ function isApproveEvent(seg) {
   for (const c of fieldCandidates(seg)) {
     if (/^event=APPROVE$/i.test(c)) return true;
     if (/"event"\s*:\s*"APPROVE"/i.test(c)) return true;
+    if (jsonEventOf(c) === 'APPROVE') return true; // decoded: `"APPR\u004fVE"` is an approve (MJ-02)
   }
   return false;
 }
@@ -639,8 +640,134 @@ function isRequestChangesEvent(seg) {
   for (const c of fieldCandidates(seg)) {
     if (/^event=REQUEST_CHANGES$/i.test(c)) return true;
     if (/"event"\s*:\s*"REQUEST_CHANGES"/i.test(c)) return true;
+    if (jsonEventOf(c) === 'REQUEST_CHANGES') return true; // decoded (MJ-02)
   }
   return false;
+}
+
+/**
+ * The upper-cased `event` of a candidate that is an inline JSON object, decoded by JSON.parse
+ * (so `"APPR\u004fVE"` reads as `APPROVE`, as GitHub reads it). Null when the candidate is not
+ * a JSON object, does not parse, or carries no string `event`. A candidate that looks like JSON
+ * but does not parse is unresolvedVerdictForm's concern, not this one's.
+ *
+ * @param {string} c
+ * @returns {string|null}
+ */
+function jsonEventOf(c) {
+  if (typeof c !== 'string' || !/^\s*\{/.test(c)) return null;
+  let o;
+  try {
+    o = JSON.parse(c);
+  } catch (_) {
+    return null;
+  }
+  return o && typeof o === 'object' && typeof o.event === 'string' ? o.event.toUpperCase() : null;
+}
+
+/**
+ * Request-body flags whose value curl or gh may read from a FILE or STDIN when it starts with `@`
+ * (curl's `-d`/`--data*`/`--json`), keyed by the flag as written. `--data-raw` is absent on
+ * purpose: curl never reads a file for it.
+ */
+const BODY_FROM_FILE_FLAGS = Object.freeze(['-d', '--data', '--data-binary', '--data-ascii', '--data-urlencode', '--json']);
+
+/** Flags whose operand is ALWAYS a file or stdin carrying the request body. */
+const BODY_FILE_FLAGS = Object.freeze(['--input', '-T', '--upload-file']);
+
+/**
+ * Why this REST review submission's EVENT cannot be read statically, or null when it can (38
+ * review MJ-02). Native `gh pr review` is never unresolved: its verdict is a flag. On a REST
+ * segment (`gh api`, curl) the event is unresolved when it comes from:
+ *   - an `event=@…` field (`-F event=@file`, `-F event=@-`, `-f event=@…`): gh reads a file/stdin;
+ *   - `--input`, `-T` or `--upload-file`: the whole body is read from a file or stdin;
+ *   - a `-d`/`--data`/`--data-binary`/`--data-ascii`/`--data-urlencode`/`--json` value starting
+ *     with `@`: curl reads the body from a file or stdin;
+ *   - a body value that starts like JSON but does not parse;
+ *   - an event or body value built by shell expansion (`$…` or a backtick), which argv keeps literal.
+ * The `…/reviews/<id>/dismissals` route carries no event and is never unresolved. The returned
+ * text is a fixed description of the FORM; it never echoes a path or a body.
+ *
+ * @param {Object} seg
+ * @returns {string|null}
+ */
+function unresolvedVerdictForm(seg) {
+  if (isNativeGhSegment(seg)) return null;
+  const tokens = Array.isArray(seg.tokens) ? seg.tokens.filter((t) => typeof t === 'string') : [];
+  if (tokens.some((t) => /\/reviews\/[^/]+\/dismissals(?:$|[/?])/.test(t))) return null;
+
+  for (const c of fieldCandidates(seg)) {
+    if (/^event=@/i.test(c)) {
+      return 'a `-F`/`-f event=@…` field (gh reads the event from a file or stdin)';
+    }
+    if (/^event=.*[$`]/i.test(c)) {
+      return 'an `event=` value built by shell expansion (`$…` or a backtick)';
+    }
+  }
+
+  for (let i = 0; i < tokens.length; i += 1) {
+    const t = tokens[i];
+    let flag = null;
+    let val;
+    if (BODY_FROM_FILE_FLAGS.indexOf(t) !== -1 || BODY_FILE_FLAGS.indexOf(t) !== -1) {
+      flag = t;
+      val = tokens[i + 1];
+    } else {
+      const long = /^(--[A-Za-z][A-Za-z0-9-]*)=([\s\S]*)$/.exec(t);
+      if (long && (BODY_FROM_FILE_FLAGS.indexOf(long[1]) !== -1 || BODY_FILE_FLAGS.indexOf(long[1]) !== -1)) {
+        flag = long[1];
+        val = long[2];
+      } else if (/^-d.+/.test(t)) {
+        flag = '-d';
+        val = t.slice(2);
+      } else if (/^-T.+/.test(t)) {
+        flag = '-T';
+        val = t.slice(2);
+      }
+    }
+    if (flag === null) continue;
+    if (BODY_FILE_FLAGS.indexOf(flag) !== -1) {
+      return '`' + flag + '` (the request body is read from a file or stdin)';
+    }
+    if (typeof val !== 'string') continue;
+    if (val.startsWith('@')) {
+      return '`' + flag + ' @…` (curl reads the request body from a file or stdin)';
+    }
+    if (/^\s*[{[]/.test(val)) {
+      try {
+        JSON.parse(val);
+      } catch (_) {
+        return 'an inline JSON body that does not parse (`' + flag + '`)';
+      }
+      continue;
+    }
+    if (/[$`]/.test(val)) {
+      return 'a request body built by shell expansion (`$…` or a backtick, `' + flag + '`)';
+    }
+  }
+  return null;
+}
+
+/**
+ * The ask for an UNRESOLVED verdict (MJ-02): the segment may be an approve or a request-changes,
+ * and the gate cannot tell, so steps 8a and 10 cannot be checked. A human decides. Held like any
+ * other ask, so a deny from R8, R1 or a chained segment still wins.
+ *
+ * @param {string} form from unresolvedVerdictForm
+ * @returns {Object}
+ */
+function unresolvedVerdictAsk(form) {
+  return ask(
+    'ENF-20 R8a-memtrace / R10 (re-review steps 8a and 10) — UNRESOLVED verdict: this review ' +
+      'submission takes its event from ' + form + ', so the gate cannot tell whether it is an ' +
+      'approve, a request-changes or a comment. If it is a verdict, step 8a (memtrace evidence in ' +
+      'this session) applies, and for an approve step 10 (the exogenous check) too; the gate did ' +
+      'not check either.\n\n' +
+      'Put the event on the command line so the gate can read it (`-f event=APPROVE`, ' +
+      '`-f event=REQUEST_CHANGES`, `-f event=COMMENT`, or an inline JSON body), or let a human ' +
+      'decide here. `GSD_CONTRIB_OVERRIDE` does not answer this prompt: it rescues thrown gate ' +
+      'errors only. (CTK-ADR-0010, ENF-20)'
+  );
 }
 
 /**
@@ -1264,7 +1391,7 @@ function memtraceArtifactBranch(g, ctx, deps, short) {
   const claimed = normalizeOid(readPath(doc, 'head_oid'));
   if (!claimed || !ctx.headOid.startsWith(claimed)) {
     return deny(
-      head + '\n\n`' + rel + '` records `head_oid` `' + String(readPath(doc, 'head_oid')).slice(0, 80) +
+      head + '\n\n`' + rel + '` records `head_oid` `' + quoteAttestation(readPath(doc, 'head_oid'), 80).text +
         '`, but PR #' + ctx.number + ' now heads at `' + ctx.headOid.slice(0, OID_KEY_LENGTH) +
         '`. An attestation for an older push does not cover this one.\n\n' + memtraceRemedy(rel) +
         '\n\n' + R8A_DENY_NOTE
@@ -1289,20 +1416,26 @@ const ATTESTATION_QUOTE_MAX = 300;
 
 /**
  * The attested reason as it may appear in a human prompt (prompt-injection guard, T-38-11):
- * C0/C1 control characters and the Unicode line/paragraph separators become spaces, the quote
- * delimiters `«` `»` become `"` so the text cannot close its own quote, and at most
- * ATTESTATION_QUOTE_MAX code points are kept (replace first, then cut, so a cut never lands
- * inside a surrogate pair).
+ * C0/C1 control characters and the Unicode line/paragraph separators become spaces, bidi
+ * controls (U+202A-202E, U+2066-2069) and zero-width characters (U+200B-200F, U+FEFF) are
+ * removed, the quote delimiters `«` `»` become `"` so the text cannot close its own quote, and at
+ * most `max` code points are kept (replace first, then cut, so a cut never lands inside a
+ * surrogate pair). The recorded `head_oid` of a mismatched attestation goes through the same
+ * guard with `max` 80 (38 review NT-02).
  *
  * @param {*} value
+ * @param {number} [max] code points kept (default ATTESTATION_QUOTE_MAX)
  * @returns {{text:string, truncated:boolean}}
  */
-function quoteAttestation(value) {
+function quoteAttestation(value, max = ATTESTATION_QUOTE_MAX) {
   const clean = String(value === undefined || value === null ? '' : value)
     .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
+    // 38 review NT-03: bidi embeddings/overrides/isolates and zero-width characters are removed,
+    // so attested text cannot reorder itself to appear outside its quotes.
+    .replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, '')
     .replace(/[«»]/g, '"');
   const chars = Array.from(clean);
-  return { text: chars.slice(0, ATTESTATION_QUOTE_MAX).join(''), truncated: chars.length > ATTESTATION_QUOTE_MAX };
+  return { text: chars.slice(0, max).join(''), truncated: chars.length > max };
 }
 
 // ── the gate ────────────────────────────────────────────────────────────────
@@ -1371,8 +1504,12 @@ function gateSegment(seg, action, deps, opts = {}) {
   // comment for no enforcement value.
   if (COMMENT_ACTIONS.has(action) && !(post.clear || post.reviewPost)) return null;
 
+  // MJ-02: a REST review whose event cannot be read is an UNRESOLVED verdict. It seeds the held
+  // ask; the entries below still run, so any of their denies wins over it.
+  const unresolved = action === 'pr-review' ? unresolvedVerdictForm(seg) : null;
+
   const applicable = GATES.filter((g) => g.on.indexOf(action) !== -1 && gateApplies(g, action, post));
-  if (applicable.length === 0) return null;
+  if (applicable.length === 0) return unresolved ? unresolvedVerdictAsk(unresolved) : null;
 
   const repoSpec = repoSpecOf(seg);
   const selector = prSelector(seg);
@@ -1411,7 +1548,8 @@ function gateSegment(seg, action, deps, opts = {}) {
     sessionId: opts && typeof opts.sessionId === 'string' ? opts.sessionId : null,
   };
 
-  let pendingAsk = null; // the FIRST ask; never returned while a later entry could still deny
+  // The FIRST ask; never returned while a later entry could still deny.
+  let pendingAsk = unresolved ? unresolvedVerdictAsk(unresolved) : null;
 
   for (const g of applicable) {
     // Companion artifacts first: the merge record's re-fetch recency is meaningless without
@@ -1498,11 +1636,18 @@ function gate(stdinString, deps) {
   if (!hasGovernedSegment(parsed, GOVERNED_ACTIONS)) return allow();
 
   const segs = Array.isArray(parsed.segments) && parsed.segments.length > 0 ? parsed.segments : [parsed];
+  // 38 review MJ-01: every verdict segment of this call shares ONE tool-log read. The session id
+  // is the payload's, the same for the whole chain, so a second read would only repeat the first
+  // and spend another READ_BUDGET_MS. The memo lives in this call only.
+  const segDeps =
+    deps && typeof deps.readToolLog === 'function'
+      ? Object.assign({}, deps, { readToolLog: memoizeBySession(deps.readToolLog) })
+      : deps;
   let firstAsk = null;
   for (const seg of segs) {
     const r = classifyAction({ ok: true, segments: [seg] });
     if (!r || !GOVERNED_ACTIONS.has(r.action)) continue;
-    const decision = gateSegment(seg, r.action, deps, { sessionId });
+    const decision = gateSegment(seg, r.action, segDeps, { sessionId });
     if (decision && decision.permissionDecision === 'ask') {
       if (!firstAsk) firstAsk = decision; // held: a later segment may still deny
     } else if (decision) {
@@ -1511,6 +1656,24 @@ function gate(stdinString, deps) {
   }
 
   return firstAsk || allow();
+}
+
+/**
+ * Wrap a `readToolLog(sessionId)` so each session id is read at most once (38 review MJ-01). A
+ * returned value is cached, whatever its shape (the contract check in verifyMemtraceEvidence
+ * still runs on it); a throw is not cached, and it propagates to runGate's fail-closed path.
+ *
+ * @param {(sessionId:string) => *} read
+ * @returns {(sessionId:string) => *}
+ */
+function memoizeBySession(read) {
+  const memo = new Map();
+  return (sid) => {
+    if (memo.has(sid)) return memo.get(sid);
+    const r = read(sid);
+    memo.set(sid, r);
+    return r;
+  };
 }
 
 /**
@@ -1772,6 +1935,7 @@ module.exports = {
   fieldCandidates,
   isApproveEvent,
   isRequestChangesEvent,
+  unresolvedVerdictForm,
   isHelpInvocation,
   isNativeGhSegment,
   unfilledFields,
