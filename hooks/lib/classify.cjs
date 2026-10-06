@@ -577,6 +577,8 @@ const VERDICT_ROUTE_FORMS = Object.freeze({
   'unparseable-payload': 'an eval or shell -c payload the gate cannot parse',
   'depth-bound': 'an eval or shell -c payload nested deeper than the gate reads',
   'prefix-bound': 'a review command behind more stacked wrappers than the gate reads',
+  xargs: 'a review command run through xargs',
+  'xargs-unknown-option': 'an xargs command with an option the gate cannot read',
 });
 
 /**
@@ -598,6 +600,34 @@ const RECOVERY_PREFIX_WORDS = Object.freeze({ '(': 'subshell', '{': 'brace-group
 
 /** GNU time long options that take a value (RESEARCH section 6); matched by unique prefix. */
 const TIME_VALUE_LONG = Object.freeze(['format', 'output']);
+
+// GNU xargs (findutils 4.9.0) options, RESEARCH section 4 (probed): short letters with no value,
+// with a REQUIRED value (the rest of the token if non-empty, else the next token), and with an
+// OPTIONAL value that may only be attached (a separate token is already the command).
+const XARGS_SHORT_NO_VALUE = new Set(['0', 'o', 'p', 'r', 't', 'x']);
+const XARGS_SHORT_REQUIRED = new Set(['a', 'd', 'E', 'I', 'L', 'n', 'P', 's']);
+const XARGS_SHORT_OPTIONAL = new Set(['i', 'e', 'l']);
+/** GNU xargs long options by value class; resolved by exact name, else by unique prefix. */
+const XARGS_LONG = Object.freeze({
+  'arg-file': 'required',
+  delimiter: 'required',
+  'max-args': 'required',
+  'max-procs': 'required',
+  'max-chars': 'required',
+  'process-slot-var': 'required',
+  replace: 'optional',
+  eof: 'optional',
+  'max-lines': 'optional',
+  null: 'none',
+  'open-tty': 'none',
+  interactive: 'none',
+  'no-run-if-empty': 'none',
+  verbose: 'none',
+  exit: 'none',
+  'show-limits': 'none',
+  help: 'none',
+  version: 'none',
+});
 
 /** Shells whose `-c` command string the recovery re-parses (RESEARCH section 5). */
 const RECOVERY_SHELLS = new Set(['bash', 'sh', 'dash', 'zsh', 'ksh']);
@@ -657,6 +687,7 @@ function recoverVerdictRoute(seg, state) {
   if (prog === 'nohup') return recoverStripped(after[0] === '--' ? after.slice(1) : after, 'nohup', state);
   if (prog === 'setsid') return recoverStripped(afterSetsidOptions(after), 'setsid', state);
   if (prog === 'time') return recoverStripped(afterTimeOptions(after), 'time', state);
+  if (prog === 'xargs') return recoverXargs(after, state);
   // Task 2d: a program word built by expansion (`$(echo gh)`, `$GH`, a backtick), keyed on the
   // token as argv produced it (argv drops the quotes of `"$CHROME"`).
   if (word.length > 0 && (word[0] === '$' || word[0] === '`')) return recoverExpansionProgram(tokens, state);
@@ -817,6 +848,82 @@ function afterTimeOptions(after) {
     break;
   }
   return after.slice(i);
+}
+
+/**
+ * The value class of an xargs long option name: exact match first, else a unique prefix (GNU
+ * getopt_long). Null for an unknown or ambiguous name.
+ *
+ * @param {string} name
+ * @returns {'required'|'optional'|'none'|null}
+ */
+function xargsLongKind(name) {
+  if (Object.prototype.hasOwnProperty.call(XARGS_LONG, name)) return XARGS_LONG[name];
+  if (name.length === 0) return null;
+  const hits = Object.keys(XARGS_LONG).filter((n) => n.startsWith(name));
+  return hits.length === 1 ? XARGS_LONG[hits[0]] : null;
+}
+
+/**
+ * The command argv xargs runs, after its options (RESEARCH section 4): short bundles walk letter
+ * by letter until a value letter; a required-value letter takes the rest of the token, else the
+ * next token; an optional-value letter takes only the rest of the token; a long option takes the
+ * next token only when it is required-value and written without `=`; `--` ends options; the
+ * command is the first non-option token. `{ unknown: true }` for an option the table does not
+ * know (or an ambiguous long prefix), whose value class, and so the command, cannot be located.
+ *
+ * @param {string[]} after the tokens after `xargs`
+ * @returns {{command:string[]}|{unknown:true}}
+ */
+function xargsCommand(after) {
+  let i = 0;
+  while (i < after.length) {
+    const t = after[i];
+    if (t === '--') {
+      i += 1;
+      break;
+    }
+    if (t.startsWith('--') && t.length > 2) {
+      const body = t.slice(2);
+      const eq = body.indexOf('=');
+      const kind = xargsLongKind(eq === -1 ? body : body.slice(0, eq));
+      if (kind === null) return { unknown: true };
+      i += kind === 'required' && eq === -1 ? 2 : 1;
+      continue;
+    }
+    if (t.length > 1 && t[0] === '-') {
+      let width = 1;
+      for (let k = 1; k < t.length; k += 1) {
+        const c = t[k];
+        if (XARGS_SHORT_NO_VALUE.has(c)) continue;
+        if (XARGS_SHORT_OPTIONAL.has(c)) break; // its value, if any, is the rest of this token
+        if (XARGS_SHORT_REQUIRED.has(c)) {
+          if (k === t.length - 1) width = 2; // the value is the next token
+          break;
+        }
+        return { unknown: true };
+      }
+      i += width;
+      continue;
+    }
+    break;
+  }
+  return { command: after.slice(i) };
+}
+
+/**
+ * Recover an xargs-run review verdict (Task 2e): xargs runs its command argv directly, so this is
+ * a prefix strip (`peels + 1`), not a payload re-parse. An unknown or ambiguous option is
+ * uncertain only when a review hint is visible, else null. Bare `xargs` (no command) is null.
+ *
+ * @param {string[]} after the tokens after `xargs`
+ * @param {{depth:number, peels:number, inShellString:boolean}} state
+ * @returns {Object|null}
+ */
+function recoverXargs(after, state) {
+  const parsed = xargsCommand(after);
+  if (parsed.unknown === true) return hasReviewHint(after) ? uncertainRoute('xargs-unknown-option') : null;
+  return recoverStripped(parsed.command, 'xargs', state);
 }
 
 /**
