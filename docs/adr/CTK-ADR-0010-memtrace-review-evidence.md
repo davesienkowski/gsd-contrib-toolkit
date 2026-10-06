@@ -165,6 +165,7 @@ is wrong.
    | The attested reason contains the quote delimiters U+00AB / U+00BB | each is replaced with `"`, so attested text cannot close its own quote and append words that read as the gate's | executor addition (38-03) |
    | Malformed attestation JSON, unreadable attestation | thrown deny (override-escapable with a receipt) | CONTEXT (HARD-01) |
    | An artifact (R8, R10, R13, R8a) or `--body-file` that is not a regular file (a FIFO, socket, device or directory, or a symlink to one), or is over the 1 MiB read cap | thrown deny, the same as a malformed artifact; lstat, O_RDONLY\|O_NONBLOCK and fstat mean it is never opened in a way that blocks or read without bound. A symlink to a regular file is read | 38 verifier VF-2 |
+   | A FIFO, socket, device or directory (or a symlink to one) at a gate hot-path state file outside ENF-20: the ENF-21 `runtime-stamp.json` and `upstream-tip-cache.json`, the HARD-03 `override-receipts.log`, or an ENF-19 artifact (`.gsd/contrib/<slug>/*.json`) | each path keeps its existing posture: the stamp is a thrown deny (an absent stamp stays unstamped), a cache read is a miss, a cache write is skipped, a refused receipt write makes the override deny, and an ENF-19 artifact is a thrown deny (also over the 1 MiB read cap). Reads use this record's VF-2 reader, moved to `hooks/lib/regular-file.cjs`; writes go through its `writeRegularFile`, which opens O_WRONLY\|O_CREAT\|O_NONBLOCK and fstats the fd before any truncate or write | W5 (quick 261006-jts) |
    | The reader throws, or returns a value without boolean `complete`, boolean `recorderOff` and array `records` | thrown deny | PLANNER ADDITION (contract check) |
    | An ask held while a later entry or a chained segment denies (R1 treadmill, R13 merge) | the deny wins: deny > thrown > ask > allow | PLANNER ADDITION |
 
@@ -255,6 +256,20 @@ is wrong.
   (OBS-01/OBS-02), sits outside step 8a, and is seeded for a follow-up as
   `.planning/seeds/SEED-live-tool-log-fifo-hangs-all-gates.md` (local planning corpus). The rotated
   slot, which no writer opens, is the persistent case the reader fix closes.
+- **Other gate-path file opens are still unguarded (W5 residual).** W5 (quick 261006-jts) hardened only
+  the ENF-21 stamp and tip cache, the HARD-03 override receipt and the ENF-19 artifact read (the row
+  above). These same-class opens still use a blocking read or open and are unchanged, not fixed: the
+  `--body-file` reads in gh-edit, gh-pr-create, gh-issue-create, issue-dedupe and git-commit-convention;
+  `hooks/gsd-test-viability.cjs` near line 558, which is stat-checked first but could be swapped after
+  the stat; `hooks/worktree-fresh-base.cjs` near line 860, plus its settings read near line 332, which
+  is stat-checked first but could be swapped after the stat; gh-pr-create's `readRepoFile` read of
+  worktree files; binlib-edit's reads of the worktree `.git` gitdir, commondir and back-pointer files;
+  `runtimeDigest`'s reads of the installed runtime tree; `writeStamp` (the runtime-sync CLI, not a
+  gate); and the receipt preflight in `bin/contrib-capability.cjs`, a blocking open in a CLI rather
+  than a gate (its later `writeReceipt` call now refuses a non-regular receipt, but the preflight opens
+  first). The tool-log writers are a separate worker's scope (W1). A write through a dangling symlink
+  still creates its target, as before, and a dangling symlink at `runtime-stamp.json` still reads as
+  unstamped (null, via ENOENT), unchanged from today.
 - **A CLEAR-verdict PR comment routes around 8a.** A `gh pr comment` or a POST to
   `/issues/<pr#>/comments` whose body carries `CLEAR` arms R10 (and R1) but not R8a, because R8a is
   scoped to `pr-review` verdicts. It is a route around the memtrace obligation; recorded, not fixed.
