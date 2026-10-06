@@ -565,6 +565,7 @@ const VERDICT_ROUTE_FORMS = Object.freeze({
   setsid: 'a review command run through setsid',
   time: 'a review command run through time',
   eval: 'a review command inside an eval payload',
+  'gh-repo-flag': 'a gh pr review command with -R or --repo before the review verb',
 });
 
 /**
@@ -627,12 +628,53 @@ function recoverVerdictRoute(seg, state) {
   if (word.length > 1 && word[0] === '(') {
     return recoverStripped(withoutClosingParen([word.slice(1), ...after]), 'subshell', state);
   }
+  // Task 2c: gh with -R / --repo before the area or between `pr` and the verb (the direct walk
+  // reads -R's value as the area or verb, so it returned null).
+  if (prog === 'gh') return recoverGhRepoFlag(seg, after);
   // Task 2b: eval re-reads its arguments, joined with one space, as a command line (a payload).
   if (prog === 'eval') return recoverPayload(after.join(' '), 'eval', state);
   if (prog === 'nohup') return recoverStripped(after[0] === '--' ? after.slice(1) : after, 'nohup', state);
   if (prog === 'setsid') return recoverStripped(afterSetsidOptions(after), 'setsid', state);
   if (prog === 'time') return recoverStripped(afterTimeOptions(after), 'time', state);
   return null;
+}
+
+/**
+ * Index of the first token at or after `i` that is not a gh `-R <v>`, `-R<v>`, `--repo <v>` or
+ * `--repo=<v>` spelling (a separate value token is skipped with its flag).
+ *
+ * @param {string[]} tokens
+ * @param {number} i
+ * @returns {number}
+ */
+function skipGhRepoFlags(tokens, i) {
+  let k = i;
+  while (k < tokens.length) {
+    const t = tokens[k];
+    if (t === '-R' || t === '--repo') k += 2;
+    else if ((t.length > 2 && t.startsWith('-R')) || t.startsWith('--repo=')) k += 1;
+    else break;
+  }
+  return k;
+}
+
+/**
+ * Recover `gh -R o/r pr review ...` and `gh pr -R o/r review ...` (RESEARCH section 2: -R is a
+ * persistent flag of the `pr` group, accepted before the area and between `pr` and the verb).
+ * The outer segment is the verdict segment (D3): repoSpecOf reads its -R value and prSelector
+ * reads its selector across the flag. Any other area or verb returns null (D1): a wrapped
+ * `gh -R o/r pr merge` stays other (recorded residual).
+ *
+ * @param {Object} seg
+ * @param {string[]} after the tokens after `gh`
+ * @returns {Object|null}
+ */
+function recoverGhRepoFlag(seg, after) {
+  const area = skipGhRepoFlags(after, 0);
+  if (after[area] !== 'pr') return null;
+  const verb = skipGhRepoFlags(after, area + 1);
+  if (after[verb] !== 'review') return null;
+  return { action: 'pr-review', route: 'recovered', recovered: true, via: 'gh-repo-flag', verdictSegments: [seg] };
 }
 
 /**

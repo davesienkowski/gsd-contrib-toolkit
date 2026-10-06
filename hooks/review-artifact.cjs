@@ -833,10 +833,19 @@ function prSelector(seg) {
     if (m) return m[1];
   }
 
-  // Native route: the first number after the `<pr|issue> <verb>` pair.
-  for (let i = 1; i < tokens.length; i += 1) {
-    const prev = tokens[i - 1];
-    if ((prev !== 'pr' && prev !== 'issue') || !NATIVE_TARGET_VERBS.has(tokens[i])) continue;
+  // Native route: the first number after the `<pr|issue> <verb>` pair. gh also accepts its
+  // `-R` / `--repo` flag between the area and the verb (`gh pr -R o/r review 42`), so those
+  // spellings, and a separate value token, are skipped between the two (261006-jsm).
+  for (let a = 0; a < tokens.length; a += 1) {
+    if (tokens[a] !== 'pr' && tokens[a] !== 'issue') continue;
+    let i = a + 1;
+    while (i < tokens.length) {
+      const t = tokens[i];
+      if (t === '-R' || t === '--repo') i += 2;
+      else if (typeof t === 'string' && ((t.length > 2 && t.startsWith('-R')) || t.startsWith('--repo='))) i += 1;
+      else break;
+    }
+    if (!NATIVE_TARGET_VERBS.has(tokens[i])) continue;
     for (let j = i + 1; j < tokens.length; j += 1) {
       const t = tokens[j];
       if (/^\d+$/.test(t)) return t;
