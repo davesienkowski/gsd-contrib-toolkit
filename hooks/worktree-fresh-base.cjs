@@ -47,7 +47,7 @@
  *
  * UNOBTAINABLE ORIGIN -> ASK (37-04, CTK-ADR-0007): the fetch seam throws FetchUnavailable (not a
  * FailClosed) when origin cannot be fetched: timeout, unreachable remote, auth failure, a held ref
- * lock, no `origin` remote. A try/catch around the fetch call ALONE maps exactly that class to
+ * lock (no `origin` remote is not armed at all: MA-01). A try/catch around the fetch call ALONE maps exactly that class to
  * `ask`; origin/next missing after a good fetch asks too. Every other throw denies through
  * runGate. An ask degrades to an allow under --dangerously-skip-permissions (ASK_LIMIT_NOTE, stated
  * in the reason). A failed fetch is not retried for a second cut of the same root in one call.
@@ -58,6 +58,10 @@
  * MIN_CALL_MS left the gate throws FailClosed (deny, override-escapable). One trunk cut spawns at
  * most MAX_GIT_CALLS_PER_ROOT non-fetch git processes, so FETCH_BELT_MS + MAX * GIT_TIMEOUT_MS fits
  * the budget, and the budget plus 3 s fits the HOOK_TIMEOUT_S (60 s) hook timeout (asserted by tests).
+ *
+ * ARMING (37-REVIEW MA-01): a sentinel root is acted on only when `git remote get-url origin` there
+ * parses as open-gsd/gsd-core (resolve.repoSpecTargetsGsdCore: owner and repo, case-folded, any
+ * host). Anything else, including no `origin`, is out of scope: allow with no fetch.
  *
  * The gate's own git argv is limited to: remote get-url origin, fetch (via coreutils timeout),
  * rev-parse, symbolic-ref, merge-base --is-ancestor, worktree list --porcelain and update-ref
@@ -83,7 +87,7 @@ const os = require('node:os');
 const path = require('node:path');
 const childProcess = require('node:child_process');
 const { runGate, readHookInput, allow, ask, deny, emit, safeCommand, FailClosed } = require('./lib/failclosed.cjs');
-const { resolveGsdCoreRoot, ScriptResolveError } = require('./lib/resolve.cjs');
+const { resolveGsdCoreRoot, ScriptResolveError, repoSpecTargetsGsdCore } = require('./lib/resolve.cjs');
 const { startDirFor, expandStatic } = require('./lib/gsd-test-detect.cjs');
 const { findWorktreeAdds } = require('./lib/worktree-add-detect.cjs');
 
@@ -163,8 +167,8 @@ const ASK_LIMIT_NOTE =
   'accepted limit ENF-11\'s advisory carries.';
 
 /**
- * The upstream could not be fetched (timeout, unreachable remote, auth failure, a held ref lock, no
- * `origin` remote). Deliberately NOT a FailClosed: the gate catches exactly this class around the
+ * The upstream could not be fetched (timeout, unreachable remote, auth failure, a held ref lock, a
+ * remote with no `next`). Deliberately NOT a FailClosed: the gate catches exactly this class around the
  * fetch call and maps it to `ask` (CTK-ADR-0007 — an unobtainable upstream is a network limit, not
  * a policy decision). A fetch that cannot be BOUNDED (no coreutils `timeout`) is a FailClosed.
  */
@@ -355,6 +359,7 @@ function readBaseRef(root, homedir, readSettings) {
  * @param {Object} deps.env environment for static `cd` target expansion
  * @param {string} deps.homedir home directory for `~` expansion
  * @param {(dir:string)=>(string|null)} deps.resolveTreeRoot gsd-core root, or null
+ * @param {(root:string)=>(string|null)} deps.originUrl `remote get-url origin`, or null (no origin)
  * @param {(root:string)=>void} deps.fetchOrigin bounded fetch; throws FetchUnavailable
  * @param {(root:string)=>(string|null)} deps.currentBranch branch name, or null when detached
  * @param {(root:string, ref:string)=>(string|null)} deps.revParse commit sha or null
@@ -438,6 +443,8 @@ function checkContext(deps) {
     budget: typeof deps.budget === 'function' ? deps.budget : makeBudget(deps.now),
     // root -> null (fetched) or the ask decision (origin unobtainable): one fetch per root per call.
     fetchState: new Map(),
+    // root -> whether its origin parses as open-gsd/gsd-core (MA-01): one `remote get-url` per root.
+    armed: new Map(),
   };
 }
 
@@ -599,13 +606,18 @@ function casLostReason(local, remote) {
  *             moved. Neither: deny(diverged).
  */
 function checkCut(e, root, ctx) {
-  const { deps, budget, fetchState } = ctx;
+  const { deps, budget, fetchState, armed } = ctx;
   const git = () => budget(GIT_TIMEOUT_MS);
   let kind = e.baseKind;
   if (kind === 'head') {
     if (deps.currentBranch(root, git()) !== 'next') return null;
     kind = 'local';
   }
+  // MA-01: the sentinel layout only nominates a root. The gate fetches and moves refs only in a
+  // clone whose `origin` parses as open-gsd/gsd-core; any other repository (a vendored sentinel, a
+  // fork-only clone, no `origin`) is out of scope: allow with no fetch.
+  if (!armed.has(root)) armed.set(root, repoSpecTargetsGsdCore(deps.originUrl(root, git()) || ''));
+  if (!armed.get(root)) return null;
   // BL-01: a symbolic next is refused BEFORE any fetch, read or write of it.
   if (kind === 'local' && deps.isSymbolicRef(root, NEXT_REF, git())) throw new FailClosed(SYMREF_REASON);
 
@@ -716,7 +728,7 @@ function requireSha(op, sha) {
  * @param {{env?: Object, spawnSync?: Function, budget?: (capMs:number)=>number}} [opts]
  *   `spawnSync` defaults to child_process.spawnSync; `budget` is the gate call's shared deadline
  *   (absent: each call gets its full cap).
- * @returns {{fetchOrigin: Function, revParse: Function, currentBranch: Function, isSymbolicRef: Function,
+ * @returns {{originUrl: Function, fetchOrigin: Function, revParse: Function, currentBranch: Function, isSymbolicRef: Function,
  *   isAncestor: Function, worktreesHolding: Function, nextInProgress: Function, casUpdateRef: Function}}
  */
 function createDefaultSeams({ env, spawnSync, budget } = {}) {
@@ -873,25 +885,32 @@ function createDefaultSeams({ env, spawnSync, budget } = {}) {
   }
 
   /**
-   * The bounded fetch, hardened (37-04). Absolute dir only (else FailClosed, nothing spawned). Then:
-   *   1. `git remote get-url origin` (one GIT_TIMEOUT_MS slice): exit 0 continues; exit 2 (no such
-   *      remote) throws FetchUnavailable; anything else throws FailClosed;
-   *   2. `timeout -k 2 <s> git -C <dir> fetch --quiet --no-auto-maintenance origin next`, argv only,
+   * MA-01: `git remote get-url origin`: exit 0 -> the trimmed URL, exit 2 (no such remote) -> null,
+   * anything else -> FailClosed. The caller only parses it (repoSpecTargetsGsdCore); it is never
+   * passed to another command.
+   */
+  function originUrl(dir, ms) {
+    const r = runGit(dir, ['remote', 'get-url', 'origin'], 'remote get-url', ms);
+    if (r.status === 0) return String(r.stdout || '').trim();
+    if (r.status === 2) return null;
+    throw unexpected('remote get-url', r);
+  }
+
+  /**
+   * The bounded fetch, hardened (37-04). Absolute dir only (else FailClosed, nothing spawned). Then
+   * (the `remote get-url` that used to run first is the originUrl seam since 37-REVIEW MA-01):
+   *   1. `timeout -k 2 <s> git -C <dir> fetch --quiet --no-auto-maintenance origin next`, argv only,
    *      with a SIGKILL belt of min(FETCH_BELT_MS, the gate's slice, the shared deadline), the
    *      scrubbed env plus GIT_TERMINAL_PROMPT=0, stdin ignored. <s> is FETCH_TIMEOUT_S, shortened
    *      when the belt is reduced so coreutils kills git before the belt kills `timeout` (a belt
    *      kill reaps only `timeout` and would orphan a git holding the ref lock);
-   *   3. classifyFetchResult: ok returns, unavailable throws FetchUnavailable (redacted detail),
+   *   2. classifyFetchResult: ok returns, unavailable throws FetchUnavailable (redacted detail),
    *      error throws FailClosed (no coreutils `timeout` means the fetch cannot be bounded).
    */
   function fetchOrigin(dir, beltMs) {
     if (typeof dir !== 'string' || !path.isAbsolute(dir)) {
       throw new FailClosed('ENF-25 worktree fresh-base gate: fetch target is not an absolute path — failing closed.');
     }
-    const u = runGit(dir, ['remote', 'get-url', 'origin'], 'remote get-url');
-    if (u.status === 2) throw new FetchUnavailable('this repository has no `origin` remote');
-    if (u.status !== 0) throw unexpected('remote get-url', u);
-
     const belt = slice(FETCH_BELT_MS, beltMs);
     const seconds = Math.max(1, Math.min(FETCH_TIMEOUT_S, Math.floor(belt / 1000) - FETCH_KILL_AFTER_S - 1));
     const r = spawn(
@@ -914,7 +933,7 @@ function createDefaultSeams({ env, spawnSync, budget } = {}) {
     throw new FailClosed('ENF-25 worktree fresh-base gate: ' + graded.detail + ' — failing closed.');
   }
 
-  return { fetchOrigin, revParse, currentBranch, isSymbolicRef, isAncestor, worktreesHolding, nextInProgress, casUpdateRef };
+  return { originUrl, fetchOrigin, revParse, currentBranch, isSymbolicRef, isAncestor, worktreesHolding, nextInProgress, casUpdateRef };
 }
 
 /**
