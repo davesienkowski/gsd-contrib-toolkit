@@ -38,7 +38,8 @@
  *
  * A returned deny is a POLICY deny: GSD_CONTRIB_OVERRIDE rescues THROWN errors only and never
  * flips it (Addendum 4), so every deny reason names the real fix. A git failure (not a repo,
- * timeout) is thrown as FailClosed, which IS override-escapable with a logged receipt.
+ * timeout, or the shared 15 s GATE_BUDGET_MS spent — 36-REVIEW m-06) is thrown as FailClosed,
+ * which IS override-escapable with a logged receipt.
  *
  * The gate only READS the repository: `status` with --no-optional-locks (no index refresh
  * write) and `rev-parse`. It never stashes, commits, resets, checks out or fetches. Every git
@@ -58,6 +59,15 @@ const { findGsdTestDispatches, treeDirFor } = require('./lib/gsd-test-detect.cjs
 
 /** Per-git-call timeout. The harness hook budget is 20 s; a hung git must not eat it. */
 const GIT_TIMEOUT_MS = 5000;
+
+/**
+ * 36-REVIEW m-06: ONE deadline shared by every git call in a gate call. GIT_TIMEOUT_MS bounds a
+ * single call, but N dispatches with distinct literal `--head` values multiply it past the 20 s
+ * harness timeout, and a hook the harness kills emits no deny. Each call gets
+ * min(GIT_TIMEOUT_MS, remaining); with less than MIN_CALL_MS left the gate throws FailClosed.
+ */
+const GATE_BUDGET_MS = 15000;
+const MIN_CALL_MS = 100;
 
 /** At most this many dirty paths are listed in the deny reason. */
 const MAX_DIRTY_LISTED = 10;
@@ -152,10 +162,14 @@ function testsWorkingHead(d, root, deps, cache) {
   if (d.unresolved && d.unresolved.has('head')) return { working: true, expansion: true };
   if (typeof head !== 'string') return { working: true, expansion: false };
 
-  if (!cache.headSha.has(root)) cache.headSha.set(root, deps.resolveRef(root, 'HEAD'));
-  const headSha = cache.headSha.get(root);
+  const lookup = (ref) => {
+    const key = root + '\u0000' + ref;
+    if (!cache.refs.has(key)) cache.refs.set(key, deps.resolveRef(root, ref, cache.budget()));
+    return cache.refs.get(key);
+  };
+  const headSha = lookup('HEAD');
   if (headSha === null || headSha === undefined) return { working: true, expansion: false };
-  const sha = deps.resolveRef(root, head);
+  const sha = lookup(head);
   return { working: sha !== null && sha !== undefined && sha === headSha, expansion: false };
 }
 
@@ -198,7 +212,22 @@ function gate(stdinString, deps) {
   // govern (submit / status / install-agent-hooks) are dropped here too, before any I/O.
   const dispatches = entries.filter((e) => e.kind === 'dispatch' && !e.informational && appliesTo(e) !== null);
 
-  const cache = { porcelain: new Map(), headSha: new Map(), refs: new Map() };
+  // m-06: one deadline for every git call this gate call makes; `budget()` is the timeout the
+  // next call may use, and throws once the budget is spent.
+  const now = typeof deps.now === 'function' ? deps.now : Date.now;
+  const deadline = now() + GATE_BUDGET_MS;
+  const budget = () => {
+    const remaining = deadline - now();
+    if (remaining < MIN_CALL_MS) {
+      throw new FailClosed(
+        'ENF-23 gsd-test clean-tree gate spent its ' + GATE_BUDGET_MS / 1000 + ' s git budget for this ' +
+          'command before checking every gsd-test dispatch — failing closed. Split the command so ' +
+          'each gsd-test dispatch runs on its own.'
+      );
+    }
+    return Math.min(GIT_TIMEOUT_MS, remaining);
+  };
+  const cache = { porcelain: new Map(), refs: new Map(), budget };
   for (const d of dispatches) {
     let decision = null;
     try {
@@ -245,7 +274,7 @@ function checkDispatch(d, deps, cache) {
   if (d.flags && d.flags.base === '') return null;
 
   // (5d) Dirtiness of tracked files.
-  if (!cache.porcelain.has(root)) cache.porcelain.set(root, porcelainLines(deps.gitStatus(root)));
+  if (!cache.porcelain.has(root)) cache.porcelain.set(root, porcelainLines(deps.gitStatus(root, cache.budget())));
   const lines = cache.porcelain.get(root);
   if (lines.length === 0) return null;
 
@@ -256,13 +285,13 @@ function checkDispatch(d, deps, cache) {
 }
 
 /** Real `git status`: tracked changes only; any failure fails closed (HARD-01). */
-function defaultGitStatus(root) {
+function defaultGitStatus(root, timeoutMs) {
   try {
     return execFileSync('git', ['--no-optional-locks', 'status', '--porcelain', '--untracked-files=no'], {
       cwd: root,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: GIT_TIMEOUT_MS,
+      timeout: Number.isFinite(timeoutMs) ? timeoutMs : GIT_TIMEOUT_MS,
       env: process.env,
     });
   } catch (err) {
@@ -275,12 +304,12 @@ function defaultGitStatus(root) {
  * Real ref resolution. status 0 + a sha -> the sha; status 1 (unknown ref, including an
  * option-shaped value) -> null; anything else -> FailClosed.
  */
-function defaultResolveRef(root, ref) {
+function defaultResolveRef(root, ref, timeoutMs) {
   const r = spawnSync('git', ['rev-parse', '--verify', '--quiet', '--end-of-options', ref + '^{commit}'], {
     cwd: root,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: GIT_TIMEOUT_MS,
+    timeout: Number.isFinite(timeoutMs) ? timeoutMs : GIT_TIMEOUT_MS,
     env: process.env,
   });
   if (r.error) {
@@ -352,4 +381,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { runGsdTestCleanTreeGate, gate, PIPE_REASON, GIT_TIMEOUT_MS };
+module.exports = { runGsdTestCleanTreeGate, gate, PIPE_REASON, GIT_TIMEOUT_MS, GATE_BUDGET_MS };

@@ -84,6 +84,15 @@ const DOCKER_PROBE_ARGS = Object.freeze(['info', '--format', '{{.ServerVersion}}
 /** Probe bound. 36-05 asserts the settings hook timeout (20 s) exceeds it. */
 const DOCKER_PROBE_TIMEOUT_MS = 8000;
 
+/**
+ * 36-REVIEW m-06: ONE deadline shared by every probe in a gate call (m-02 allows one probe per
+ * distinct DOCKER_HOST / DOCKER_CONTEXT selection). Each probe gets min(DOCKER_PROBE_TIMEOUT_MS,
+ * remaining); with less than MIN_PROBE_MS left the gate throws FailClosed rather than let the
+ * harness kill it (a killed hook emits no deny).
+ */
+const GATE_BUDGET_MS = 15000;
+const MIN_PROBE_MS = 100;
+
 /** At most this many chars of docker's first stderr line reach a reason. */
 const MAX_DOCKER_DETAIL = 200;
 
@@ -419,7 +428,20 @@ function gate(stdinString, deps) {
   // subcommands ENF-24 does not govern (see `governs`).
   const dispatches = entries.filter((e) => e.kind === 'dispatch' && !e.informational && governs(e));
 
-  const state = { firstAsk: null, docker: new Map() };
+  const now = typeof deps.now === 'function' ? deps.now : Date.now;
+  const deadline = now() + GATE_BUDGET_MS;
+  const budget = () => {
+    const remaining = deadline - now();
+    if (remaining < MIN_PROBE_MS) {
+      throw new FailClosed(
+        'ENF-24 gsd-test viability gate spent its ' + GATE_BUDGET_MS / 1000 + ' s probe budget for ' +
+          'this command before checking every gsd-test dispatch — failing closed. Split the command ' +
+          'so each gsd-test dispatch runs on its own.'
+      );
+    }
+    return Math.min(DOCKER_PROBE_TIMEOUT_MS, remaining);
+  };
+  const state = { firstAsk: null, docker: new Map(), budget };
   for (const d of dispatches) {
     let decision = null;
     try {
@@ -496,7 +518,7 @@ function checkDispatch(d, deps, state) {
     if (envs.child.changed.has(n)) overrides[n] = typeof envs.child.env[n] === 'string' ? envs.child.env[n] : null;
   }
   const key = JSON.stringify(overrides);
-  if (!state.docker.has(key)) state.docker.set(key, deps.dockerProbe(overrides));
+  if (!state.docker.has(key)) state.docker.set(key, deps.dockerProbe(overrides, state.budget()));
   const docker = state.docker.get(key);
   const st = docker && docker.state;
   if (st === 'ok') return null;
@@ -592,12 +614,12 @@ function runGsdTestViabilityGate(stdinString, deps = {}) {
     if (!resolved.dockerProbe) {
       // Built ONLY when no probe is injected; the spawn seam defaults to child_process.spawnSync.
       const spawn = resolved.spawnSync || require('node:child_process').spawnSync;
-      resolved.dockerProbe = (overrides) =>
+      resolved.dockerProbe = (overrides, timeoutMs) =>
         classifyDockerResult(
           spawn('docker', [...DOCKER_PROBE_ARGS], {
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'pipe'],
-            timeout: DOCKER_PROBE_TIMEOUT_MS,
+            timeout: Number.isFinite(timeoutMs) ? timeoutMs : DOCKER_PROBE_TIMEOUT_MS,
             killSignal: 'SIGKILL',
             env: probeEnv(overrides),
           })
@@ -629,6 +651,7 @@ module.exports = {
   parseDefaults,
   classifyDockerResult,
   DOCKER_PROBE_TIMEOUT_MS,
+  GATE_BUDGET_MS,
   DOCKER_PROBE_ARGS,
   ASK_LIMIT_NOTE,
 };
