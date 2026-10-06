@@ -1922,3 +1922,27 @@ test('38 fix MJ-02 precedence: an unresolved verdict chained before a merge with
   assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
   assert.match(d.permissionDecisionReason, /ENF-20 R13/);
 });
+
+// ── 38 review fix NT-02 / NT-03: echoed attestation text carries no control, bidi or zero-width ─
+
+/** Every character the echo guard must keep out of a prompt (C0/C1, U+2028/9, bidi, zero-width). */
+const UNSAFE_ECHO = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/;
+
+test('38 fix NT-03: bidi and zero-width characters are stripped from the quoted attestation', () => {
+  const reason = 'down\u202e desab\u202c \u2066x\u2069 zero\u200bwidth\u200f bom\ufeff end';
+  const { d } = approveAttested(text(filledR8a({ unavailable_reason: reason })));
+  const q = quotedAttestation(assertAttestAsk(d));
+  assert.ok(!UNSAFE_ECHO.test(q), 'no unsafe character survives: ' + JSON.stringify(q));
+  assert.strictEqual(q, 'down desab x zerowidth bom end');
+});
+
+test('38 fix NT-02: a mismatched head_oid is echoed cleaned (controls, bidi, zero-width) and capped at 80 characters', () => {
+  const bad = 'dead\u0007beef\u202e\u2028\u200b' + 'q'.repeat(200);
+  const { d } = approveAttested(text(filledR8a({ head_oid: bad })));
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  const m = /records `head_oid` `([\s\S]*?)`, but PR/.exec(d.permissionDecisionReason);
+  assert.ok(m, 'the deny echoes the recorded head_oid: ' + d.permissionDecisionReason);
+  assert.ok(!UNSAFE_ECHO.test(m[1]), 'no unsafe character survives: ' + JSON.stringify(m[1]));
+  assert.ok(Array.from(m[1]).length <= 80, 'at most 80 characters: ' + Array.from(m[1]).length);
+  assert.ok(m[1].startsWith('dead beef'), JSON.stringify(m[1].slice(0, 12)));
+});
