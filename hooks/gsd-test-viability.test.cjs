@@ -437,7 +437,10 @@ const DOCKER_TABLE = [
   ['exit 0 -> ok', { status: 0, stdout: '27.1.1\n' }, 'ok'],
   ['spawn ENOENT -> missing', { error: { code: 'ENOENT' } }, 'missing'],
   ['ETIMEDOUT + SIGKILL -> timeout', { error: { code: 'ETIMEDOUT' }, status: null, signal: 'SIGKILL' }, 'timeout'],
-  ['status null + signal -> timeout', { status: null, signal: 'SIGKILL' }, 'timeout'],
+  // m-05 (36-REVIEW): only OUR timeout kill (spawnSync's ETIMEDOUT) is a timeout; a probe killed
+  // by any other signal is an unknown state, which denies (thrown), never asks.
+  ['status null + SIGKILL without ETIMEDOUT -> error', { status: null, signal: 'SIGKILL' }, 'error'],
+  ['status null + SIGSEGV -> error', { status: null, signal: 'SIGSEGV' }, 'error'],
   ['exit 1 -> down', { status: 1, stderr: 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock\n' }, 'down'],
   ['spawn EACCES -> error', { error: { code: 'EACCES' } }, 'error'],
 ];
@@ -825,4 +828,21 @@ test('ENF-24 m-01: an uncertain entry beside a viable dispatch still DENIES (thr
 test('ENF-24 m-01: a thrown error beats an ask (uncertain + unresolvable --config)', () => {
   const { d } = run('gsd-test $X; gsd-test --config $CFG');
   assert.strictEqual(d.permissionDecision, 'deny');
+});
+
+// ─────────────── m-05 (36-REVIEW): a foreign signal is not a timeout ───────────────
+
+test('ENF-24 m-05: classifyDockerResult names the killing signal in the error detail', () => {
+  const r = viability.classifyDockerResult({ status: null, signal: 'SIGSEGV' });
+  assert.strictEqual(r.state, 'error');
+  assert.match(r.detail, /SIGSEGV/);
+});
+
+test('ENF-24 m-05: the default probe killed by SIGSEGV DENIES (thrown), never asks', () => {
+  const spawn = recordingSpawn({ status: null, signal: 'SIGSEGV', stdout: '', stderr: '' });
+  const { deps } = scenario({ spawnSync: spawn.fn });
+  delete deps.dockerProbe;
+  const d = runGsdTestViabilityGate(input('gsd-test'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /SIGSEGV/);
 });
