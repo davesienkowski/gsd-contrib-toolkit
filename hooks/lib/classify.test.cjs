@@ -1944,3 +1944,35 @@ for (const cmd of JSM_D8_CORPUS) {
     assert.strictEqual(isNonGovernedCommand(parsed, REVIEW_ARTIFACT_GOVERNED), true, 'review-artifact: ' + cmd);
   });
 }
+
+// ---------------------------------------------------------------------------
+// 261006-jsm Task 2b: eval verdict route. The payload is eval's arguments joined with one space
+// (argv already removed one quoting layer, as eval's own parse sees it), re-parsed with
+// argv.parseCommand at depth + 1.
+// ---------------------------------------------------------------------------
+
+for (const cmd of [
+  'eval "gh pr review 42 -a"',
+  'eval gh pr review 42 -a',
+  "eval 'gh pr review 42 -a; echo done'",
+  'eval eval eval eval gh pr review 42 -a',
+]) {
+  test('261006-jsm eval: `' + cmd + '` -> recovered pr-review, via eval, one verdict segment', () => {
+    assertPrefixReview(cmd, 'eval');
+  });
+}
+
+test('261006-jsm eval: four nested evals sit at payload depth 4, inside RECOVERY_MAX_DEPTH', () => {
+  const { RECOVERY_MAX_DEPTH } = require('./classify.cjs');
+  assert.strictEqual(RECOVERY_MAX_DEPTH, 4);
+  assertPrefixReview('eval eval eval eval gh pr review 42 -a', 'eval');
+});
+
+for (const cmd of ['eval "echo hi"', "eval ''", 'eval ""', 'eval', 'eval "git push"']) {
+  test('261006-jsm eval lock: `' + cmd + '` stays other (an empty payload runs nothing)', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasFailClosedSegment(parseCommand(cmd)), false, cmd);
+  });
+}
+
+jsmD2Rows('eval', 'eval "gh pr review 42 -a"');

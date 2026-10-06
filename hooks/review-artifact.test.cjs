@@ -2399,3 +2399,16 @@ for (const cmd of [
     assert.deepStrictEqual(dp._calls.readToolLog, [], cmd);
   });
 }
+
+// -- 261006-jsm Task 2b: an eval payload verdict reaches R8a -------------------------------------
+
+for (const cmd of [
+  'eval "gh pr review 42 -a"',
+  'eval gh pr review 42 -a',
+  "eval 'gh pr review 42 -a; echo done'",
+  'eval eval eval eval gh pr review 42 -a',
+]) {
+  test('261006-jsm gate eval: `' + cmd + '` with only Bash rows -> DENY R8a-memtrace', () => {
+    assertJsmR8aDeny(cmd);
+  });
+}
