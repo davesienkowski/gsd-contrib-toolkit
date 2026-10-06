@@ -223,7 +223,11 @@ is wrong.
   `gh api …/pulls/<n>/reviews -fevent=APPROVE` (gh's flag parser accepts it); `gh api …/reviews
   --input <file|->` without `-X POST` (with `-X POST` it classifies `pr-review`, and step 8a grades
   it an unresolved verdict that asks); and a review wrapped in `bash -c "gh pr review <n> -a"` or
-  `sh -c`. GraphQL is one of these routes, not the only one. All predate this record
+  `sh -c`. The Phase 38 verifier (VF-1) found seven more wrapper forms that classify `other` and are
+  allowed: a subshell `( gh pr review 42 -a )`, a brace group `{ gh pr review 42 -a; }`,
+  `nohup gh pr review 42 -a`, `eval "gh pr review 42 -a"`, `echo 42 | xargs gh pr review -a`,
+  `$(echo gh) pr review 42 -a`, and `gh -R o/r pr review 42 -a` (gh accepts `-R` before the
+  subcommand). GraphQL is one of these routes, not the only one. All predate this record
   (`classify.cjs` and `argv.cjs` are unchanged by Phase 38); closing them is a classifier change for
   a follow-up, not part of step 8a (38 review MJ-03).
 - **Extending the rotated log past the scan cap turns a deny into an ask.** `truncate -s 65M
@@ -242,14 +246,15 @@ is wrong.
   `gh pr review <n> -b "-a"` and `gh pr review <n> --comment -b event=APPROVE` classify as verdicts,
   so R8a and R10 apply though gh submits none. The error only over-gates (an avoidable ask or deny,
   never an allow), so it is recorded, not fixed (38 review NT-05).
-- **A FIFO at the live slot still blocks the verdict writer.** The reader refuses a non-regular file
-  in either slot (38 review BL-01). But every gate's verdict row (OBS-02, `verdict-log.cjs` through
+- **A FIFO at the live slot still blocks the verdict writer, and so hangs every gate.** The reader
+  refuses a non-regular file in either slot (38 review BL-01). But every gate's verdict row (OBS-02, `verdict-log.cjs` through
   tool-recorder's `appendRecord`) and every recorder row is appended to `tool-log.jsonl` with a
   blocking open for write, so a FIFO planted at the live slot hangs the hook before it emits
   (measured: still blocked when a 6 s probe killed it), and the toolkit's gap backlog (#2a) records
   that the harness then allows the call. That writer issue is toolkit-wide, predates this record
-  (OBS-01/OBS-02), sits outside step 8a, and is recorded for a follow-up. The rotated slot, which
-  no writer opens, is the persistent case the reader fix closes.
+  (OBS-01/OBS-02), sits outside step 8a, and is seeded for a follow-up as
+  `.planning/seeds/SEED-live-tool-log-fifo-hangs-all-gates.md` (local planning corpus). The rotated
+  slot, which no writer opens, is the persistent case the reader fix closes.
 - **A CLEAR-verdict PR comment routes around 8a.** A `gh pr comment` or a POST to
   `/issues/<pr#>/comments` whose body carries `CLEAR` arms R10 (and R1) but not R8a, because R8a is
   scoped to `pr-review` verdicts. It is a route around the memtrace obligation; recorded, not fixed.
