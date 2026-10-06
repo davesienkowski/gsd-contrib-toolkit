@@ -91,8 +91,15 @@ const { resolveGsdCoreRoot, ScriptResolveError, repoSpecTargetsGsdCore } = requi
 const { startDirFor, expandStatic } = require('./lib/gsd-test-detect.cjs');
 const { findWorktreeAdds } = require('./lib/worktree-add-detect.cjs');
 
-/** The fetch argv after `git -C <root>`: literal, frozen; `--no-auto-maintenance` = no gc here. */
-const FETCH_ARGV = Object.freeze(['fetch', '--quiet', '--no-auto-maintenance', 'origin', 'next']);
+/**
+ * The fetch argv after `git -C <root>`: literal, frozen; `--no-auto-maintenance` = no gc here.
+ * 37-REVIEW MA-02: a fully qualified, forced refspec, so `refs/remotes/origin/next` is ALWAYS the
+ * remote BRANCH (a narrowed `remote.origin.fetch` would otherwise leave it stale, and a tag named
+ * `next` on origin would win the DWIM of a bare `next`); `--no-tags` fetches no tags at all.
+ */
+const FETCH_ARGV = Object.freeze([
+  'fetch', '--quiet', '--no-auto-maintenance', '--no-tags', 'origin', '+refs/heads/next:refs/remotes/origin/next',
+]);
 /** coreutils `timeout` duration and kill-after grace for the fetch. */
 const FETCH_TIMEOUT_S = 15;
 const FETCH_KILL_AFTER_S = 2;
@@ -278,11 +285,11 @@ function fetchUnavailableReason(root, message) {
   );
 }
 
-/** The `ask` for a fetch that succeeded but left no origin/next (no `next` mapped by the refspec). */
+/** The `ask` for a fetch that succeeded but left no origin/next (MA-02: the refspec always maps it). */
 function originNextMissingReason(root) {
   return (
-    'ENF-25 worktree fresh-base gate: origin/next does not resolve after the fetch of `origin next` ' +
-    'succeeded (the `origin` fetch refspec maps no refs/remotes/origin/next), so the gate cannot tell ' +
+    'ENF-25 worktree fresh-base gate: origin/next does not resolve after the fetch of origin\'s ' +
+    '`refs/heads/next` into it succeeded (something removed or replaced it), so the gate cannot tell ' +
     'whether local `next` is current. This is a remote-configuration and network limit, not a policy ' +
     'decision. Check the `origin` remote, run\n\n  git -C ' + shellWord(root) + ' fetch origin next\n\n' +
     'then re-issue your command.\n\n' + ASK_LIMIT_NOTE
@@ -899,7 +906,7 @@ function createDefaultSeams({ env, spawnSync, budget } = {}) {
   /**
    * The bounded fetch, hardened (37-04). Absolute dir only (else FailClosed, nothing spawned). Then
    * (the `remote get-url` that used to run first is the originUrl seam since 37-REVIEW MA-01):
-   *   1. `timeout -k 2 <s> git -C <dir> fetch --quiet --no-auto-maintenance origin next`, argv only,
+   *   1. `timeout -k 2 <s> git -C <dir> <FETCH_ARGV>` (MA-02 explicit refspec), argv only,
    *      with a SIGKILL belt of min(FETCH_BELT_MS, the gate's slice, the shared deadline), the
    *      scrubbed env plus GIT_TERMINAL_PROMPT=0, stdin ignored. <s> is FETCH_TIMEOUT_S, shortened
    *      when the belt is reduced so coreutils kills git before the belt kills `timeout` (a belt
