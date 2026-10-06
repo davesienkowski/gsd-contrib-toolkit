@@ -164,6 +164,14 @@ The two wired **non-blocking** hooks are outside this table by design: `protocol
 (`UserPromptSubmit`, advisory) and `tool-recorder` (`PostToolUse`/`PostToolUseFailure`,
 observability). Neither ever denies.
 
+**What `worktree-fresh-base` cannot see.** It judges only cuts made through the Bash tool or the
+harness `EnterWorktree` tool. Worktrees that Orca (`orca-ide`) creates under
+`~/orca/workspaces/<repo>/<name>`, worktrees that GSD's own engine creates from a node child process,
+and any other creator outside those two tools bypass it. Before such a cut, run
+`git -C <gsd-core checkout> fetch origin next`, then `git merge --ff-only origin/next` in the tree
+holding `next`, or base the worktree on `origin/next`. Whether the harness fetches before a
+`worktree.baseRef=fresh` cut is UNVERIFIED.
+
 ## Recovery offramp
 
 When a gate **denies** — or the `core-contribution` skill surfaces a real blocking issue

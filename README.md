@@ -98,6 +98,33 @@ wired set exactly.
 | `protocol-reminder.cjs` | UserPromptSubmit | *(advisory only — reminds, never denies)* | — |
 | `tool-recorder.cjs` | PostToolUse + PostToolUseFailure | *(observability only — records, never denies; the one hook wired on two events)* | — |
 
+### Worktree cuts `worktree-fresh-base` cannot see
+
+The fresh-base check (ENF-25) runs only when Claude Code itself is about to cut the worktree: a
+`git worktree add` typed through the Bash tool, or the harness `EnterWorktree` tool. A worktree
+created any other way is never seen, so its trunk is not refreshed and a stale `next` is not denied:
+
+- **Orca.** `orca-ide` creates worktrees out of band under `~/orca/workspaces/<repo>/<name>`. Neither
+  a Bash `git worktree add` nor `EnterWorktree` passes through Claude Code, so no hook fires.
+- **GSD's own worktree engine.** It runs `git worktree add` from a node child process
+  (`spawnSync('git', ['worktree', 'add', ...])` in the installed runtime's worktree-safety module),
+  not through the Bash tool, so no Claude Code hook is in that path.
+- **Any other creator outside the Bash tool and `EnterWorktree`**: an IDE, a terminal outside Claude
+  Code, a script or Makefile the agent runs, or a newline-joined multi-line command (the shared
+  command parser reads an unquoted newline as whitespace, so a cut on a later line is missed).
+
+Before cutting a gsd-core worktree any of those ways, refresh the trunk by hand:
+
+```bash
+git -C <gsd-core checkout> fetch origin next
+# then fast-forward the tree that has next checked out:
+git -C <tree holding next> merge --ff-only origin/next
+# or skip local next entirely and base the worktree on origin/next
+```
+
+Whether the harness itself fetches before an `EnterWorktree` cut under `worktree.baseRef=fresh` is
+**UNVERIFIED**. When this gate fires, it runs its own bounded fetch regardless.
+
 ## How It Works
 
 **Harness-boundary enforcement.** A `PreToolUse` hook is run by the Claude Code
