@@ -319,3 +319,12 @@ test('261006-jsm WR-02: the keying bullet says a wrong key can allow and that th
   assert.match(k, /asks/);
   assert.match(k, /any deny still wins/);
 });
+
+// -- quick 261006-jsm review fix round WR-03: these rows must not read a git object -------------
+// e2690ca is on no published branch; after a squash merge, a rebase or in a fresh clone of the public
+// repo `git show e2690ca:...` throws. The base text is pinned by digest instead.
+test('261006-jsm WR-03: this suite reads no git object (hermetic in any clone)', () => {
+  const src = fs.readFileSync(__filename, 'utf8');
+  const gitShow = "['sh" + "ow', ";
+  assert.ok(!src.includes(gitShow), 'docs-adr-status.test.cjs must not call git show');
+});
