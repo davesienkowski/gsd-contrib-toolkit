@@ -93,6 +93,7 @@ const {
   hasFailClosedSegment,
   isNonGovernedCommand,
   PR_COMMENT_EQUIVALENT_ACTIONS,
+  VERDICT_ROUTE_FORMS,
 } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, ask, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand } = require('./lib/resolve.cjs');
@@ -773,6 +774,34 @@ function unresolvedVerdictAsk(form) {
       '`-f event=REQUEST_CHANGES`, `-f event=COMMENT`, or an inline JSON body), or let a human ' +
       'decide here. `GSD_CONTRIB_OVERRIDE` does not answer this prompt: it rescues thrown gate ' +
       'errors only. (CTK-ADR-0010, ENF-20)'
+  );
+}
+
+/**
+ * The ask for an UNCERTAIN verdict route (261006-jsm, CONTEXT D6): the command may submit a review
+ * verdict through a form the classifier cannot read (an expansion-named program, an opaque or
+ * unparseable eval / shell -c payload, a nesting or wrapper stack past the bound). Steps 8a and 10
+ * cannot be checked, so a human decides. Held like any other ask (any deny still wins), and
+ * raised WITHOUT resolving a PR, scaffolding or reading the tool log: there is nothing to key the
+ * artifacts to. The reason names the form by its FIXED description only; it never echoes the
+ * command, a payload, a path or a body.
+ *
+ * @param {string} via a classify VERDICT_ROUTE_FORMS code
+ * @returns {Object}
+ */
+function uncertainVerdictRouteAsk(via) {
+  const form = Object.prototype.hasOwnProperty.call(VERDICT_ROUTE_FORMS, via)
+    ? VERDICT_ROUTE_FORMS[via]
+    : 'a command form the gate cannot read';
+  return ask(
+    'ENF-20 R8a-memtrace / R10 (re-review steps 8a and 10) - UNCERTAIN verdict route: ' + form +
+      '. The gate cannot see whether this command submits an approve or a request-changes, so ' +
+      'step 8a (memtrace evidence in this session) and step 10 (the exogenous check) were not ' +
+      'checked.\n\n' +
+      'Run the review as a plain `gh pr review <n> --approve` or `gh pr review <n> ' +
+      '--request-changes` the gate can read, or let a human decide here. `GSD_CONTRIB_OVERRIDE` ' +
+      'does not answer this prompt: it rescues thrown gate errors only. (CTK-ADR-0005 Decision 2, ' +
+      'CTK-ADR-0010, ENF-20)'
   );
 }
 
@@ -1627,7 +1656,9 @@ function gateSegment(seg, action, deps, opts = {}) {
  * returned, else allow.
  *
  * 261006-jsm: a recovered verdict route (classify result `recovered: true`) contributes its
- * `verdictSegments` to this loop in place of the outer segment, under the same precedence.
+ * `verdictSegments` to this loop in place of the outer segment, under the same precedence. An
+ * uncertain route (`uncertain: true`) holds uncertainVerdictRouteAsk as an ask without any PR
+ * lookup, scaffold or log read.
  */
 function gate(stdinString, deps) {
   const input = readHookInput(stdinString);
@@ -1669,6 +1700,11 @@ function gate(stdinString, deps) {
     // `bash -c "..."`) is gated through each of its inner verdict segments, with the same
     // precedence as the outer loop. The outer wrapper segment never reaches gateSegment: its
     // tokens make isNativeGhSegment false, so its `-a` would not count as an approve.
+    // 261006-jsm Task 2d: an UNCERTAIN route holds its ask first (no PR lookup, no scaffold, no
+    // log read); any verdict segments it also carries are still gated below, so a deny wins.
+    if (r.recovered === true && r.uncertain === true && !firstAsk) {
+      firstAsk = uncertainVerdictRouteAsk(r.uncertainVia || r.via);
+    }
     const targets = r.recovered === true ? r.verdictSegments : [seg];
     const action = r.recovered === true ? 'pr-review' : r.action;
     for (const target of targets) {

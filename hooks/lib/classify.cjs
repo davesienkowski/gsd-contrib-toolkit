@@ -536,7 +536,13 @@ function classifySegmentDirect(seg) {
 //   { action: 'pr-review', route: 'recovered', recovered: true, via, verdictSegments: [seg, ...] }
 //
 // `verdictSegments` are the inner segments the review-artifact gate must run (re-parsed from the
-// static payload text with argv.parseCommand, never a raw-string grep, EP-2). Any other inner
+// static payload text with argv.parseCommand, never a raw-string grep, EP-2). An opaque form the
+// recovery cannot read is UNCERTAIN (D6) and the gate grades it `ask` with no PR lookup:
+//
+//   { action: 'pr-review', route: 'recovered', recovered: true, uncertain: true, via, verdictSegments: [] }
+//
+// A collection that holds verdict segments AND an uncertain inner keeps the segments and adds
+// `uncertain: true` plus `uncertainVia` (the code naming the opaque inner form). Any other inner
 // result (push, pr-merge, failClosed, null) is discarded, so the segment stays `other` exactly as
 // before (D1). classifyAction's PASS 4 keeps every existing chain classification unchanged (D2).
 //
@@ -566,7 +572,22 @@ const VERDICT_ROUTE_FORMS = Object.freeze({
   time: 'a review command run through time',
   eval: 'a review command inside an eval payload',
   'gh-repo-flag': 'a gh pr review command with -R or --repo before the review verb',
+  'expansion-program': 'a command whose program name is built by shell expansion next to a review hint',
+  'opaque-payload': 'an eval or shell -c payload whose command word is a shell expansion',
+  'unparseable-payload': 'an eval or shell -c payload the gate cannot parse',
+  'depth-bound': 'an eval or shell -c payload nested deeper than the gate reads',
+  'prefix-bound': 'a review command behind more stacked wrappers than the gate reads',
 });
+
+/**
+ * CONTEXT D7 (A), approved by the coordinator as written: inside an eval or shell -c payload, a
+ * command word built by expansion (`eval "$CMD"`, `bash -c "$CMD"`) is an UNCERTAIN verdict route
+ * with NO review hint required, because eval re-reads the expansion's output as a whole command
+ * line, so the verb and the flags are hidden too. Measured 2026-10-06: 17 / 47,642 Bash calls
+ * (0.04%) in ~/.claude/projects transcripts. Flipping this to true makes (A) require a review hint
+ * like the top-level form (B) does.
+ */
+const OPAQUE_SHELL_PAYLOAD_NEEDS_HINT = false;
 
 /**
  * Lone prefix tokens the recovery strips from the visible argv (Task 2a, D4): the reserved words
@@ -636,7 +657,56 @@ function recoverVerdictRoute(seg, state) {
   if (prog === 'nohup') return recoverStripped(after[0] === '--' ? after.slice(1) : after, 'nohup', state);
   if (prog === 'setsid') return recoverStripped(afterSetsidOptions(after), 'setsid', state);
   if (prog === 'time') return recoverStripped(afterTimeOptions(after), 'time', state);
+  // Task 2d: a program word built by expansion (`$(echo gh)`, `$GH`, a backtick), keyed on the
+  // token as argv produced it (argv drops the quotes of `"$CHROME"`).
+  if (word.length > 0 && (word[0] === '$' || word[0] === '`')) return recoverExpansionProgram(tokens, state);
   return null;
+}
+
+/**
+ * Is a review hint visible among `tokens`? True for a `review` token, `--approve`,
+ * `--request-changes`, a `/pulls/<n>/reviews` path, or the GraphQL review mutation names
+ * `submitPullRequestReview` / `addPullRequestReview` (case-sensitive whole identifiers). `-a`
+ * alone is deliberately not a hint (it is too common to scope an ask). Pure.
+ *
+ * @param {string[]} tokens
+ * @returns {boolean}
+ */
+function hasReviewHint(tokens) {
+  if (!Array.isArray(tokens)) return false;
+  return tokens.some((t) => typeof t === 'string' && (
+    t === 'review' || t === '--approve' || t === '--request-changes' ||
+    /\/pulls\/\d+\/reviews(?:$|[/?])/.test(t) ||
+    /\b(?:submitPullRequestReview|addPullRequestReview)\b/.test(t)
+  ));
+}
+
+/**
+ * An UNCERTAIN verdict route (D6): a pr-review the gate grades `ask` without a PR lookup. `via`
+ * names the opaque form; there is no verdict segment to gate.
+ *
+ * @param {string} via a VERDICT_ROUTE_FORMS code
+ * @returns {Object}
+ */
+function uncertainRoute(via) {
+  return { action: 'pr-review', route: 'recovered', recovered: true, uncertain: true, via, verdictSegments: [] };
+}
+
+/**
+ * A program word built by expansion (D7). Inside an eval or shell -c payload it is uncertain with
+ * no hint (A) unless OPAQUE_SHELL_PAYLOAD_NEEDS_HINT; anywhere else it is uncertain only when a
+ * review hint is visible (B), else null (1,509 / 47,642 Bash calls start with an expansion, so a
+ * hint-free ask would fire on about one call in 30). Residual: `$X 42 -a` stays other.
+ *
+ * @param {string[]} tokens the segment tokens
+ * @param {{depth:number, peels:number, inShellString:boolean}} state
+ * @returns {Object|null}
+ */
+function recoverExpansionProgram(tokens, state) {
+  if (state.inShellString && (!OPAQUE_SHELL_PAYLOAD_NEEDS_HINT || hasReviewHint(tokens))) {
+    return uncertainRoute('opaque-payload');
+  }
+  return hasReviewHint(tokens) ? uncertainRoute('expansion-program') : null;
 }
 
 /**
@@ -762,40 +832,56 @@ function afterTimeOptions(after) {
  */
 function recoverStripped(rest, via, state) {
   if (rest.length === 0) return null;
-  // Past the prefix bound: null in this tier (a later tier grades it uncertain with a hint).
-  if (state.peels >= MAX_PREFIX_PEELS) return null;
+  // Past the prefix bound (W3): uncertain only with a visible review hint. A prefix hides no token,
+  // so a hint-free remainder can reach a verdict only through an expansion-named program, which
+  // D7 (B) already scopes to a hint; asking here would add noise with no additional catch.
+  if (state.peels >= MAX_PREFIX_PEELS) return hasReviewHint(rest) ? uncertainRoute('prefix-bound') : null;
   const innerSeg = classifyTokens(rest);
   const inner = classifySegment(innerSeg, {
     depth: state.depth,
     peels: state.peels + 1,
     inShellString: state.inShellString,
   });
-  return wrapRecovered(inner, innerSeg, via);
+  return combineRecovered(via, [{ r: inner, seg: innerSeg }]);
 }
 
 /**
- * Wrap an inner classification as this level's recovered route. Null unless the inner result is
- * a pr-review (D1). A native inner pr-review makes `innerSeg` the verdict segment; a recovered
- * inner contributes its own verdict segments, and an inner with no verdict segment at all (an
- * uncertain or unresolved route) passes through unchanged so it keeps the code that names it.
+ * Combine the inner classifications of one recovery level into this level's recovered route.
+ * Each item is an inner result `r` and the inner segment `seg` it classified. Only a pr-review is
+ * kept (D1). A native inner pr-review makes its segment a verdict segment; a recovered inner
+ * contributes its own verdict segments. When no verdict segment is collected, the first inner
+ * route with none (an uncertain or unresolved route) passes through unchanged, so it keeps the
+ * code that names it; otherwise null. A collection that also holds an uncertain inner keeps its
+ * verdict segments and adds `uncertain: true` with `uncertainVia`, so the gate both gates the
+ * segments and holds the uncertain ask (Task 2d).
  *
- * @param {Object|null} inner
- * @param {Object} innerSeg
- * @param {string} via
+ * @param {string} via a VERDICT_ROUTE_FORMS code for this level
+ * @param {Array<{r:Object|null, seg:Object}>} items
  * @returns {Object|null}
  */
-function wrapRecovered(inner, innerSeg, via) {
-  if (!inner || inner.action !== 'pr-review') return null;
-  if (inner.recovered !== true) {
-    return { action: 'pr-review', route: 'recovered', recovered: true, via, verdictSegments: [innerSeg] };
+function combineRecovered(via, items) {
+  const verdictSegments = [];
+  let opaque = null;
+  let uncertainVia = null;
+  let unresolved = false;
+  for (const { r, seg } of items) {
+    if (!r || r.action !== 'pr-review') continue; // D1: every other inner result is discarded
+    if (r.recovered !== true) {
+      verdictSegments.push(seg);
+      continue;
+    }
+    verdictSegments.push(...r.verdictSegments);
+    if (r.verdictSegments.length === 0 && opaque === null) opaque = r;
+    if (r.uncertain === true && uncertainVia === null) uncertainVia = r.uncertainVia || r.via;
+    if (r.unresolved === true) unresolved = true;
   }
-  if (inner.verdictSegments.length === 0) return { ...inner };
-  const out = { action: 'pr-review', route: 'recovered', recovered: true, via, verdictSegments: inner.verdictSegments.slice() };
-  if (inner.uncertain === true) {
+  if (verdictSegments.length === 0) return opaque === null ? null : { ...opaque };
+  const out = { action: 'pr-review', route: 'recovered', recovered: true, via, verdictSegments };
+  if (uncertainVia !== null) {
     out.uncertain = true;
-    out.uncertainVia = inner.uncertainVia || inner.via;
+    out.uncertainVia = uncertainVia;
   }
-  if (inner.unresolved === true) out.unresolved = true;
+  if (unresolved) out.unresolved = true;
   return out;
 }
 
@@ -887,22 +973,16 @@ function recoverPayload(payload, via, state) {
   // An empty or whitespace payload runs nothing: not a route, and not an unparseable payload.
   if (payload.trim().length === 0) return null;
   const depth = state.depth + 1;
-  // Past the depth bound: null in this tier (a later tier grades it uncertain, D3).
-  if (depth > RECOVERY_MAX_DEPTH) return null;
+  // Past the depth bound: uncertain with NO review hint (D3 literal).
+  if (depth > RECOVERY_MAX_DEPTH) return uncertainRoute('depth-bound');
   const inner = parseCommand(payload);
-  // A payload argv cannot parse: null in this tier (a later tier grades it uncertain, D3, D7).
-  if (!inner || inner.ok !== true) return null;
+  // A non-empty payload argv cannot parse: uncertain with no review hint (D3, D7 A).
+  if (!inner || inner.ok !== true) return uncertainRoute('unparseable-payload');
   const innerState = { depth, peels: 0, inShellString: true };
-  const verdictSegments = [];
-  for (const innerSeg of inner.segments) {
-    const r = classifySegment(innerSeg, innerState);
-    // D1: only a pr-review is kept; every other inner result is discarded.
-    if (!r || r.action !== 'pr-review') continue;
-    if (r.recovered === true) verdictSegments.push(...r.verdictSegments);
-    else verdictSegments.push(innerSeg);
-  }
-  if (verdictSegments.length === 0) return null;
-  return { action: 'pr-review', route: 'recovered', recovered: true, via, verdictSegments };
+  return combineRecovered(
+    via,
+    inner.segments.map((innerSeg) => ({ r: classifySegment(innerSeg, innerState), seg: innerSeg }))
+  );
 }
 
 /**
@@ -1442,4 +1522,7 @@ module.exports = {
   RECOVERY_MAX_DEPTH,
   MAX_PREFIX_PEELS,
   VERDICT_ROUTE_FORMS,
+  // 261006-jsm Task 2d: the D7 (A) switch and the review-hint predicate that scopes the asks.
+  OPAQUE_SHELL_PAYLOAD_NEEDS_HINT,
+  hasReviewHint,
 };
