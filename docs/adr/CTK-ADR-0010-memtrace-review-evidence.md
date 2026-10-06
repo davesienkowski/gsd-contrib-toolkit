@@ -103,6 +103,15 @@ is wrong.
    closed a pre-existing ENF-20 bypass: before this change `gh pr review <n> -a` was not an approve,
    so step 10 (the exogenous self-check, `R10-exogenous.json`) never applied to it. That fix narrows a
    bypass and widens nothing else; `classify.cjs` and `argv.cjs` are unchanged.
+   A JSON request body is decoded with `JSON.parse` before its `event` is matched, so a
+   Unicode-escaped `"APPR\u004fVE"` is an approve, as GitHub reads it. On a REST review (`gh api`,
+   curl) whose event cannot be read from the command, the segment is an **unresolved verdict** and
+   asks, naming the form: an `event=@…` field (`-F event=@file`, `-F event=@-`, `-f event=@…`),
+   `--input`, a curl `-d`/`--data`/`--data-binary` (and `--data-ascii`, `--data-urlencode`,
+   `--json`) value starting with `@`, curl `-T`/`--upload-file`, an inline JSON body that does not
+   parse, or an event or body built by shell expansion. An explicit `COMMENT` event and a body
+   with no event stay exempt. The ask is held like any other, so an R8, R1 or chained deny still
+   wins (38 review MJ-02).
 
 5. **Missing evidence denies and scaffolds an obligation, never evidence.** When a complete read shows
    the required set short, the gate denies, names every missing tool, and scaffolds
@@ -143,6 +152,9 @@ is wrong.
    | Rows projected to `tool_name` and `outcome` only | (reader contract; no `cwd`, ids or inputs reach a reason) | PLANNER ADDITION |
    | The live file is read before the rotated one | (read order; a rotation mid-read can only double-read, never skip) | PLANNER REFINEMENT |
    | Short flags `-a` / `-r` count only on a native `gh` segment | (classifier) | PLANNER REFINEMENT |
+   | A REST review whose event comes from a file, stdin, an unparseable inline JSON body or a shell expansion | ask (an unresolved verdict, naming the form); any deny still wins | 38 review MJ-02 |
+   | A log slot that is not a regular file (a FIFO, socket, device or directory, or a symlink to one) | refused before it is opened; the read is incomplete, so a shortfall asks | 38 review BL-01 |
+   | Several verdict segments in one command | one log read per hook call, shared across the segments | 38 review MJ-01 |
    | Evidence short in a complete read, attestation absent | policy deny naming the tools, plus the scaffold | CONTEXT |
    | Attestation with placeholders (including an empty file) | policy deny naming the unfilled fields | CONTEXT |
    | Attestation filled but `pass`, `status` or the reason fails its assertion, or `head_oid` does not match | policy deny with that assertion's instruction | CONTEXT |
