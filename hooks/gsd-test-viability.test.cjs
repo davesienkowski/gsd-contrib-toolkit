@@ -395,7 +395,7 @@ test('ENF-24 GTEST-04: an unresolvable `-source $S` DENIES (thrown) with ZERO re
 
 // ───────────────────────── arming / cost (RES-01) ─────────────────────────
 
-for (const cmd of ['git status', 'gsd-test --version', 'gsd-test -probe-benches']) {
+for (const cmd of ['git status', 'gsd-test --version', 'gsd-test -help']) {
   test(`ENF-24 GTEST-04: \`${cmd}\` ALLOWS with ZERO resolve/read/probe calls (RES-01)`, () => {
     const { d, calls } = run(cmd);
     assert.strictEqual(d.permissionDecision, 'allow');
@@ -404,6 +404,19 @@ for (const cmd of ['git status', 'gsd-test --version', 'gsd-test -probe-benches'
     assert.strictEqual(calls.dockerProbe, 0);
   });
 }
+
+test('ENF-24 B-01: `gsd-test -probe-benches` runs the suite in v1.8.0 — a missing config DENIES', () => {
+  const { d, calls, reason } = run('gsd-test -probe-benches', { config: null });
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(reason, /does not exist/);
+  assert.strictEqual(calls.readConfig, 1);
+});
+
+test('ENF-24 B-01: `gsd-test --probe-benches` with Docker down DENIES (the probe runs)', () => {
+  const { d, calls } = run('gsd-test --probe-benches', { probe: { state: 'down', detail: 'daemon down' } });
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(calls.dockerProbe, 1);
+});
 
 test('ENF-24 GTEST-04: an out-of-tree dispatch (resolveTreeRoot null) ALLOWS with ZERO reads and probes', () => {
   const { d, calls } = run('gsd-test -bench nope', { resolveTreeRoot: () => null, config: null });

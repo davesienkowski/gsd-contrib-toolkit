@@ -313,11 +313,25 @@ test('GTEST-01 walker: -head HEAD is not informational', () => {
   assert.strictEqual(d.flags.head, 'HEAD');
 });
 
-for (const flag of ['--version', '-version', '--help', '-help', '--probe-benches', '-probe-benches']) {
+for (const flag of ['--version', '-version', '--help', '-help']) {
   test(`GTEST-01 walker: ${flag} is informational`, () => {
     assert.strictEqual(oneDispatch(`gsd-test ${flag}`).informational, true);
   });
 }
+
+// B-01 (36-REVIEW): v1.8.0 `--probe-benches` probes reachability DURING config.Load and then runs
+// the full suite (cmd/gsd-test/main.go: only --version returns before runner.Run). It is a run.
+for (const flag of ['--probe-benches', '-probe-benches', '--probe-benches=true']) {
+  test(`GTEST-01 walker (B-01): ${flag} is NOT informational — it runs the suite`, () => {
+    const d = oneDispatch(`gsd-test ${flag} --head HEAD`);
+    assert.strictEqual(d.informational, false);
+    assert.strictEqual(d.flags.head, 'HEAD');
+  });
+}
+
+test('GTEST-01 walker (B-01): INFORMATIONAL_FLAGS no longer carries probe-benches', () => {
+  assert.strictEqual(det.INFORMATIONAL_FLAGS.has('probe-benches'), false);
+});
 
 test('GTEST-01 walker: -bench "$B" records bench as unresolved', () => {
   const d = oneDispatch('gsd-test -bench "$B"');

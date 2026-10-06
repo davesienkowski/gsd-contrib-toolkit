@@ -514,7 +514,7 @@ for (const cmd of ['echo "x', 'cat gsd-test-clean-tree.cjs "x']) {
   });
 }
 
-for (const cmd of ['gsd-test --version', 'gsd-test -h', 'gsd-test --probe-benches | head']) {
+for (const cmd of ['gsd-test --version', 'gsd-test -h', 'gsd-test --help | head']) {
   test(`ENF-23 hardening: informational \`${cmd}\` ALLOWS with zero resolveTreeRoot/gitStatus/resolveRef calls`, () => {
     const { deps, calls } = scenario({ porcelain: DIRTY_ONE });
     const d = runGsdTestCleanTreeGate(input(cmd), deps);
@@ -533,6 +533,22 @@ for (const cmd of ['git status', 'npm test', 'gh pr review 9 --approve', 'echo g
     assert.strictEqual(gitCalls(calls), 0);
   });
 }
+
+// B-01 (36-REVIEW): `--probe-benches` runs the full suite in v1.8.0, so both traps apply to it.
+test('ENF-23 B-01: `gsd-test --probe-benches --head HEAD 2>&1 | tail -20` DENIES with PIPE_REASON', () => {
+  const { deps } = scenario({ porcelain: DIRTY_ONE });
+  const d = runGsdTestCleanTreeGate(input('gsd-test --probe-benches --head HEAD 2>&1 | tail -20'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(d.permissionDecisionReason, PIPE_REASON);
+});
+
+test('ENF-23 B-01: dirty tree + unpiped `gsd-test --probe-benches` DENIES with the dirty-tree reason', () => {
+  const { deps, calls } = scenario({ porcelain: DIRTY_ONE });
+  const d = runGsdTestCleanTreeGate(input('gsd-test --probe-benches'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /ref-based/);
+  assert.strictEqual(calls.gitStatus, 1);
+});
 
 test('ENF-23 hardening: multi-dispatch `gsd-test -head origin/next; gsd-test` (dirty) DENIES — the second tests HEAD', () => {
   const { deps, calls } = scenario({ porcelain: DIRTY_ONE });
