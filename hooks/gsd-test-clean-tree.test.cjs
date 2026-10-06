@@ -748,3 +748,34 @@ test('ENF-23 M-02: an unknown `cd` option fails closed and the reason names cd o
   assert.match(d.permissionDecisionReason, /option/);
   assert.strictEqual(calls.resolveTreeRoot, 0);
 });
+
+// ─────────────── M-03 (36-REVIEW): env -C / sudo -D move the start dir ───────────────
+
+for (const cmd of [
+  'env -C /g/core gsd-test | tail',
+  'env --chdir=/g/core gsd-test | tail',
+  'env --chdir /g/core gsd-test | tail',
+  'sudo -D /g/core gsd-test | tail',
+  'sudo --chdir=/g/core gsd-test | tail',
+]) {
+  test(`ENF-23 M-03: \`${cmd}\` from /elsewhere DENIES with PIPE_REASON`, () => {
+    const { deps } = elsewhere();
+    const d = runGsdTestCleanTreeGate(input(cmd), deps);
+    assert.strictEqual(d.permissionDecision, 'deny');
+    assert.strictEqual(d.permissionDecisionReason, PIPE_REASON);
+  });
+}
+
+test('ENF-23 M-03: `env -C /tmp gsd-test` from a gsd-core cwd checks /tmp, not the session tree', () => {
+  const { deps, calls } = scenario({ porcelain: DIRTY_ONE, resolveTreeRoot: (dir) => { calls.dirs.push(dir); return null; } });
+  const d = runGsdTestCleanTreeGate(input('env -C /tmp gsd-test'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.deepStrictEqual(calls.dirs, ['/tmp']);
+});
+
+test('ENF-23 M-03: `env -C "$X" gsd-test` fails closed (unresolvable start dir)', () => {
+  const { deps, calls } = scenario();
+  const d = runGsdTestCleanTreeGate(input('env -C "$X" gsd-test'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(calls.resolveTreeRoot, 0);
+});

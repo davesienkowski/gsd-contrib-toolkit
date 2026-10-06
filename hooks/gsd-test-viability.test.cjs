@@ -776,3 +776,15 @@ test('ENF-24 M-02: an unknown `cd` option fails closed and the reason names cd o
   assert.match(reason, /option/);
   assert.strictEqual(calls.resolveTreeRoot, 0);
 });
+
+// ─────────────── M-03 (36-REVIEW): env -C / sudo -D ───────────────
+
+test('ENF-24 M-03: `sudo -D /g/core gsd-test --config ./c.toml` reads /g/core/c.toml', () => {
+  const { calls } = run('sudo -D /g/core gsd-test --config ./c.toml');
+  assert.deepStrictEqual(calls.paths, [path.resolve('/g/core/c.toml')]);
+});
+
+test('ENF-24 M-03: `env -C /g/core gsd-test` arms on /g/core', () => {
+  const { calls } = run('env -C /g/core gsd-test', { cwd: '/elsewhere' });
+  assert.deepStrictEqual(calls.dirs, [path.resolve('/g/core')]);
+});

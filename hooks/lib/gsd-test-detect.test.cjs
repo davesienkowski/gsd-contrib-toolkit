@@ -798,3 +798,45 @@ test('GTEST-01 N-05: `cd -P; gsd-test` with no known home is unresolved (null)',
   const d = oneDispatch('cd -P; gsd-test');
   assert.strictEqual(exported('startDirFor')(d, '/elsewhere', { env: {} }), null);
 });
+
+// ─────────────── M-03 (36-REVIEW): `env -C` / `env --chdir` and `sudo -D` / `sudo --chdir` ───────────────
+
+const CHDIR_ROWS = [
+  ['env -C /g/core gsd-test | tail', '/g/core'],
+  ['env --chdir=/g/core gsd-test | tail', '/g/core'],
+  ['env --chdir /g/core gsd-test | tail', '/g/core'],
+  ['env -C/g/core gsd-test', '/g/core'],
+  ['env -iC /g/core gsd-test', '/g/core'],
+  ['env -C sub FOO=1 gsd-test', '/elsewhere/sub'],
+  ['cd /a && env -C b gsd-test', '/a/b'],
+  ['sudo -D /g/core gsd-test | tail', '/g/core'],
+  ['sudo --chdir=/g/core gsd-test', '/g/core'],
+  ['sudo --chdir /g/core gsd-test', '/g/core'],
+  ['sudo -u dave -D /g/core gsd-test', '/g/core'],
+  ['nice -n 5 sudo -D /g/core gsd-test', '/g/core'],
+  ['env -C /a sudo -D b gsd-test', '/a/b'],
+  ['sudo -D /g/core bash -c "gsd-test | tail"', '/g/core'],
+  ['env -C "$X" gsd-test', null],
+  ['env -C ~bob gsd-test', null],
+];
+for (const [cmd, want] of CHDIR_ROWS) {
+  test(`GTEST-01 M-03: startDirFor(${cmd}) from /elsewhere is ${want}`, () => {
+    const d = oneDispatch(cmd);
+    assert.strictEqual(exported('startDirFor')(d, '/elsewhere', { env: {}, homedir: '/h' }), want);
+  });
+}
+
+test('GTEST-01 M-03: `sudo -D /g/core gsd-test --head HEAD | tail` is a piped dispatch with its flags read', () => {
+  const d = oneDispatch('sudo -D /g/core gsd-test --head HEAD | tail');
+  assert.strictEqual(d.flags.head, 'HEAD');
+  assert.strictEqual(d.pipeMasked, true);
+});
+
+test('GTEST-01 M-03: the reverse case — `env -C /tmp gsd-test` from /g/core starts in /tmp', () => {
+  const d = oneDispatch('env -C /tmp gsd-test');
+  assert.strictEqual(exported('startDirFor')(d, '/g/core', { env: {}, homedir: '/h' }), '/tmp');
+});
+
+test('GTEST-01 M-03: `echo env -C /x gsd-test` is not a dispatch (env is not in wrapper position)', () => {
+  assert.deepStrictEqual(entries('echo env -C /x gsd-test'), []);
+});
