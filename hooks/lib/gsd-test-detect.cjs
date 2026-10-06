@@ -28,6 +28,13 @@
  *   `subcommand` is null for the classic path, else one of SUBCOMMANDS (36-REVIEW M-01); each
  *   gate decides which subcommands it governs.
  *
+ * The segment walk is SHARED (37-02, 37-CONTEXT Addendum 2): `findProgramEntries(command,
+ * matcher)` runs it with a program matcher that supplies the uncertain word test and the
+ * per-segment hook; GSD_TEST_MATCHER (the pre-37-02 gsd-test branch, moved verbatim) is the
+ * default, and `findGsdTestDispatches` is the walk with that matcher. hooks/lib/worktree-add-detect
+ * is the second matcher. Grouping, the quote mask, wrapper / nohup / time peel, start dirs,
+ * `command -v` lookups and the `bash -c` / `eval` recursion stay in the walk, for every matcher.
+ *
  * Pure: no fs, no child_process, no env reads (env and homedir are always passed in). Never
  * executes the command it classifies. Never throws on a string input.
  *
@@ -958,19 +965,21 @@ function toSeg(tokens, nextOp) {
  * Scan one parsed command (top level or a `-c` payload).
  *
  * @param {{ok:true, segments:Object[]}} parsed
- * @param {{depth:number, inheritedPipefail:boolean, outerMasked:boolean, prefixes:Object[]}} st
+ * @param {{depth:number, inheritedPipefail:boolean, outerMasked:boolean, prefixes:Object[],
+ *   matcher:Object}} st  (`matcher` is inherited by the bash -c / eval recursion)
  * @returns {Object[]} entries
  */
 function scanParsed(parsed, st) {
   const segments = parsed.segments;
   const out = [];
+  const m = st.matcher || GSD_TEST_MATCHER;
 
   // Pass 0 (36-03 handoff 2): the quote mask. Nested quotes inside a double-quoted `$(...)`
   // next to a paren cannot be attributed exactly -> uncertain when the command names gsd-test.
   const mask = maskedSegmentTokens(parsed);
   if (mask.ambiguous) {
     const words = segments.map((s) => s.tokens.join(' ')).join(' ');
-    if (GSD_TEST_WORD.test(String(parsed.raw || '')) || GSD_TEST_WORD.test(words)) {
+    if (m.word.test(String(parsed.raw || '')) || m.word.test(words)) {
       return [{ kind: 'uncertain', reason: 'nested quotes inside a double-quoted substitution make grouping unattributable' }];
     }
   }
@@ -1000,8 +1009,8 @@ function scanParsed(parsed, st) {
       // m-02 follow-on: rejoin `NAME=$(a b)` assignment values argv split on spaces.
       const joined = joinAssignmentSubstitutions(n.tokens);
       if (joined === null) {
-        if (GSD_TEST_WORD.test(n.tokens.join(' '))) {
-          out.push({ kind: 'uncertain', reason: 'unbalanced command substitution in an assignment before gsd-test' });
+        if (m.word.test(n.tokens.join(' '))) {
+          out.push({ kind: 'uncertain', reason: `unbalanced command substitution in an assignment before ${m.label}` });
         }
       }
       // M-03: `env -C <dir>` / `sudo -D <dir>` change the directory of THIS segment only.
@@ -1012,44 +1021,34 @@ function scanParsed(parsed, st) {
       const pipefail = runningPipefail || st.inheritedPipefail;
 
       if (r.ambiguous) {
-        if (GSD_TEST_WORD.test(toks.join(' '))) {
-          out.push({ kind: 'uncertain', reason: 'ambiguous wrapper around a gsd-test mention' });
+        if (m.word.test(toks.join(' '))) {
+          out.push({ kind: 'uncertain', reason: `ambiguous wrapper around a ${m.label} mention` });
         }
-      } else if (r.prog === 'gsd-test' && r.idx !== -1 && isCommandLookup(toks, r.idx)) {
-        // M-05: `command -v gsd-test` — a lookup, not a dispatch.
-      } else if (r.prog === 'gsd-test' && r.idx !== -1) {
-        const sub = leadingSubcommand(toks.slice(r.idx + 1));
-        const spec = sub.name === null ? CLASSIC_FLAGSET : SUBCOMMANDS[sub.name];
-        const w = spec.positionalOnly ? walkPositionals(sub.rest) : walkGoFlags(sub.rest, spec);
-        if (w.uncertainReason) {
-          out.push({ kind: 'uncertain', reason: w.uncertainReason });
-        } else {
-          const pipedOut = attributePipe(segments, profile, i);
-          const informational = isInformational(w.flags, sub.name);
-          out.push({
-            kind: 'dispatch',
-            subcommand: sub.name,
-            envOps: ownEnvOps(toks, r.idx),
-            seg: toSeg(toks, segments[i].nextOp),
-            segIndex: i,
-            args: w.positionals,
-            flags: w.flags,
-            unresolved: w.unresolved,
-            informational,
-            background: w.background,
-            pipedOut,
-            pipefail,
-            pipeMasked: (pipedOut && !pipefail) || st.outerMasked,
-            viaDashC: st.depth > 0,
-            depth: st.depth,
-            prefixes: here(),
-          });
-        }
+      } else if (r.idx !== -1 && m.programs.has(r.prog) && isCommandLookup(toks, r.idx)) {
+        // M-05: `command -v <program>` — a lookup, not a run (generic: every matcher inherits it).
+      } else if (r.idx !== -1 && m.programs.has(r.prog)) {
+        // The matcher's per-segment hook (37-02 Addendum 2): everything above and below this
+        // branch — grouping, quote mask, wrapper / nohup / time peel, start dirs, recursion — is
+        // the shared walk; only the turning of one resolved segment into entries is per program.
+        const seg = segments[i];
+        const hit = m.segment({
+          toks,
+          idx: r.idx,
+          segIndex: i,
+          nextOp: seg.nextOp,
+          depth: st.depth,
+          pipefail,
+          outerMasked: st.outerMasked,
+          pipedOut: () => attributePipe(segments, profile, i),
+          seg: () => toSeg(toks, seg.nextOp),
+          prefixes: here,
+        });
+        if (Array.isArray(hit)) for (const e of hit) out.push(e);
       } else if (SHELLS.has(r.prog) && r.idx !== -1) {
         const opt = readShellOptions(toks.slice(r.idx + 1));
         if (opt.dashC && typeof opt.payload === 'string') {
           if (st.depth + 1 > MAX_DASH_C_DEPTH) {
-            if (GSD_TEST_WORD.test(opt.payload)) {
+            if (m.word.test(opt.payload)) {
               out.push({ kind: 'uncertain', reason: `bash -c payload nested deeper than ${MAX_DASH_C_DEPTH}` });
             }
           } else {
@@ -1059,6 +1058,7 @@ function scanParsed(parsed, st) {
               inheritedPipefail: opt.shellPipefail,
               outerMasked: (pipedOut && !pipefail) || st.outerMasked,
               prefixes: here(),
+              matcher: m,
             });
             for (const e of inner) out.push(e);
           }
@@ -1069,7 +1069,7 @@ function scanParsed(parsed, st) {
         // quoting layer, which is exactly what eval's own parse sees.
         const payload = toks.slice(r.idx + 1).join(' ');
         if (st.depth + 1 > MAX_DASH_C_DEPTH) {
-          if (GSD_TEST_WORD.test(payload)) {
+          if (m.word.test(payload)) {
             out.push({ kind: 'uncertain', reason: `eval payload nested deeper than ${MAX_DASH_C_DEPTH}` });
           }
         } else {
@@ -1079,6 +1079,7 @@ function scanParsed(parsed, st) {
             inheritedPipefail: pipefail,
             outerMasked: (pipedOut && !pipefail) || st.outerMasked,
             prefixes: here(),
+            matcher: m,
           }, 'eval');
           for (const e of inner) out.push(e);
         }
@@ -1113,25 +1114,95 @@ function scanParsed(parsed, st) {
  */
 function scanCommand(payload, st, label) {
   if (typeof payload !== 'string' || payload.trim().length === 0) return [];
+  const m = st.matcher || GSD_TEST_MATCHER;
   const parsed = parseCommand(payload);
   if (!parsed.ok) {
-    return GSD_TEST_WORD.test(payload)
-      ? [{ kind: 'uncertain', reason: `unparseable ${label || 'bash -c'} payload names gsd-test (${parsed.reason})` }]
+    return m.word.test(payload)
+      ? [{ kind: 'uncertain', reason: `unparseable ${label || 'bash -c'} payload names ${m.label} (${parsed.reason})` }]
       : [];
   }
-  return scanParsed(parsed, st).map((e) => (e.kind === 'dispatch' ? Object.assign(e, { viaDashC: true }) : e));
+  return scanParsed(parsed, st).map((e) => (e.kind !== 'uncertain' ? Object.assign(e, { viaDashC: true }) : e));
 }
 
 /**
- * Every gsd-test dispatch (and every uncertain gsd-test mention) in a raw Bash command, in
- * order.
+ * The gsd-test program matcher (37-02 Addendum 2): the per-segment branch the walk ran before the
+ * walk was parametrized, moved verbatim. It is the DEFAULT matcher, so every gsd-test caller keeps
+ * its exact behaviour.
+ *
+ * @param {Object} ctx see scanParsed (toks, idx, segIndex, depth, pipefail, outerMasked,
+ *   pipedOut(), seg(), prefixes())
+ * @returns {Object[]} entries
+ */
+function gsdTestSegment(ctx) {
+  const toks = ctx.toks;
+  const sub = leadingSubcommand(toks.slice(ctx.idx + 1));
+  const spec = sub.name === null ? CLASSIC_FLAGSET : SUBCOMMANDS[sub.name];
+  const w = spec.positionalOnly ? walkPositionals(sub.rest) : walkGoFlags(sub.rest, spec);
+  if (w.uncertainReason) return [{ kind: 'uncertain', reason: w.uncertainReason }];
+  const pipedOut = ctx.pipedOut();
+  const informational = isInformational(w.flags, sub.name);
+  return [{
+    kind: 'dispatch',
+    subcommand: sub.name,
+    envOps: ownEnvOps(toks, ctx.idx),
+    seg: ctx.seg(),
+    segIndex: ctx.segIndex,
+    args: w.positionals,
+    flags: w.flags,
+    unresolved: w.unresolved,
+    informational,
+    background: w.background,
+    pipedOut,
+    pipefail: ctx.pipefail,
+    pipeMasked: (pipedOut && !ctx.pipefail) || ctx.outerMasked,
+    viaDashC: ctx.depth > 0,
+    depth: ctx.depth,
+    prefixes: ctx.prefixes(),
+  }];
+}
+
+/**
+ * A program matcher for the shared walk:
+ *   label     the program name used in uncertain reasons
+ *   word      the HARD-01 word test: a command the walk cannot attribute (unparseable, ambiguous
+ *             wrapper, over-deep `-c` / eval, ambiguous quoting) is graded uncertain only when
+ *             this matches it
+ *   programs  the resolved program basenames the matcher claims (never a shell, `eval` or
+ *             `set`: those are the walk's own recursion and pipefail branches)
+ *   segment   (ctx) => entries for one claimed segment ([] = not an entry)
+ */
+const GSD_TEST_MATCHER = Object.freeze({
+  label: 'gsd-test',
+  word: GSD_TEST_WORD,
+  programs: new Set(['gsd-test']),
+  segment: gsdTestSegment,
+});
+
+function validMatcher(m) {
+  return Boolean(
+    m &&
+      typeof m.label === 'string' &&
+      m.word instanceof RegExp &&
+      m.programs instanceof Set &&
+      typeof m.segment === 'function' &&
+      ![...m.programs].some((p) => SHELLS.has(p) || p === 'eval' || p === 'set')
+  );
+}
+
+/**
+ * The generic segment walk (37-02 Addendum 2): every entry (and every uncertain mention) a
+ * program matcher yields for a raw Bash command, in order. With no matcher it is the gsd-test
+ * detector.
  *
  * @param {string} command raw tool_input.command
+ * @param {Object} [matcher] see GSD_TEST_MATCHER; default GSD_TEST_MATCHER
  * @param {Object} [opts] internal recursion state ({depth, inheritedPipefail, outerMasked,
  *   prefixes}); callers pass nothing
  * @returns {Object[]} entries
  */
-function findGsdTestDispatches(command, opts) {
+function findProgramEntries(command, matcher, opts) {
+  const m = matcher === undefined || matcher === null ? GSD_TEST_MATCHER : matcher;
+  if (!validMatcher(m)) throw new TypeError('findProgramEntries: invalid program matcher');
   if (typeof command !== 'string' || command.trim().length === 0) return [];
   const o = opts || {};
   const st = {
@@ -1139,21 +1210,35 @@ function findGsdTestDispatches(command, opts) {
     inheritedPipefail: Boolean(o.inheritedPipefail),
     outerMasked: Boolean(o.outerMasked),
     prefixes: Array.isArray(o.prefixes) ? o.prefixes : [],
+    matcher: m,
   };
   try {
     const parsed = parseCommand(command);
     if (!parsed.ok) {
-      return GSD_TEST_WORD.test(command)
-        ? [{ kind: 'uncertain', reason: `unparseable command names gsd-test (${parsed.reason})` }]
+      return m.word.test(command)
+        ? [{ kind: 'uncertain', reason: `unparseable command names ${m.label} (${parsed.reason})` }]
         : [];
     }
     return scanParsed(parsed, st);
   } catch (err) {
     // Defensive: the detector must never throw into a gate.
-    return GSD_TEST_WORD.test(command)
+    return m.word.test(command)
       ? [{ kind: 'uncertain', reason: `detector error (${err && err.message ? err.message : 'unknown'})` }]
       : [];
   }
+}
+
+/**
+ * Every gsd-test dispatch (and every uncertain gsd-test mention) in a raw Bash command, in
+ * order: the generic walk with the gsd-test matcher.
+ *
+ * @param {string} command raw tool_input.command
+ * @param {Object} [opts] internal recursion state ({depth, inheritedPipefail, outerMasked,
+ *   prefixes}); callers pass nothing
+ * @returns {Object[]} entries
+ */
+function findGsdTestDispatches(command, opts) {
+  return findProgramEntries(command, GSD_TEST_MATCHER, opts);
 }
 
 /**
@@ -1327,6 +1412,10 @@ function treeDirFor(dispatch, cwd, ctx) {
 }
 
 module.exports = {
+  findProgramEntries,
+  GSD_TEST_MATCHER,
+  REDIRECT,
+  hasExpansion,
   findGsdTestDispatches,
   findGsdTestDispatch,
   walkGoFlags,

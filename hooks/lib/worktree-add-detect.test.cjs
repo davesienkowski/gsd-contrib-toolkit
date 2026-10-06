@@ -206,6 +206,8 @@ const VARIANTS = [
   ['git worktree add -b x p next > log 2>&1 &', '/w', [], (e) => assert.strictEqual(e.newBranch, 'x')],
   ['if true; then git worktree add p next; fi', '/w', []],
   ['echo "(" && cd /r && git worktree add p next', '/r', []],
+  // Found during 37-02 implementation: a redirect may sit before the verb.
+  ['git 2>/dev/null worktree add p next', '/w', []],
 ];
 
 for (const [cmd, wantStart, wantChdirs, extra] of VARIANTS) {
@@ -341,6 +343,8 @@ const NON_CUTS = [
   "grep 'worktree add' f",
   'git log --grep "worktree add p next"',
   'command -v git && git status',
+  // Found during 37-02 implementation: the walk's generic lookup exclusion covers git too.
+  'command -v git worktree add p next',
 ];
 
 for (const cmd of NON_CUTS) {
@@ -379,6 +383,8 @@ const UNCERTAIN = [
     `bash -c "bash -c 'bash -c \\"git status\\"'"`,
   ],
   ["eval 'git worktree add \"x'", "eval 'git status \"x'"],
+  // Found during 37-02 implementation: an expansion before the verb may be options or the verb.
+  ['git $G worktree add p next', 'git $G status'],
 ];
 
 for (const [cmd, twin] of UNCERTAIN) {

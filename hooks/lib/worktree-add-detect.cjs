@@ -6,49 +6,79 @@
  *
  * Pure: no fs, no child_process, no env reads; never throws on a string.
  *
- * ── Entry shape (FINAL from 37-01; later plans fill parsing, they never reshape entries) ──
+ * ── One walk, two detectors (37-02, 37-CONTEXT Addendum 2) ──
+ * This module is a PROGRAM MATCHER on the shared segment walk of hooks/lib/gsd-test-detect.cjs
+ * (`findProgramEntries`). The walk owns parsing and every shell rule: groups and subshells, the
+ * quote mask, env assignments and wrapper builtins, the nohup / time peel, `bash -c` and `eval`
+ * recursion with its depth bound, `cd` / `env -C` / `sudo -D` start dirs, `command -v` lookups,
+ * and the HARD-01 uncertain grading of unattributable input. This file only turns one resolved
+ * `git` segment into an entry, so the worktree gate sees exactly the command shapes the gsd-test
+ * gates see. There is no second walk here.
+ *
+ * ── Entry shape (FINAL from 37-01) ──
  *   { kind:'cut', seg, segIndex, prefixes, viaDashC, depth, gitChdirs, path, base, baseKind,
  *     newBranch }
  *   { kind:'uncertain', reason }
  *
- *   seg        the parsed argv segment (argv.parseCommand shape, with `nextOp`)
- *   segIndex   its index among the scanned segments
- *   prefixes   parse-shaped `{ok:true, segments}` objects holding the segments that ran BEFORE
- *              this one, folded by gsd-test-detect's exported `startDirFor` (follows `cd`)
- *   viaDashC   / depth   whether / how deep the cut sits inside a `bash -c` payload
- *   gitChdirs  the git GLOBAL `-C <dir>` values, in order (applied after the start dir)
+ *   seg        the segment (argv.parseCommand shape, with `nextOp`; wrapper chdir options removed)
+ *   segIndex   its index among the scanned segments of its (sub)command
+ *   prefixes   parse-shaped `{ok:true, segments}` objects that ran before it, folded by
+ *              gsd-test-detect's `startDirFor` (follows `cd`, `env -C`, `sudo -D`)
+ *   viaDashC   / depth   whether / how deep the cut sits inside a `bash -c` or `eval` payload
+ *   gitChdirs  the git GLOBAL `-C <dir>` values, in order, unexpanded (the gate expands them)
  *   path       the new worktree's path (first positional after `add`)
  *   base       the commit-ish (second positional), or null when omitted
- *   baseKind   'remote' | 'local' | 'head' | 'other' | 'none' ('none' = `--orphan`, 37-02)
+ *   baseKind   'remote' | 'local' | 'head' | 'other' | 'none' ('none' = `--orphan`)
  *   newBranch  the `-b`/`-B` value, or null
  *
- * ── 37-01 tracer form ──
- * TOP-LEVEL segments only; an unparseable command yields []. 37-02 replaces the walk with the
- * shared one (groups, `bash -c`, quote mask, wrappers, uncertain grading) and the `add` option
- * walk with the full one (attached forms, clusters, `--`, `--orphan`, `--detach`).
+ * `-C` is read from the tokens AFTER the resolved git program index, so `FOO=1 git -C /a`,
+ * `sudo git -C /a` and `timeout 5 git -C rel` target the -C dir (resolve.commandStartDir only
+ * follows `-C` when `tokens[0] === 'git'`).
  *
- * Why the detector reads `-C` itself: `resolve.commandStartDir` only follows `-C` when
- * `tokens[0] === 'git'`, so an env-prefixed or wrapped git (`FOO=1 git -C /a ...`,
- * `sudo git -C /a ...`) would silently stay at the base dir. The `-C` values are therefore
- * collected from the tokens AFTER the resolved program index.
+ * ── Uncertain (HARD-01: the gate fails closed) ──
+ * A cut whose repository or base cannot be attributed statically: `--git-dir` / `--work-tree`,
+ * a `GIT_DIR=` / `GIT_WORK_TREE=` / `GIT_COMMON_DIR=` assignment before git, a shell expansion in
+ * the base slot, in an omitted-base path, in an option, or among more than two positionals; plus
+ * everything the walk itself grades (unparseable, ambiguous wrapper, over-deep `-c`) when the
+ * command mentions WORKTREE_ADD_WORD.
  *
  * @module hooks/lib/worktree-add-detect
  */
 
 const path = require('node:path');
-const { parseCommand } = require('./argv.cjs');
-const { resolveProgram } = require('./classify.cjs');
+const { findProgramEntries, REDIRECT, hasExpansion } = require('./gsd-test-detect.cjs');
 
-/** `worktree` then whitespace then `add`, as whole words (37-02 uncertain grading). */
+/** `worktree` then whitespace then `add`, as whole words (the walk's uncertain word test). */
 const WORKTREE_ADD_WORD = /\bworktree\s+add\b/;
 
-/** git GLOBAL options that consume the following token as their value (`-C` is collected). */
-const GIT_GLOBAL_VALUE_OPTS = new Set([
-  '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--super-prefix', '--config-env',
-]);
+/** git GLOBAL options that consume the following token (`-C` is collected separately). */
+const GIT_GLOBAL_VALUE_OPTS = new Set(['-c', '--namespace', '--exec-path', '--super-prefix', '--config-env']);
 
-/** `worktree add` options that consume the following token. */
-const ADD_VALUE_OPTS = new Set(['-b', '-B', '--reason']);
+/** git GLOBAL options that point git at another repository: the target cannot be attributed. */
+const GIT_REPO_OPTS = new Set(['--git-dir', '--work-tree']);
+
+/** Assignments before git that point it at another repository. */
+const GIT_REPO_ASSIGNMENT = /^(GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR)=/;
+
+/**
+ * `git worktree add` options (builtin/worktree.c add_options; parse-options semantics: long
+ * options take a unique-prefix abbreviation and a `--no-` negation, short options cluster, a
+ * value option takes the rest of its cluster or the next token unconditionally).
+ */
+const ADD_LONG = Object.freeze({
+  force: 'bool',
+  detach: 'bool',
+  checkout: 'bool',
+  lock: 'bool',
+  reason: 'value',
+  quiet: 'bool',
+  track: 'bool',
+  'guess-remote': 'bool',
+  orphan: 'bool',
+  'relative-paths': 'bool',
+});
+const ADD_SHORT_VALUE = new Set(['b', 'B']);
+const ADD_SHORT_BOOL = Object.freeze({ f: 'force', d: 'detach', q: 'quiet' });
 
 const LOCAL_TRUNK = new Set(['next', 'refs/heads/next', 'heads/next']);
 const REMOTE_TRUNK = new Set(['origin/next', 'refs/remotes/origin/next', 'remotes/origin/next']);
@@ -56,7 +86,7 @@ const HEAD_FORMS = new Set(['HEAD', '@']);
 
 /**
  * Classify a `worktree add` base by exact, case-sensitive string equality (no normalisation:
- * `NEXT`, `next~1`, `upstream/next` and a sha are all 'other').
+ * `NEXT`, `next~1`, `upstream/next`, a look-alike and a sha are all 'other').
  *
  * @param {string|null|undefined} base
  * @returns {'remote'|'local'|'head'|'other'}
@@ -70,105 +100,227 @@ function classifyBase(base) {
   return 'other';
 }
 
-/**
- * Index of the `git` program token: the first token whose basename is `git` and at which
- * resolveProgram over the prefix resolves to git (so `sudo -u git git ...` picks the second).
- * Tracer-local; 37-02 replaces it with the shared walk's program index.
- */
-function gitIndex(tokens) {
-  for (let i = 0; i < tokens.length; i++) {
-    if (path.basename(String(tokens[i])) !== 'git') continue;
-    if (resolveProgram({ tokens: tokens.slice(0, i + 1) }).prog === 'git') return i;
-  }
-  return -1;
+/** Index just past a redirect at `k` (an operator-only token consumes its target), or -1. */
+function redirectEnd(toks, k) {
+  const m = REDIRECT.exec(toks[k]);
+  if (!m) return -1;
+  return m[2] === '' ? k + 2 : k + 1;
 }
 
-const isDash = (t) => typeof t === 'string' && t.length > 1 && t.startsWith('-');
+/**
+ * A long `worktree add` option name (after `--`, before any `=`) resolved the way parse-options
+ * does: exact, `no-<exact>`, else a unique prefix of a name or of its `no-` form.
+ *
+ * @returns {{name:string, neg:boolean}|null} null when unknown or ambiguous (git rejects it)
+ */
+function resolveLong(name) {
+  if (Object.prototype.hasOwnProperty.call(ADD_LONG, name)) return { name, neg: false };
+  if (name.startsWith('no-') && Object.prototype.hasOwnProperty.call(ADD_LONG, name.slice(3))) {
+    return { name: name.slice(3), neg: true };
+  }
+  const hits = [];
+  for (const L of Object.keys(ADD_LONG)) {
+    if (L.startsWith(name)) hits.push({ name: L, neg: false });
+    if (name.startsWith('no-') && name.length > 3 && L.startsWith(name.slice(3))) hits.push({ name: L, neg: true });
+  }
+  return hits.length === 1 ? hits[0] : null;
+}
 
 /**
- * Parse one segment as `git [globals] worktree add [opts] <path> [<base>]`, or null.
+ * Walk the tokens after `worktree add`: options, then `<path> [<commit-ish>]`. Redirects are
+ * removed (the shell strips them before git sees argv); a lone `&` ends the command.
+ *
+ * baseKind: `--orphan` -> 'none'; a base -> classifyBase(base); no base with `-b`/`-B`/`--detach`
+ * -> 'head'; no base and none of those -> 'local' when basename(path) is `next` (git then checks
+ * out the existing branch `next`; PLANNER ADDITION, CTK-ADR-0009), else 'head'.
+ *
+ * @param {string[]} tail
+ * @returns {{path:(string|null), base:(string|null), newBranch:(string|null), detach:boolean,
+ *   orphan:boolean, baseKind:string, uncertainReason:(string|null)}}
  */
-function parseCut(tokens) {
-  const g = gitIndex(tokens);
-  if (g === -1) return null;
-  const gitChdirs = [];
-  let k = g + 1;
+function parseWorktreeAddArgs(tail) {
+  const toks = Array.isArray(tail) ? tail.filter((t) => typeof t === 'string') : [];
+  let newBranch = null;
+  let detach = false;
+  let orphan = false;
+  let uncertainReason = null;
+  const positionals = [];
+  const set = (name, on) => {
+    if (name === 'detach') detach = on;
+    if (name === 'orphan') orphan = on;
+  };
+
+  let k = 0;
+  let optionsDone = false;
+  while (k < toks.length) {
+    const r = redirectEnd(toks, k);
+    if (r !== -1) { k = r; continue; }
+    const t = toks[k];
+    if (t === '&') break;
+    if (!optionsDone && t === '--') { optionsDone = true; k += 1; continue; }
+
+    if (optionsDone || !t.startsWith('-') || t === '-') {
+      positionals.push(t);
+      k += 1;
+      continue;
+    }
+
+    if (t.startsWith('--')) {
+      const eq = t.indexOf('=');
+      const name = eq === -1 ? t.slice(2) : t.slice(2, eq);
+      if (hasExpansion(name)) { uncertainReason = 'shell expansion in a worktree add option'; break; }
+      const opt = resolveLong(name);
+      if (opt && ADD_LONG[opt.name] === 'value' && !opt.neg) {
+        k += eq === -1 ? 2 : 1; // `--reason r` / `--reason=r`
+        continue;
+      }
+      if (opt) set(opt.name, !opt.neg);
+      k += 1; // a boolean, or an unknown / ambiguous option git rejects
+      continue;
+    }
+
+    // A short cluster: booleans, then at most one value letter taking the rest or the next token.
+    if (hasExpansion(t)) { uncertainReason = 'shell expansion in a worktree add option'; break; }
+    let consumedNext = false;
+    for (let c = 1; c < t.length; c++) {
+      const L = t[c];
+      if (ADD_SHORT_VALUE.has(L)) {
+        const rest = t.slice(c + 1);
+        if (rest !== '') {
+          newBranch = rest;
+        } else {
+          newBranch = typeof toks[k + 1] === 'string' ? toks[k + 1] : null;
+          consumedNext = true;
+        }
+        break;
+      }
+      if (Object.prototype.hasOwnProperty.call(ADD_SHORT_BOOL, L)) set(ADD_SHORT_BOOL[L], true);
+    }
+    k += consumedNext ? 2 : 1;
+  }
+
+  const p = positionals.length > 0 ? positionals[0] : null;
+  const base = positionals.length > 1 ? positionals[1] : null;
+
+  if (!uncertainReason && positionals.length > 2 && positionals.some(hasExpansion)) {
+    uncertainReason = 'shell expansion among the worktree add positionals';
+  }
+  if (!uncertainReason && base !== null && hasExpansion(base)) {
+    uncertainReason = 'shell expansion in the worktree add base';
+  }
+
+  let baseKind;
+  if (orphan) baseKind = 'none';
+  else if (base !== null) baseKind = classifyBase(base);
+  else if (newBranch !== null || detach) baseKind = 'head';
+  else if (p !== null && hasExpansion(p)) {
+    baseKind = 'head';
+    if (!uncertainReason) uncertainReason = 'shell expansion in a worktree add path that names the branch';
+  } else if (p !== null && path.posix.basename(p) === 'next') baseKind = 'local';
+  else baseKind = 'head';
+
+  return { path: p, base, newBranch, detach, orphan, baseKind, uncertainReason };
+}
+
+/**
+ * The shared walk's per-segment hook for a resolved `git` program.
+ *
+ * @param {Object} ctx the walk's segment context (toks, idx, segIndex, depth, seg(), prefixes())
+ * @returns {Object[]} [] (not a cut), [cut] or [uncertain]
+ */
+function worktreeAddSegment(ctx) {
+  const toks = ctx.toks;
+  const uncertain = (reason) => [{ kind: 'uncertain', reason }];
+
   // git GLOBAL options, up to the verb.
-  while (k < tokens.length) {
-    const t = tokens[k];
+  const gitChdirs = [];
+  let redirected = toks.slice(0, ctx.idx).some((t) => GIT_REPO_ASSIGNMENT.test(t));
+  let expandedGlobal = false;
+  let k = ctx.idx + 1;
+  while (k < toks.length) {
+    const r = redirectEnd(toks, k);
+    if (r !== -1) { k = r; continue; }
+    const t = toks[k];
     if (t === '-C') {
-      if (typeof tokens[k + 1] === 'string') gitChdirs.push(tokens[k + 1]);
+      if (typeof toks[k + 1] === 'string') gitChdirs.push(toks[k + 1]);
       k += 2;
+      continue;
+    }
+    const eq = t.indexOf('=');
+    const name = t.startsWith('--') && eq !== -1 ? t.slice(0, eq) : t;
+    if (GIT_REPO_OPTS.has(name)) {
+      redirected = true;
+      k += eq === -1 ? 2 : 1;
       continue;
     }
     if (GIT_GLOBAL_VALUE_OPTS.has(t)) { k += 2; continue; }
-    if (isDash(t)) { k += 1; continue; }
-    break;
-  }
-  if (tokens[k] !== 'worktree') return null;
-  k += 1;
-  while (k < tokens.length && isDash(tokens[k])) k += 1;
-  if (tokens[k] !== 'add') return null;
-  k += 1;
-
-  // `worktree add` options and positionals (tracer walk).
-  let newBranch = null;
-  const positionals = [];
-  while (k < tokens.length) {
-    const t = tokens[k];
-    if (ADD_VALUE_OPTS.has(t)) {
-      if ((t === '-b' || t === '-B') && typeof tokens[k + 1] === 'string') newBranch = tokens[k + 1];
-      k += 2;
+    if (t.length > 1 && t.startsWith('-')) {
+      if (hasExpansion(t)) expandedGlobal = true;
+      k += 1;
       continue;
     }
-    if (isDash(t)) { k += 1; continue; }
-    positionals.push(t);
-    k += 1;
+    if (hasExpansion(t)) {
+      // `git $G worktree add ...`: the expansion may be options or the verb itself.
+      expandedGlobal = true;
+      k += 1;
+      continue;
+    }
+    break;
   }
-  if (positionals.length === 0) return null; // git rejects it; nothing to protect
-  const base = positionals.length > 1 ? positionals[1] : null;
-  return { gitChdirs, path: positionals[0], base, baseKind: classifyBase(base), newBranch };
+
+  if (toks[k] !== 'worktree') {
+    return expandedGlobal && WORKTREE_ADD_WORD.test(toks.slice(k).join(' '))
+      ? uncertain('shell expansion before a git worktree add verb')
+      : [];
+  }
+  k += 1;
+  for (let r = redirectEnd(toks, k); r !== -1; r = redirectEnd(toks, k)) k = r;
+  if (toks[k] !== 'add') return [];
+
+  const a = parseWorktreeAddArgs(toks.slice(k + 1));
+  if (a.path === null && !a.uncertainReason) return []; // git rejects it; nothing to protect
+  if (expandedGlobal) return uncertain('shell expansion among the git global options');
+  if (redirected) return uncertain('git is pointed at another repository (--git-dir, --work-tree or GIT_DIR)');
+  if (a.uncertainReason) return uncertain(a.uncertainReason);
+
+  return [{
+    kind: 'cut',
+    seg: ctx.seg(),
+    segIndex: ctx.segIndex,
+    prefixes: ctx.prefixes(),
+    viaDashC: ctx.depth > 0,
+    depth: ctx.depth,
+    gitChdirs,
+    path: a.path,
+    base: a.base,
+    baseKind: a.baseKind,
+    newBranch: a.newBranch,
+  }];
 }
 
+/** The program matcher for the shared walk. */
+const WORKTREE_ADD_MATCHER = Object.freeze({
+  label: 'git worktree add',
+  word: WORKTREE_ADD_WORD,
+  programs: new Set(['git']),
+  segment: worktreeAddSegment,
+});
+
 /**
- * Every `git worktree add` in a command, in command order.
+ * Every `git worktree add` (cut or uncertain) in a command, in command order.
  *
  * @param {string} command
  * @returns {Object[]} entries (see the module header for the shape)
  */
 function findWorktreeAdds(command) {
-  if (typeof command !== 'string' || command.length === 0) return [];
-  let parsed;
-  try {
-    parsed = parseCommand(command);
-  } catch (_) {
-    return [];
-  }
-  if (!parsed || parsed.ok !== true || !Array.isArray(parsed.segments)) return [];
-  const segments = parsed.segments;
-  const out = [];
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i];
-    if (!seg || !Array.isArray(seg.tokens)) continue;
-    const r = resolveProgram(seg);
-    if (r.ambiguous || r.prog !== 'git') continue;
-    const cut = parseCut(seg.tokens);
-    if (!cut) continue;
-    out.push({
-      kind: 'cut',
-      seg,
-      segIndex: i,
-      prefixes: [{ ok: true, segments: segments.slice(0, i) }],
-      viaDashC: false,
-      depth: 0,
-      gitChdirs: cut.gitChdirs,
-      path: cut.path,
-      base: cut.base,
-      baseKind: cut.baseKind,
-      newBranch: cut.newBranch,
-    });
-  }
-  return out;
+  if (typeof command !== 'string') return [];
+  return findProgramEntries(command, WORKTREE_ADD_MATCHER);
 }
 
-module.exports = { findWorktreeAdds, classifyBase, WORKTREE_ADD_WORD };
+module.exports = {
+  findWorktreeAdds,
+  parseWorktreeAddArgs,
+  classifyBase,
+  WORKTREE_ADD_WORD,
+  WORKTREE_ADD_MATCHER,
+};
