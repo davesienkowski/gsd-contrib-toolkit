@@ -164,6 +164,7 @@ is wrong.
    | Attestation filled and valid, evidence still short | ask, quoting at most 300 characters of the reason, control characters and U+2028/U+2029 replaced, bidi controls (U+202A-202E, U+2066-2069) and zero-width characters (U+200B-200F, U+FEFF) removed, labelled unverified; a mismatched `head_oid` is echoed through the same guard, capped at 80 | CONTEXT; the 300-character cap is a PLANNER ADDITION; the bidi, zero-width and `head_oid` cleaning is 38 review NT-02/NT-03 |
    | The attested reason contains the quote delimiters U+00AB / U+00BB | each is replaced with `"`, so attested text cannot close its own quote and append words that read as the gate's | executor addition (38-03) |
    | Malformed attestation JSON, unreadable attestation | thrown deny (override-escapable with a receipt) | CONTEXT (HARD-01) |
+   | An artifact (R8, R10, R13, R8a) or `--body-file` that is not a regular file (a FIFO, socket, device or directory, or a symlink to one), or is over the 1 MiB read cap | thrown deny, the same as a malformed artifact; lstat, O_RDONLY\|O_NONBLOCK and fstat mean it is never opened in a way that blocks or read without bound. A symlink to a regular file is read | 38 verifier VF-2 |
    | The reader throws, or returns a value without boolean `complete`, boolean `recorderOff` and array `records` | thrown deny | PLANNER ADDITION (contract check) |
    | An ask held while a later entry or a chained segment denies (R1 treadmill, R13 merge) | the deny wins: deny > thrown > ask > allow | PLANNER ADDITION |
 
