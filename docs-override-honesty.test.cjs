@@ -44,6 +44,23 @@ function assertScoped(label, section) {
   assert.ok(ASCII.test(section), label + ' is not plain ASCII:\n' + section);
 }
 
+/**
+ * Review round 2: a doc site describing the valve must not state "thrown gate errors only" as a
+ * global rule, because ENF-07 (hooks/containment.cjs) honors the override in its own policy path
+ * for a maintainer push to `origin`; it names that exception, and it presents the off switch as a
+ * human operator's decision (the agent can run it too, so it is not offered as a way past a deny).
+ */
+function assertDocTruthful(label, section) {
+  assertScoped(label, section);
+  const flat = section.replace(/\s+/g, ' ');
+  assert.ok(!/thrown gate errors only/i.test(flat), label + ' states "thrown gate errors only" as a global rule:\n' + section);
+  assert.ok(flat.includes('ENF-07'), label + ' does not name the ENF-07 exception:\n' + section);
+  assert.ok(/operator/i.test(flat), label + ' does not present the off switch as an operator decision:\n' + section);
+  for (const c of ['Deliberate bypass', 'genuinely-wrong gate', 'turns off every toolkit gate']) {
+    assert.ok(!flat.includes(c), label + ' still says "' + c + '":\n' + section);
+  }
+}
+
 // Mirrored (copied, not imported) from docs-adr-status.test.cjs.
 function adrFile(n) {
   const dir = path.join(REPO, 'docs', 'adr');
@@ -70,25 +87,25 @@ function adr10Bullet(re) {
 
 test('docs-honesty: contributor guide section 6 scopes the override to thrown gate errors', () => {
   const s = between(read('docs/guides/contributor-guide.md'), '## 6. The override valve', '## Quick reference', 'contributor-guide');
-  assertScoped('contributor-guide section 6', s);
+  assertDocTruthful('contributor-guide section 6', s);
   assert.ok(!s.includes('genuinely-wrong gate'), 'section 6 still presents the override as a false-positive escape:\n' + s);
   assert.ok(s.includes('dodge a real failure'), 'section 6 keeps the never-dodge warning:\n' + s);
 });
 
 test('docs-honesty: README override valve paragraph scopes the override to thrown gate errors', () => {
   const s = between(read('README.md'), '**The override valve.**', '\n\n', 'README valve');
-  assertScoped('README valve paragraph', s);
+  assertDocTruthful('README valve paragraph', s);
   assert.ok(s.includes('never a silent default'), 'the valve paragraph keeps "never a silent default":\n' + s);
 });
 
 test('docs-honesty: README honesty bullet scopes the override to thrown gate errors', () => {
   const s = untilLinePrefix(read('README.md'), '- **The override is deliberate, not silent.**', '- **', 'README bullet');
-  assertScoped('README honesty bullet', s);
+  assertDocTruthful('README honesty bullet', s);
 });
 
 test('docs-honesty: overview item 3 scopes the override to thrown gate errors', () => {
   const s = between(read('docs/guides/overview.md'), '3. **The override valve', '\n\n', 'overview item 3');
-  assertScoped('overview item 3', s);
+  assertDocTruthful('overview item 3', s);
   assert.ok(s.includes('dodge a real failure'), 'overview item 3 keeps the never-dodge clause:\n' + s);
 });
 

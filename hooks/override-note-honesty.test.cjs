@@ -40,8 +40,23 @@ const { recordToolCall, serializeRecord, LOG_FILENAME } = require('./tool-record
 
 // The phrases that made the pre-fix text false, copied from the source lines:
 // review-artifact.cjs:870 + protocol-artifact.cjs:617, githooks-seal.cjs:108, issue-dedupe.cjs:440.
-const FALSE_CLAIMS = ['Deliberate bypass', 'If a bypass is TRULY necessary, use', 'to override (logged)'];
-const TRUTH_MARKERS = ['does not lift this deny', 'thrown gate errors only', 'contrib-capability.cjs off --reason'];
+const FALSE_CLAIMS = [
+  'Deliberate bypass',
+  'If a bypass is TRULY necessary, use',
+  'to override (logged)',
+  // Review round 2: false as a global statement (ENF-07 honors the override in its own policy
+  // path), and `off` strips only the toolkit's tagged gates in one gsd-core checkout.
+  'it rescues thrown gate errors only',
+  'turns off every toolkit gate',
+];
+const TRUTH_MARKERS = [
+  'does not lift this deny',
+  'this gate honors it only for a thrown gate error',
+  // The off switch is agent-runnable (README "what the hooks cannot stop"), so a deny names it only
+  // as a human operator's decision, never as a way past the deny.
+  "a human operator's decision, not a way past this deny",
+  'contrib-capability.cjs off --reason',
+];
 const ASCII = /^[\x00-\x7F]*$/;
 
 function assertTruthful(label, reason, tail) {
@@ -57,7 +72,7 @@ function assertTruthful(label, reason, tail) {
 
 const lastParagraph = (s) => s.split('\n\n').pop();
 
-// ── ENF-20 builders: six gates x three builders ─────────────────────────────
+// -- ENF-20 builders: six gates x three builders -----------------------------
 
 const { missingText, shortfallText, liveText, GATES } = reviewArtifact;
 const RA_REL = '.gsd-contrib/review-artifacts/pr42-a1b2c3d/R8-code-review.json';
@@ -87,7 +102,7 @@ for (const g of GATES) {
   });
 }
 
-// ── ENF-19 denialText: every protocol-artifact gate ─────────────────────────
+// -- ENF-19 denialText: every protocol-artifact gate -------------------------
 
 const PA_REL = '.gsd-contrib/protocol-artifacts/x/P1.json';
 for (const g of protocolArtifact.GATES) {
@@ -99,7 +114,7 @@ for (const g of protocolArtifact.GATES) {
   });
 }
 
-// ── ENF-12 githooks-seal `--no-verify` ──────────────────────────────────────
+// -- ENF-12 githooks-seal `--no-verify` --------------------------------------
 
 function bashInput(command) {
   return JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
@@ -130,7 +145,7 @@ test('truthful: ENF-12 --no-verify deny', () => {
   }
 });
 
-// ── ENF-11 issue-dedupe likely duplicate ────────────────────────────────────
+// -- ENF-11 issue-dedupe likely duplicate ------------------------------------
 
 const STUB_SCORER = {
   scoreCandidates: (t, c) => c.map((x) => ({ number: x.number, title: x.title, score: 0.95 })),
@@ -156,7 +171,7 @@ test('truthful: ENF-11 likely-duplicate deny', () => {
   assertTruthful('ENF-11 duplicate', reason, reason.slice(at));
 });
 
-// ── semantics pins (in-process): a policy deny is not lifted, no receipt ────
+// -- semantics pins (in-process): a policy deny is not lifted, no receipt ----
 
 test('semantics: ENF-12 --no-verify stays deny with the override set, no receipt', () => {
   const o = overrideStub(true);
@@ -176,7 +191,7 @@ test('semantics: ENF-11 duplicate stays deny with the override set, no receipt',
   assert.strictEqual(o.calls.receipts, 0);
 });
 
-// ── spawned ENF-20 hook (ported from the 261006-jqh probe-enf20.cjs fixtures) ─
+// -- spawned ENF-20 hook (ported from the 261006-jqh probe-enf20.cjs fixtures) -
 
 const HOOK = path.join(__dirname, 'review-artifact.cjs');
 const HEAD = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
