@@ -28,6 +28,11 @@
  *   - error_kind redaction (paths/tokens/bodies) → dropped, never leaked
  *   - log path resolution (D1) + env override
  *   - rotation at 50 MB, and a best-effort drop when the log dir cannot be created
+ *   - the fsImpl seam ported to openSync/fstatSync/writeSync/closeSync (quick 261006-jox): the
+ *     non-blocking append flags, one whole-line write on the opened fd, fstat refusal on the fd,
+ *     no rename of a non-regular slot, and close in a finally on every path after an open
+ *   - real FIFO, /dev/zero, symlink and directory slots, spawned under a wall-clock bound, and
+ *     rotation read-back: hooks/tool-recorder-fifo.test.cjs
  *   - end-to-end: the spawned hook exits 0, writes nothing to stdout, appends exactly one line
  */
 
@@ -295,75 +300,167 @@ test('GSD_CONTRIB_LOG_DIR overrides the directory', () => {
   assert.strictEqual(resolveLogDir({ GSD_CONTRIB_LOG_DIR: '   ' }), path.join(os.homedir(), LOG_DIRNAME));
 });
 
-// ── D4: rotation + best-effort append ───────────────────────────────────────
+// ── D4: rotation + best-effort append (seam ported to the 261006-jox primitives) ──
+//
+// appendRecord opens the slot with O_WRONLY|O_APPEND|O_CREAT|O_NONBLOCK, fstats the fd, writes the
+// whole line once and closes in a finally. fakeFs records every call so the tests below can assert
+// the exact primitive sequence without touching a real file. It deliberately has NO appendFileSync.
 
-test('appendRecord rotates ONCE past 50 MB, overwriting the previous rotation', () => {
-  const calls = { renamed: null, appended: null };
-  const fsImpl = {
-    mkdirSync: () => {},
-    statSync: () => ({ size: MAX_LOG_BYTES + 1 }),
-    renameSync: (from, to) => {
-      calls.renamed = [from, to];
+/** The open flags appendRecord must use, computed here from fs.constants (not from the module). */
+const JOX_APPEND_FLAGS =
+  fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | (fs.constants.O_NONBLOCK || 0);
+
+/** A recording fake fs. `over` replaces any primitive. */
+function fakeFs(over = {}) {
+  const calls = { mkdir: [], stat: [], rename: [], open: [], fstat: [], write: [], close: [] };
+  const enoent = () => {
+    const e = new Error('ENOENT: no such file');
+    e.code = 'ENOENT';
+    return e;
+  };
+  const impl = {
+    mkdirSync: (p, o) => {
+      calls.mkdir.push([p, o]);
     },
-    appendFileSync: (f, line) => {
-      calls.appended = [f, line];
+    statSync: (p) => {
+      calls.stat.push(p);
+      throw enoent();
+    },
+    renameSync: (from, to) => {
+      calls.rename.push([from, to]);
+    },
+    openSync: (p, flags, mode) => {
+      calls.open.push({ path: p, flags, mode });
+      return 42;
+    },
+    fstatSync: (fd) => {
+      calls.fstat.push(fd);
+      return { isFile: () => true, size: 0 };
+    },
+    writeSync: (fd, data, offset, length) => {
+      const text = Buffer.isBuffer(data) ? data.toString('utf8') : String(data);
+      calls.write.push({ fd, text });
+      return typeof length === 'number' ? length : Buffer.byteLength(text, 'utf8');
+    },
+    closeSync: (fd) => {
+      calls.close.push(fd);
     },
   };
-  const out = appendRecord('{"a":1}\n', { env: { GSD_CONTRIB_LOG_DIR: '/tmp/obs' }, fsImpl });
-  assert.strictEqual(out, path.join('/tmp/obs', LOG_FILENAME));
-  assert.deepStrictEqual(calls.renamed, [
-    path.join('/tmp/obs', LOG_FILENAME),
-    path.join('/tmp/obs', ROTATED_FILENAME),
-  ]);
-  assert.strictEqual(calls.appended[1], '{"a":1}\n');
+  // Wrap overrides so they still record the call.
+  for (const [name, fn] of Object.entries(over)) {
+    const key = { mkdirSync: 'mkdir', statSync: 'stat', renameSync: 'rename', openSync: 'open', fstatSync: 'fstat', writeSync: 'write', closeSync: 'close' }[name];
+    impl[name] = (...args) => {
+      if (key === 'open') calls.open.push({ path: args[0], flags: args[1], mode: args[2] });
+      else if (key === 'write') {
+        const d = args[1];
+        calls.write.push({ fd: args[0], text: Buffer.isBuffer(d) ? d.toString('utf8') : String(d) });
+      } else if (key) calls[key].push(args.length === 1 ? args[0] : args);
+      return fn(...args);
+    };
+  }
+  return { impl, calls };
+}
+
+const OBS_ENV = { GSD_CONTRIB_LOG_DIR: '/tmp/obs' };
+const OBS_SLOT = path.join('/tmp/obs', LOG_FILENAME);
+
+test('appendRecord rotates ONCE past 50 MB, overwriting the previous rotation', () => {
+  const { impl, calls } = fakeFs({ statSync: () => ({ size: MAX_LOG_BYTES + 1, isFile: () => true }) });
+  const out = appendRecord('{"a":1}\n', { env: OBS_ENV, fsImpl: impl });
+  assert.strictEqual(out, OBS_SLOT);
+  assert.deepStrictEqual(calls.rename, [[OBS_SLOT, path.join('/tmp/obs', ROTATED_FILENAME)]]);
+  assert.strictEqual(calls.write.length, 1);
+  assert.strictEqual(calls.write[0].text, '{"a":1}\n');
 });
 
 test('appendRecord does NOT rotate below the threshold, and tolerates an absent log', () => {
-  let renamed = false;
-  const fsImpl = {
-    mkdirSync: () => {},
-    statSync: () => {
-      throw new Error('ENOENT');
-    },
-    renameSync: () => {
-      renamed = true;
-    },
-    appendFileSync: () => {},
-  };
-  appendRecord('{"a":1}\n', { env: { GSD_CONTRIB_LOG_DIR: '/tmp/obs' }, fsImpl });
-  assert.strictEqual(renamed, false, 'an absent log has nothing to rotate');
+  const { impl, calls } = fakeFs();
+  const out = appendRecord('{"a":1}\n', { env: OBS_ENV, fsImpl: impl });
+  assert.strictEqual(calls.rename.length, 0, 'an absent log has nothing to rotate');
+  assert.strictEqual(out, OBS_SLOT);
 });
 
 test('an uncreatable log directory drops the record SILENTLY (best-effort, D4)', () => {
-  const fsImpl = {
+  const { impl, calls } = fakeFs({
     mkdirSync: () => {
       throw new Error('EACCES');
     },
-    statSync: () => ({ size: 0 }),
-    renameSync: () => {},
-    appendFileSync: () => {
-      throw new Error('must not be reached');
-    },
-  };
+  });
   let out;
   assert.doesNotThrow(() => {
-    out = appendRecord('{"a":1}\n', { env: { GSD_CONTRIB_LOG_DIR: '/tmp/obs' }, fsImpl });
+    out = appendRecord('{"a":1}\n', { env: OBS_ENV, fsImpl: impl });
   });
   assert.strictEqual(out, null);
+  assert.strictEqual(calls.open.length, 0, 'openSync is never reached');
 });
 
 test('a failing append drops the record rather than escalating', () => {
-  const fsImpl = {
-    mkdirSync: () => {},
-    statSync: () => ({ size: 0 }),
-    renameSync: () => {},
-    appendFileSync: () => {
-      throw new Error('ENOSPC');
+  const { impl, calls } = fakeFs({
+    writeSync: () => {
+      const e = new Error('ENOSPC: no space left on device');
+      e.code = 'ENOSPC';
+      throw e;
     },
-  };
-  assert.strictEqual(appendRecord('{"a":1}\n', { env: { GSD_CONTRIB_LOG_DIR: '/tmp/obs' }, fsImpl }), null);
-  assert.strictEqual(appendRecord('', { env: { GSD_CONTRIB_LOG_DIR: '/tmp/obs' }, fsImpl }), null);
-  assert.strictEqual(appendRecord(null, { env: { GSD_CONTRIB_LOG_DIR: '/tmp/obs' }, fsImpl }), null);
+  });
+  assert.strictEqual(appendRecord('{"a":1}\n', { env: OBS_ENV, fsImpl: impl }), null);
+  assert.deepStrictEqual(calls.close, [42], 'the fd is closed exactly once after a throwing write');
+  assert.strictEqual(appendRecord('', { env: OBS_ENV, fsImpl: impl }), null);
+  assert.strictEqual(appendRecord(null, { env: OBS_ENV, fsImpl: impl }), null);
+});
+
+test('261006-jox seam: openSync is called once on the live slot with O_WRONLY|O_APPEND|O_CREAT|O_NONBLOCK', () => {
+  const { impl, calls } = fakeFs();
+  appendRecord('{"a":1}\n', { env: OBS_ENV, fsImpl: impl });
+  assert.strictEqual(calls.open.length, 1, 'one open');
+  assert.strictEqual(calls.open[0].path, OBS_SLOT);
+  assert.strictEqual(calls.open[0].flags, JOX_APPEND_FLAGS);
+});
+
+test('261006-jox seam: one writeSync of the whole line on the opened fd, and fstatSync on that fd', () => {
+  const line = '{"a":"été"}\n';
+  const { impl, calls } = fakeFs();
+  assert.strictEqual(appendRecord(line, { env: OBS_ENV, fsImpl: impl }), OBS_SLOT);
+  assert.deepStrictEqual(calls.write, [{ fd: 42, text: line }], 'exactly one write of the whole line');
+  assert.deepStrictEqual(calls.fstat, [42], 'fstat on the fd, not on the path');
+  assert.deepStrictEqual(calls.close, [42]);
+});
+
+test('261006-jox seam: fstatSync reporting a non-regular file refuses the write and closes the fd', () => {
+  const { impl, calls } = fakeFs({ fstatSync: () => ({ isFile: () => false, size: 0 }) });
+  assert.strictEqual(appendRecord('{"a":1}\n', { env: OBS_ENV, fsImpl: impl }), null);
+  assert.strictEqual(calls.write.length, 0, 'nothing is written to a non-regular file');
+  assert.deepStrictEqual(calls.close, [42]);
+});
+
+test('261006-jox seam: a non-regular slot over MAX_LOG_BYTES is never renamed', () => {
+  const { impl, calls } = fakeFs({ statSync: () => ({ size: MAX_LOG_BYTES + 1, isFile: () => false }) });
+  appendRecord('{"a":1}\n', { env: OBS_ENV, fsImpl: impl });
+  assert.strictEqual(calls.rename.length, 0);
+  assert.strictEqual(calls.open.length, 1, 'the append is still attempted (and fstat-checked)');
+});
+
+test('261006-jox seam: openSync throwing ENXIO returns null, never writes and never closes', () => {
+  const { impl, calls } = fakeFs({
+    openSync: () => {
+      const e = new Error('ENXIO: no such device or address');
+      e.code = 'ENXIO';
+      throw e;
+    },
+  });
+  let out;
+  assert.doesNotThrow(() => {
+    out = appendRecord('{"a":1}\n', { env: OBS_ENV, fsImpl: impl });
+  });
+  assert.strictEqual(out, null);
+  assert.strictEqual(calls.write.length, 0);
+  assert.strictEqual(calls.close.length, 0);
+});
+
+test('261006-jox seam: a short write returns null and closes the fd exactly once', () => {
+  const { impl, calls } = fakeFs({ writeSync: (fd, data, off, len) => (typeof len === 'number' ? len - 1 : 0) });
+  assert.strictEqual(appendRecord('{"a":1}\n', { env: OBS_ENV, fsImpl: impl }), null);
+  assert.strictEqual(calls.write.length, 1);
+  assert.deepStrictEqual(calls.close, [42]);
 });
 
 // ── end-to-end: the SPAWNED hook is silent, exits 0, and writes exactly one line ──
