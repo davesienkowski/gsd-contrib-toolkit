@@ -82,9 +82,11 @@ const SCAN_CHUNK_BYTES = 1024 * 1024;
 const MAX_SCAN_BYTES = 64 * 1024 * 1024;
 
 /**
- * Wall-clock budget for one read across both files (10 s). Three budgets fit inside the
- * review-artifact hook's 60 s timeout in settings.snippet.json (asserted in
- * hooks/review-artifact.test.cjs).
+ * Wall-clock budget for one read across both files (10 s). review-artifact.cjs reads the log at
+ * most ONCE per hook call (gate() memoizes the read per session id across verdict segments), so
+ * this is the reader's whole share of the hook's 60 s timeout in settings.snippet.json; the test
+ * in hooks/review-artifact.test.cjs keeps it at no more than a third, leaving the rest for the gh
+ * lookups, which this budget does not bound.
  */
 const READ_BUDGET_MS = 10000;
 

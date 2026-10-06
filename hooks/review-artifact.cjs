@@ -1498,11 +1498,18 @@ function gate(stdinString, deps) {
   if (!hasGovernedSegment(parsed, GOVERNED_ACTIONS)) return allow();
 
   const segs = Array.isArray(parsed.segments) && parsed.segments.length > 0 ? parsed.segments : [parsed];
+  // 38 review MJ-01: every verdict segment of this call shares ONE tool-log read. The session id
+  // is the payload's, the same for the whole chain, so a second read would only repeat the first
+  // and spend another READ_BUDGET_MS. The memo lives in this call only.
+  const segDeps =
+    deps && typeof deps.readToolLog === 'function'
+      ? Object.assign({}, deps, { readToolLog: memoizeBySession(deps.readToolLog) })
+      : deps;
   let firstAsk = null;
   for (const seg of segs) {
     const r = classifyAction({ ok: true, segments: [seg] });
     if (!r || !GOVERNED_ACTIONS.has(r.action)) continue;
-    const decision = gateSegment(seg, r.action, deps, { sessionId });
+    const decision = gateSegment(seg, r.action, segDeps, { sessionId });
     if (decision && decision.permissionDecision === 'ask') {
       if (!firstAsk) firstAsk = decision; // held: a later segment may still deny
     } else if (decision) {
@@ -1511,6 +1518,24 @@ function gate(stdinString, deps) {
   }
 
   return firstAsk || allow();
+}
+
+/**
+ * Wrap a `readToolLog(sessionId)` so each session id is read at most once (38 review MJ-01). A
+ * returned value is cached, whatever its shape (the contract check in verifyMemtraceEvidence
+ * still runs on it); a throw is not cached, and it propagates to runGate's fail-closed path.
+ *
+ * @param {(sessionId:string) => *} read
+ * @returns {(sessionId:string) => *}
+ */
+function memoizeBySession(read) {
+  const memo = new Map();
+  return (sid) => {
+    if (memo.has(sid)) return memo.get(sid);
+    const r = read(sid);
+    memo.set(sid, r);
+    return r;
+  };
 }
 
 /**

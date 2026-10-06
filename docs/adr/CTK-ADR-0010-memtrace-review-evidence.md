@@ -153,9 +153,12 @@ is wrong.
    | An ask held while a later entry or a chained segment denies (R1 treadmill, R13 merge) | the deny wins: deny > thrown > ask > allow | PLANNER ADDITION |
 
    The bounds are tied together by test: `MAX_SCAN_BYTES` (64 MiB) exceeds the recorder's 50 MiB
-   rotation size plus one record, and three read budgets fit inside the 60 s hook timeout in
-   `settings.snippet.json`. The bounds are checked by a test, not by a throw at require time, because a
-   PreToolUse hook that crashes while loading is not a deny.
+   rotation size plus one record, and the log is read at most once per hook call (`gate()` memoizes
+   the read per session id, so a chain of verdict segments shares one read; a counting-reader test
+   proves it), so one 10 s read budget is the reader's whole share of the 60 s hook timeout in
+   `settings.snippet.json`, kept at no more than a third of it. The rest of the timeout is for the
+   `gh` lookups, which the read budget does not bound. The bounds are checked by a test, not by a
+   throw at require time, because a PreToolUse hook that crashes while loading is not a deny.
 
 ### Trek-e provenance and divergences
 
