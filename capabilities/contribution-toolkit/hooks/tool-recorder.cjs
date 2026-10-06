@@ -65,6 +65,8 @@
  *
  * Records are kept WELL under 4096 bytes so POSIX guarantees the O_APPEND write is atomic against
  * concurrent hook processes, and the log rotates once at 50 MB rather than growing unbounded.
+ * The slot is opened non-blocking and fstat-checked, so a FIFO, device or directory planted at it
+ * costs a dropped record, not a hung gate (quick 261006-jox).
  *
  * ── KILL SWITCH (D6) ────────────────────────────────────────────────────────────────────
  * `GSD_CONTRIB_RECORD=off` disables recording. This is NOT `GSD_CONTRIB_OVERRIDE` — that valve
@@ -95,6 +97,15 @@ const MAX_LOG_BYTES = 50 * 1024 * 1024;
  * hook processes cannot interleave a line (D4).
  */
 const MAX_RECORD_BYTES = 2048;
+
+/**
+ * Open flags for the append (quick 261006-jox): write-only, append, create, non-blocking.
+ * O_NONBLOCK makes the open of a FIFO with no reader fail at once with ENXIO instead of waiting
+ * for a reader; on a regular file it changes nothing. Where the platform has no O_NONBLOCK (win32
+ * has no FIFOs either) the flag is simply absent.
+ */
+const APPEND_OPEN_FLAGS =
+  fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | (fs.constants.O_NONBLOCK || 0);
 
 /**
  * Per-field character caps. Bounded BEFORE serialization so no single field can push a record past
@@ -359,10 +370,16 @@ function resolveLogDir(env = process.env) {
  * cannot be created, or the append fails, the record is DROPPED SILENTLY. There is no failure mode
  * here worth surfacing to a user mid-turn.
  *
+ * A slot that is not a regular file (a FIFO with or without a reader, a device, a directory, or a
+ * symlink to one) is skipped: it is opened with APPEND_OPEN_FLAGS so the open never blocks, the fd
+ * is fstat-checked before any write, and it is never rotated (quick 261006-jox). The line goes out
+ * in a single write on the O_APPEND fd, and the fd is closed in a finally.
+ *
  * @param {string} line
  * @param {Object} [deps]
  * @param {Object} [deps.env]
- * @param {Object} [deps.fsImpl] injectable fs seam (mkdirSync/statSync/renameSync/appendFileSync).
+ * @param {Object} [deps.fsImpl] injectable fs seam (mkdirSync/statSync/renameSync/openSync/
+ *   fstatSync/writeSync/closeSync).
  * @returns {string|null} the absolute path written, or null when nothing was written.
  */
 function appendRecord(line, deps = {}) {
@@ -380,21 +397,44 @@ function appendRecord(line, deps = {}) {
 
   // Rotate ONCE, overwriting any previous rotation, so the on-disk footprint is bounded at two
   // files. An unreadable/absent log is simply "not yet big enough".
+  // Only a regular file is ever rotated: a FIFO, device or directory (or a symlink to one) at the
+  // slot is never renamed into the rotated slot.
   try {
     const st = impl.statSync(file);
-    if (st && st.size > MAX_LOG_BYTES) {
+    if (st && typeof st.isFile === 'function' && st.isFile() && st.size > MAX_LOG_BYTES) {
       impl.renameSync(file, path.join(dir, ROTATED_FILENAME));
     }
   } catch (_) {
     /* no existing log, or an unreadable stat — nothing to rotate */
   }
 
+  // Open non-blocking. A FIFO with no reader (or a symlink to one) fails here with ENXIO, a
+  // directory with EISDIR; any failure drops the record. A failed open has no fd to close.
+  let fd;
   try {
-    impl.appendFileSync(file, line, { encoding: 'utf8' });
+    fd = impl.openSync(file, APPEND_OPEN_FLAGS, 0o644);
   } catch (_) {
     return null;
   }
-  return file;
+
+  // Refuse anything the fd does not show to be a regular file (a FIFO with a reader, /dev/zero, a
+  // socket, or a slot swapped after the rotation stat), then write the whole line ONCE so the
+  // O_APPEND write stays atomic. The fd is closed exactly once, on every path.
+  try {
+    const st = impl.fstatSync(fd);
+    if (!st || typeof st.isFile !== 'function' || !st.isFile()) return null;
+    const buf = Buffer.from(line, 'utf8');
+    const written = impl.writeSync(fd, buf, 0, buf.length);
+    return written === buf.length ? file : null;
+  } catch (_) {
+    return null;
+  } finally {
+    try {
+      impl.closeSync(fd);
+    } catch (_) {
+      /* nothing left to do with a fd that will not close */
+    }
+  }
 }
 
 /**
@@ -441,6 +481,7 @@ module.exports = {
   GOVERNED_ACTIONS,
   LIMITS,
   MAX_RECORD_BYTES,
+  APPEND_OPEN_FLAGS,
   MAX_LOG_BYTES,
   LOG_FILENAME,
   ROTATED_FILENAME,
