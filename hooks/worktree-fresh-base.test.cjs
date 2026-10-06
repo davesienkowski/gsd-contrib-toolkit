@@ -70,6 +70,7 @@ function scenario(over = {}) {
     casUpdateRef: 0,
     casArgs: [],
     isSymbolicRef: 0,
+    nextInProgress: 0,
     currentBranch: 0,
     readBaseRef: 0,
     readBaseRefArgs: [],
@@ -112,6 +113,11 @@ function scenario(over = {}) {
       calls.worktreesHolding += 1;
       return over.held || [];
     },
+    // 37-REVIEW BL-02: worktrees mid-rebase / mid-bisect of next (`over.inProgress`, default none).
+    nextInProgress: () => {
+      calls.nextInProgress += 1;
+      return over.inProgress || [];
+    },
     // 37-REVIEW BL-01: is refs/heads/next a symbolic ref (`over.symbolic`, default false)?
     isSymbolicRef: () => {
       calls.isSymbolicRef += 1;
@@ -135,7 +141,7 @@ function scenario(over = {}) {
     },
   };
   const rest = Object.assign({}, over);
-  for (const k of ['refs', 'ancestor', 'held', 'casOk', 'branch', 'baseRef', 'symbolic']) delete rest[k];
+  for (const k of ['refs', 'ancestor', 'held', 'casOk', 'branch', 'baseRef', 'symbolic', 'inProgress']) delete rest[k];
   return { deps: Object.assign(base, rest), calls };
 }
 
@@ -1336,7 +1342,7 @@ test('ENF-25 bound: FETCH_BELT_MS + MAX_GIT_CALLS_PER_ROOT * GIT_TIMEOUT_MS <= G
 /** Every non-fetch git process the default seams would spawn; the fetch seam's `remote get-url` counts 1. */
 function gitProcesses(calls) {
   return calls.currentBranch + calls.revParse + calls.isAncestor + calls.worktreesHolding + calls.casUpdateRef + calls.fetchOrigin +
-    calls.isSymbolicRef;
+    calls.isSymbolicRef + calls.nextInProgress;
 }
 
 const WORST = [
@@ -2221,6 +2227,155 @@ test('ENF-25 BL-01 e2e (fx1): next is a symref to the CHECKED-OUT work -> deny; 
     assert.strictEqual(refOf(fx.A, 'refs/heads/work'), work, 'the checked-out branch must not move');
     assert.strictEqual(porcelain(fx.A), '', 'the checked-out tree must stay clean');
     assert.strictEqual(git(fx.A, 'symbolic-ref', 'refs/heads/next').trim(), 'refs/heads/work');
+  } finally {
+    fx.dispose();
+  }
+});
+
+// ── BL-02: a next being rebased or bisected in ANY worktree is held (git's own branch -f rule) ──
+
+test('ENF-25 BL-02: next behind and mid-rebase in /w/W -> POLICY deny naming /w/W and rebase, ZERO CAS, zero receipts', () => {
+  const o = yesOverride();
+  const { deps, calls } = scenario({ inProgress: [{ path: '/w/W', op: 'rebase' }], overrideImpl: o.overrideImpl });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  const why = d.permissionDecisionReason;
+  assert.match(why, /ENF-25/);
+  assert.ok(why.includes('/w/W'), why);
+  assert.match(why, /rebas/);
+  assert.match(why, /rebase --continue|rebase --abort/);
+  assert.ok(why.includes('git worktree add -b <branch> <path> origin/next'), why);
+  assert.ok(!DESTRUCTIVE.test(why), why);
+  assert.strictEqual(calls.casUpdateRef, 0);
+  assert.strictEqual(o.receipts.length, 0, 'a returned policy deny writes no receipt');
+});
+
+test('ENF-25 BL-02: next behind and mid-bisect -> deny naming bisect reset', () => {
+  const { deps, calls } = scenario({ inProgress: [{ path: '/w/B', op: 'bisect' }] });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /bisect reset/);
+  assert.strictEqual(calls.casUpdateRef, 0);
+});
+
+test('ENF-25 BL-02: the in-progress check runs only on the move path (not for equal, ahead, held or remote)', () => {
+  for (const over of [
+    { refs: { 'refs/heads/next': SHA_REMOTE } },
+    { ancestor: AHEAD },
+    { held: ['/w/main'] },
+  ]) {
+    const { deps, calls } = scenario(over);
+    runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps);
+    assert.strictEqual(calls.nextInProgress, 0, JSON.stringify(over));
+  }
+  const { deps, calls } = scenario();
+  runWorktreeFreshBaseGate(input('git worktree add -b f p origin/next'), deps);
+  assert.strictEqual(calls.nextInProgress, 0);
+});
+
+/**
+ * Fixture A on work with FOUR commits on next (origin advanced three times and next fast-forwarded
+ * by setup, so a bisect has a midpoint to detach at) and a linked worktree W on next; origin is then
+ * advanced again by the caller so local next is a strict ancestor of the remote tip.
+ */
+function twoCommitFixtureWithW() {
+  const fx = makeFixture();
+  fx.advanceOrigin();
+  fx.advanceOrigin();
+  fx.advanceOrigin();
+  git(fx.A, 'fetch', '-q', 'origin', 'next');
+  git(fx.A, 'update-ref', 'refs/heads/next', 'refs/remotes/origin/next');
+  const W = path.join(fx.root, 'W');
+  git(fx.A, 'worktree', 'add', '-q', W, 'next');
+  return { fx, W, next: refOf(fx.A, 'refs/heads/next') };
+}
+
+function gitIn(dir, ...args) {
+  return execFileSync('git', ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args], {
+    cwd: dir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: Object.assign({}, process.env, { GIT_EDITOR: 'true' }),
+  });
+}
+
+/** Stop an interactive rebase of next in W at a `break` before its first pick (HEAD detached). */
+function startRebaseBreak(W) {
+  try {
+    gitIn(W, '-c', "sequence.editor=sed -i '1i break'", 'rebase', '-q', '-i', 'HEAD~1');
+  } catch (err) {
+    // `break` stops the rebase with exit 0 on most gits; tolerate a non-zero stop.
+  }
+  assert.ok(fs.existsSync(path.join(git(W, 'rev-parse', '--absolute-git-dir').trim(), 'rebase-merge', 'head-name')),
+    'setup: W is mid-rebase');
+}
+
+test('ENF-25 BL-02 seam: default nextInProgress finds a linked worktree mid-rebase of next (porcelain shows it detached)', () => {
+  const { fx, W } = twoCommitFixtureWithW();
+  try {
+    startRebaseBreak(W);
+    const seams = defaultSeams();
+    assert.deepStrictEqual(seams.worktreesHolding(fx.A, 'refs/heads/next'), [], 'precondition: porcelain misses it');
+    assert.deepStrictEqual(seams.nextInProgress(fx.A, 'refs/heads/next'), [{ path: fs.realpathSync(W), op: 'rebase' }]);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 BL-02 seam: default nextInProgress finds a linked worktree bisecting from next', () => {
+  const { fx, W } = twoCommitFixtureWithW();
+  try {
+    gitIn(W, 'bisect', 'start', 'HEAD', 'HEAD~3');
+    assert.deepStrictEqual(defaultSeams().nextInProgress(fx.A, 'refs/heads/next'), [{ path: fs.realpathSync(W), op: 'bisect' }]);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 BL-02 seam: rebase-apply/head-name and rebase-merge/update-refs in the MAIN git dir count; nothing -> []', () => {
+  const fx = makeFixture();
+  try {
+    const seams = defaultSeams();
+    assert.deepStrictEqual(seams.nextInProgress(fx.A, 'refs/heads/next'), []);
+    const gd = path.join(fx.A, '.git');
+    fs.mkdirSync(path.join(gd, 'rebase-apply'));
+    fs.writeFileSync(path.join(gd, 'rebase-apply', 'head-name'), 'refs/heads/next\n');
+    assert.deepStrictEqual(seams.nextInProgress(fx.A, 'refs/heads/next'), [{ path: fs.realpathSync(fx.A), op: 'rebase' }]);
+    fs.rmSync(path.join(gd, 'rebase-apply'), { recursive: true });
+    fs.mkdirSync(path.join(gd, 'rebase-merge'));
+    fs.writeFileSync(path.join(gd, 'rebase-merge', 'head-name'), 'refs/heads/work\n');
+    fs.writeFileSync(path.join(gd, 'rebase-merge', 'update-refs'), 'refs/heads/next\n' + 'a'.repeat(40) + '\n' + 'b'.repeat(40) + '\n');
+    assert.deepStrictEqual(seams.nextInProgress(fx.A, 'refs/heads/next'), [{ path: fs.realpathSync(fx.A), op: 'rebase' }]);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 BL-02 e2e (fx2): next mid-rebase in linked worktree W, origin advanced -> deny naming W; next unchanged; rebase --continue lands', () => {
+  const { fx, W, next } = twoCommitFixtureWithW();
+  try {
+    startRebaseBreak(W);
+    fx.advanceOrigin();
+    const r = spawnIn(fx.A, 'git worktree add -b f ' + path.join(fx.root, 'x') + ' next');
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.ok(r.reason.includes(fs.realpathSync(W)), r.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), next, 'next must not move under the rebase');
+    gitIn(W, 'rebase', '--continue');
+    assert.strictEqual(git(W, 'symbolic-ref', 'HEAD').trim(), 'refs/heads/next', 'the rebase lands back on next');
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 BL-02 e2e (fx2c): next mid-bisect in W, origin advanced -> deny; next unchanged', () => {
+  const { fx, W, next } = twoCommitFixtureWithW();
+  try {
+    gitIn(W, 'bisect', 'start', 'HEAD', 'HEAD~3');
+    fx.advanceOrigin();
+    const r = spawnIn(fx.A, 'git worktree add -b f ' + path.join(fx.root, 'x') + ' next');
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.match(r.reason, /bisect/);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), next);
   } finally {
     fx.dispose();
   }
