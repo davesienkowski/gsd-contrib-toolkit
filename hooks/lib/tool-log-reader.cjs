@@ -36,6 +36,13 @@
  * twice is harmless. An absent file is skipped; both absent is the problem
  * `log absent: tool-log.jsonl, tool-log.1.jsonl`.
  *
+ * ── FILE TYPE (38 review BL-01) ─────────────────────────────────────────────────────────
+ * Only a REGULAR file is read. Each slot is lstat'ed first (a symlink is followed to see its
+ * target); a FIFO, socket, device or directory, or a symlink to one, is the problem
+ * `unreadable <basename>: not a regular file`, which makes the read incomplete (so a shortfall
+ * asks). The open is O_RDONLY|O_NONBLOCK and the fd is fstat'ed again before any read, so a slot
+ * swapped for a FIFO between the two checks cannot block the hook either.
+ *
  * ── BOUNDS (T-38-06) ────────────────────────────────────────────────────────────────────
  *   - Each file is read in SCAN_CHUNK_BYTES chunks up to a size snapshot taken once at open, so
  *     concurrent appends after the snapshot are not chased.
@@ -86,6 +93,13 @@ const READ_BUDGET_MS = 10000;
 // review-artifact.cjs before runGate, and a crashed PreToolUse hook is not a deny.
 
 const NEWLINE = 0x0a;
+
+/**
+ * Open flags for a log file: read-only and non-blocking (BL-01). O_NONBLOCK makes an open of a
+ * FIFO return at once instead of waiting for a writer; on a regular file it changes nothing.
+ * Where the platform has no O_NONBLOCK (win32 has no FIFOs either) the flag is simply absent.
+ */
+const OPEN_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0);
 
 /**
  * The byte needle a recorder row for `id` contains, exactly as JSON.stringify emits it.
@@ -178,9 +192,30 @@ function codeOf(err) {
  */
 function scanFile(file, s) {
   const base = path.basename(file);
+  const notRegular = 'unreadable ' + base + ': not a regular file';
+
+  // (1) Type check BEFORE any open (BL-01). A FIFO, socket, device or directory, or a symlink to
+  // one, is refused here: openSync on a FIFO blocks until a writer appears, outside every size and
+  // time bound. A symlink is followed only to see what it points at; one to a regular file is
+  // read (that is the accepted forgery class, not a refusal).
+  try {
+    let st = s.impl.lstatSync(file);
+    if (st.isSymbolicLink()) st = s.impl.statSync(file);
+    if (!st.isFile()) {
+      s.problems.push(notRegular);
+      return 'problem';
+    }
+  } catch (err) {
+    if (codeOf(err) === 'ENOENT') return 'absent'; // includes a dangling symlink
+    s.problems.push('unreadable ' + base + ': ' + codeOf(err));
+    return 'problem';
+  }
+
+  // (2) Open read-only and NON-BLOCKING, so a slot swapped for a FIFO after the check above still
+  // cannot block, then (3) confirm on the fd itself that it is a regular file.
   let fd;
   try {
-    fd = s.impl.openSync(file, 'r');
+    fd = s.impl.openSync(file, OPEN_FLAGS);
   } catch (err) {
     if (codeOf(err) === 'ENOENT') return 'absent';
     s.problems.push('unreadable ' + base + ': ' + codeOf(err));
@@ -188,7 +223,12 @@ function scanFile(file, s) {
   }
 
   try {
-    const size = s.impl.fstatSync(fd).size; // snapshot once; later appends are not chased
+    const st = s.impl.fstatSync(fd);
+    if (!st || typeof st.isFile !== 'function' || !st.isFile()) {
+      s.problems.push(notRegular);
+      return 'problem';
+    }
+    const size = st.size; // snapshot once; later appends are not chased
     if (!(typeof size === 'number' && size >= 0)) {
       s.problems.push('unreadable ' + base + ': error');
       return 'problem';
@@ -243,7 +283,7 @@ function scanFile(file, s) {
  * @param {Object} [opts]
  * @param {Object} [opts.env] environment (default process.env): the recorder kill switch and
  *   GSD_CONTRIB_LOG_DIR are read from it, through tool-recorder's own helpers
- * @param {Object} [opts.fsImpl] fs seam (openSync/fstatSync/readSync/closeSync)
+ * @param {Object} [opts.fsImpl] fs seam (lstatSync/statSync/openSync/fstatSync/readSync/closeSync)
  * @param {number} [opts.chunkBytes] scan chunk size (default SCAN_CHUNK_BYTES)
  * @param {number} [opts.maxScanBytes] per-file cap (default MAX_SCAN_BYTES)
  * @param {() => number} [opts.now] clock in ms (default Date.now)
