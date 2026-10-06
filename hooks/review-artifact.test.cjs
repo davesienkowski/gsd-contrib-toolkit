@@ -1831,3 +1831,94 @@ test('38 fix BL-01 e2e (spawned hook): a FIFO at tool-log.1.jsonl → the real e
     for (const d of [root, logDir, binDir]) fs.rmSync(d, { recursive: true, force: true });
   }
 });
+
+// ── 38 review fix MJ-02: a review verdict the gate cannot read is UNRESOLVED → ask ──────────
+//
+// A REST review whose event comes from a file, stdin, an unparseable inline JSON body or a shell
+// expansion cannot be classified statically. Before this fix such a post was neither verdict, so
+// R8a and R10 were skipped and it was allowed. It is now an UNRESOLVED verdict: the segment asks,
+// naming the form, while every deny (R8, R1, a chained merge) still wins. A JSON body is decoded
+// with JSON.parse before matching, so a Unicode-escaped `APPROVE` is an approve.
+
+const REVIEWS = 'repos/open-gsd/gsd-core/pulls/42/reviews';
+const CURL_REVIEWS = 'curl -X POST https://api.github.com/' + REVIEWS;
+
+/** An UNRESOLVED-verdict ask whose reason names `form`. */
+function assertUnresolvedAsk(d, form) {
+  assert.strictEqual(d.permissionDecision, 'ask', d.permissionDecisionReason);
+  const why = d.permissionDecisionReason;
+  assert.match(why, /^ENF-20 /);
+  assert.match(why, /UNRESOLVED verdict/);
+  assert.match(why, form);
+  assert.match(why, /does not answer this prompt/);
+  return why;
+}
+
+for (const [label, cmd, form] of [
+  ['gh api -F event=@file', 'gh api ' + REVIEWS + ' -F event=@ev.txt', /event=@/],
+  ['gh api -F event=@- (stdin)', 'echo APPROVE | gh api ' + REVIEWS + ' -F event=@-', /event=@/],
+  ['gh api -f event=@…', 'gh api ' + REVIEWS + ' -f event=@x', /event=@/],
+  ['gh api -X POST --input file', 'gh api -X POST ' + REVIEWS + ' --input body.json', /`--input`/],
+  ['gh api -X POST --input - (stdin)', 'gh api -X POST ' + REVIEWS + ' --input -', /`--input`/],
+  ['curl -d @file', CURL_REVIEWS + ' -d @body.json', /`-d @…`/],
+  ['curl -d@file (attached)', CURL_REVIEWS + ' -d@body.json', /`-d @…`/],
+  ['curl --data @file', CURL_REVIEWS + ' --data @body.json', /`--data @…`/],
+  ['curl --data=@file', CURL_REVIEWS + ' --data=@body.json', /`--data @…`/],
+  ['curl --data-binary @file', CURL_REVIEWS + ' --data-binary @body.json', /`--data-binary @…`/],
+  ['curl -d @- (stdin)', 'echo x | ' + CURL_REVIEWS + ' -d @-', /`-d @…`/],
+  ['curl inline JSON that does not parse', CURL_REVIEWS + ' -d \'{"event":\'', /inline JSON body that does not parse/],
+  ['curl body from a shell variable', CURL_REVIEWS + ' -d "$BODY"', /shell expansion/],
+]) {
+  test('38 fix MJ-02 unresolved: ' + label + ' → ask naming the form (was allow)', () => {
+    const dp = deps();
+    assertUnresolvedAsk(runReviewArtifactGate(input(cmd), dp), form);
+  });
+}
+
+test('38 fix MJ-02: a JSON body whose event is a Unicode escape of APPROVE is an approve → R10 deny when R10 is absent', () => {
+  const cmd = CURL_REVIEWS + ' -d \'{"event":"APPR\\u004fVE","body":"b"}\'';
+  assert.strictEqual(isApproveEvent(seg0(cmd)), true);
+  const d = runReviewArtifactGate(input(cmd), deps({ files: absent(R10) }));
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-20 R10/);
+});
+
+test('38 fix MJ-02: a JSON body whose event is a Unicode escape of APPROVE, only Bash rows → R8a deny', () => {
+  const cmd = CURL_REVIEWS + ' -d \'{"event":"\\u0041PPROVE"}\'';
+  const d = runReviewArtifactGate(input(cmd), depsWithLog(toolLog(ONLY_BASH.slice())));
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /R8a-memtrace/);
+});
+
+test('38 fix MJ-02: a JSON body whose event is a Unicode escape of REQUEST_CHANGES is a request-changes', () => {
+  assert.strictEqual(requestChanges(CURL_REVIEWS + ' -d \'{"event":"REQUEST\\u005fCHANGES"}\''), true);
+});
+
+for (const [label, cmd] of [
+  ['gh api -f event=COMMENT', 'gh api -X POST ' + REVIEWS + ' -f event=COMMENT -f body=x'],
+  ['curl JSON event COMMENT', CURL_REVIEWS + ' -d \'{"event":"COMMENT","body":"b"}\''],
+  ['curl JSON with no event (a pending review)', CURL_REVIEWS + ' -d \'{"body":"b"}\''],
+  ['gh api -f body=x (no event)', 'gh api -X POST ' + REVIEWS + ' -f body=x'],
+]) {
+  test('38 fix MJ-02 resolved non-verdict: ' + label + ' → allow; the log is never read', () => {
+    const dp = deps();
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+    assert.deepStrictEqual(dp._calls.readToolLog, []);
+  });
+}
+
+test('38 fix MJ-02 precedence: an unresolved verdict with R8-code-review.json absent → DENY R8-code (deny beats the ask)', () => {
+  const d = runReviewArtifactGate(input('gh api ' + REVIEWS + ' -F event=@ev.txt'), deps({ files: absent(R8_CODE) }));
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-20 R8-code/);
+});
+
+test('38 fix MJ-02 precedence: an unresolved verdict chained before a merge with no merge record → DENY R13', () => {
+  const d = runReviewArtifactGate(
+    input('gh api ' + REVIEWS + ' -F event=@ev.txt && gh pr merge 42 --squash'),
+    deps({ files: absent(R13) })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-20 R13/);
+});
