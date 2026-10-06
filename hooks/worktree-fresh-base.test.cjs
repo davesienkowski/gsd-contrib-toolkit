@@ -69,6 +69,8 @@ function scenario(over = {}) {
     casUpdateRef: 0,
     casArgs: [],
     currentBranch: 0,
+    readBaseRef: 0,
+    readBaseRefArgs: [],
     order: [],
   };
   const refs = Object.assign(
@@ -113,13 +115,20 @@ function scenario(over = {}) {
       calls.casArgs.push(args);
       return over.casOk !== false;
     },
+    // 37-05: the effective worktree.baseRef for an EnterWorktree cut (`over.baseRef`, default fresh).
+    readBaseRef: (...args) => {
+      calls.readBaseRef += 1;
+      calls.readBaseRefArgs.push(args);
+      calls.order.push('readBaseRef');
+      return Object.prototype.hasOwnProperty.call(over, 'baseRef') ? over.baseRef : 'fresh';
+    },
     overrideImpl: {
       checkOverride: () => ({ override: false }),
       writeReceipt: () => {},
     },
   };
   const rest = Object.assign({}, over);
-  for (const k of ['refs', 'ancestor', 'held', 'casOk', 'branch']) delete rest[k];
+  for (const k of ['refs', 'ancestor', 'held', 'casOk', 'branch', 'baseRef']) delete rest[k];
   return { deps: Object.assign(base, rest), calls };
 }
 
@@ -1659,4 +1668,326 @@ test('ENF-25 WTREE-04 e2e: no coreutils `timeout` on PATH -> DENY (the fetch can
     fx.dispose();
     fs.rmSync(bin, { recursive: true, force: true });
   }
+});
+
+// ───────────────────────── 37-05 WTREE-01: the worktree.baseRef cascade ─────────────────────────
+//
+// Addendum 4: mirror gsd-core's resolveEffectiveBaseRef precedence — <root>/.claude/settings.local.json,
+// then <root>/.claude/settings.json, then <homedir>/.claude/settings.json (skipped when it is the
+// same file as layer 2). A layer counts only when `worktree` is a non-array object with a string
+// `baseRef`; the effective value is `head` only for the exact string 'head', else `fresh`.
+
+const BR_ROOT = path.join(path.sep, 'r');
+const BR_HOME = path.join(path.sep, 'h');
+const L1 = path.join(BR_ROOT, '.claude', 'settings.local.json');
+const L2 = path.join(BR_ROOT, '.claude', 'settings.json');
+const L3 = path.join(BR_HOME, '.claude', 'settings.json');
+const HEAD_JSON = '{"worktree":{"baseRef":"head"}}';
+const FRESH_JSON = '{"worktree":{"baseRef":"fresh"}}';
+
+/** An injected settings reader over a path -> text table, recording every path it is asked for. */
+function tableReader(table) {
+  const asked = [];
+  const read = (p) => {
+    asked.push(p);
+    return Object.prototype.hasOwnProperty.call(table, p) ? table[p] : null;
+  };
+  return { read, asked };
+}
+
+const BASEREF_TABLE = [
+  ['only layer 1 (settings.local.json) says head -> head', { [L1]: HEAD_JSON }, 'head'],
+  ['only layer 2 (project settings.json) says head -> head', { [L2]: HEAD_JSON }, 'head'],
+  ['only layer 3 (user settings.json) says head -> head', { [L3]: HEAD_JSON }, 'head'],
+  ['layer 1 fresh beats layer 3 head -> fresh', { [L1]: FRESH_JSON, [L3]: HEAD_JSON }, 'fresh'],
+  ['layer 2 fresh beats layer 3 head -> fresh', { [L2]: FRESH_JSON, [L3]: HEAD_JSON }, 'fresh'],
+  ['layer 1 malformed JSON contributes nothing; layer 2 head -> head', { [L1]: '{bad', [L2]: HEAD_JSON }, 'head'],
+  ['layer 1 `worktree` is an array (ignored); layer 3 head -> head', { [L1]: '{"worktree":["head"]}', [L3]: HEAD_JSON }, 'head'],
+  ['layer 1 baseRef is a number (falls through); layer 3 head -> head', { [L1]: '{"worktree":{"baseRef":1}}', [L3]: HEAD_JSON }, 'head'],
+  ['layer 1 baseRef is a number and nothing else -> fresh', { [L1]: '{"worktree":{"baseRef":1}}' }, 'fresh'],
+  ['layer 1 `worktree` null / without baseRef falls through; layer 2 head -> head', { [L1]: '{"worktree":null}', [L2]: '{"worktree":{}}', [L3]: HEAD_JSON }, 'head'],
+  ['a top-level JSON array or `null` contributes nothing -> fresh', { [L1]: '["head"]', [L2]: 'null' }, 'fresh'],
+  ['all three layers absent -> fresh (the default)', {}, 'fresh'],
+  ['`HEAD` (uppercase) is not head -> fresh', { [L1]: '{"worktree":{"baseRef":"HEAD"}}' }, 'fresh'],
+  ['an unknown string (`bogus`) wins the layer but is not head -> fresh', { [L1]: '{"worktree":{"baseRef":"bogus"}}', [L3]: HEAD_JSON }, 'fresh'],
+];
+
+for (const [name, table, want] of BASEREF_TABLE) {
+  test('ENF-25 baseRef: ' + name, () => {
+    const readBaseRef = exp('readBaseRef');
+    const { read } = tableReader(table);
+    assert.strictEqual(readBaseRef(BR_ROOT, BR_HOME, read), want);
+  });
+}
+
+test('ENF-25 baseRef: the reader is asked for exactly the three layers, in order, and nothing else', () => {
+  const readBaseRef = exp('readBaseRef');
+  const { read, asked } = tableReader({});
+  assert.strictEqual(readBaseRef(BR_ROOT, BR_HOME, read), 'fresh');
+  assert.deepStrictEqual(asked, [L1, L2, L3]);
+});
+
+test('ENF-25 baseRef: the first layer that answers stops the cascade (layer 1 head -> layers 2 and 3 not read)', () => {
+  const readBaseRef = exp('readBaseRef');
+  const { read, asked } = tableReader({ [L1]: HEAD_JSON });
+  assert.strictEqual(readBaseRef(BR_ROOT, BR_HOME, read), 'head');
+  assert.deepStrictEqual(asked, [L1]);
+});
+
+test('ENF-25 baseRef: homedir equal to root -> layer 3 (the same file as layer 2) is not read', () => {
+  const readBaseRef = exp('readBaseRef');
+  const { read, asked } = tableReader({});
+  assert.strictEqual(readBaseRef(BR_ROOT, BR_ROOT + path.sep, read), 'fresh');
+  assert.deepStrictEqual(asked, [L1, L2], 'two reads, not three');
+});
+
+test('ENF-25 baseRef: MAX_SETTINGS_BYTES is 1 MiB', () => {
+  assert.strictEqual(exp('MAX_SETTINGS_BYTES'), 1048576);
+});
+
+/** A temp project root + temp homedir, each with a `.claude` dir; the caller writes the layers. */
+function settingsDirs() {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'wtfb-set-'));
+  const root = path.join(base, 'root');
+  const home = path.join(base, 'home');
+  fs.mkdirSync(path.join(root, '.claude'), { recursive: true });
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+  return { root, home, dispose: () => fs.rmSync(base, { recursive: true, force: true }) };
+}
+
+test('ENF-25 baseRef: default reader, a small regular settings.local.json saying head -> head (positive control)', () => {
+  const readBaseRef = exp('readBaseRef');
+  const d = settingsDirs();
+  try {
+    fs.writeFileSync(path.join(d.root, '.claude', 'settings.local.json'), HEAD_JSON);
+    assert.strictEqual(readBaseRef(d.root, d.home), 'head');
+  } finally {
+    d.dispose();
+  }
+});
+
+test('ENF-25 baseRef: default reader, a regular file over MAX_SETTINGS_BYTES is ignored (layer 3 head is not reached past it -> it falls through)', () => {
+  const readBaseRef = exp('readBaseRef');
+  const max = exp('MAX_SETTINGS_BYTES');
+  const d = settingsDirs();
+  try {
+    // Valid JSON saying head, padded past the cap: ignored, so the cascade falls through to layer 2 fresh.
+    fs.writeFileSync(path.join(d.root, '.claude', 'settings.local.json'), HEAD_JSON + ' '.repeat(max));
+    fs.writeFileSync(path.join(d.root, '.claude', 'settings.json'), FRESH_JSON);
+    fs.writeFileSync(path.join(d.home, '.claude', 'settings.json'), HEAD_JSON);
+    assert.strictEqual(readBaseRef(d.root, d.home), 'fresh');
+    // And alone (no other layer) it yields the default.
+    fs.rmSync(path.join(d.root, '.claude', 'settings.json'));
+    fs.rmSync(path.join(d.home, '.claude', 'settings.json'));
+    assert.strictEqual(readBaseRef(d.root, d.home), 'fresh');
+  } finally {
+    d.dispose();
+  }
+});
+
+test('ENF-25 baseRef: default reader, a directory at the settings path is ignored (falls through to layer 2 head)', () => {
+  const readBaseRef = exp('readBaseRef');
+  const d = settingsDirs();
+  try {
+    fs.mkdirSync(path.join(d.root, '.claude', 'settings.local.json'));
+    fs.writeFileSync(path.join(d.root, '.claude', 'settings.json'), HEAD_JSON);
+    assert.strictEqual(readBaseRef(d.root, d.home), 'head');
+  } finally {
+    d.dispose();
+  }
+});
+
+test('ENF-25 baseRef: default reader, missing files are ignored (only layer 3 present says head -> head; none -> fresh)', () => {
+  const readBaseRef = exp('readBaseRef');
+  const d = settingsDirs();
+  try {
+    assert.strictEqual(readBaseRef(d.root, d.home), 'fresh');
+    fs.writeFileSync(path.join(d.home, '.claude', 'settings.json'), HEAD_JSON);
+    assert.strictEqual(readBaseRef(d.root, d.home), 'head');
+  } finally {
+    d.dispose();
+  }
+});
+
+test('ENF-25 baseRef: default reader never writes: the temp settings dirs are byte-identical after a read', () => {
+  const readBaseRef = exp('readBaseRef');
+  const d = settingsDirs();
+  try {
+    fs.writeFileSync(path.join(d.root, '.claude', 'settings.local.json'), '{bad');
+    const before = [d.root, d.home].map((x) => fs.readdirSync(path.join(x, '.claude')).join(','));
+    readBaseRef(d.root, d.home);
+    const after = [d.root, d.home].map((x) => fs.readdirSync(path.join(x, '.claude')).join(','));
+    assert.deepStrictEqual(after, before);
+    assert.strictEqual(fs.readFileSync(path.join(d.root, '.claude', 'settings.local.json'), 'utf8'), '{bad');
+  } finally {
+    d.dispose();
+  }
+});
+
+// ───────────────────────── 37-05 WTREE-01: the EnterWorktree surface (unit) ─────────────────────────
+//
+// `path` (non-empty string) enters an existing worktree: no cut, zero work. Every other shape is a
+// cut on a new branch (spec-less probe: unknown / empty shapes are treated as a cut, the conservative
+// reading): the repo is the hook cwd, the base comes from worktree.baseRef (fresh -> origin/next,
+// head -> current HEAD), judged by the same freshness rules as a Bash cut.
+
+/** An EnterWorktree payload; `toolInput === OMIT` drops the tool_input key entirely. */
+const OMIT = Symbol('omit');
+function ewInput(toolInput) {
+  const o = { tool_name: 'EnterWorktree' };
+  if (toolInput !== OMIT) o.tool_input = toolInput;
+  return JSON.stringify(o);
+}
+
+test('ENF-25 EnterWorktree: `path` given (enter an existing worktree) allows with ZERO resolve, readBaseRef, fetch and git calls', () => {
+  const { deps, calls } = scenario({ baseRef: 'head', branch: 'next' });
+  const d = runWorktreeFreshBaseGate(ewInput({ path: '/w/wt' }), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.resolveTreeRoot, 0);
+  assert.strictEqual(calls.readBaseRef, 0);
+  assert.strictEqual(calls.fetchOrigin, 0);
+  assert.strictEqual(calls.currentBranch + calls.revParse + calls.isAncestor + calls.worktreesHolding + calls.casUpdateRef, 0);
+});
+
+test('ENF-25 EnterWorktree: a `command` field riding on an EnterWorktree `path` payload is NOT scanned as Bash (allow, zero work)', () => {
+  const { deps, calls } = scenario();
+  const d = runWorktreeFreshBaseGate(ewInput({ path: '/w/wt', command: 'git worktree add p next' }), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.resolveTreeRoot + calls.readBaseRef + calls.fetchOrigin, 0);
+});
+
+const EW_CUT_SHAPES = [
+  ['`name` given', { name: 'x' }],
+  ['`name` absent (`{}`)', {}],
+  ['`tool_input` missing', OMIT],
+  ['`tool_input` null', null],
+  ['`path` empty string', { path: '' }],
+  ['`path` non-string (42)', { path: 42 }],
+];
+
+for (const [name, ti] of EW_CUT_SHAPES) {
+  test('ENF-25 EnterWorktree: ' + name + ' is a cut -> resolveTreeRoot(cwd) once, readBaseRef once (root, homedir)', () => {
+    const { deps, calls } = scenario();
+    const d = runWorktreeFreshBaseGate(ewInput(ti), deps);
+    assert.strictEqual(d.permissionDecision, 'allow');
+    assert.strictEqual(calls.resolveTreeRoot, 1);
+    assert.deepStrictEqual(calls.dirs, [FAKE_CWD], 'the repo is the hook cwd');
+    assert.strictEqual(calls.readBaseRef, 1);
+    assert.deepStrictEqual(calls.readBaseRefArgs[0].slice(0, 2), [FAKE_CWD, path.join(path.sep, 'h')]);
+  });
+}
+
+test('ENF-25 EnterWorktree: not a gsd-core checkout (resolveTreeRoot null) -> allow, readBaseRef 0, fetch 0', () => {
+  const { deps, calls } = scenario({ resolveTreeRoot: () => { calls.resolveTreeRoot += 1; return null; } });
+  const d = runWorktreeFreshBaseGate(ewInput({ name: 'x' }), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  // Distinguishes the 37-04 gate (which did no work at all): the root lookup must have run.
+  assert.strictEqual(calls.resolveTreeRoot, 1);
+  assert.strictEqual(calls.readBaseRef, 0);
+  assert.strictEqual(calls.fetchOrigin, 0);
+});
+
+test('ENF-25 EnterWorktree: fresh -> fetch once, allow, local next untouched (casUpdateRef 0)', () => {
+  const { deps, calls } = scenario({ baseRef: 'fresh', branch: 'next' });
+  const d = runWorktreeFreshBaseGate(ewInput({ name: 'x' }), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.fetchOrigin, 1);
+  assert.deepStrictEqual(calls.fetchDirs, [FAKE_CWD]);
+  assert.strictEqual(calls.casUpdateRef, 0);
+  assert.strictEqual(calls.currentBranch, 0, 'fresh does not depend on the current branch');
+  assert.deepStrictEqual(calls.order.slice(0, 2), ['readBaseRef', 'fetchOrigin']);
+});
+
+test('ENF-25 EnterWorktree: fresh with an unobtainable origin (FetchUnavailable) -> ask naming ENF-25', () => {
+  const { deps, calls } = scenario({ baseRef: 'fresh', fetchOrigin: unavailable('unreachable') });
+  const d = runWorktreeFreshBaseGate(ewInput({ name: 'x' }), deps);
+  assert.strictEqual(d.permissionDecision, 'ask');
+  assert.match(d.permissionDecisionReason, /ENF-25/);
+  assert.match(d.permissionDecisionReason, /dangerously-skip-permissions/);
+  assert.strictEqual(calls.casUpdateRef, 0);
+});
+
+test('ENF-25 EnterWorktree: fresh, fetch ok but origin/next missing -> ask', () => {
+  const { deps } = scenario({ baseRef: 'fresh', refs: { 'refs/remotes/origin/next': null } });
+  const d = runWorktreeFreshBaseGate(ewInput({ name: 'x' }), deps);
+  assert.strictEqual(d.permissionDecision, 'ask');
+  assert.match(d.permissionDecisionReason, /origin\/next does not resolve/);
+});
+
+test('ENF-25 EnterWorktree: an unrecognised readBaseRef result is treated as fresh (fetch once, allow)', () => {
+  const { deps, calls } = scenario({ baseRef: undefined });
+  const d = runWorktreeFreshBaseGate(ewInput({ name: 'x' }), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.fetchOrigin, 1);
+  assert.strictEqual(calls.currentBranch, 0);
+});
+
+test('ENF-25 EnterWorktree: head + current branch `work` -> allow, fetch 0', () => {
+  const { deps, calls } = scenario({ baseRef: 'head', branch: 'work' });
+  const d = runWorktreeFreshBaseGate(ewInput({ name: 'x' }), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.currentBranch, 1);
+  assert.strictEqual(calls.fetchOrigin, 0);
+});
+
+test('ENF-25 EnterWorktree: head + detached HEAD -> allow, fetch 0', () => {
+  const { deps, calls } = scenario({ baseRef: 'head', branch: null });
+  const d = runWorktreeFreshBaseGate(ewInput({ name: 'x' }), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  // Distinguishes the 37-04 gate (which did no work at all): the branch read must have run.
+  assert.strictEqual(calls.currentBranch, 1);
+  assert.strictEqual(calls.fetchOrigin, 0);
+});
+
+test('ENF-25 EnterWorktree: head + `next` behind origin/next, held by the root -> POLICY deny with `git -C <root> merge --ff-only origin/next`', () => {
+  const { deps, calls } = scenario({ baseRef: 'head', branch: 'next', held: [FAKE_CWD] });
+  const d = runWorktreeFreshBaseGate(ewInput({ name: 'x' }), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.ok(d.permissionDecisionReason.includes('git -C ' + FAKE_CWD + ' merge --ff-only origin/next'), d.permissionDecisionReason);
+  assert.strictEqual(calls.fetchOrigin, 1);
+  assert.strictEqual(calls.casUpdateRef, 0);
+});
+
+test('ENF-25 EnterWorktree: the head-on-next deny is NOT override-escapable (zero receipts)', () => {
+  const o = yesOverride();
+  const { deps } = scenario({ baseRef: 'head', branch: 'next', held: [FAKE_CWD], overrideImpl: o.overrideImpl });
+  const d = runWorktreeFreshBaseGate(ewInput({ name: 'x' }), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(o.receipts.length, 0);
+});
+
+test('ENF-25 EnterWorktree: head + `next` equal to origin/next -> allow, no CAS', () => {
+  const { deps, calls } = scenario({ baseRef: 'head', branch: 'next', refs: { 'refs/heads/next': SHA_REMOTE } });
+  const d = runWorktreeFreshBaseGate(ewInput({ name: 'x' }), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.fetchOrigin, 1);
+  assert.strictEqual(calls.casUpdateRef, 0);
+});
+
+test('ENF-25 EnterWorktree: head + `next` diverged from origin/next -> deny naming the divergence', () => {
+  const { deps } = scenario({ baseRef: 'head', branch: 'next', ancestor: DIVERGED });
+  const d = runWorktreeFreshBaseGate(ewInput({ name: 'x' }), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /diverged/);
+});
+
+test('ENF-25 EnterWorktree: a hook env carrying GIT_DIR makes a cut unattributable -> the constant uncertain deny, ZERO resolve and fetch', () => {
+  const { deps, calls } = scenario({ hookEnv: { GIT_DIR: '/x/.git' } });
+  const d = runWorktreeFreshBaseGate(ewInput({ name: 'x' }), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /cannot attribute/);
+  assert.strictEqual(calls.resolveTreeRoot + calls.readBaseRef + calls.fetchOrigin, 0);
+});
+
+test('ENF-25 EnterWorktree: a hook env carrying GIT_DIR does not touch a `path` entry (allow, zero work)', () => {
+  const { deps, calls } = scenario({ hookEnv: { GIT_DIR: '/x/.git' } });
+  const d = runWorktreeFreshBaseGate(ewInput({ path: '/w/wt' }), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.resolveTreeRoot + calls.readBaseRef + calls.fetchOrigin, 0);
+});
+
+test('ENF-25 EnterWorktree: a readBaseRef that THROWS fails closed (deny via runGate)', () => {
+  const { deps } = scenario({ readBaseRef: () => { throw new Error('boom'); } });
+  const d = runWorktreeFreshBaseGate(ewInput({ name: 'x' }), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
 });
