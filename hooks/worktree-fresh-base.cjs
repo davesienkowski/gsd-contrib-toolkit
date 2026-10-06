@@ -81,8 +81,6 @@
  * The settings reader (37-05) only reads: three fixed layers, a regular-file check, a 1 MiB cap,
  * JSON.parse in a try, one key. It never writes and never reads any other path.
  *
- * Not registered in settings.snippet.json until 37-06 (until then it is not wired and not bundled).
- *
  * @module hooks/worktree-fresh-base
  */
 
@@ -967,7 +965,8 @@ function createDefaultSeams({ env, spawnSync, budget } = {}) {
    * (the `remote get-url` that used to run first is the originUrl seam since 37-REVIEW MA-01):
    *   1. `timeout -k 2 <s> git -C <dir> <FETCH_ARGV>` (MA-02 explicit refspec), argv only,
    *      with a SIGKILL belt of min(FETCH_BELT_MS, the gate's slice, the shared deadline), the
-   *      scrubbed env plus GIT_TERMINAL_PROMPT=0, stdin ignored. <s> is FETCH_TIMEOUT_S, shortened
+   *      scrubbed env plus GIT_TERMINAL_PROMPT=0, SSH_ASKPASS_REQUIRE=never, GCM_INTERACTIVE=never
+   *      (NI-05), stdin ignored. <s> is FETCH_TIMEOUT_S, shortened
    *      when the belt is reduced so coreutils kills git before the belt kills `timeout` (a belt
    *      kill reaps only `timeout` and would orphan a git holding the ref lock);
    *   2. classifyFetchResult: ok returns, unavailable throws FetchUnavailable (redacted detail),
@@ -987,7 +986,10 @@ function createDefaultSeams({ env, spawnSync, budget } = {}) {
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: belt,
         killSignal: 'SIGKILL',
-        env: gitEnv(base, { GIT_TERMINAL_PROMPT: '0' }),
+        // NI-05: no terminal prompt, no ssh-askpass, no Git Credential Manager window. A prompt on
+        // the session's controlling terminal (ssh) is not suppressible from spawnSync (it has no
+        // `detached`); it is bounded by the fetch timeout and recorded as a CTK-ADR-0009 residual.
+        env: gitEnv(base, { GIT_TERMINAL_PROMPT: '0', SSH_ASKPASS_REQUIRE: 'never', GCM_INTERACTIVE: 'never' }),
       }
     );
     const graded = classifyFetchResult(r);
