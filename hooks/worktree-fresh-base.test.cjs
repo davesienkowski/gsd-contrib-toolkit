@@ -280,10 +280,12 @@ test('ENF-25 tracer: a failed CAS (ref moved under us) fails closed -> deny', ()
   assert.match(d.permissionDecisionReason, /ENF-25/);
 });
 
-test('ENF-25 tracer: a missing origin/next after the fetch fails closed -> deny', () => {
+// 37-04 (planned, CTK-ADR-0007): a missing origin/next after a successful fetch is an unobtainable
+// upstream, so it ASKS. It was a FailClosed deny stub in 37-01..03; it never moves next either way.
+test('ENF-25 tracer: a missing origin/next after the fetch asks (37-04) and never moves next', () => {
   const { deps, calls } = scenario({ refs: { 'refs/remotes/origin/next': null } });
   const d = runWorktreeFreshBaseGate(input('git worktree add p next'), deps);
-  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(d.permissionDecision, 'ask');
   assert.strictEqual(calls.casUpdateRef, 0);
 });
 
@@ -361,11 +363,14 @@ test('ENF-25 tracer e2e: a plain clone with no gsd-core sentinel allows a trunk 
   }
 });
 
-test('ENF-25 tracer e2e: an inherited GIT_DIR cannot aim the fetch or the CAS at another repo', () => {
+// 37-04 (closes 37-02 deferred item 1, environment half): the hook process itself inherits GIT_DIR,
+// so the real cut would run in B while the gate could only see A. That cut is unattributable: the
+// constant uncertain deny, and NEITHER repo's next moves (37-01 asserted allow + A moved).
+test('ENF-25 tracer e2e: an inherited GIT_DIR makes a trunk cut unattributable -> uncertain deny; neither A nor B moves', () => {
   const fx = makeFixture();
   const saved = process.env.GIT_DIR;
   try {
-    const tip = fx.advanceOrigin();
+    fx.advanceOrigin();
     const bNextBefore = refOf(fx.B, 'refs/heads/next');
     process.env.GIT_DIR = path.join(fx.B, '.git');
     let r;
@@ -375,8 +380,10 @@ test('ENF-25 tracer e2e: an inherited GIT_DIR cannot aim the fetch or the CAS at
       if (saved === undefined) delete process.env.GIT_DIR;
       else process.env.GIT_DIR = saved;
     }
-    assert.strictEqual(r.decision, 'allow', r.reason);
-    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), tip, 'the gate acted on A, the target repo');
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.match(r.reason, /cannot attribute/);
+    assert.ok(!r.reason.includes('/'), 'the constant, path-free uncertain reason: ' + r.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), fx.initial, 'A next not moved');
     assert.strictEqual(refOf(fx.B, 'refs/heads/next'), bNextBefore, 'B was not touched');
   } finally {
     fx.dispose();
@@ -966,4 +973,431 @@ test('ENF-25 WTREE-02: e2e idempotency: the trunk cut run twice allows both time
   } finally {
     fx.dispose();
   }
+});
+
+// ───────────────────────── 37-04 WTREE-04: an unobtainable origin asks ─────────────────────────
+//
+// CTK-ADR-0007 / Addendum 5: the fetch seam throws FetchUnavailable (NOT a FailClosed) and a catch
+// around the fetch call ALONE turns it into `ask`. Every other throw still denies through runGate.
+// The ask reason names ENF-25, the (redacted) failure, that this is a network limit, the manual
+// `git -C <dir> fetch origin next`, and ends with the ASK_LIMIT_NOTE honesty sentence.
+
+/** A gate-module export, asserted (not destructured) so a missing export fails one row, not the file. */
+function exp(name) {
+  assert.ok(gateModule[name] !== undefined, 'worktree-fresh-base must export ' + name);
+  return gateModule[name];
+}
+
+function unavailable(msg) {
+  return () => {
+    throw new gateModule.FetchUnavailable(msg);
+  };
+}
+
+const ASK_NOT_BLOCKING = /\bblock(s|ed|ing)?\b/i;
+
+const FETCH_TABLE = [
+  { name: 'exit 0 is ok', res: { status: 0, stderr: '' }, state: 'ok' },
+  { name: 'exit 124 (coreutils timed out) is unavailable (timeout)', res: { status: 124, stderr: '' }, state: 'unavailable', detail: /timed out/ },
+  { name: 'exit 137 (killed after the grace) is unavailable (timeout)', res: { status: 137, stderr: '' }, state: 'unavailable', detail: /timed out/ },
+  {
+    name: 'spawnSync ETIMEDOUT with SIGKILL (the belt) is unavailable (timeout)',
+    res: { status: null, signal: 'SIGKILL', error: { code: 'ETIMEDOUT' } },
+    state: 'unavailable',
+    detail: /timed out|did not finish/,
+  },
+  { name: 'a SIGTERM with no exit status is unavailable', res: { status: null, signal: 'SIGTERM' }, state: 'unavailable' },
+  {
+    name: 'exit 128 with a credentialed URL is unavailable and the credentials are redacted',
+    res: { status: 128, stderr: "fatal: unable to access 'https://u:s3cr3t@h.example/r.git/': x\n" },
+    state: 'unavailable',
+    check: (detail) => {
+      assert.ok(detail.includes('https://***@h.example'), detail);
+      assert.ok(!detail.includes('s3cr3t'), detail);
+    },
+  },
+  { name: 'exit 1 with an empty stderr is unavailable', res: { status: 1, stderr: '' }, state: 'unavailable' },
+  { name: 'spawn ENOENT (no coreutils timeout: the fetch cannot be bounded) is error', res: { status: null, error: { code: 'ENOENT' } }, state: 'error' },
+  { name: 'exit 125 (timeout itself failed) is error', res: { status: 125, stderr: '' }, state: 'error' },
+  { name: 'exit 126 (git not executable) is error', res: { status: 126, stderr: '' }, state: 'error' },
+  { name: 'exit 127 (git not found) is error', res: { status: 127, stderr: '' }, state: 'error' },
+  { name: 'spawn EACCES is error', res: { status: null, error: { code: 'EACCES' } }, state: 'error' },
+  {
+    name: 'a 500-char stderr line is capped at 200 characters',
+    res: { status: 128, stderr: '\n' + 'x'.repeat(500) + '\nsecond line\n' },
+    state: 'unavailable',
+    check: (detail) => {
+      assert.ok(detail.length <= 200, 'detail length ' + detail.length);
+      assert.ok(!detail.includes('second line'), 'first non-empty line only: ' + detail);
+    },
+  },
+];
+
+for (const row of FETCH_TABLE) {
+  test('ENF-25 WTREE-04: classifyFetchResult: ' + row.name, () => {
+    const out = exp('classifyFetchResult')(row.res);
+    assert.strictEqual(out.state, row.state, JSON.stringify(out));
+    if (row.detail) assert.match(String(out.detail), row.detail);
+    if (row.check) row.check(String(out.detail));
+  });
+}
+
+test('ENF-25 WTREE-04: a fetch that throws FetchUnavailable asks; nothing after the fetch runs', () => {
+  const { deps, calls } = scenario({ fetchOrigin: unavailable('`git fetch origin next` timed out after 15 s') });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b feat p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'ask', JSON.stringify(d));
+  const why = d.permissionDecisionReason;
+  assert.match(why, /ENF-25/);
+  assert.match(why, /timed out after 15 s/);
+  assert.match(why, /git -C .* fetch origin next/);
+  assert.match(why, /network/i);
+  assert.match(why, /not a policy decision/i);
+  assert.match(why, /dangerously-skip-permissions/);
+  assert.strictEqual(calls.revParse, 0);
+  assert.strictEqual(calls.isAncestor, 0);
+  assert.strictEqual(calls.worktreesHolding, 0);
+  assert.strictEqual(calls.casUpdateRef, 0);
+});
+
+test('ENF-25 WTREE-04: the ask reason names the target root in the manual fetch and re-issue, and ends with ASK_LIMIT_NOTE', () => {
+  const { deps } = scenario({ fetchOrigin: unavailable('x') });
+  const d = runWorktreeFreshBaseGate(input('git worktree add p next'), deps);
+  const why = d.permissionDecisionReason;
+  assert.ok(why.includes('git -C ' + FAKE_CWD + ' fetch origin next'), why);
+  assert.match(why, /re-issue/i);
+  assert.ok(why.endsWith(exp('ASK_LIMIT_NOTE')), why);
+});
+
+test('ENF-25 WTREE-04: the ask reason never describes itself as blocking', () => {
+  const { deps } = scenario({ fetchOrigin: unavailable('`git fetch origin next` failed (exit 128)') });
+  const d = runWorktreeFreshBaseGate(input('git worktree add p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'ask');
+  assert.ok(!ASK_NOT_BLOCKING.test(d.permissionDecisionReason), d.permissionDecisionReason);
+});
+
+test('ENF-25 WTREE-04: ASK_LIMIT_NOTE is the same sentence as runtime-drift (test-side require only)', () => {
+  assert.strictEqual(exp('ASK_LIMIT_NOTE'), require('./runtime-drift.cjs').ASK_LIMIT_NOTE);
+});
+
+test('ENF-25 WTREE-04: credentials in a FetchUnavailable message are redacted in the ask reason', () => {
+  const { deps } = scenario({
+    fetchOrigin: unavailable("`git fetch origin next` failed: fatal: unable to access 'https://user:s3cr3t@example.invalid/r.git/'"),
+  });
+  const d = runWorktreeFreshBaseGate(input('git worktree add p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'ask');
+  assert.ok(d.permissionDecisionReason.includes('https://***@example.invalid'), d.permissionDecisionReason);
+  assert.ok(!d.permissionDecisionReason.includes('s3cr3t'), d.permissionDecisionReason);
+});
+
+test('ENF-25 WTREE-04: fetch ok but origin/next missing asks, naming origin/next missing after the fetch', () => {
+  const { deps, calls } = scenario({ refs: { 'refs/remotes/origin/next': null } });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b feat p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'ask', JSON.stringify(d));
+  assert.match(d.permissionDecisionReason, /origin\/next/);
+  assert.match(d.permissionDecisionReason, /after the fetch/);
+  assert.match(d.permissionDecisionReason, /dangerously-skip-permissions/);
+  assert.strictEqual(calls.isAncestor, 0);
+  assert.strictEqual(calls.casUpdateRef, 0);
+});
+
+test('ENF-25 WTREE-04: a remote base (`origin/next`) with an unobtainable origin asks', () => {
+  const { deps } = scenario({ fetchOrigin: unavailable('x') });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b feat p origin/next'), deps);
+  assert.strictEqual(d.permissionDecision, 'ask');
+});
+
+test('ENF-25 WTREE-04: a HEAD base on `next` with an unobtainable origin asks after reading the branch', () => {
+  const { deps, calls } = scenario({ branch: 'next', fetchOrigin: unavailable('x') });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b feat p'), deps);
+  assert.strictEqual(d.permissionDecision, 'ask');
+  assert.strictEqual(calls.currentBranch, 1);
+  assert.strictEqual(calls.revParse, 0);
+});
+
+test('ENF-25 WTREE-04: a fetch seam throwing FailClosed denies (nothing leaks into ask)', () => {
+  const { deps } = scenario({
+    fetchOrigin: () => {
+      throw new FailClosed('ENF-25 test: timeout binary missing');
+    },
+  });
+  const d = runWorktreeFreshBaseGate(input('git worktree add p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+});
+
+test('ENF-25 WTREE-04: a fetch seam throwing a plain Error denies (nothing leaks into ask)', () => {
+  const { deps } = scenario({
+    fetchOrigin: () => {
+      throw new Error('surprise');
+    },
+  });
+  const d = runWorktreeFreshBaseGate(input('git worktree add p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+});
+
+test('ENF-25 WTREE-04: a FetchUnavailable from a seam OTHER than the fetch denies (the catch wraps the fetch alone)', () => {
+  const { deps } = scenario({
+    revParse: () => {
+      throw new gateModule.FetchUnavailable('not from the fetch');
+    },
+  });
+  const d = runWorktreeFreshBaseGate(input('git worktree add p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+});
+
+test('ENF-25 WTREE-04: revParse throwing FailClosed after a good fetch denies', () => {
+  const { deps, calls } = scenario({
+    revParse: () => {
+      throw new FailClosed('ENF-25 test: rev-parse failed');
+    },
+  });
+  const d = runWorktreeFreshBaseGate(input('git worktree add p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(calls.fetchOrigin, 1);
+});
+
+test('ENF-25 WTREE-04: an ask from cut 1 and a policy deny from cut 2 (another root) -> deny', () => {
+  const { deps } = scenario({
+    resolveTreeRoot: (dir) => dir,
+    held: ['/r2'],
+    fetchOrigin: (dir) => {
+      if (dir === '/r1') throw new gateModule.FetchUnavailable('timed out');
+    },
+  });
+  const d = runWorktreeFreshBaseGate(input('git -C /r1 worktree add -b a p next && git -C /r2 worktree add -b b q next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny', JSON.stringify(d));
+  assert.match(d.permissionDecisionReason, /merge --ff-only/);
+});
+
+test('ENF-25 WTREE-04: an ask from cut 1 and a THROW from cut 2 (another root) -> deny', () => {
+  const { deps } = scenario({
+    resolveTreeRoot: (dir) => dir,
+    fetchOrigin: (dir) => {
+      if (dir === '/r1') throw new gateModule.FetchUnavailable('timed out');
+      throw new FailClosed('ENF-25 test: second root broken');
+    },
+  });
+  const d = runWorktreeFreshBaseGate(input('git -C /r1 worktree add -b a p next && git -C /r2 worktree add -b b q next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny', JSON.stringify(d));
+});
+
+test('ENF-25 WTREE-04: asks only -> ask, and a failed fetch is NOT retried for a second cut of the same root', () => {
+  const { deps, calls } = scenario({ fetchOrigin: unavailable('timed out') });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b a p next && git worktree add -b b q origin/next'), deps);
+  assert.strictEqual(d.permissionDecision, 'ask');
+  assert.strictEqual(calls.fetchOrigin, 1, 'one fetch attempt per root per gate call');
+});
+
+test('ENF-25 WTREE-04: the ask is a returned decision, not a throw: an override that says yes writes zero receipts', () => {
+  const o = yesOverride();
+  const { deps } = scenario({ fetchOrigin: unavailable('timed out'), overrideImpl: o.overrideImpl });
+  const d = runWorktreeFreshBaseGate(input('git worktree add p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'ask');
+  assert.strictEqual(o.receipts.length, 0);
+});
+
+// ── 37-02 deferred item 1 (environment half), closed in 37-04 as a recorded deviation ──
+// The HOOK process's own environment carrying GIT_DIR / GIT_WORK_TREE / GIT_COMMON_DIR means the
+// real cut runs in a repository the gate cannot see (its own git calls scrub them). A trunk-naming
+// cut is then unattributable: the constant uncertain deny, thrown (override-escapable), zero work.
+
+test('ENF-25 targeting: hook env GIT_DIR makes a trunk cut uncertain -> the constant deny, ZERO resolve and fetch', () => {
+  const { deps, calls } = scenario({ hookEnv: { GIT_DIR: '/x/.git' } });
+  const d = runWorktreeFreshBaseGate(input('git worktree add p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /cannot attribute/);
+  assert.ok(!d.permissionDecisionReason.includes('/'), d.permissionDecisionReason);
+  assert.strictEqual(calls.resolveTreeRoot, 0);
+  assert.strictEqual(calls.fetchOrigin, 0);
+});
+
+test('ENF-25 targeting: hook env GIT_WORK_TREE makes a HEAD-base cut uncertain -> deny, ZERO currentBranch', () => {
+  const { deps, calls } = scenario({ hookEnv: { GIT_WORK_TREE: '/x' }, branch: 'next' });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b f p'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /cannot attribute/);
+  assert.strictEqual(calls.currentBranch, 0);
+});
+
+test('ENF-25 targeting: hook env GIT_COMMON_DIR makes a remote-base cut uncertain -> deny', () => {
+  const { deps } = scenario({ hookEnv: { GIT_COMMON_DIR: '/x' } });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b f p origin/next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /cannot attribute/);
+});
+
+test('ENF-25 targeting: the hook-env uncertain deny is THROWN (override-escapable, one receipt)', () => {
+  const o = yesOverride();
+  const { deps } = scenario({ hookEnv: { GIT_DIR: '/x/.git' }, overrideImpl: o.overrideImpl });
+  const d = runWorktreeFreshBaseGate(input('git worktree add p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(o.receipts.length, 1);
+});
+
+test('ENF-25 targeting: hook env GIT_DIR does not touch `git status` or a non-trunk cut (allow, ZERO work)', () => {
+  for (const cmd of ['git status', 'git worktree add -b f p feature', 'git worktree add --orphan -b o p']) {
+    const { deps, calls } = scenario({ hookEnv: { GIT_DIR: '/x/.git' } });
+    const d = runWorktreeFreshBaseGate(input(cmd), deps);
+    assert.strictEqual(d.permissionDecision, 'allow', cmd);
+    assert.strictEqual(calls.resolveTreeRoot, 0, cmd);
+    assert.strictEqual(calls.fetchOrigin, 0, cmd);
+  }
+});
+
+test('ENF-25 targeting: GIT_INDEX_FILE alone in the hook env does not redirect the repository (allow)', () => {
+  const { deps, calls } = scenario({ hookEnv: { GIT_INDEX_FILE: '/x/index' } });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.fetchOrigin, 1);
+});
+
+// ───────────────────────── 37-04 WTREE-01: non-trunk cuts never fetch ─────────────────────────
+
+const NO_FETCH = [
+  ['base `feature`', 'git worktree add -b x p feature', {}],
+  ['a 40-hex sha base', 'git worktree add -b x p ' + 'c'.repeat(40), {}],
+  ['base `upstream/next`', 'git worktree add -b x p upstream/next', {}],
+  ['base `next~1`', 'git worktree add -b x p next~1', {}],
+  ['base `NEXT` (case matters)', 'git worktree add -b x p NEXT', {}],
+  ['`--orphan` (no base)', 'git worktree add --orphan -b o p', {}],
+  ['HEAD base while on branch `work`', 'git worktree add -b f p', { branch: 'work' }],
+];
+const ONE_FETCH = [
+  ['base `next`', 'git worktree add -b x p next', {}],
+  ['base `refs/heads/next`', 'git worktree add -b x p refs/heads/next', {}],
+  ['base `origin/next`', 'git worktree add -b x p origin/next', {}],
+  ['base `refs/remotes/origin/next`', 'git worktree add -b x p refs/remotes/origin/next', {}],
+  ['HEAD base (omitted) while on `next`', 'git worktree add -b f p', { branch: 'next', held: [] }],
+  ['the `../next` convenience form (branch named after the path)', 'git worktree add ../next', {}],
+];
+
+for (const [name, cmd, over] of NO_FETCH) {
+  test('ENF-25 no-fetch: ' + name + ' makes ZERO fetch calls', () => {
+    const { deps, calls } = scenario(over);
+    const d = runWorktreeFreshBaseGate(input(cmd), deps);
+    assert.strictEqual(d.permissionDecision, 'allow');
+    assert.strictEqual(calls.fetchOrigin, 0);
+  });
+}
+
+for (const [name, cmd, over] of ONE_FETCH) {
+  test('ENF-25 no-fetch: ' + name + ' makes exactly ONE fetch call', () => {
+    const { deps, calls } = scenario(over);
+    runWorktreeFreshBaseGate(input(cmd), deps);
+    assert.strictEqual(calls.fetchOrigin, 1);
+  });
+}
+
+// ───────────────────────── 37-04 bound: one GATE_BUDGET_MS per gate call ─────────────────────────
+//
+// The 36-REVIEW m-06 per-call deadline (hooks/gsd-test-clean-tree.cjs, 658442a), mirrored, not
+// imported. Every subprocess draws on ONE deadline; a non-fetch git call gets
+// min(GIT_TIMEOUT_MS, remaining), the fetch belt min(FETCH_BELT_MS, remaining).
+
+test('ENF-25 bound: FETCH_BELT_MS + MAX_GIT_CALLS_PER_ROOT * GIT_TIMEOUT_MS <= GATE_BUDGET_MS, and GATE_BUDGET_MS + 3 s <= 45 s', () => {
+  const belt = exp('FETCH_BELT_MS');
+  const max = exp('MAX_GIT_CALLS_PER_ROOT');
+  const git1 = exp('GIT_TIMEOUT_MS');
+  const budget = exp('GATE_BUDGET_MS');
+  assert.strictEqual(max, 7);
+  assert.strictEqual(budget, 42000);
+  assert.ok(belt + max * git1 <= budget, belt + ' + ' + max + ' * ' + git1 + ' > ' + budget);
+  assert.ok(budget + 3000 <= 45000);
+});
+
+/** Every non-fetch git process the default seams would spawn; the fetch seam's `remote get-url` counts 1. */
+function gitProcesses(calls) {
+  return calls.currentBranch + calls.revParse + calls.isAncestor + calls.worktreesHolding + calls.casUpdateRef + calls.fetchOrigin;
+}
+
+const WORST = [
+  ['local next behind and unheld (CAS)', 'git worktree add -b f p next', {}],
+  ['local next diverged', 'git worktree add -b f p next', { ancestor: DIVERGED }],
+  ['HEAD on next, behind and (counted as) unheld', 'git worktree add -b f p', { branch: 'next' }],
+  ['HEAD on next, diverged', 'git worktree add -b f p', { branch: 'next', ancestor: DIVERGED }],
+  ['remote base', 'git worktree add -b f p origin/next', {}],
+];
+for (const [name, cmd, over] of WORST) {
+  test('ENF-25 bound: worst path "' + name + '" spawns <= MAX_GIT_CALLS_PER_ROOT non-fetch git processes', () => {
+    const { deps, calls } = scenario(over);
+    runWorktreeFreshBaseGate(input(cmd), deps);
+    assert.ok(gitProcesses(calls) <= exp('MAX_GIT_CALLS_PER_ROOT'), name + ': ' + gitProcesses(calls));
+  });
+}
+
+test('ENF-25 bound: the clock past the budget before a git call -> thrown deny naming the ENF-25 budget', () => {
+  let t = 1000;
+  const spent = 1000 + exp('GATE_BUDGET_MS') - 10; // the fetch spends almost the whole budget
+  const { deps, calls } = scenario({
+    now: () => t,
+    fetchOrigin: () => {
+      calls.fetchOrigin += 1;
+      t = spent;
+    },
+  });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /ENF-25/);
+  assert.match(d.permissionDecisionReason, /budget/);
+  assert.strictEqual(calls.revParse, 0);
+  assert.strictEqual(calls.casUpdateRef, 0);
+});
+
+test('ENF-25 bound: the budget deny is override-escapable (allow + one receipt)', () => {
+  let t = 0;
+  const spent = exp('GATE_BUDGET_MS'); // read OUTSIDE the seam: a missing export must fail, not throw into runGate
+  const o = yesOverride();
+  const { deps } = scenario({
+    now: () => t,
+    overrideImpl: o.overrideImpl,
+    fetchOrigin: () => {
+      t = spent;
+    },
+  });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(o.receipts.length, 1);
+});
+
+test('ENF-25 bound: the fetch belt is FETCH_BELT_MS with the full budget left', () => {
+  const belts = [];
+  const { deps } = scenario({ now: () => 0, fetchOrigin: (dir, belt) => belts.push(belt) });
+  runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps);
+  assert.deepStrictEqual(belts, [exp('FETCH_BELT_MS')]);
+});
+
+test('ENF-25 bound: the fetch belt is min(FETCH_BELT_MS, remaining) after a slow branch read, and a FetchUnavailable after it asks', () => {
+  let t = 0;
+  const belts = [];
+  const { deps } = scenario({
+    now: () => t,
+    currentBranch: () => {
+      t = 30000;
+      return 'next';
+    },
+    fetchOrigin: (dir, belt) => {
+      belts.push(belt);
+      throw new gateModule.FetchUnavailable('`git fetch origin next` timed out');
+    },
+  });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b f p'), deps);
+  assert.deepStrictEqual(belts, [exp('GATE_BUDGET_MS') - 30000]);
+  assert.strictEqual(d.permissionDecision, 'ask');
+});
+
+test('ENF-25 bound: a non-fetch git call gets min(GIT_TIMEOUT_MS, remaining)', () => {
+  let t = 0;
+  const slices = [];
+  const spent = exp('GATE_BUDGET_MS') - 1500;
+  const { deps } = scenario({
+    now: () => t,
+    fetchOrigin: () => {
+      t = spent;
+    },
+    revParse: (dir, ref, ms) => {
+      slices.push(ms);
+      return ref === 'refs/remotes/origin/next' ? SHA_REMOTE : SHA_REMOTE;
+    },
+  });
+  runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps);
+  assert.deepStrictEqual(slices, [1500, 1500]);
 });
