@@ -227,6 +227,25 @@ const PROOF_TABLE = [
   { name: 'runtime-drift', kind: 'deny', needsLive: false,
     bad: bash('gh pr create --title "x'),
     clean: bash('git status') },
+  // ── ENF-23 / ENF-24 (Phase 36, GTEST-07): the gsd-test dispatch gates ─────────────────
+  // ENF-23 (gsd-test-clean-tree): the dirty-tree deny is STATE-driven, so the BAD fixture uses
+  // the COMMAND-driven pipe deny (GTEST-03): a gsd-test dispatch piped into `tail` without
+  // pipefail returns the path-free PIPE_REASON before ANY git call, so the capture does not
+  // depend on whether the checkout is dirty. needsLive:true because the gate first resolves the
+  // dispatch's tree to a gsd-core root from cwd and skips an out-of-tree dispatch.
+  // ENF-24 (gsd-test-viability): the config/bench/docker denies are STATE-driven, so the BAD
+  // fixture proves the FAIL-CLOSED wiring: an unparseable command naming gsd-test is graded
+  // uncertain and denies before any root resolution, config read or `docker info` probe, so the
+  // proof never reaches real Docker (needsLive:false). The docker-timeout `ask` has no proof
+  // kind (SEED-enf22-residual-merge-continue-and-ask-proof-kind); it is unit-proven only.
+  // Both CLEAN fixtures `gsd-test --version` are informational and allow before any I/O (RES-01).
+  // Mirrored in hooks/integration-proof.test.cjs DENY_GATES (the sync SOURCE).
+  { name: 'gsd-test-clean-tree', kind: 'deny', needsLive: true,
+    bad: bash('gsd-test -base next -head origin/next | tail'),
+    clean: bash('gsd-test --version') },
+  { name: 'gsd-test-viability', kind: 'deny', needsLive: false,
+    bad: bash('gsd-test --bench "x'),
+    clean: bash('gsd-test --version') },
   // ── binlib-edit (Write|Edit gate): command-only, no live resolution ──
   { name: 'binlib-edit', kind: 'deny', needsLive: false,
     bad: edit('/g/gsd-core/bin/lib/decisions.cjs'),
@@ -256,7 +275,7 @@ const PROOF_TABLE = [
   // What OBS-01 must actually prove (exit 0 + EMPTY stdout on both a well-formed payload and on
   // garbage, and exactly one bounded JSONL line appended) is proven where those assertions are
   // expressible: the SPAWNED-hook tests at the end of hooks/tool-recorder.test.cjs. Adding a row
-  // here would change the committed 54-case baseline without adding any evidence.
+  // here would change the committed baseline without adding any evidence.
   //
   // If a future proof KIND is introduced for non-decision hooks, this is the entry to add.
 ];

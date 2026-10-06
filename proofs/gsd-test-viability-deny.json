@@ -1,0 +1,17 @@
+{
+  "hook": "gsd-test-viability",
+  "case": "deny",
+  "fixture": "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gsd-test --bench \\\"x\"}}",
+  "expected": "deny",
+  "verdict": "pass",
+  "decision": "deny",
+  "exitCode": 0,
+  "reason": "parsed permissionDecision:deny",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "permissionDecisionReason": "ENF-24 gsd-test viability gate cannot attribute this gsd-test command (unparseable command names gsd-test (unbalanced quote)) — failing closed. Re-run it as a plain `gsd-test` invocation with literal flag values."
+    }
+  }
+}

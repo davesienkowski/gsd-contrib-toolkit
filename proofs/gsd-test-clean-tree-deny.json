@@ -1,0 +1,17 @@
+{
+  "hook": "gsd-test-clean-tree",
+  "case": "deny",
+  "fixture": "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gsd-test -base next -head origin/next | tail\"}}",
+  "expected": "deny",
+  "verdict": "pass",
+  "decision": "deny",
+  "exitCode": 0,
+  "reason": "parsed permissionDecision:deny",
+  "emitted": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "permissionDecisionReason": "Blocked by the ENF-23 gsd-test clean-tree gate: this gsd-test dispatch is piped into another command. A shell pipeline exits with the status of its LAST command, so a failed gsd-test run piped into `tail`/`tee`/`grep` reads as exit 0 — a false green.\n\nRe-run it one of these ways:\n  1. run it unpiped: `gsd-test ...` on its own;\n  2. prefix the pipeline with `set -o pipefail;` so the pipeline fails when gsd-test fails;\n  3. redirect to a file and read the log after: `gsd-test ... > gsd-test.log 2>&1`, then inspect `gsd-test.log` and the exit status."
+    }
+  }
+}
