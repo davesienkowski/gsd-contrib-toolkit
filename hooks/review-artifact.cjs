@@ -548,9 +548,15 @@ function bodyText(seg, deps = {}) {
 }
 
 /**
- * Is this review submission an APPROVE? `--approve` natively, `event=APPROVE` over REST.
+ * Is this review submission an APPROVE? `--approve` / `-a` natively, `event=APPROVE` over REST.
  * An approve IS a CLEAR verdict (re-review step 12 maps `CLEAR` → Approve), so it is the most
  * robust step-10 trigger available — far more so than parsing prose.
+ *
+ * The short `-a` counts only on a native `gh pr|issue` segment: curl's `-a` (append) is not a
+ * review verdict. It counts whatever value argv attached to it (`-a 42` parses as `{a:'42'}`,
+ * `-ab x` as `{a:'b'}`), because gh's `-a` takes no value; `-ba x` is a body (`{b:'a'}`), not an
+ * approve. Found and fixed in 38-03: before it, `gh pr review <n> -a` was not an approve and
+ * skipped step 10 (R10).
  *
  * @param {Object} seg
  * @returns {boolean}
@@ -558,9 +564,32 @@ function bodyText(seg, deps = {}) {
 function isApproveEvent(seg) {
   const flags = seg.flags || {};
   if (Object.prototype.hasOwnProperty.call(flags, 'approve')) return true;
+  if (isNativeGhSegment(seg) && Object.prototype.hasOwnProperty.call(seg.shortFlags || {}, 'a')) return true;
   for (const c of fieldCandidates(seg)) {
     if (/^event=APPROVE$/i.test(c)) return true;
     if (/"event"\s*:\s*"APPROVE"/i.test(c)) return true;
+  }
+  return false;
+}
+
+/**
+ * Is this review submission a REQUEST-CHANGES verdict? `--request-changes` / `-r` natively
+ * (including the bundled `-rb x`, which argv records as `{r:'b'}`), `event=REQUEST_CHANGES` over
+ * REST (a new review or `…/reviews/<id>/events`), or a JSON body `"event":"REQUEST_CHANGES"`.
+ * Mirrors isApproveEvent; the short `-r` counts only on a native gh segment, so curl's `-r`
+ * (byte range) never classifies as a verdict. Step 8a (R8a-memtrace) applies to it; step 10
+ * (R10) does not.
+ *
+ * @param {Object} seg
+ * @returns {boolean}
+ */
+function isRequestChangesEvent(seg) {
+  const flags = seg.flags || {};
+  if (Object.prototype.hasOwnProperty.call(flags, 'request-changes')) return true;
+  if (isNativeGhSegment(seg) && Object.prototype.hasOwnProperty.call(seg.shortFlags || {}, 'r')) return true;
+  for (const c of fieldCandidates(seg)) {
+    if (/^event=REQUEST_CHANGES$/i.test(c)) return true;
+    if (/"event"\s*:\s*"REQUEST_CHANGES"/i.test(c)) return true;
   }
   return false;
 }
@@ -1099,6 +1128,9 @@ function verifyMemtraceEvidence(g, ctx, deps) {
  * @param {Object} g
  * @param {string} action
  * @param {{approve:boolean, requestChanges:boolean, clear:boolean, reviewPost:boolean}} post
+ *   `approve` from isApproveEvent, `requestChanges` from isRequestChangesEvent, `clear` and
+ *   `reviewPost` from the body. A `--comment` review and a REST review with no event are neither
+ *   verdict, so 'verdict' (step 8a) never applies to them.
  * @returns {boolean}
  */
 function gateApplies(g, action, post) {
@@ -1144,9 +1176,7 @@ function gateSegment(seg, action, deps, opts = {}) {
   const body = bodyText(seg, deps); // may throw (unreadable --body-file) → fail closed
   const post = {
     approve: isApproveEvent(seg),
-    // KNOWN STUB (38-01 tracer): request-changes is not yet classified; 38-03 adds
-    // isRequestChangesEvent.
-    requestChanges: false,
+    requestChanges: isRequestChangesEvent(seg),
     clear: CLEAR_VERDICT_RE.test(body),
     reviewPost: REVIEW_POST_RE.test(body),
   };
@@ -1556,6 +1586,7 @@ module.exports = {
   bodyText,
   fieldCandidates,
   isApproveEvent,
+  isRequestChangesEvent,
   isHelpInvocation,
   isNativeGhSegment,
   unfilledFields,
