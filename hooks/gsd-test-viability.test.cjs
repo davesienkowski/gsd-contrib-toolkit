@@ -788,3 +788,11 @@ test('ENF-24 M-03: `env -C /g/core gsd-test` arms on /g/core', () => {
   const { calls } = run('env -C /g/core gsd-test', { cwd: '/elsewhere' });
   assert.deepStrictEqual(calls.dirs, [path.resolve('/g/core')]);
 });
+
+// ─────────────── M-04 (36-REVIEW): eval ───────────────
+
+test('ENF-24 M-04: `eval gsd-test` with Docker down DENIES', () => {
+  const { d, calls } = run('eval gsd-test', { probe: { state: 'down', detail: 'daemon down' } });
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(calls.dockerProbe, 1);
+});

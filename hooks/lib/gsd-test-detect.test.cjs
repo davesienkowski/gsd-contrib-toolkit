@@ -840,3 +840,39 @@ test('GTEST-01 M-03: the reverse case — `env -C /tmp gsd-test` from /g/core st
 test('GTEST-01 M-03: `echo env -C /x gsd-test` is not a dispatch (env is not in wrapper position)', () => {
   assert.deepStrictEqual(entries('echo env -C /x gsd-test'), []);
 });
+
+// ─────────────── M-04 (36-REVIEW): `eval` re-parses its joined arguments ───────────────
+
+test("GTEST-01 M-04: `eval 'gsd-test --head HEAD | tail -5'` is a piped dispatch", () => {
+  const d = oneDispatch("eval 'gsd-test --head HEAD | tail -5'");
+  assert.strictEqual(d.flags.head, 'HEAD');
+  assert.strictEqual(d.pipeMasked, true);
+  assert.strictEqual(d.depth, 1);
+});
+
+test('GTEST-01 M-04: `eval gsd-test --head HEAD` is a dispatch with its flags read', () => {
+  const d = oneDispatch('eval gsd-test --head HEAD');
+  assert.strictEqual(d.flags.head, 'HEAD');
+  assert.strictEqual(d.pipeMasked, false);
+});
+
+test('GTEST-01 M-04: `eval gsd-test | tail` is masked by the outer pipe', () => {
+  assert.strictEqual(oneDispatch('eval gsd-test | tail').pipeMasked, true);
+});
+
+test('GTEST-01 M-04: `cd /g/core && eval gsd-test` starts in /g/core', () => {
+  const d = oneDispatch('cd /g/core && eval gsd-test');
+  assert.strictEqual(exported('startDirFor')(d, '/elsewhere', { env: {}, homedir: '/h' }), '/g/core');
+});
+
+test("GTEST-01 M-04: an unparseable eval payload naming gsd-test is uncertain (`eval 'gsd-test --bench \"x'`)", () => {
+  oneUncertain("eval 'gsd-test --bench \"x'");
+});
+
+test('GTEST-01 M-04: eval counts toward the -c depth bound', () => {
+  oneUncertain(`bash -c "bash -c 'eval gsd-test'"`);
+});
+
+test('GTEST-01 M-04: `eval echo gsd-test` yields no entry', () => {
+  assert.deepStrictEqual(entries('eval echo gsd-test'), []);
+});

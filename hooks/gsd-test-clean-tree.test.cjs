@@ -779,3 +779,18 @@ test('ENF-23 M-03: `env -C "$X" gsd-test` fails closed (unresolvable start dir)'
   assert.strictEqual(d.permissionDecision, 'deny');
   assert.strictEqual(calls.resolveTreeRoot, 0);
 });
+
+// ─────────────── M-04 (36-REVIEW): eval ───────────────
+
+test("ENF-23 M-04: `eval 'gsd-test --head HEAD | tail -5'` DENIES with PIPE_REASON", () => {
+  const { deps } = scenario({ porcelain: DIRTY_ONE });
+  const d = runGsdTestCleanTreeGate(input("eval 'gsd-test --head HEAD | tail -5'"), deps);
+  assert.strictEqual(d.permissionDecisionReason, PIPE_REASON);
+});
+
+test('ENF-23 M-04: dirty tree + `eval gsd-test --head HEAD` DENIES with the dirty reason', () => {
+  const { deps } = scenario({ porcelain: DIRTY_ONE });
+  const d = runGsdTestCleanTreeGate(input('eval gsd-test --head HEAD'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /ref-based/);
+});
