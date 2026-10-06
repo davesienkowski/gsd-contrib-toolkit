@@ -78,8 +78,11 @@
  * would aim the mutation at another repo). The base token never reaches git: classification is
  * pure string matching, and only shas that pass SHA_RE are passed to merge-base / update-ref.
  *
- * The settings reader (37-05) only reads: three fixed layers, a regular-file check, a 1 MiB cap,
- * JSON.parse in a try, one key. It never writes and never reads any other path.
+ * The settings reader (37-05, widened by 37-REVIEW MI-04) only reads: the managed-settings file and
+ * its sorted `managed-settings.d` drop-ins, the two project layers, the main checkout's two project
+ * layers when the root is a linked worktree (found through `<root>/.git` and `<admin>/commondir`),
+ * and the user layer; a regular-file check, a 1 MiB cap, JSON.parse in a try, one key. It never
+ * writes and never reads any other path.
  *
  * @module hooks/worktree-fresh-base
  */
@@ -321,43 +324,140 @@ function defaultReadSettings(p) {
   }
 }
 
+/** At most this many managed-settings.d drop-in files are consulted (sorted; the rest ignored). */
+const MAX_MANAGED_DROPINS = 64;
+
+/**
+ * 37-REVIEW MI-04: the directory Claude Code reads managed (policy) settings from, per platform.
+ * Verified 2026-10-06 against the installed Claude Code 2.1.291 binary: `/Library/Application
+ * Support/ClaudeCode` (macOS), `C:\Program Files\ClaudeCode` (Windows), else `/etc/claude-code`,
+ * each holding `managed-settings.json` plus a sorted `managed-settings.d/` drop-in directory.
+ *
+ * @param {string} [platform] default process.platform
+ * @returns {string}
+ */
+function defaultManagedSettingsDir(platform) {
+  const p = platform || process.platform;
+  if (p === 'darwin') return '/Library/Application Support/ClaudeCode';
+  if (p === 'win32') return 'C:\\Program Files\\ClaudeCode';
+  return '/etc/claude-code';
+}
+
+/** The default drop-in lister: the entry names of `dir`, or [] when it cannot be listed. */
+function defaultListDir(dir) {
+  try {
+    return fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * MI-04: the main checkout of a LINKED worktree `root`, read with the bounded settings reader (no
+ * git call): `<root>/.git` is a file `gitdir: <admin>`, `<admin>/commondir` names the common dir,
+ * and a common dir named `.git` sits in the main checkout. null when `root` is not a linked
+ * worktree (`.git` is a directory, missing or unreadable), the common dir is bare, or the main
+ * checkout is `root` itself.
+ *
+ * @param {string} root
+ * @param {(p:string)=>(string|null)} read the settings reader (text or null)
+ * @returns {string|null}
+ */
+function mainCheckoutRoot(root, read) {
+  const gitFile = read(path.join(String(root), '.git'));
+  if (typeof gitFile !== 'string') return null;
+  const m = /^gitdir:[ \t]*(.+?)[ \t]*$/m.exec(gitFile);
+  if (!m) return null;
+  const admin = path.resolve(String(root), m[1]);
+  const commondir = read(path.join(admin, 'commondir'));
+  if (typeof commondir !== 'string' || commondir.trim() === '') return null;
+  const common = path.resolve(admin, commondir.trim());
+  if (path.basename(common) !== '.git') return null; // a bare common dir has no main checkout
+  const main = path.dirname(common);
+  return path.resolve(main) === path.resolve(String(root)) ? null : main;
+}
+
 /**
  * The effective `worktree.baseRef` for an EnterWorktree cut (Addendum 4; the shape of gsd-core's
- * resolveEffectiveBaseRef, mirrored, not required). Layers, first answer wins:
+ * resolveEffectiveBaseRef, mirrored, not required, widened by 37-REVIEW MI-04). Layers, first
+ * answer wins:
+ *   0. managed: `<managedDir>/managed-settings.d/*.json` (drop-ins, the LAST sorted name first, so
+ *      a later file wins), then `<managedDir>/managed-settings.json` (highest precedence in the
+ *      harness);
  *   1. <root>/.claude/settings.local.json
  *   2. <root>/.claude/settings.json
- *   3. <homedir>/.claude/settings.json — skipped when it is the same file as layer 2.
+ *   3. when `root` is a linked worktree: <main>/.claude/settings.local.json, then
+ *      <main>/.claude/settings.json (mainCheckoutRoot: `<root>/.git` and `<admin>/commondir`)
+ *   4. <homedir>/.claude/settings.json — skipped when it is the same file as layer 2.
  * A layer answers only when its JSON parses and `worktree` is a non-array object with a string
  * `baseRef`; an absent, unreadable, non-regular, oversized or unparseable layer contributes nothing.
  * The result is 'head' only for the exact string 'head', otherwise 'fresh' (the harness default).
- * No other path is ever read, and nothing is written.
+ * Only these paths (plus the drop-in directory listing) are read, and nothing is written. CLI
+ * `--settings` layers and the optional WSL Windows-policy chain are not read (CTK-ADR-0009).
  *
  * @param {string} root the gsd-core tree root
  * @param {string} homedir the user's home directory
  * @param {(p:string)=>(string|null)} [readSettings] text of a layer, or null (default: the real fs)
+ * @param {{managedDir?:string, listDir?:(dir:string)=>string[]}} [opts] the managed-settings dir
+ *   (default defaultManagedSettingsDir()) and the drop-in lister (default fs.readdirSync, [] on error)
  * @returns {'head'|'fresh'}
  */
-function readBaseRef(root, homedir, readSettings) {
+function readBaseRef(root, homedir, readSettings, opts) {
   const read = typeof readSettings === 'function' ? readSettings : defaultReadSettings;
-  const project = path.join(String(root), '.claude', 'settings.json');
-  const layers = [path.join(String(root), '.claude', 'settings.local.json'), project];
-  if (typeof homedir === 'string' && homedir !== '') {
-    const user = path.join(homedir, '.claude', 'settings.json');
-    if (path.resolve(user) !== path.resolve(project)) layers.push(user);
-  }
-  for (const p of layers) {
+  const o = opts || {};
+  const managedDir = typeof o.managedDir === 'string' && o.managedDir !== '' ? o.managedDir : defaultManagedSettingsDir();
+  const listDir = typeof o.listDir === 'function' ? o.listDir : defaultListDir;
+
+  /** The baseRef one layer answers, or null when it contributes nothing. */
+  const answer = (p) => {
     const text = read(p);
-    if (typeof text !== 'string') continue;
+    if (typeof text !== 'string') return null;
     let parsed;
     try {
       parsed = JSON.parse(text);
     } catch {
-      continue;
+      return null;
     }
     const wt = parsed && typeof parsed === 'object' ? parsed.worktree : undefined;
-    if (!wt || typeof wt !== 'object' || Array.isArray(wt)) continue;
-    if (typeof wt.baseRef !== 'string') continue;
+    if (!wt || typeof wt !== 'object' || Array.isArray(wt)) return null;
+    if (typeof wt.baseRef !== 'string') return null;
     return wt.baseRef === 'head' ? 'head' : 'fresh';
+  };
+
+  // Each entry is a path or a thunk producing more paths (the main checkout is probed lazily).
+  const dropDir = path.join(managedDir, 'managed-settings.d');
+  let dropins = [];
+  try {
+    const names = listDir(dropDir);
+    dropins = (Array.isArray(names) ? names : [])
+      .filter((n) => typeof n === 'string' && n.endsWith('.json') && !n.startsWith('.'))
+      .sort()
+      .slice(0, MAX_MANAGED_DROPINS)
+      .reverse()
+      .map((n) => path.join(dropDir, n));
+  } catch {
+    dropins = [];
+  }
+  const project = path.join(String(root), '.claude', 'settings.json');
+  const layers = dropins.concat([
+    path.join(managedDir, 'managed-settings.json'),
+    path.join(String(root), '.claude', 'settings.local.json'),
+    project,
+    () => {
+      const main = mainCheckoutRoot(root, read);
+      return main === null ? [] : [path.join(main, '.claude', 'settings.local.json'), path.join(main, '.claude', 'settings.json')];
+    },
+  ]);
+  if (typeof homedir === 'string' && homedir !== '') {
+    const user = path.join(homedir, '.claude', 'settings.json');
+    if (path.resolve(user) !== path.resolve(project)) layers.push(user);
+  }
+  for (const layer of layers) {
+    const paths = typeof layer === 'function' ? layer() : [layer];
+    for (const p of paths) {
+      const a = answer(p);
+      if (a !== null) return a;
+    }
   }
   return 'fresh';
 }
@@ -1075,6 +1175,8 @@ module.exports = {
   createDefaultSeams,
   classifyFetchResult,
   readBaseRef,
+  defaultManagedSettingsDir,
+  mainCheckoutRoot,
   FetchUnavailable,
   ASK_LIMIT_NOTE,
   MAX_SETTINGS_BYTES,
