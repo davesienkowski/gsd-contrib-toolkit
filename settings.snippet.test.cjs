@@ -46,6 +46,12 @@ const BASH_GATES = [
   'scan-gate',
   'protocol-artifact',
   'review-artifact',
+  // `runtime-drift` (ENF-21) was wired but MISSING here too, the same under-coverage the
+  // git-commit-convention note above describes. Added with ENF-23/ENF-24 (36-05).
+  'runtime-drift',
+  // ENF-23 / ENF-24 (Phase 36): the gsd-test dispatch gates.
+  'gsd-test-clean-tree',
+  'gsd-test-viability',
 ];
 const WRITE_EDIT_GATES = ['binlib-edit'];
 const PROMPT_HOOKS = ['protocol-reminder'];
@@ -161,9 +167,39 @@ test('Bash gates are under a Bash matcher', () => {
   const cmds = allCommands(snip);
   for (const name of BASH_GATES) {
     const hit = cmds.find((c) => c.command.includes(`/hooks/${name}.cjs"`));
+    assert.ok(hit, `${name} is wired`);
     assert.equal(hit.evt, 'PreToolUse', `${name} is a PreToolUse hook`);
     assert.equal(hit.matcher, 'Bash', `${name} matcher is Bash (got ${hit.matcher})`);
   }
+});
+
+/**
+ * GTEST-07 / T-36-21: a PreToolUse hook killed by its harness timeout delivers NO deny, so each
+ * gsd-test gate's settings timeout must exceed the worst case of its own subprocess bounds.
+ *   - viability: one bounded `docker info` probe (DOCKER_PROBE_TIMEOUT_MS) per gate call;
+ *   - clean-tree: up to three bounded git calls for one tree on the slow path (status, plus a
+ *     rev-parse of HEAD and of a literal --head), each GIT_TIMEOUT_MS. A command that dispatches
+ *     into several distinct trees can exceed this; that residual is not asserted here.
+ * The bounds are read from the hook modules themselves, so raising a bound without raising the
+ * settings timeout goes red here.
+ */
+test('GTEST-07: gsd-test gate timeouts exceed their own subprocess bounds', () => {
+  const { DOCKER_PROBE_TIMEOUT_MS } = require('./hooks/gsd-test-viability.cjs');
+  const { GIT_TIMEOUT_MS } = require('./hooks/gsd-test-clean-tree.cjs');
+  assert.equal(typeof DOCKER_PROBE_TIMEOUT_MS, 'number', 'viability exports DOCKER_PROBE_TIMEOUT_MS');
+  assert.equal(typeof GIT_TIMEOUT_MS, 'number', 'clean-tree exports GIT_TIMEOUT_MS');
+  const cmds = allCommands(loadSnippet());
+  const timeoutOf = (name) => {
+    const hit = cmds.find((c) => c.command.includes(`/hooks/${name}.cjs"`));
+    assert.ok(hit, `${name} is wired`);
+    return hit.timeout * 1000;
+  };
+  const viability = timeoutOf('gsd-test-viability');
+  assert.ok(viability > DOCKER_PROBE_TIMEOUT_MS,
+    `gsd-test-viability timeout ${viability} ms must exceed DOCKER_PROBE_TIMEOUT_MS ${DOCKER_PROBE_TIMEOUT_MS}`);
+  const cleanTree = timeoutOf('gsd-test-clean-tree');
+  assert.ok(cleanTree > 3 * GIT_TIMEOUT_MS,
+    `gsd-test-clean-tree timeout ${cleanTree} ms must exceed 3 x GIT_TIMEOUT_MS (${3 * GIT_TIMEOUT_MS})`);
 });
 
 test('binlib-edit is under a Write|Edit matcher', () => {

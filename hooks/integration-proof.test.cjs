@@ -404,6 +404,34 @@ const DENY_GATES = [
     clean: bash('git status'),
     needsLive: false,
   },
+  // ── ENF-23 / ENF-24 (Phase 36, GTEST-07): the gsd-test dispatch gates ───────────────────
+  {
+    name: 'gsd-test-clean-tree',
+    // ENF-23's dirty-tree deny is STATE-driven (the checkout's tracked changes), so the BAD fixture
+    // uses the gate's other, COMMAND-driven deny: a gsd-test dispatch piped into `tail` without
+    // pipefail (GTEST-03). That deny returns PIPE_REASON (path-free) before ANY git call, so the
+    // capture does not depend on whether the checkout is dirty. needsLive:true because the gate
+    // first resolves the dispatch's tree to a gsd-core root from cwd and skips an out-of-tree
+    // dispatch. The CLEAN fixture `gsd-test --version` is informational: the gate allows it before
+    // any root, git or fs work (RES-01).
+    bad: bash('gsd-test -base next -head origin/next | tail'),
+    clean: bash('gsd-test --version'),
+    needsLive: true,
+  },
+  {
+    name: 'gsd-test-viability',
+    // ENF-24's config/bench/docker denies are STATE-driven (the user's config.toml and the local
+    // Docker daemon), so no fixture can trip them without touching real state. The BAD fixture
+    // proves the deterministic FAIL-CLOSED wiring instead: an unparseable command naming gsd-test
+    // (`gsd-test --bench "x`) is graded uncertain by the detector and denies before any root
+    // resolution, config read or `docker info` probe, so the proof NEVER reaches real Docker and
+    // needsLive:false. The CLEAN fixture `gsd-test --version` is informational and allows before
+    // any I/O. The docker-timeout `ask` has no proof kind (SEED-enf22-residual-merge-continue-
+    // and-ask-proof-kind); it is unit-proven in hooks/gsd-test-viability.test.cjs only.
+    bad: bash('gsd-test --bench "x'),
+    clean: bash('gsd-test --version'),
+    needsLive: false,
+  },
 ];
 
 for (const g of DENY_GATES) {
