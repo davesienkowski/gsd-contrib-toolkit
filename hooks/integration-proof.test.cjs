@@ -432,6 +432,23 @@ const DENY_GATES = [
     clean: bash('gsd-test --version'),
     needsLive: false,
   },
+  // ── ENF-25 (Phase 37, WTREE-01): the worktree fresh-base gate ─────────────────────────────
+  {
+    name: 'worktree-fresh-base',
+    // ENF-25's stale-trunk denies are STATE-driven (a local `next` behind origin/next, which needs
+    // a fetch to know), so no environment-independent fixture can trip them. The BAD fixture proves
+    // the deterministic FAIL-CLOSED wiring instead: an unparseable command naming `git worktree
+    // add` (`git worktree add "x`) is graded uncertain by the detector and denies with the
+    // constant, path-free UNCERTAIN_REASON before any root resolution, fetch or git call. The CLEAN
+    // fixture `git status` is not a worktree command and allows before any I/O. needsLive:false,
+    // so the proof runs in the toolkit cwd and NEVER runs in ~/repos/gsd-core, where a fetch or a
+    // ref update could touch a real repository. The `ask` path (origin unobtainable) has no proof
+    // kind (SEED-enf22-residual-merge-continue-and-ask-proof-kind); it is unit-proven in
+    // hooks/worktree-fresh-base.test.cjs only.
+    bad: bash('git worktree add "x'),
+    clean: bash('git status'),
+    needsLive: false,
+  },
 ];
 
 for (const g of DENY_GATES) {

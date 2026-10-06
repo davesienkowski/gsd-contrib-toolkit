@@ -246,6 +246,19 @@ const PROOF_TABLE = [
   { name: 'gsd-test-viability', kind: 'deny', needsLive: false,
     bad: bash('gsd-test --bench "x'),
     clean: bash('gsd-test --version') },
+  // ── ENF-25 (Phase 37, WTREE-01): the worktree fresh-base gate ─────────────────────────
+  // The stale-trunk denies are STATE-driven (a local `next` behind origin/next), so the BAD
+  // fixture proves the FAIL-CLOSED wiring: an unparseable `git worktree add "x` is graded
+  // uncertain and denies with the constant, path-free UNCERTAIN_REASON before any root
+  // resolution, fetch or git call. The CLEAN fixture `git status` is not a worktree command and
+  // allows before any I/O. needsLive:false, so the capture runs in the toolkit cwd and NEVER in
+  // ~/repos/gsd-core (no fetch or ref update can reach a real repository). The origin-
+  // unobtainable `ask` has no proof kind (SEED-enf22-residual-merge-continue-and-ask-proof-kind);
+  // it is unit-proven in hooks/worktree-fresh-base.test.cjs only. Mirrored in
+  // hooks/integration-proof.test.cjs DENY_GATES (the sync SOURCE).
+  { name: 'worktree-fresh-base', kind: 'deny', needsLive: false,
+    bad: bash('git worktree add "x'),
+    clean: bash('git status') },
   // ── binlib-edit (Write|Edit gate): command-only, no live resolution ──
   { name: 'binlib-edit', kind: 'deny', needsLive: false,
     bad: edit('/g/gsd-core/bin/lib/decisions.cjs'),
