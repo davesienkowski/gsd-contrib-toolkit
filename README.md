@@ -106,9 +106,9 @@ created any other way is never seen, so its trunk is not refreshed and a stale `
 
 - **Orca.** `orca-ide` creates worktrees out of band under `~/orca/workspaces/<repo>/<name>`. Neither
   a Bash `git worktree add` nor `EnterWorktree` passes through Claude Code, so no hook fires.
-- **GSD's own worktree engine.** It runs `git worktree add` from a node child process
-  (`spawnSync('git', ['worktree', 'add', ...])` in the installed runtime's worktree-safety module),
-  not through the Bash tool, so no Claude Code hook is in that path.
+- **GSD's own worktree engine.** It runs `git worktree add` from a node child process (the installed
+  runtime's worktree-safety module calls `execGit(['worktree', 'add', ...])`, a `spawnSync('git', ...)`
+  wrapper), not through the Bash tool, so no Claude Code hook is in that path.
 - **Any other creator outside the Bash tool and `EnterWorktree`**: an IDE, a terminal outside Claude
   Code, a script or Makefile the agent runs, or a newline-joined multi-line command (the shared
   command parser reads an unquoted newline as whitespace, so a cut on a later line is missed).

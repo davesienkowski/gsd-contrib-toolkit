@@ -28,8 +28,10 @@ code that had already been rewritten upstream, and the first rebase produced con
 the change. His `worktree-fresh-base-guard.sh` made the fetch part of worktree creation. ENF-25 adopts
 that idea for the toolkit.
 
-Every earlier toolkit gate is read-only: it inspects local state, or calls a LIVE gsd-core script,
-and returns `allow`, `ask` or `deny`. ENF-25 is the first gate that changes repository state. It
+Every earlier toolkit gate leaves the repository it judges untouched: it inspects local state, or
+calls a LIVE gsd-core script, and returns `allow`, `ask` or `deny`. (Toolkit-owned state, such as the
+ENF-21 stamp and tip cache, the verdict log and override receipts, lives outside that repository.)
+ENF-25 is the first gate that changes repository state. It
 fetches `origin next`, which writes `refs/remotes/origin/next`, `FETCH_HEAD` and objects, and it can
 move the local branch `refs/heads/next`. That is a precedent, so it gets its own record.
 
