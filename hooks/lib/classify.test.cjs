@@ -2534,3 +2534,30 @@ test('261006-jsm CR-02 forms: the new via codes are VERDICT_ROUTE_FORMS keys wit
     assert.ok(typeof VERDICT_ROUTE_FORMS[via] === 'string' && /^[\x20-\x7e]+$/.test(VERDICT_ROUTE_FORMS[via]), via);
   }
 });
+
+// -- 261006-jsm review fix round CR-03: gh api takes the GraphQL endpoint as a full URL too -------
+for (const cmd of [
+  "gh api https://api.github.com/graphql -f query='" + JSM_GQL_SUBMIT + "'",
+  "gh api https://api.github.com/graphql/ -f query='" + JSM_GQL_SUBMIT + "'",
+  "gh api 'graphql?x=1' -f query='" + JSM_GQL_SUBMIT + "'",
+  "gh api '/graphql?x=1' -f query='" + JSM_GQL_SUBMIT + "'",
+]) {
+  test('261006-jsm CR-03: `' + cmd.slice(0, 60) + '...` -> recovered pr-review, route graphql', () => {
+    assertGraphqlReview(cmd);
+  });
+}
+
+test('261006-jsm CR-03: a full-URL GraphQL query read from a file -> UNRESOLVED pr-review', () => {
+  assertGraphqlFileQuery('gh api https://api.github.com/graphql -F query=@q.graphql');
+});
+
+for (const cmd of [
+  "gh api https://example.com/graphql -f query='" + JSM_GQL_SUBMIT + "'",
+  "gh api https://api.github.com/repos/o/r/graphql -f query='" + JSM_GQL_SUBMIT + "'",
+  "gh api https://api.github.com/graphqlx -f query='" + JSM_GQL_SUBMIT + "'",
+]) {
+  test('261006-jsm CR-03 lock: `' + cmd.slice(0, 70) + '` stays other', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasFailClosedSegment(parseCommand(cmd)), false, cmd);
+  });
+}

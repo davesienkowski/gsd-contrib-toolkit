@@ -2902,3 +2902,8 @@ test('261006-jsm CR-02 fieldCandidates: a bundled gh field and a bundled curl bo
   const c2 = fieldCandidates(seg0("curl -sSd'{\"event\":\"APPROVE\"}' " + JSM_CR02_URL + 'pulls/42/reviews'));
   assert.ok(c2.includes('{"event":"APPROVE"}'), JSON.stringify(c2));
 });
+
+// -- 261006-jsm review fix round CR-03: a full-URL `gh api https://api.github.com/graphql` -------
+test('261006-jsm CR-03 gate: `gh api https://api.github.com/graphql -f query=<approve>` with only Bash rows -> DENY R8a-memtrace', () => {
+  assertJsmR8aDeny("gh api https://api.github.com/graphql -f query='" + JSM_GQL_SUBMIT + "'");
+});
