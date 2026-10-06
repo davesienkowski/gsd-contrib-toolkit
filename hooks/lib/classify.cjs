@@ -880,8 +880,9 @@ function ghApiFields(tokens) {
  * The GraphQL review mutation a segment sends, if any (Task 3b, CONTEXT D4). Pure.
  *
  * Returns null when the segment is not a request to the GitHub GraphQL endpoint (graphqlTarget).
- * Otherwise `{ mutation, queryText, fileSourced, variables }`:
- *   queryText    the `query` field (gh) or the inline JSON body's `query` (curl), or null
+ * Otherwise `{ mutation, queryText, fileSourced, variables, fields }`:
+ *   queryText    every `query` field value (gh sends the LAST of repeated fields, so none is
+ *                skipped; joined with a newline) or the inline JSON body's `query` (curl), or null
  *   mutation     `submitPullRequestReview` / `addPullRequestReview` when the query text names one
  *                as a case-sensitive whole identifier, else null
  *   fileSourced  true when the query may come from a file or stdin: gh `-F query=@...` /
@@ -890,9 +891,12 @@ function ghApiFields(tokens) {
  *                file-sourced: gh sends the literal text.
  *   variables    name -> value for every non-query gh field, or the curl JSON body's `variables`
  *                object (values as JSON gives them), for the gate's event-variable read
+ *   fields       every gh field in token order (`{name, value, typed}`, repeats kept), so the gate
+ *                can read every value of a repeated variable and gh's bracket paths
+ *                (`input[event]=...`); [] for curl
  *
  * @param {Object} seg
- * @returns {{mutation:(string|null), queryText:(string|null), fileSourced:boolean, variables:Object}|null}
+ * @returns {{mutation:(string|null), queryText:(string|null), fileSourced:boolean, variables:Object, fields:Array<{name:string, value:string, typed:boolean}>}|null}
  */
 function graphqlReviewMutation(seg) {
   if (!seg || typeof seg !== 'object' || !Array.isArray(seg.tokens)) return null;
@@ -902,15 +906,19 @@ function graphqlReviewMutation(seg) {
   let queryText = null;
   let fileSourced = false;
   const variables = {};
+  let fields = [];
   if (target === 'gh') {
-    for (const f of ghApiFields(tokens)) {
+    fields = ghApiFields(tokens);
+    const queries = [];
+    for (const f of fields) {
       if (f.name === 'query') {
         if (f.typed && f.value.startsWith('@')) fileSourced = true;
-        else if (queryText === null) queryText = f.value;
+        else queries.push(f.value);
       } else if (!Object.prototype.hasOwnProperty.call(variables, f.name)) {
         variables[f.name] = f.value;
       }
     }
+    if (queries.length > 0) queryText = queries.join('\n');
     if (tokens.some((t) => t === '--input' || t.startsWith('--input='))) fileSourced = true;
   } else {
     for (let i = 0; i < tokens.length; i += 1) {
@@ -948,7 +956,7 @@ function graphqlReviewMutation(seg) {
     }
   }
   const m = queryText === null ? null : GRAPHQL_REVIEW_MUTATION_RE.exec(queryText);
-  return { mutation: m ? m[1] : null, queryText, fileSourced, variables };
+  return { mutation: m ? m[1] : null, queryText, fileSourced, variables, fields };
 }
 
 /**
