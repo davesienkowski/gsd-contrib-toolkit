@@ -661,3 +661,23 @@ test('GTEST-01 cd-expansion: treeDirFor(cd "$X" && gsd-test) is null (unresolved
   const d = oneDispatch('cd "$X" && gsd-test');
   assert.strictEqual(exported('treeDirFor')(d, '/r', { env: {}, homedir: '/h' }), null);
 });
+
+// Regression locks added after GREEN (same fix family; they passed on the first run after it).
+test('GTEST-03 quoted-paren: `gsd-test --bench "{" | tail` is pipe-masked (a quoted lone brace is not a group)', () => {
+  assert.strictEqual(oneDispatch('gsd-test --bench "{" | tail').pipeMasked, true);
+});
+
+test('GTEST-01 cd-expansion: `cd - && gsd-test` is an unresolved start dir ($OLDPWD)', () => {
+  const d = oneDispatch('cd - && gsd-test');
+  assert.strictEqual(exported('startDirFor')(d, '/r', { env: {}, homedir: '/h' }), null);
+});
+
+test('GTEST-01 cd-expansion: `cd ~/r && gsd-test` uses the injected homedir', () => {
+  const d = oneDispatch('cd ~/r && gsd-test');
+  assert.strictEqual(exported('startDirFor')(d, '/w', { env: {}, homedir: '/h' }), '/h/r');
+});
+
+test('GTEST-01 cd-expansion: `{ cd "$X"; }; gsd-test` is unresolved (a brace group cd persists)', () => {
+  const d = oneDispatch('{ cd "$X"; }; gsd-test');
+  assert.strictEqual(exported('startDirFor')(d, '/r', { env: {}, homedir: '/h' }), null);
+});
