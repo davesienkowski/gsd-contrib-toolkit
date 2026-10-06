@@ -1357,7 +1357,20 @@ const WORST = [
   ['HEAD on next, behind and (counted as) unheld', 'git worktree add -b f p', { branch: 'next' }],
   ['HEAD on next, diverged', 'git worktree add -b f p', { branch: 'next', ancestor: DIVERGED }],
   ['remote base', 'git worktree add -b f p origin/next', {}],
+  // 37-REVIEW: the paths the review fixes lengthened (BL-01 symref, BL-02 in-progress, MI-01 stale judge).
+  ['HEAD on next, behind, unheld, not in progress (CAS): the 9-call path', 'git worktree add -b f p', { branch: 'next' }],
+  ['HEAD on next, fetch failed, behind and in progress (MI-01)', 'git worktree add -b f p',
+    { branch: 'next', fetchOrigin: () => { throw new gateModule.FetchUnavailable('x'); }, inProgress: [{ path: '/w', op: 'rebase' }] }],
+  ['HEAD on next, fetch failed, diverged (MI-01)', 'git worktree add -b f p',
+    { branch: 'next', fetchOrigin: () => { throw new gateModule.FetchUnavailable('x'); }, ancestor: DIVERGED }],
 ];
+
+test('ENF-25 bound: the full CAS path on a HEAD-on-next cut spawns EXACTLY MAX_GIT_CALLS_PER_ROOT non-fetch git processes', () => {
+  const { deps, calls } = scenario({ branch: 'next' });
+  assert.strictEqual(runWorktreeFreshBaseGate(input('git worktree add -b f p'), deps).permissionDecision, 'allow');
+  assert.strictEqual(calls.casUpdateRef, 1);
+  assert.strictEqual(gitProcesses(calls), exp('MAX_GIT_CALLS_PER_ROOT'));
+});
 for (const [name, cmd, over] of WORST) {
   test('ENF-25 bound: worst path "' + name + '" spawns <= MAX_GIT_CALLS_PER_ROOT non-fetch git processes', () => {
     const { deps, calls } = scenario(over);
