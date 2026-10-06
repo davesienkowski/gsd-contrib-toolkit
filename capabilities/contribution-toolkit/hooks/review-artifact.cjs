@@ -93,6 +93,7 @@ const {
   hasFailClosedSegment,
   isNonGovernedCommand,
   PR_COMMENT_EQUIVALENT_ACTIONS,
+  VERDICT_ROUTE_FORMS,
 } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, ask, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand } = require('./lib/resolve.cjs');
@@ -777,6 +778,34 @@ function unresolvedVerdictAsk(form) {
 }
 
 /**
+ * The ask for an UNCERTAIN verdict route (261006-jsm, CONTEXT D6): the command may submit a review
+ * verdict through a form the classifier cannot read (an expansion-named program, an opaque or
+ * unparseable eval / shell -c payload, a nesting or wrapper stack past the bound). Steps 8a and 10
+ * cannot be checked, so a human decides. Held like any other ask (any deny still wins), and
+ * raised WITHOUT resolving a PR, scaffolding or reading the tool log: there is nothing to key the
+ * artifacts to. The reason names the form by its FIXED description only; it never echoes the
+ * command, a payload, a path or a body.
+ *
+ * @param {string} via a classify VERDICT_ROUTE_FORMS code
+ * @returns {Object}
+ */
+function uncertainVerdictRouteAsk(via) {
+  const form = Object.prototype.hasOwnProperty.call(VERDICT_ROUTE_FORMS, via)
+    ? VERDICT_ROUTE_FORMS[via]
+    : 'a command form the gate cannot read';
+  return ask(
+    'ENF-20 R8a-memtrace / R10 (re-review steps 8a and 10) - UNCERTAIN verdict route: ' + form +
+      '. The gate cannot see whether this command submits an approve or a request-changes, so ' +
+      'step 8a (memtrace evidence in this session) and step 10 (the exogenous check) were not ' +
+      'checked.\n\n' +
+      'Run the review as a plain `gh pr review <n> --approve` or `gh pr review <n> ' +
+      '--request-changes` the gate can read, or let a human decide here. `GSD_CONTRIB_OVERRIDE` ' +
+      'does not answer this prompt: it rescues thrown gate errors only. (CTK-ADR-0005 Decision 2, ' +
+      'CTK-ADR-0010, ENF-20)'
+  );
+}
+
+/**
  * Is this a help invocation? `gh pr review --help` classifies as `pr-review` (the classifier
  * reads the verb, not the intent), and denying a help request would be a pure false positive —
  * the failure mode that gets a toolkit switched off. Reads only the STRUCTURED flag space, so
@@ -833,10 +862,19 @@ function prSelector(seg) {
     if (m) return m[1];
   }
 
-  // Native route: the first number after the `<pr|issue> <verb>` pair.
-  for (let i = 1; i < tokens.length; i += 1) {
-    const prev = tokens[i - 1];
-    if ((prev !== 'pr' && prev !== 'issue') || !NATIVE_TARGET_VERBS.has(tokens[i])) continue;
+  // Native route: the first number after the `<pr|issue> <verb>` pair. gh also accepts its
+  // `-R` / `--repo` flag between the area and the verb (`gh pr -R o/r review 42`), so those
+  // spellings, and a separate value token, are skipped between the two (261006-jsm).
+  for (let a = 0; a < tokens.length; a += 1) {
+    if (tokens[a] !== 'pr' && tokens[a] !== 'issue') continue;
+    let i = a + 1;
+    while (i < tokens.length) {
+      const t = tokens[i];
+      if (t === '-R' || t === '--repo') i += 2;
+      else if (typeof t === 'string' && ((t.length > 2 && t.startsWith('-R')) || t.startsWith('--repo='))) i += 1;
+      else break;
+    }
+    if (!NATIVE_TARGET_VERBS.has(tokens[i])) continue;
     for (let j = i + 1; j < tokens.length; j += 1) {
       const t = tokens[j];
       if (/^\d+$/.test(t)) return t;
@@ -1618,7 +1656,9 @@ function gateSegment(seg, action, deps, opts = {}) {
  * returned, else allow.
  *
  * 261006-jsm: a recovered verdict route (classify result `recovered: true`) contributes its
- * `verdictSegments` to this loop in place of the outer segment, under the same precedence.
+ * `verdictSegments` to this loop in place of the outer segment, under the same precedence. An
+ * uncertain route (`uncertain: true`) holds uncertainVerdictRouteAsk as an ask without any PR
+ * lookup, scaffold or log read.
  */
 function gate(stdinString, deps) {
   const input = readHookInput(stdinString);
@@ -1660,6 +1700,11 @@ function gate(stdinString, deps) {
     // `bash -c "..."`) is gated through each of its inner verdict segments, with the same
     // precedence as the outer loop. The outer wrapper segment never reaches gateSegment: its
     // tokens make isNativeGhSegment false, so its `-a` would not count as an approve.
+    // 261006-jsm Task 2d: an UNCERTAIN route holds its ask first (no PR lookup, no scaffold, no
+    // log read); any verdict segments it also carries are still gated below, so a deny wins.
+    if (r.recovered === true && r.uncertain === true && !firstAsk) {
+      firstAsk = uncertainVerdictRouteAsk(r.uncertainVia || r.via);
+    }
     const targets = r.recovered === true ? r.verdictSegments : [seg];
     const action = r.recovered === true ? 'pr-review' : r.action;
     for (const target of targets) {

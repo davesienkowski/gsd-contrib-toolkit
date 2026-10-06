@@ -1812,3 +1812,366 @@ test('261006-jsm D2 shell -c corpus lock: F is non-governed for every existing g
 test('261006-jsm D2 shell -c corpus: F IS governed by the review-artifact set', () => {
   assert.strictEqual(hasGovernedSegment(parseCommand(JSM_SHELL_F), REVIEW_ARTIFACT_GOVERNED), true);
 });
+
+// ---------------------------------------------------------------------------
+// 261006-jsm Task 2a: transparent prefix verdict routes (subshell, brace group, negation, nohup,
+// setsid, time). Each strip removes one prefix from the SAME visible argv and re-classifies the
+// rest; only an inner pr-review is kept (D1). The D8 false-deny corpus below is a lock set: it
+// passes before and after every Task 2 fix.
+// ---------------------------------------------------------------------------
+
+/** Assert `cmd` recovers as a pr-review named by `via` with one verdict segment `tokens`. */
+function assertPrefixReview(cmd, via, tokens = JSM_REVIEW_TOKENS) {
+  assertRecoveredReview(cmd, [tokens]);
+  assert.strictEqual(cls(cmd).via, via, cmd + ' via');
+}
+
+for (const [cmd, via] of [
+  ['( gh pr review 42 -a )', 'subshell'],
+  ['(gh pr review 42 -a)', 'subshell'],
+  ['{ gh pr review 42 -a; }', 'brace-group'],
+  ['! gh pr review 42 -a', 'negation'],
+  ['nohup gh pr review 42 -a', 'nohup'],
+  ['nohup -- gh pr review 42 -a', 'nohup'],
+  ['setsid -f gh pr review 42 -a', 'setsid'],
+  ['time gh pr review 42 -a', 'time'],
+  ['time -p gh pr review 42 -a', 'time'],
+  ['/usr/bin/time -f %e -o /dev/null gh pr review 42 -a', 'time'],
+  ['sudo nohup gh pr review 42 -a', 'nohup'],
+  ['( time nohup gh pr review 42 -a )', 'subshell'],
+]) {
+  test('261006-jsm prefix: `' + cmd + '` -> recovered pr-review, via ' + via + ', one verdict segment', () => {
+    assertPrefixReview(cmd, via);
+  });
+}
+
+test('261006-jsm prefix: `nohup sudo gh pr review 42 -a` keeps the WRAPPER_BUILTINS sudo the direct classifier resolves', () => {
+  // Stripping nohup leaves `sudo gh pr review 42 -a`, which the unchanged direct classifier reads
+  // as a native pr-review through resolveProgram; that inner segment is the verdict segment.
+  assertPrefixReview('nohup sudo gh pr review 42 -a', 'nohup', ['sudo', 'gh', 'pr', 'review', '42', '-a']);
+});
+
+test('261006-jsm prefix: GNU time value spellings (`-f` attached, `--format=`, `--output`) are skipped', () => {
+  assertPrefixReview('/usr/bin/time -f%e gh pr review 42 -a', 'time');
+  assertPrefixReview('/usr/bin/time --format=%e gh pr review 42 -a', 'time');
+  assertPrefixReview('/usr/bin/time --output /dev/null gh pr review 42 -a', 'time');
+  assertPrefixReview('/usr/bin/time -pf %e gh pr review 42 -a', 'time');
+});
+
+for (const cmd of ['nohup', 'setsid', 'time', '( )', '()', 'nohup --', '!', '{']) {
+  test('261006-jsm prefix lock: bare wrapper `' + cmd + '` stays other and never throws', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+  });
+}
+
+for (const cmd of ['nohup git push', 'setsid git push', 'time git push', '( git push )', '! git push']) {
+  test('261006-jsm prefix lock (D1, 36-02a): `' + cmd + '` stays other and no push gate starts firing', () => {
+    const parsed = parseCommand(cmd);
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasGovernedSegment(parsed, ['push']), false);
+    assert.strictEqual(hasFailClosedSegment(parsed), false);
+  });
+}
+
+/**
+ * The D2 four rows + the governed-set corpus for a recovered form F (CONTEXT D2, orchestrator B2).
+ * `merge` overrides the `F && gh pr merge 1` chain (xargs reads its command to the chain end).
+ */
+function jsmD2Rows(label, F, { merge = F + ' && gh pr merge 1', lone = null } = {}) {
+  test('261006-jsm D2 ' + label + ' lock: `F && gh pr merge 1` is pr-merge', () => {
+    assert.strictEqual(cls(merge).action, 'pr-merge', merge);
+  });
+  test('261006-jsm D2 ' + label + ' lock: `gh pr review 1 -a; F` is the NATIVE pr-review, no recovered key', () => {
+    assert.deepStrictEqual(cls('gh pr review 1 -a; ' + F), { action: 'pr-review', route: 'native' });
+  });
+  test('261006-jsm D2 ' + label + ': lone F classifies as the task specifies', () => {
+    const r = cls(F);
+    assert.strictEqual(r.action, 'pr-review', F + ' -> ' + JSON.stringify(r));
+    assert.strictEqual(r.recovered, true, F);
+    if (lone) lone(r);
+  });
+  test('261006-jsm D2 ' + label + ' lock: hasGovernedSegment still finds pr-merge after F', () => {
+    assert.strictEqual(hasGovernedSegment(parseCommand(merge), ['pr-merge']), true, merge);
+  });
+  test('261006-jsm D2 ' + label + ' corpus lock: F is non-governed for every existing gate set and never fails closed', () => {
+    const parsed = parseCommand(F);
+    assert.strictEqual(hasFailClosedSegment(parsed), false);
+    for (const [gate, actions] of Object.entries(EXISTING_GATE_SETS)) {
+      assert.strictEqual(hasGovernedSegment(parsed, actions), false, gate + ' must NOT be governed by ' + F);
+      assert.strictEqual(isNonGovernedCommand(parsed, actions), true, gate + ' must short-circuit for ' + F);
+    }
+  });
+  test('261006-jsm D2 ' + label + ' corpus: F IS governed by the review-artifact set', () => {
+    assert.strictEqual(hasGovernedSegment(parseCommand(F), REVIEW_ARTIFACT_GOVERNED), true, F);
+  });
+}
+
+jsmD2Rows('subshell', '( gh pr review 42 -a )');
+jsmD2Rows('brace-group', '{ gh pr review 42 -a; }');
+jsmD2Rows('nohup', 'nohup gh pr review 42 -a');
+
+// D8 false-deny corpus (CONTEXT D8, must_haves): each classifies other, never fails closed, and is
+// non-governed for every existing gate set AND the review-artifact set. Locks: green pre-fix.
+const JSM_D8_CORPUS = [
+  'eval "echo hi"',
+  "eval 'echo hi'",
+  'bash -c "npm test"',
+  "sh -c 'ls | wc -l'",
+  'ls | xargs grep foo',
+  'find . -name x | xargs rm -f',
+  "xargs -I{} sh -c 'echo {}'",
+  'nohup npm start',
+  '( cd x && make )',
+  '{ echo a; echo b; }',
+  '"$CHROME" --headless',
+  '$CHROME --headless',
+  '$G query commit x',
+  'time make',
+  'bash script.sh',
+  "gh api graphql -f query='query { viewer { login } }'",
+  'gh api repos/o/r/pulls/42/reviews',
+  'gh api -X GET repos/o/r/pulls/42/reviews --input f',
+];
+
+for (const cmd of JSM_D8_CORPUS) {
+  test('261006-jsm D8 false-deny lock: `' + cmd + '` is other and non-governed for every gate', () => {
+    const parsed = parseCommand(cmd);
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasFailClosedSegment(parsed), false, cmd);
+    for (const [gate, actions] of Object.entries(EXISTING_GATE_SETS)) {
+      assert.strictEqual(isNonGovernedCommand(parsed, actions), true, gate + ': ' + cmd);
+    }
+    assert.strictEqual(isNonGovernedCommand(parsed, REVIEW_ARTIFACT_GOVERNED), true, 'review-artifact: ' + cmd);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 261006-jsm Task 2b: eval verdict route. The payload is eval's arguments joined with one space
+// (argv already removed one quoting layer, as eval's own parse sees it), re-parsed with
+// argv.parseCommand at depth + 1.
+// ---------------------------------------------------------------------------
+
+for (const cmd of [
+  'eval "gh pr review 42 -a"',
+  'eval gh pr review 42 -a',
+  "eval 'gh pr review 42 -a; echo done'",
+  'eval eval eval eval gh pr review 42 -a',
+]) {
+  test('261006-jsm eval: `' + cmd + '` -> recovered pr-review, via eval, one verdict segment', () => {
+    assertPrefixReview(cmd, 'eval');
+  });
+}
+
+test('261006-jsm eval: four nested evals sit at payload depth 4, inside RECOVERY_MAX_DEPTH', () => {
+  const { RECOVERY_MAX_DEPTH } = require('./classify.cjs');
+  assert.strictEqual(RECOVERY_MAX_DEPTH, 4);
+  assertPrefixReview('eval eval eval eval gh pr review 42 -a', 'eval');
+});
+
+for (const cmd of ['eval "echo hi"', "eval ''", 'eval ""', 'eval', 'eval "git push"']) {
+  test('261006-jsm eval lock: `' + cmd + '` stays other (an empty payload runs nothing)', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasFailClosedSegment(parseCommand(cmd)), false, cmd);
+  });
+}
+
+jsmD2Rows('eval', 'eval "gh pr review 42 -a"');
+
+// ---------------------------------------------------------------------------
+// 261006-jsm Task 2c: gh -R / --repo before the review verb. gh accepts `-R <o/r>` before the
+// `pr` area and between `pr` and the verb (RESEARCH section 2); the shared walk reads `-R`'s value
+// as the area or verb. The outer segment itself is the verdict segment (D3).
+// ---------------------------------------------------------------------------
+
+for (const cmd of ['gh -R o/r pr review 42 -a', 'gh pr -R o/r review 42 -a']) {
+  test('261006-jsm gh -R: `' + cmd + '` -> recovered pr-review, via gh-repo-flag, the outer segment', () => {
+    assertPrefixReview(cmd, 'gh-repo-flag', cmd.split(' '));
+  });
+}
+
+for (const cmd of ['gh -Ro/r pr review 42 -a', 'gh --repo o/r pr review 42 -a', 'gh --repo=o/r pr review 42 -a']) {
+  test('261006-jsm gh -R regression (green before the fix): `' + cmd + '` stays the native pr-review', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'pr-review', route: 'native' }, cmd);
+  });
+}
+
+for (const [cmd, action] of [
+  ['gh -R o/r pr merge 42', 'pr-merge'],
+  ['gh -R o/r pr create --title x', 'pr-create'],
+]) {
+  test('261006-jsm gh -R lock (D1 residual): `' + cmd + '` stays other and ' + action + ' gates do not start firing', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasGovernedSegment(parseCommand(cmd), [action]), false, cmd);
+  });
+}
+
+jsmD2Rows('gh -R', 'gh -R o/r pr review 42 -a');
+
+// ---------------------------------------------------------------------------
+// 261006-jsm Task 2d: opaque verdict routes are UNCERTAIN (CONTEXT D3, D6, D7; orchestrator W3).
+// An uncertain route is a pr-review the gate grades `ask` without a PR lookup:
+//   (B) a program built by expansion, only with a visible review hint (1,509 / 47,642 noise);
+//   (A) an expansion-named program inside an eval or shell -c payload, no hint needed while
+//       OPAQUE_SHELL_PAYLOAD_NEEDS_HINT is false (17 / 47,642), and a payload argv cannot parse;
+//   a payload nested past RECOVERY_MAX_DEPTH (no hint, D3 literal); a prefix stack past
+//   MAX_PREFIX_PEELS (hint required, W3).
+// ---------------------------------------------------------------------------
+
+const JSM_NOHUP9 = 'nohup '.repeat(9);
+
+/** Assert `cmd` is an uncertain recovered pr-review with no verdict segment, named by `via`. */
+function assertUncertainRoute(cmd, via) {
+  assert.deepStrictEqual(
+    cls(cmd),
+    { action: 'pr-review', route: 'recovered', recovered: true, uncertain: true, via, verdictSegments: [] },
+    cmd
+  );
+}
+
+for (const [cmd, via] of [
+  ['$(echo gh) pr review 42 -a', 'expansion-program'],
+  ['$GH pr review 42 -a', 'expansion-program'],
+  ['`echo gh` pr review 42 --approve', 'expansion-program'],
+  ['eval "$CMD"', 'opaque-payload'],
+  ['eval "$(ssh-agent -s)"', 'opaque-payload'],
+  ['bash -c "$CMD"', 'opaque-payload'],
+  ["bash -c \"echo 'x\"", 'unparseable-payload'],
+  ['eval eval eval eval eval gh pr review 42 -a', 'depth-bound'],
+  ['eval eval eval eval eval echo hi', 'depth-bound'],
+  [JSM_NOHUP9 + 'gh pr review 42 -a', 'prefix-bound'],
+]) {
+  test('261006-jsm opaque: `' + cmd + '` -> UNCERTAIN pr-review, via ' + via, () => {
+    assertUncertainRoute(cmd, via);
+  });
+}
+
+for (const cmd of ['"$CHROME" --headless', '$G query commit x', JSM_NOHUP9 + 'ls', '$X 42 -a']) {
+  test('261006-jsm opaque lock: `' + cmd + '` stays other (no review hint, D7 B / W3)', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+  });
+}
+
+test('261006-jsm opaque: eight stacked nohup are inside MAX_PREFIX_PEELS and recover statically', () => {
+  const { MAX_PREFIX_PEELS } = require('./classify.cjs');
+  assert.strictEqual(MAX_PREFIX_PEELS, 8);
+  assertPrefixReview('nohup '.repeat(8) + 'gh pr review 42 -a', 'nohup');
+});
+
+test('261006-jsm opaque: OPAQUE_SHELL_PAYLOAD_NEEDS_HINT is exported and false (CONTEXT D7 A, coordinator)', () => {
+  assert.strictEqual(require('./classify.cjs').OPAQUE_SHELL_PAYLOAD_NEEDS_HINT, false);
+});
+
+test('261006-jsm opaque: hasReviewHint reads only the listed hint tokens', () => {
+  const { hasReviewHint } = require('./classify.cjs');
+  assert.strictEqual(typeof hasReviewHint, 'function');
+  for (const t of [['x', 'review'], ['--approve'], ['--request-changes'], ['repos/o/r/pulls/42/reviews'],
+    ['query=mutation { submitPullRequestReview(input: {}) }'], ['addPullRequestReview']]) {
+    assert.strictEqual(hasReviewHint(t), true, JSON.stringify(t));
+  }
+  for (const t of [['42', '-a'], ['reviews'], ['submitpullrequestreview'], ['query', 'commit'], []]) {
+    assert.strictEqual(hasReviewHint(t), false, JSON.stringify(t));
+  }
+});
+
+test('261006-jsm opaque: a mixed inner chain keeps its verdict segment and adds uncertain', () => {
+  const r = cls("bash -c 'gh pr review 1 -a; $CMD'");
+  assert.strictEqual(r.action, 'pr-review');
+  assert.strictEqual(r.recovered, true);
+  assert.strictEqual(r.uncertain, true);
+  assert.strictEqual(r.via, 'shell-c');
+  assert.strictEqual(r.uncertainVia, 'opaque-payload');
+  assert.deepStrictEqual(r.verdictSegments.map((s) => s.tokens), [['gh', 'pr', 'review', '1', '-a']]);
+});
+
+test('261006-jsm opaque: a prefix around an opaque route passes the uncertain route through', () => {
+  assertUncertainRoute('nohup $GH pr review 42 -a', 'expansion-program');
+  assertUncertainRoute('( eval "$CMD" )', 'opaque-payload');
+});
+
+test('261006-jsm opaque: classification is pure, a repeated call yields the same result', () => {
+  const cmd = 'eval "$CMD"';
+  assert.deepStrictEqual(cls(cmd), cls(cmd));
+});
+
+jsmD2Rows('expansion-program', '$(echo gh) pr review 42 -a', {
+  lone: (r) => {
+    assert.strictEqual(r.uncertain, true);
+    assert.deepStrictEqual(r.verdictSegments, []);
+  },
+});
+
+// Every via code the recovery emits names a FIXED ASCII description (the gate never builds one
+// from command text, and a missing key would surface as `undefined` in an ask reason).
+test('261006-jsm forms: every emitted via code is a VERDICT_ROUTE_FORMS key with an ASCII description', () => {
+  const { VERDICT_ROUTE_FORMS } = require('./classify.cjs');
+  for (const desc of Object.values(VERDICT_ROUTE_FORMS)) {
+    assert.ok(typeof desc === 'string' && /^[\x20-\x7e]+$/.test(desc), JSON.stringify(desc));
+  }
+  for (const cmd of [
+    'bash -c "gh pr review 42 -a"', '( gh pr review 42 -a )', '{ gh pr review 42 -a; }', '! gh pr review 42 -a',
+    'nohup gh pr review 42 -a', 'setsid gh pr review 42 -a', 'time gh pr review 42 -a', 'eval "gh pr review 42 -a"',
+    'gh -R o/r pr review 42 -a', '$GH pr review 42 -a', 'eval "$CMD"', "bash -c \"echo 'x\"",
+    'eval eval eval eval eval echo hi', JSM_NOHUP9 + 'gh pr review 42 -a', "bash -c 'gh pr review 1 -a; $CMD'",
+  ]) {
+    const r = cls(cmd);
+    assert.ok(Object.prototype.hasOwnProperty.call(VERDICT_ROUTE_FORMS, r.via), cmd + ' via ' + r.via);
+    if (r.uncertainVia !== undefined) {
+      assert.ok(Object.prototype.hasOwnProperty.call(VERDICT_ROUTE_FORMS, r.uncertainVia), cmd + ' uncertainVia');
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 261006-jsm Task 2e: xargs verdict route (RESEARCH section 4). xargs runs its command argv
+// directly (a prefix strip at peels + 1, not a payload re-parse). The option table has three
+// classes: no value, required value (attached or next token) and optional-attached-only (a
+// separate token is the command); long options resolve by unique prefix; `--` ends options.
+// ---------------------------------------------------------------------------
+
+const JSM_XARGS_TOKENS = ['gh', 'pr', 'review', '-a'];
+const JSM_XARGS_BRACE_TOKENS = ['gh', 'pr', 'review', '{}', '-a'];
+
+for (const [cmd, tokens] of [
+  ['echo 42 | xargs gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs -n1 gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs -rn1 gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs -I{} gh pr review {} -a', JSM_XARGS_BRACE_TOKENS],
+  ['xargs -I {} gh pr review {} -a', JSM_XARGS_BRACE_TOKENS],
+  ['xargs -0 -P 4 gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs --max-args 1 gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs --max-a 1 gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs --max-args=1 gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs -- gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs -i gh pr review {} -a', JSM_XARGS_BRACE_TOKENS],
+  ['xargs -iX gh pr review X -a', ['gh', 'pr', 'review', 'X', '-a']],
+  ['xargs --replace gh pr review {} -a', JSM_XARGS_BRACE_TOKENS],
+  ["xargs -I{} sh -c 'gh pr review {} -a'", JSM_XARGS_BRACE_TOKENS],
+]) {
+  test('261006-jsm xargs: `' + cmd + '` -> recovered pr-review, via xargs, one verdict segment', () => {
+    assertPrefixReview(cmd, 'xargs', tokens);
+  });
+}
+
+for (const cmd of [
+  'xargs -l 1 gh pr review -a',
+  'xargs --bogus ls',
+  'ls | xargs grep foo',
+  'find . -name x | xargs rm -f',
+  "xargs -I{} sh -c 'echo {}'",
+  'xargs',
+  'xargs -n1',
+  'xargs git push',
+]) {
+  test('261006-jsm xargs lock: `' + cmd + '` stays other', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasFailClosedSegment(parseCommand(cmd)), false, cmd);
+  });
+}
+
+for (const cmd of ['xargs --bogus gh pr review -a', 'xargs --max gh pr review -a', 'xargs -z gh pr review -a']) {
+  test('261006-jsm xargs: unknown or ambiguous option `' + cmd + '` with a review hint -> UNCERTAIN', () => {
+    assertUncertainRoute(cmd, 'xargs-unknown-option');
+  });
+}
+
+jsmD2Rows('xargs', 'xargs gh pr review -a', { merge: 'xargs gh pr review -a && gh pr merge 1' });

@@ -48,7 +48,7 @@
 const path = require('node:path'); // CR-03: basename-normalize the program
 // Contract dependency (parseCommand output shape). 261006-jsm: parseCommand also re-parses an
 // eval or shell -c payload in the verdict-route recovery (argv's own primitive, never a raw grep).
-const { parseCommand } = require('./argv.cjs');
+const { parseCommand, classifyTokens } = require('./argv.cjs');
 
 const MUTATING_METHODS = new Set(['POST', 'PATCH', 'PUT']);
 const GITHUB_API_HOSTS = new Set(['api.github.com']);
@@ -536,7 +536,13 @@ function classifySegmentDirect(seg) {
 //   { action: 'pr-review', route: 'recovered', recovered: true, via, verdictSegments: [seg, ...] }
 //
 // `verdictSegments` are the inner segments the review-artifact gate must run (re-parsed from the
-// static payload text with argv.parseCommand, never a raw-string grep, EP-2). Any other inner
+// static payload text with argv.parseCommand, never a raw-string grep, EP-2). An opaque form the
+// recovery cannot read is UNCERTAIN (D6) and the gate grades it `ask` with no PR lookup:
+//
+//   { action: 'pr-review', route: 'recovered', recovered: true, uncertain: true, via, verdictSegments: [] }
+//
+// A collection that holds verdict segments AND an uncertain inner keeps the segments and adds
+// `uncertain: true` plus `uncertainVia` (the code naming the opaque inner form). Any other inner
 // result (push, pr-merge, failClosed, null) is discarded, so the segment stays `other` exactly as
 // before (D1). classifyAction's PASS 4 keeps every existing chain classification unchanged (D2).
 //
@@ -558,6 +564,69 @@ const MAX_PREFIX_PEELS = 8;
  */
 const VERDICT_ROUTE_FORMS = Object.freeze({
   'shell-c': 'a review command inside a bash or sh -c command string',
+  subshell: 'a review command inside a ( ... ) subshell',
+  'brace-group': 'a review command inside a { ...; } brace group',
+  negation: 'a review command behind a ! pipeline negation',
+  nohup: 'a review command run through nohup',
+  setsid: 'a review command run through setsid',
+  time: 'a review command run through time',
+  eval: 'a review command inside an eval payload',
+  'gh-repo-flag': 'a gh pr review command with -R or --repo before the review verb',
+  'expansion-program': 'a command whose program name is built by shell expansion next to a review hint',
+  'opaque-payload': 'an eval or shell -c payload whose command word is a shell expansion',
+  'unparseable-payload': 'an eval or shell -c payload the gate cannot parse',
+  'depth-bound': 'an eval or shell -c payload nested deeper than the gate reads',
+  'prefix-bound': 'a review command behind more stacked wrappers than the gate reads',
+  xargs: 'a review command run through xargs',
+  'xargs-unknown-option': 'an xargs command with an option the gate cannot read',
+});
+
+/**
+ * CONTEXT D7 (A), approved by the coordinator as written: inside an eval or shell -c payload, a
+ * command word built by expansion (`eval "$CMD"`, `bash -c "$CMD"`) is an UNCERTAIN verdict route
+ * with NO review hint required, because eval re-reads the expansion's output as a whole command
+ * line, so the verb and the flags are hidden too. Measured 2026-10-06: 17 / 47,642 Bash calls
+ * (0.04%) in ~/.claude/projects transcripts. Flipping this to true makes (A) require a review hint
+ * like the top-level form (B) does.
+ */
+const OPAQUE_SHELL_PAYLOAD_NEEDS_HINT = false;
+
+/**
+ * Lone prefix tokens the recovery strips from the visible argv (Task 2a, D4): the reserved words
+ * that open a subshell, a brace group and a negated pipeline. A `(` attached to the first word
+ * is the subshell too (`(gh pr review 42 -a)`).
+ */
+const RECOVERY_PREFIX_WORDS = Object.freeze({ '(': 'subshell', '{': 'brace-group', '!': 'negation' });
+
+/** GNU time long options that take a value (RESEARCH section 6); matched by unique prefix. */
+const TIME_VALUE_LONG = Object.freeze(['format', 'output']);
+
+// GNU xargs (findutils 4.9.0) options, RESEARCH section 4 (probed): short letters with no value,
+// with a REQUIRED value (the rest of the token if non-empty, else the next token), and with an
+// OPTIONAL value that may only be attached (a separate token is already the command).
+const XARGS_SHORT_NO_VALUE = new Set(['0', 'o', 'p', 'r', 't', 'x']);
+const XARGS_SHORT_REQUIRED = new Set(['a', 'd', 'E', 'I', 'L', 'n', 'P', 's']);
+const XARGS_SHORT_OPTIONAL = new Set(['i', 'e', 'l']);
+/** GNU xargs long options by value class; resolved by exact name, else by unique prefix. */
+const XARGS_LONG = Object.freeze({
+  'arg-file': 'required',
+  delimiter: 'required',
+  'max-args': 'required',
+  'max-procs': 'required',
+  'max-chars': 'required',
+  'process-slot-var': 'required',
+  replace: 'optional',
+  eof: 'optional',
+  'max-lines': 'optional',
+  null: 'none',
+  'open-tty': 'none',
+  interactive: 'none',
+  'no-run-if-empty': 'none',
+  verbose: 'none',
+  exit: 'none',
+  'show-limits': 'none',
+  help: 'none',
+  version: 'none',
 });
 
 /** Shells whose `-c` command string the recovery re-parses (RESEARCH section 5). */
@@ -595,7 +664,332 @@ function recoverVerdictRoute(seg, state) {
   if (!seg || typeof seg !== 'object' || !Array.isArray(seg.tokens)) return null;
   const { prog } = resolveProgram(seg);
   if (RECOVERY_SHELLS.has(prog)) return recoverShellCommandString(seg, prog, state);
+
+  const tokens = seg.tokens;
+  const at = programTokenIndex(tokens, prog);
+  if (at === -1) return null;
+  const word = tokens[at];
+  const after = tokens.slice(at + 1);
+
+  // Task 2a transparent prefixes: each strip removes ONE prefix from the same visible argv.
+  if (Object.prototype.hasOwnProperty.call(RECOVERY_PREFIX_WORDS, word)) {
+    const rest = word === '(' ? withoutClosingParen(after) : after;
+    return recoverStripped(rest, RECOVERY_PREFIX_WORDS[word], state);
+  }
+  if (word.length > 1 && word[0] === '(') {
+    return recoverStripped(withoutClosingParen([word.slice(1), ...after]), 'subshell', state);
+  }
+  // Task 2c: gh with -R / --repo before the area or between `pr` and the verb (the direct walk
+  // reads -R's value as the area or verb, so it returned null).
+  if (prog === 'gh') return recoverGhRepoFlag(seg, after);
+  // Task 2b: eval re-reads its arguments, joined with one space, as a command line (a payload).
+  if (prog === 'eval') return recoverPayload(after.join(' '), 'eval', state);
+  if (prog === 'nohup') return recoverStripped(after[0] === '--' ? after.slice(1) : after, 'nohup', state);
+  if (prog === 'setsid') return recoverStripped(afterSetsidOptions(after), 'setsid', state);
+  if (prog === 'time') return recoverStripped(afterTimeOptions(after), 'time', state);
+  if (prog === 'xargs') return recoverXargs(after, state);
+  // Task 2d: a program word built by expansion (`$(echo gh)`, `$GH`, a backtick), keyed on the
+  // token as argv produced it (argv drops the quotes of `"$CHROME"`).
+  if (word.length > 0 && (word[0] === '$' || word[0] === '`')) return recoverExpansionProgram(tokens, state);
   return null;
+}
+
+/**
+ * Is a review hint visible among `tokens`? True for a `review` token, `--approve`,
+ * `--request-changes`, a `/pulls/<n>/reviews` path, or the GraphQL review mutation names
+ * `submitPullRequestReview` / `addPullRequestReview` (case-sensitive whole identifiers). `-a`
+ * alone is deliberately not a hint (it is too common to scope an ask). Pure.
+ *
+ * @param {string[]} tokens
+ * @returns {boolean}
+ */
+function hasReviewHint(tokens) {
+  if (!Array.isArray(tokens)) return false;
+  return tokens.some((t) => typeof t === 'string' && (
+    t === 'review' || t === '--approve' || t === '--request-changes' ||
+    /\/pulls\/\d+\/reviews(?:$|[/?])/.test(t) ||
+    /\b(?:submitPullRequestReview|addPullRequestReview)\b/.test(t)
+  ));
+}
+
+/**
+ * An UNCERTAIN verdict route (D6): a pr-review the gate grades `ask` without a PR lookup. `via`
+ * names the opaque form; there is no verdict segment to gate.
+ *
+ * @param {string} via a VERDICT_ROUTE_FORMS code
+ * @returns {Object}
+ */
+function uncertainRoute(via) {
+  return { action: 'pr-review', route: 'recovered', recovered: true, uncertain: true, via, verdictSegments: [] };
+}
+
+/**
+ * A program word built by expansion (D7). Inside an eval or shell -c payload it is uncertain with
+ * no hint (A) unless OPAQUE_SHELL_PAYLOAD_NEEDS_HINT; anywhere else it is uncertain only when a
+ * review hint is visible (B), else null (1,509 / 47,642 Bash calls start with an expansion, so a
+ * hint-free ask would fire on about one call in 30). Residual: `$X 42 -a` stays other.
+ *
+ * @param {string[]} tokens the segment tokens
+ * @param {{depth:number, peels:number, inShellString:boolean}} state
+ * @returns {Object|null}
+ */
+function recoverExpansionProgram(tokens, state) {
+  if (state.inShellString && (!OPAQUE_SHELL_PAYLOAD_NEEDS_HINT || hasReviewHint(tokens))) {
+    return uncertainRoute('opaque-payload');
+  }
+  return hasReviewHint(tokens) ? uncertainRoute('expansion-program') : null;
+}
+
+/**
+ * Index of the first token at or after `i` that is not a gh `-R <v>`, `-R<v>`, `--repo <v>` or
+ * `--repo=<v>` spelling (a separate value token is skipped with its flag).
+ *
+ * @param {string[]} tokens
+ * @param {number} i
+ * @returns {number}
+ */
+function skipGhRepoFlags(tokens, i) {
+  let k = i;
+  while (k < tokens.length) {
+    const t = tokens[k];
+    if (t === '-R' || t === '--repo') k += 2;
+    else if ((t.length > 2 && t.startsWith('-R')) || t.startsWith('--repo=')) k += 1;
+    else break;
+  }
+  return k;
+}
+
+/**
+ * Recover `gh -R o/r pr review ...` and `gh pr -R o/r review ...` (RESEARCH section 2: -R is a
+ * persistent flag of the `pr` group, accepted before the area and between `pr` and the verb).
+ * The outer segment is the verdict segment (D3): repoSpecOf reads its -R value and prSelector
+ * reads its selector across the flag. Any other area or verb returns null (D1): a wrapped
+ * `gh -R o/r pr merge` stays other (recorded residual).
+ *
+ * @param {Object} seg
+ * @param {string[]} after the tokens after `gh`
+ * @returns {Object|null}
+ */
+function recoverGhRepoFlag(seg, after) {
+  const area = skipGhRepoFlags(after, 0);
+  if (after[area] !== 'pr') return null;
+  const verb = skipGhRepoFlags(after, area + 1);
+  if (after[verb] !== 'review') return null;
+  return { action: 'pr-review', route: 'recovered', recovered: true, via: 'gh-repo-flag', verdictSegments: [seg] };
+}
+
+/**
+ * Remove ONE closing `)` of a subshell: the last token when it is `)`, else a `)` attached to the
+ * end of the last token (`-a)`).
+ *
+ * @param {string[]} tokens
+ * @returns {string[]}
+ */
+function withoutClosingParen(tokens) {
+  if (tokens.length === 0) return tokens;
+  const out = tokens.slice();
+  const last = out[out.length - 1];
+  if (last === ')') out.pop();
+  else if (last.endsWith(')')) out[out.length - 1] = last.slice(0, -1);
+  return out;
+}
+
+/**
+ * The tokens after setsid's options: util-linux setsid options are all boolean (`-c`, `-f`, `-w`,
+ * bundles such as `-fw`, and their long forms); `--` ends them (RESEARCH section 6).
+ *
+ * @param {string[]} after
+ * @returns {string[]}
+ */
+function afterSetsidOptions(after) {
+  let i = 0;
+  while (i < after.length && after[i].length > 1 && after[i][0] === '-') {
+    i += 1;
+    if (after[i - 1] === '--') break;
+  }
+  return after.slice(i);
+}
+
+/**
+ * The tokens after `time`'s options, for both the bash keyword (`-p`, `--`) and GNU time
+ * (RESEARCH section 6): `-f` / `-o` take a value given separately or attached (`-fFMT`, also at
+ * the end of a bundle such as `-pf FMT`); `--format` / `--output` (unique prefixes accepted) take
+ * the next token unless written with `=`; every other option takes no value; `--` ends options.
+ *
+ * @param {string[]} after
+ * @returns {string[]}
+ */
+function afterTimeOptions(after) {
+  let i = 0;
+  while (i < after.length) {
+    const t = after[i];
+    if (t === '--') {
+      i += 1;
+      break;
+    }
+    if (t.startsWith('--') && t.length > 2) {
+      const body = t.slice(2);
+      const eq = body.indexOf('=');
+      const takesNext = eq === -1 && TIME_VALUE_LONG.some((n) => n.startsWith(body));
+      i += takesNext ? 2 : 1;
+      continue;
+    }
+    if (t.length > 1 && t[0] === '-') {
+      let width = 1;
+      for (let k = 1; k < t.length; k += 1) {
+        if (t[k] === 'f' || t[k] === 'o') {
+          if (k === t.length - 1) width = 2; // the value is the next token
+          break; // the rest of the bundle is the value
+        }
+      }
+      i += width;
+      continue;
+    }
+    break;
+  }
+  return after.slice(i);
+}
+
+/**
+ * The value class of an xargs long option name: exact match first, else a unique prefix (GNU
+ * getopt_long). Null for an unknown or ambiguous name.
+ *
+ * @param {string} name
+ * @returns {'required'|'optional'|'none'|null}
+ */
+function xargsLongKind(name) {
+  if (Object.prototype.hasOwnProperty.call(XARGS_LONG, name)) return XARGS_LONG[name];
+  if (name.length === 0) return null;
+  const hits = Object.keys(XARGS_LONG).filter((n) => n.startsWith(name));
+  return hits.length === 1 ? XARGS_LONG[hits[0]] : null;
+}
+
+/**
+ * The command argv xargs runs, after its options (RESEARCH section 4): short bundles walk letter
+ * by letter until a value letter; a required-value letter takes the rest of the token, else the
+ * next token; an optional-value letter takes only the rest of the token; a long option takes the
+ * next token only when it is required-value and written without `=`; `--` ends options; the
+ * command is the first non-option token. `{ unknown: true }` for an option the table does not
+ * know (or an ambiguous long prefix), whose value class, and so the command, cannot be located.
+ *
+ * @param {string[]} after the tokens after `xargs`
+ * @returns {{command:string[]}|{unknown:true}}
+ */
+function xargsCommand(after) {
+  let i = 0;
+  while (i < after.length) {
+    const t = after[i];
+    if (t === '--') {
+      i += 1;
+      break;
+    }
+    if (t.startsWith('--') && t.length > 2) {
+      const body = t.slice(2);
+      const eq = body.indexOf('=');
+      const kind = xargsLongKind(eq === -1 ? body : body.slice(0, eq));
+      if (kind === null) return { unknown: true };
+      i += kind === 'required' && eq === -1 ? 2 : 1;
+      continue;
+    }
+    if (t.length > 1 && t[0] === '-') {
+      let width = 1;
+      for (let k = 1; k < t.length; k += 1) {
+        const c = t[k];
+        if (XARGS_SHORT_NO_VALUE.has(c)) continue;
+        if (XARGS_SHORT_OPTIONAL.has(c)) break; // its value, if any, is the rest of this token
+        if (XARGS_SHORT_REQUIRED.has(c)) {
+          if (k === t.length - 1) width = 2; // the value is the next token
+          break;
+        }
+        return { unknown: true };
+      }
+      i += width;
+      continue;
+    }
+    break;
+  }
+  return { command: after.slice(i) };
+}
+
+/**
+ * Recover an xargs-run review verdict (Task 2e): xargs runs its command argv directly, so this is
+ * a prefix strip (`peels + 1`), not a payload re-parse. An unknown or ambiguous option is
+ * uncertain only when a review hint is visible, else null. Bare `xargs` (no command) is null.
+ *
+ * @param {string[]} after the tokens after `xargs`
+ * @param {{depth:number, peels:number, inShellString:boolean}} state
+ * @returns {Object|null}
+ */
+function recoverXargs(after, state) {
+  const parsed = xargsCommand(after);
+  if (parsed.unknown === true) return hasReviewHint(after) ? uncertainRoute('xargs-unknown-option') : null;
+  return recoverStripped(parsed.command, 'xargs', state);
+}
+
+/**
+ * Re-classify the tokens left after stripping one transparent prefix (`peels + 1`, same depth,
+ * same inShellString). The tokens are rebuilt into a segment with argv's own classifyTokens, so
+ * stacked prefixes and WRAPPER_BUILTINS (`sudo nohup`, `nohup sudo`) resolve through the shared
+ * resolveProgram. Only an inner pr-review is kept (D1). A bare wrapper returns null.
+ *
+ * @param {string[]} rest
+ * @param {string} via a VERDICT_ROUTE_FORMS code
+ * @param {{depth:number, peels:number, inShellString:boolean}} state
+ * @returns {Object|null}
+ */
+function recoverStripped(rest, via, state) {
+  if (rest.length === 0) return null;
+  // Past the prefix bound (W3): uncertain only with a visible review hint. A prefix hides no token,
+  // so a hint-free remainder can reach a verdict only through an expansion-named program, which
+  // D7 (B) already scopes to a hint; asking here would add noise with no additional catch.
+  if (state.peels >= MAX_PREFIX_PEELS) return hasReviewHint(rest) ? uncertainRoute('prefix-bound') : null;
+  const innerSeg = classifyTokens(rest);
+  const inner = classifySegment(innerSeg, {
+    depth: state.depth,
+    peels: state.peels + 1,
+    inShellString: state.inShellString,
+  });
+  return combineRecovered(via, [{ r: inner, seg: innerSeg }]);
+}
+
+/**
+ * Combine the inner classifications of one recovery level into this level's recovered route.
+ * Each item is an inner result `r` and the inner segment `seg` it classified. Only a pr-review is
+ * kept (D1). A native inner pr-review makes its segment a verdict segment; a recovered inner
+ * contributes its own verdict segments. When no verdict segment is collected, the first inner
+ * route with none (an uncertain or unresolved route) passes through unchanged, so it keeps the
+ * code that names it; otherwise null. A collection that also holds an uncertain inner keeps its
+ * verdict segments and adds `uncertain: true` with `uncertainVia`, so the gate both gates the
+ * segments and holds the uncertain ask (Task 2d).
+ *
+ * @param {string} via a VERDICT_ROUTE_FORMS code for this level
+ * @param {Array<{r:Object|null, seg:Object}>} items
+ * @returns {Object|null}
+ */
+function combineRecovered(via, items) {
+  const verdictSegments = [];
+  let opaque = null;
+  let uncertainVia = null;
+  let unresolved = false;
+  for (const { r, seg } of items) {
+    if (!r || r.action !== 'pr-review') continue; // D1: every other inner result is discarded
+    if (r.recovered !== true) {
+      verdictSegments.push(seg);
+      continue;
+    }
+    verdictSegments.push(...r.verdictSegments);
+    if (r.verdictSegments.length === 0 && opaque === null) opaque = r;
+    if (r.uncertain === true && uncertainVia === null) uncertainVia = r.uncertainVia || r.via;
+    if (r.unresolved === true) unresolved = true;
+  }
+  if (verdictSegments.length === 0) return opaque === null ? null : { ...opaque };
+  const out = { action: 'pr-review', route: 'recovered', recovered: true, via, verdictSegments };
+  if (uncertainVia !== null) {
+    out.uncertain = true;
+    out.uncertainVia = uncertainVia;
+  }
+  if (unresolved) out.unresolved = true;
+  return out;
 }
 
 /**
@@ -674,7 +1068,7 @@ function recoverShellCommandString(seg, prog, state) {
 }
 
 /**
- * Re-parse a payload (a shell -c command string) with argv.parseCommand and collect EVERY inner
+ * Re-parse a payload (a shell -c command string or an eval argument line) with argv.parseCommand and collect EVERY inner
  * pr-review segment, in order (D3), so a leading `--comment` cannot hide a later approve.
  *
  * @param {string} payload
@@ -686,22 +1080,16 @@ function recoverPayload(payload, via, state) {
   // An empty or whitespace payload runs nothing: not a route, and not an unparseable payload.
   if (payload.trim().length === 0) return null;
   const depth = state.depth + 1;
-  // Past the depth bound: null in this tier (a later tier grades it uncertain, D3).
-  if (depth > RECOVERY_MAX_DEPTH) return null;
+  // Past the depth bound: uncertain with NO review hint (D3 literal).
+  if (depth > RECOVERY_MAX_DEPTH) return uncertainRoute('depth-bound');
   const inner = parseCommand(payload);
-  // A payload argv cannot parse: null in this tier (a later tier grades it uncertain, D3, D7).
-  if (!inner || inner.ok !== true) return null;
+  // A non-empty payload argv cannot parse: uncertain with no review hint (D3, D7 A).
+  if (!inner || inner.ok !== true) return uncertainRoute('unparseable-payload');
   const innerState = { depth, peels: 0, inShellString: true };
-  const verdictSegments = [];
-  for (const innerSeg of inner.segments) {
-    const r = classifySegment(innerSeg, innerState);
-    // D1: only a pr-review is kept; every other inner result is discarded.
-    if (!r || r.action !== 'pr-review') continue;
-    if (r.recovered === true) verdictSegments.push(...r.verdictSegments);
-    else verdictSegments.push(innerSeg);
-  }
-  if (verdictSegments.length === 0) return null;
-  return { action: 'pr-review', route: 'recovered', recovered: true, via, verdictSegments };
+  return combineRecovered(
+    via,
+    inner.segments.map((innerSeg) => ({ r: classifySegment(innerSeg, innerState), seg: innerSeg }))
+  );
 }
 
 /**
@@ -1241,4 +1629,7 @@ module.exports = {
   RECOVERY_MAX_DEPTH,
   MAX_PREFIX_PEELS,
   VERDICT_ROUTE_FORMS,
+  // 261006-jsm Task 2d: the D7 (A) switch and the review-hint predicate that scopes the asks.
+  OPAQUE_SHELL_PAYLOAD_NEEDS_HINT,
+  hasReviewHint,
 };
