@@ -765,8 +765,8 @@ function unresolvedVerdictAsk(form) {
       'not check either.\n\n' +
       'Put the event on the command line so the gate can read it (`-f event=APPROVE`, ' +
       '`-f event=REQUEST_CHANGES`, `-f event=COMMENT`, or an inline JSON body), or let a human ' +
-      'decide here. `GSD_CONTRIB_OVERRIDE` does not answer this prompt: it rescues thrown gate ' +
-      'errors only. (CTK-ADR-0010, ENF-20)'
+      'decide here. `GSD_CONTRIB_OVERRIDE` does not answer this prompt: this gate honors it only ' +
+      'for a thrown gate error. (CTK-ADR-0010, ENF-20)'
   );
 }
 
@@ -1165,7 +1165,7 @@ const R8A_ASK_NOTE =
   'A human decides: approve this prompt only if the memtrace graph pass (re-review.md step 8a) ' +
   'ran in this session or memtrace was genuinely unavailable (name the unavailable verb in the ' +
   'review); otherwise reject it and run the tools. `GSD_CONTRIB_OVERRIDE` does not answer this ' +
-  'prompt: it rescues thrown gate errors only. (CTK-ADR-0005, ENF-20)';
+  'prompt: this gate honors it only for a thrown gate error. (CTK-ADR-0005, ENF-20)';
 
 /**
  * An R8a cannot-observe ASK (CONTEXT §Severity map: cannot-observe is not did-not-run).
@@ -1300,8 +1300,8 @@ function verifyMemtraceEvidence(g, ctx, deps) {
 
 /** The closing note of every R8a deny: the override does not lift it. */
 const R8A_DENY_NOTE =
-  '`GSD_CONTRIB_OVERRIDE` does not lift this deny: it rescues thrown gate errors only. ' +
-  '(CTK-ADR-0004, ENF-20)';
+  '`GSD_CONTRIB_OVERRIDE` does not lift this deny: this gate honors it only for a thrown gate ' +
+  'error. (CTK-ADR-0004, ENF-20)';
 
 /**
  * The head of every R8a missing-evidence deny: what is required and which tools have not run.
