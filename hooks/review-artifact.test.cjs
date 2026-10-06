@@ -2907,3 +2907,10 @@ test('261006-jsm CR-02 fieldCandidates: a bundled gh field and a bundled curl bo
 test('261006-jsm CR-03 gate: `gh api https://api.github.com/graphql -f query=<approve>` with only Bash rows -> DENY R8a-memtrace', () => {
   assertJsmR8aDeny("gh api https://api.github.com/graphql -f query='" + JSM_GQL_SUBMIT + "'");
 });
+
+// -- 261006-jsm review fix round CR-04: `eval --` and `builtin eval` reach R8a ------------------
+for (const cmd of ['eval -- "gh pr review 42 -a"', 'builtin eval "gh pr review 42 -a"', 'builtin command eval -- "gh pr review 42 -a"']) {
+  test('261006-jsm CR-04 gate: `' + cmd + '` with only Bash rows -> DENY R8a-memtrace', () => {
+    assertJsmR8aDeny(cmd);
+  });
+}

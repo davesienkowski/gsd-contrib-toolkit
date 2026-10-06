@@ -2561,3 +2561,34 @@ for (const cmd of [
     assert.strictEqual(hasFailClosedSegment(parseCommand(cmd)), false, cmd);
   });
 }
+
+// -- 261006-jsm review fix round CR-04: `eval --` and `builtin` (a recovery-only transparent prefix)
+for (const [cmd, via] of [
+  ['eval -- "gh pr review 42 -a"', 'eval'],
+  ['command eval -- "gh pr review 42 -a"', 'eval'],
+  ['builtin eval "gh pr review 42 -a"', 'builtin'],
+  ['builtin -- eval "gh pr review 42 -a"', 'builtin'],
+  ['builtin eval -- "gh pr review 42 -a"', 'builtin'],
+  ['builtin command eval "gh pr review 42 -a"', 'builtin'],
+  ['command builtin eval "gh pr review 42 -a"', 'builtin'],
+]) {
+  test('261006-jsm CR-04: `' + cmd + '` -> recovered pr-review, via ' + via + ', one verdict segment', () => {
+    assertPrefixReview(cmd, via);
+  });
+}
+
+for (const cmd of ['builtin echo hi', 'builtin', 'builtin --', 'eval --', 'eval -- echo hi', 'builtin eval -- "echo hi"']) {
+  test('261006-jsm CR-04 lock: `' + cmd + '` stays other and never throws', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasFailClosedSegment(parseCommand(cmd)), false, cmd);
+  });
+}
+
+jsmD2Rows('builtin eval', 'builtin eval "gh pr review 42 -a"', {
+  lone: (r) => assert.strictEqual(r.via, 'builtin'),
+});
+
+test('261006-jsm CR-04 forms: `builtin` is a VERDICT_ROUTE_FORMS key with an ASCII description', () => {
+  const { VERDICT_ROUTE_FORMS } = require('./classify.cjs');
+  assert.ok(typeof VERDICT_ROUTE_FORMS.builtin === 'string' && /^[\x20-\x7e]+$/.test(VERDICT_ROUTE_FORMS.builtin));
+});
