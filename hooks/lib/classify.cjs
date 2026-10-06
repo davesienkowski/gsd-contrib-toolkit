@@ -584,6 +584,7 @@ const VERDICT_ROUTE_FORMS = Object.freeze({
   setsid: 'a review command run through setsid',
   time: 'a review command run through time',
   eval: 'a review command inside an eval payload',
+  builtin: 'a review command run through the builtin prefix',
   'gh-repo-flag': 'a gh pr review command with -R or --repo before the review verb',
   'expansion-program': 'a command whose program name is built by shell expansion next to a review hint',
   'opaque-payload': 'an eval or shell -c payload whose command word is a shell expansion',
@@ -706,7 +707,12 @@ function recoverVerdictRoute(seg, state) {
   // reads -R's value as the area or verb, so it returned null).
   if (prog === 'gh') return recoverGhRepoFlag(seg, after);
   // Task 2b: eval re-reads its arguments, joined with one space, as a command line (a payload).
-  if (prog === 'eval') return recoverPayload(after.join(' '), 'eval', state);
+  // Review fix round CR-04: a leading `--` ends eval's (empty) option list and is not payload.
+  if (prog === 'eval') return recoverPayload((after[0] === '--' ? after.slice(1) : after).join(' '), 'eval', state);
+  // Review fix round CR-04: `builtin [--] NAME ARGS` runs the shell builtin NAME (`builtin eval`,
+  // `builtin command ...`), so in the recovery only it is a transparent prefix (WRAPPER_BUILTINS is
+  // unchanged, D1). A non-builtin NAME fails in bash, so peeling it can only over-gate.
+  if (prog === 'builtin') return recoverStripped(after[0] === '--' ? after.slice(1) : after, 'builtin', state);
   if (prog === 'nohup') return recoverStripped(after[0] === '--' ? after.slice(1) : after, 'nohup', state);
   if (prog === 'setsid') return recoverStripped(afterSetsidOptions(after), 'setsid', state);
   if (prog === 'time') return recoverStripped(afterTimeOptions(after), 'time', state);
