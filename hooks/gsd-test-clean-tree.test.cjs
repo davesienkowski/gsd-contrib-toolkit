@@ -832,3 +832,9 @@ test('ENF-23 m-01: without a policy deny, an uncertain entry beside a clean disp
   assert.strictEqual(d.permissionDecision, 'deny');
   assert.match(d.permissionDecisionReason, /cannot attribute/);
 });
+
+test('ENF-23 m-02: `SHA=$(git rev-parse HEAD) gsd-test --head HEAD | tail` DENIES with PIPE_REASON', () => {
+  const { deps } = scenario();
+  const d = runGsdTestCleanTreeGate(input('SHA=$(git rev-parse HEAD) gsd-test --head HEAD | tail'), deps);
+  assert.strictEqual(d.permissionDecisionReason, PIPE_REASON);
+});

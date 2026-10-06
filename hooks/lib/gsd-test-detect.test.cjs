@@ -904,3 +904,22 @@ test('GTEST-01 M-05: `command -v gsd-test && gsd-test --version` yields only the
 test('GTEST-01 M-05: `command -p gsd-test` is still a dispatch (no -v / -V)', () => {
   oneDispatch('command -p gsd-test');
 });
+
+// ─────────────── m-02 follow-on: an assignment whose value is a spaced substitution ───────────────
+// argv splits `SHA=$(git rev-parse HEAD) gsd-test` into `SHA=$(git`, `rev-parse`, `HEAD)`, ...;
+// program resolution then saw `rev-parse` and the dispatch vanished (found while fixing m-02).
+
+test('GTEST-01 m-02: `SHA=$(git rev-parse HEAD) gsd-test --head HEAD | tail` is a piped dispatch', () => {
+  const d = oneDispatch('SHA=$(git rev-parse HEAD) gsd-test --head HEAD | tail');
+  assert.strictEqual(d.flags.head, 'HEAD');
+  assert.strictEqual(d.pipeMasked, true);
+});
+
+test('GTEST-01 m-02: `env X=$(a b) gsd-test` is a dispatch', () => {
+  oneDispatch('env X=$(a b) gsd-test');
+});
+
+test('GTEST-01 m-02: `HOME=$(mktemp -d) gsd-test` records the HOME assignment as an env op', () => {
+  const d = oneDispatch('HOME=$(mktemp -d) gsd-test');
+  assert.deepStrictEqual(d.envOps, [{ op: 'set', name: 'HOME', value: '$(mktemp -d)' }]);
+});
