@@ -94,6 +94,7 @@ const {
   isNonGovernedCommand,
   PR_COMMENT_EQUIVALENT_ACTIONS,
   VERDICT_ROUTE_FORMS,
+  graphqlReviewMutation,
 } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, ask, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand } = require('./lib/resolve.cjs');
@@ -626,7 +627,8 @@ function isApproveEvent(seg) {
     if (/"event"\s*:\s*"APPROVE"/i.test(c)) return true;
     if (jsonEventOf(c) === 'APPROVE') return true; // decoded: `"APPR\u004fVE"` is an approve (MJ-02)
   }
-  return false;
+  const gq = graphqlEvent(seg);
+  return gq !== null && gq.event === 'APPROVE'; // 261006-jsm: a GraphQL review mutation's event
 }
 
 /**
@@ -649,7 +651,44 @@ function isRequestChangesEvent(seg) {
     if (/"event"\s*:\s*"REQUEST_CHANGES"/i.test(c)) return true;
     if (jsonEventOf(c) === 'REQUEST_CHANGES') return true; // decoded (MJ-02)
   }
-  return false;
+  const gq = graphqlEvent(seg);
+  return gq !== null && gq.event === 'REQUEST_CHANGES'; // 261006-jsm: a GraphQL review mutation's event
+}
+
+/** Fixed descriptions of a GraphQL review mutation whose event cannot be read (261006-jsm). */
+const GRAPHQL_NO_EVENT = 'a GraphQL review mutation that names no event the gate can read';
+const GRAPHQL_EVENT_VARIABLE =
+  'a GraphQL review mutation whose event variable is absent, read from a file or stdin, or built by shell expansion';
+
+/**
+ * The event of a GraphQL review mutation the segment sends (261006-jsm Task 3b, CONTEXT D4), or
+ * null when the segment carries no visible `submitPullRequestReview` / `addPullRequestReview`.
+ * Read from an inline enum literal in the query text (`event: APPROVE`), or from a variable
+ * (`event: $e`) resolved against a gh field `e=<VALUE>` or the curl JSON body's `variables`.
+ * Returns `{ event, unreadable }`: `event` upper-cased, or null; `unreadable` a FIXED description
+ * when the event cannot be read (a variable that is absent, `@`-sourced or built by expansion;
+ * a `submitPullRequestReview` with no event at all), else null. `addPullRequestReview` with no
+ * event anywhere starts a pending review, not a verdict: both are null. A `$` variable named
+ * `event` is also caught by isApproveEvent's existing `event=` field match.
+ *
+ * @param {Object} seg
+ * @returns {{event:(string|null), unreadable:(string|null)}|null}
+ */
+function graphqlEvent(seg) {
+  const g = graphqlReviewMutation(seg);
+  if (!g || !g.mutation || typeof g.queryText !== 'string') return null;
+  const literal = /(?<![$\w])event\s*:\s*([A-Za-z_]+)\b/.exec(g.queryText);
+  if (literal) return { event: literal[1].toUpperCase(), unreadable: null };
+  const variable = /(?<![$\w])event\s*:\s*\$(\w+)/.exec(g.queryText);
+  if (variable) {
+    const has = Object.prototype.hasOwnProperty.call(g.variables, variable[1]);
+    const value = has ? g.variables[variable[1]] : undefined;
+    if (typeof value !== 'string' || value.startsWith('@') || /[$`]/.test(value)) {
+      return { event: null, unreadable: GRAPHQL_EVENT_VARIABLE };
+    }
+    return { event: value.toUpperCase(), unreadable: null };
+  }
+  return { event: null, unreadable: g.mutation === 'submitPullRequestReview' ? GRAPHQL_NO_EVENT : null };
 }
 
 /**
@@ -700,6 +739,9 @@ const BODY_FILE_FLAGS = Object.freeze(['--input', '-T', '--upload-file']);
  */
 function unresolvedVerdictForm(seg) {
   if (isNativeGhSegment(seg)) return null;
+  // 261006-jsm Task 3b: a GraphQL review mutation whose event cannot be read.
+  const gq = graphqlEvent(seg);
+  if (gq !== null && gq.unreadable !== null) return gq.unreadable;
   const tokens = Array.isArray(seg.tokens) ? seg.tokens.filter((t) => typeof t === 'string') : [];
   if (tokens.some((t) => /\/reviews\/[^/]+\/dismissals(?:$|[/?])/.test(t))) return null;
 
@@ -1658,7 +1700,8 @@ function gateSegment(seg, action, deps, opts = {}) {
  * 261006-jsm: a recovered verdict route (classify result `recovered: true`) contributes its
  * `verdictSegments` to this loop in place of the outer segment, under the same precedence. An
  * uncertain route (`uncertain: true`) holds uncertainVerdictRouteAsk as an ask without any PR
- * lookup, scaffold or log read.
+ * lookup, scaffold or log read. An unresolved route (`unresolved: true`, a file-sourced GraphQL
+ * query) holds the MJ-02 unresolvedVerdictAsk the same way.
  */
 function gate(stdinString, deps) {
   const input = readHookInput(stdinString);
@@ -1704,6 +1747,18 @@ function gate(stdinString, deps) {
     // log read); any verdict segments it also carries are still gated below, so a deny wins.
     if (r.recovered === true && r.uncertain === true && !firstAsk) {
       firstAsk = uncertainVerdictRouteAsk(r.uncertainVia || r.via);
+    }
+    // 261006-jsm Task 3b: an UNRESOLVED route (a GraphQL query read from a file or stdin) holds the
+    // MJ-02 ask, again with no PR lookup, scaffold or log read: the request names no PR (a node id
+    // would live in the file), and keying R8 to the current branch's PR would turn a possibly
+    // read-only query into a deny. A mixed collection also gates its verdict segments below.
+    if (r.recovered === true && r.unresolved === true && !firstAsk) {
+      const code = r.unresolvedVia || r.via;
+      firstAsk = unresolvedVerdictAsk(
+        Object.prototype.hasOwnProperty.call(VERDICT_ROUTE_FORMS, code)
+          ? VERDICT_ROUTE_FORMS[code]
+          : 'a command form the gate cannot read'
+      );
     }
     const targets = r.recovered === true ? r.verdictSegments : [seg];
     const action = r.recovered === true ? 'pr-review' : r.action;

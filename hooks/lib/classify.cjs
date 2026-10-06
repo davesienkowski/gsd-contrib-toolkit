@@ -541,8 +541,14 @@ function classifySegmentDirect(seg) {
 //
 //   { action: 'pr-review', route: 'recovered', recovered: true, uncertain: true, via, verdictSegments: [] }
 //
+// A GraphQL query read from a file or stdin (Task 3b, orchestrator B1) is UNRESOLVED, and the gate
+// holds the MJ-02 ask with no PR lookup:
+//
+//   { action: 'pr-review', route: 'graphql', recovered: true, unresolved: true, via: 'graphql-file-query', verdictSegments: [] }
+//
 // A collection that holds verdict segments AND an uncertain inner keeps the segments and adds
-// `uncertain: true` plus `uncertainVia` (the code naming the opaque inner form). Any other inner
+// `uncertain: true` plus `uncertainVia` (the code naming the opaque inner form); an unresolved
+// inner adds `unresolved: true` plus `unresolvedVia` the same way. Any other inner
 // result (push, pr-merge, failClosed, null) is discarded, so the segment stays `other` exactly as
 // before (D1). classifyAction's PASS 4 keeps every existing chain classification unchanged (D2).
 //
@@ -581,6 +587,8 @@ const VERDICT_ROUTE_FORMS = Object.freeze({
   'xargs-unknown-option': 'an xargs command with an option the gate cannot read',
   'gh-api-attached-field': 'a gh api review post whose fields are attached to the flag (-fevent=...)',
   'gh-api-input': 'a gh api review post whose body is read with --input',
+  graphql: 'a GraphQL review mutation (submitPullRequestReview or addPullRequestReview)',
+  'graphql-file-query': 'a GraphQL query read from a file or stdin, which may be a review mutation',
 });
 
 /**
@@ -693,6 +701,8 @@ function recoverVerdictRoute(seg, state) {
   if (prog === 'setsid') return recoverStripped(afterSetsidOptions(after), 'setsid', state);
   if (prog === 'time') return recoverStripped(afterTimeOptions(after), 'time', state);
   if (prog === 'xargs') return recoverXargs(after, state);
+  // Task 3b: a curl POST to the GitHub GraphQL endpoint (a REST curl already classified directly).
+  if (prog === 'curl') return recoverGraphql(seg);
   // Task 2d: a program word built by expansion (`$(echo gh)`, `$GH`, a backtick), keyed on the
   // token as argv produced it (argv drops the quotes of `"$CHROME"`).
   if (word.length > 0 && (word[0] === '$' || word[0] === '`')) return recoverExpansionProgram(tokens, state);
@@ -790,7 +800,182 @@ function recoverGhRepoFlag(seg, after) {
  * @returns {Object|null}
  */
 function recoverGhApi(seg) {
-  return recoverRestReviewPost(seg);
+  return recoverGraphql(seg) || recoverRestReviewPost(seg);
+}
+
+/** The GraphQL review mutations (case-sensitive, whole identifiers; CONTEXT D4). */
+const GRAPHQL_REVIEW_MUTATION_RE = /\b(submitPullRequestReview|addPullRequestReview)\b/;
+
+/** curl request-body flags; every one but --data-raw reads a file or stdin for an `@` value. */
+const CURL_BODY_FLAGS = Object.freeze(['-d', '--data', '--data-binary', '--data-ascii', '--data-urlencode', '--json', '--data-raw']);
+
+/**
+ * Is this segment a request to the GitHub GraphQL endpoint? `gh api graphql` or `gh api /graphql`
+ * (the endpoint is the first subcommand or positional after `api`), or curl whose URL host is
+ * api.github.com and whose path is `/graphql`. Returns 'gh', 'curl' or null.
+ *
+ * @param {Object} seg
+ * @returns {'gh'|'curl'|null}
+ */
+function graphqlTarget(seg) {
+  const { prog, args } = resolveProgram(seg);
+  if (prog === 'gh') {
+    if (args[0] !== 'api') return null;
+    const candidates = [...(seg.subcommands || []), ...(seg.positionals || [])];
+    const at = candidates.indexOf('api');
+    const endpoint = at === -1 ? undefined : candidates[at + 1];
+    return endpoint === 'graphql' || endpoint === '/graphql' ? 'gh' : null;
+  }
+  if (prog === 'curl') {
+    const target = extractTarget(seg, true);
+    if (!target || hostOf(target) !== 'api.github.com') return null;
+    const scheme = target.indexOf('://');
+    const rest = scheme === -1 ? target : target.slice(scheme + 3);
+    const slash = rest.indexOf('/');
+    const p = slash === -1 ? '' : rest.slice(slash).split('?')[0].split('#')[0].replace(/\/+$/, '');
+    return p === '/graphql' ? 'curl' : null;
+  }
+  return null;
+}
+
+/**
+ * The `name=value` fields of a gh api segment, read from the TOKENS (repeated `-f` flags overwrite
+ * each other in the parsed flag map): `-f` / `--raw-field` (raw string) and `-F` / `--field`
+ * (typed: an `@` value is read from a file or stdin), as a separate value token, attached
+ * (`-fquery=...`, `-f=query=...`) or long with `=` (`--field=query=...`).
+ *
+ * @param {string[]} tokens
+ * @returns {Array<{name:string, value:string, typed:boolean}>}
+ */
+function ghApiFields(tokens) {
+  const out = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const t = tokens[i];
+    let typed = null;
+    let body;
+    if (t === '-f' || t === '--raw-field' || t === '-F' || t === '--field') {
+      typed = t === '-F' || t === '--field';
+      body = tokens[i + 1];
+      i += 1;
+    } else {
+      const long = /^--(raw-field|field)=([\s\S]*)$/.exec(t);
+      const short = /^-([fF])([\s\S]+)$/.exec(t);
+      if (long) {
+        typed = long[1] === 'field';
+        body = long[2];
+      } else if (short) {
+        typed = short[1] === 'F';
+        body = short[2].startsWith('=') ? short[2].slice(1) : short[2];
+      }
+    }
+    if (typed === null || typeof body !== 'string') continue;
+    const eq = body.indexOf('=');
+    if (eq <= 0) continue;
+    out.push({ name: body.slice(0, eq), value: body.slice(eq + 1), typed });
+  }
+  return out;
+}
+
+/**
+ * The GraphQL review mutation a segment sends, if any (Task 3b, CONTEXT D4). Pure.
+ *
+ * Returns null when the segment is not a request to the GitHub GraphQL endpoint (graphqlTarget).
+ * Otherwise `{ mutation, queryText, fileSourced, variables }`:
+ *   queryText    the `query` field (gh) or the inline JSON body's `query` (curl), or null
+ *   mutation     `submitPullRequestReview` / `addPullRequestReview` when the query text names one
+ *                as a case-sensitive whole identifier, else null
+ *   fileSourced  true when the query may come from a file or stdin: gh `-F query=@...` /
+ *                `--field query=@...` (including `@-`), gh `--input <f|->`, or a curl body flag
+ *                other than --data-raw whose value starts with `@`. `-f query=@x` is NOT
+ *                file-sourced: gh sends the literal text.
+ *   variables    name -> value for every non-query gh field, or the curl JSON body's `variables`
+ *                object (values as JSON gives them), for the gate's event-variable read
+ *
+ * @param {Object} seg
+ * @returns {{mutation:(string|null), queryText:(string|null), fileSourced:boolean, variables:Object}|null}
+ */
+function graphqlReviewMutation(seg) {
+  if (!seg || typeof seg !== 'object' || !Array.isArray(seg.tokens)) return null;
+  const target = graphqlTarget(seg);
+  if (target === null) return null;
+  const tokens = seg.tokens.filter((t) => typeof t === 'string');
+  let queryText = null;
+  let fileSourced = false;
+  const variables = {};
+  if (target === 'gh') {
+    for (const f of ghApiFields(tokens)) {
+      if (f.name === 'query') {
+        if (f.typed && f.value.startsWith('@')) fileSourced = true;
+        else if (queryText === null) queryText = f.value;
+      } else if (!Object.prototype.hasOwnProperty.call(variables, f.name)) {
+        variables[f.name] = f.value;
+      }
+    }
+    if (tokens.some((t) => t === '--input' || t.startsWith('--input='))) fileSourced = true;
+  } else {
+    for (let i = 0; i < tokens.length; i += 1) {
+      const t = tokens[i];
+      let flag = null;
+      let val;
+      const long = /^(--[A-Za-z][A-Za-z0-9-]*)=([\s\S]*)$/.exec(t);
+      if (CURL_BODY_FLAGS.indexOf(t) !== -1) {
+        flag = t;
+        val = tokens[i + 1];
+        i += 1;
+      } else if (long && CURL_BODY_FLAGS.indexOf(long[1]) !== -1) {
+        flag = long[1];
+        val = long[2];
+      } else if (/^-d.+/.test(t)) {
+        flag = '-d';
+        val = t.slice(2);
+      }
+      if (flag === null || typeof val !== 'string') continue;
+      if (flag !== '--data-raw' && val.startsWith('@')) {
+        fileSourced = true;
+        continue;
+      }
+      if (!/^\s*\{/.test(val)) continue;
+      let o;
+      try {
+        o = JSON.parse(val);
+      } catch (_) {
+        continue;
+      }
+      if (o && typeof o === 'object') {
+        if (typeof o.query === 'string' && queryText === null) queryText = o.query;
+        if (o.variables && typeof o.variables === 'object') Object.assign(variables, o.variables);
+      }
+    }
+  }
+  const m = queryText === null ? null : GRAPHQL_REVIEW_MUTATION_RE.exec(queryText);
+  return { mutation: m ? m[1] : null, queryText, fileSourced, variables };
+}
+
+/**
+ * Recover a GraphQL verdict route (Task 3b, CONTEXT D4, orchestrator B1). A visible review mutation
+ * is a recovered pr-review (route graphql), the outer segment its verdict segment; the gate reads
+ * its event from the query text or a variable. A query read from a file or stdin with no visible
+ * mutation is UNRESOLVED: no verdict segment, no review hint required (0 genuine such calls in
+ * 48,055 Bash calls, 31 `gh api graphql` calls in total, 2026-10-06), and the gate asks without a
+ * PR lookup because the request names no PR. An explicit non-mutating method returns null.
+ *
+ * @param {Object} seg
+ * @returns {Object|null}
+ */
+function recoverGraphql(seg) {
+  const g = graphqlReviewMutation(seg);
+  if (g === null) return null;
+  const method = explicitMethod(seg);
+  if (method !== null && !MUTATING_METHODS.has(method)) return null;
+  if (g.mutation !== null) {
+    return { action: 'pr-review', route: 'graphql', recovered: true, via: 'graphql', verdictSegments: [seg] };
+  }
+  if (g.fileSourced) {
+    return {
+      action: 'pr-review', route: 'graphql', recovered: true, unresolved: true, via: 'graphql-file-query', verdictSegments: [],
+    };
+  }
+  return null;
 }
 
 /**
@@ -1001,7 +1186,9 @@ function recoverStripped(rest, via, state) {
  * route with none (an uncertain or unresolved route) passes through unchanged, so it keeps the
  * code that names it; otherwise null. A collection that also holds an uncertain inner keeps its
  * verdict segments and adds `uncertain: true` with `uncertainVia`, so the gate both gates the
- * segments and holds the uncertain ask (Task 2d).
+ * segments and holds the uncertain ask (Task 2d); likewise an unresolved inner (a file-sourced
+ * GraphQL query) adds `unresolved: true` with `unresolvedVia`, and the gate holds the MJ-02 ask
+ * (Task 3b).
  *
  * @param {string} via a VERDICT_ROUTE_FORMS code for this level
  * @param {Array<{r:Object|null, seg:Object}>} items
@@ -1011,7 +1198,7 @@ function combineRecovered(via, items) {
   const verdictSegments = [];
   let opaque = null;
   let uncertainVia = null;
-  let unresolved = false;
+  let unresolvedVia = null;
   for (const { r, seg } of items) {
     if (!r || r.action !== 'pr-review') continue; // D1: every other inner result is discarded
     if (r.recovered !== true) {
@@ -1021,7 +1208,7 @@ function combineRecovered(via, items) {
     verdictSegments.push(...r.verdictSegments);
     if (r.verdictSegments.length === 0 && opaque === null) opaque = r;
     if (r.uncertain === true && uncertainVia === null) uncertainVia = r.uncertainVia || r.via;
-    if (r.unresolved === true) unresolved = true;
+    if (r.unresolved === true && unresolvedVia === null) unresolvedVia = r.unresolvedVia || r.via;
   }
   if (verdictSegments.length === 0) return opaque === null ? null : { ...opaque };
   const out = { action: 'pr-review', route: 'recovered', recovered: true, via, verdictSegments };
@@ -1029,7 +1216,10 @@ function combineRecovered(via, items) {
     out.uncertain = true;
     out.uncertainVia = uncertainVia;
   }
-  if (unresolved) out.unresolved = true;
+  if (unresolvedVia !== null) {
+    out.unresolved = true;
+    out.unresolvedVia = unresolvedVia;
+  }
   return out;
 }
 
@@ -1673,4 +1863,7 @@ module.exports = {
   // 261006-jsm Task 2d: the D7 (A) switch and the review-hint predicate that scopes the asks.
   OPAQUE_SHELL_PAYLOAD_NEEDS_HINT,
   hasReviewHint,
+  // 261006-jsm Task 3b: the GraphQL review-mutation reader the review-artifact gate uses to read
+  // a mutation's event.
+  graphqlReviewMutation,
 };
