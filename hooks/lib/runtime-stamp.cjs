@@ -59,6 +59,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { FailClosed } = require('./failclosed.cjs');
+const { readRegularFileBounded } = require('./regular-file.cjs');
 const { GSD_CORE_OWNER, GSD_CORE_REPO } = require('./resolve.cjs');
 
 // ───────────────────────────── constants ─────────────────────────────
@@ -390,13 +391,20 @@ function validateStamp(obj, where) {
 /**
  * Read the toolkit-owned runtime stamp.
  *
+ * The default reader is the shared bounded, regular-file-only reader (W5): a stamp path that is
+ * a FIFO, socket, device or directory (or a symlink to one), or is over the 1 MiB read cap, is
+ * refused at once instead of blocking the hook past its harness timeout, and lands in the same
+ * "exists but could not be read" FailClosed below. Only ENOENT is the unstamped null, so a planted
+ * special file is never read as absent (that would let an offline run turn the deny into an ask).
+ *
  * @param {{readFileSync?:Function, stampPath?:string, env?:Object}} [deps]
  * @returns {Object|null} the stamp, or null when the file is ABSENT (the unstamped case)
- * @throws {FailClosed} on malformed JSON, a wrong schema, a bad sha/digest, or an unreadable
- *   (but present) file — fail-closed, never a guessed null
+ * @throws {FailClosed} on malformed JSON, a wrong schema, a bad sha/digest, or an unreadable,
+ *   non-regular or oversized (but present) file: fail-closed, never a guessed null
  */
 function readStamp(deps = {}) {
-  const readFileSync = deps.readFileSync || nodeFs.readFileSync;
+  // The default drops the encoding argument: the shared reader's second parameter is its byte cap.
+  const readFileSync = deps.readFileSync || ((p) => readRegularFileBounded(p));
   const file = deps.stampPath || stampPath(deps.env);
 
   let raw;
