@@ -155,7 +155,9 @@ const BASE_TABLE = [
   [null, 'head'],
   ['NEXT', 'other'],
   ['Next', 'other'],
-  ['next~1', 'other'],
+  // 37-REVIEW MA-05: trailing ~N / ^N / ^{...} / @{0} are stripped before matching (next~1 is
+  // derived from next, so it is judged by next's freshness).
+  ['next~1', 'local'],
   ['upstream/next', 'other'],
   ['0123456789abcdef0123456789abcdef01234567', 'other'],
 ];
@@ -321,7 +323,7 @@ test('WTREE-01 encoding: a quoted "next" is the argv-unquoted token -> local', (
   assert.strictEqual(oneCut('git worktree add p "next"').baseKind, 'local');
 });
 
-for (const base of ['NEXT', 'Next', 'next~1', 'upstream/next', 'nеxt']) {
+for (const base of ['NEXT', 'Next', 'upstream/next', 'nеxt']) {
   test(`WTREE-01 encoding: base ${JSON.stringify(base)} is other (exact, case-sensitive)`, () => {
     const e = oneCut('git worktree add p ' + base);
     assert.strictEqual(e.base, base);
@@ -502,3 +504,61 @@ for (const [cmd, want] of DIR_STACK_CUTS) {
     assert.strictEqual(startDir(oneCut(cmd), '/CWD'), want);
   });
 }
+
+
+// ───────────────────────── 37-REVIEW MA-05: trunk aliases and no-op suffixes ─────────────────────────
+
+const MA05_BASES = [
+  ['next~0', 'local'],
+  ['next^0', 'local'],
+  ['next^', 'local'],
+  ['next~', 'local'],
+  ['next^{commit}', 'local'],
+  ['next^{}', 'local'],
+  ['next@{0}', 'local'],
+  ['next~2^{commit}~0', 'local'],
+  ['refs/heads/next~0', 'local'],
+  ['origin/next~0', 'remote'],
+  ['origin/next^{commit}', 'remote'],
+  ['origin', 'remote'],
+  ['origin/HEAD', 'remote'],
+  ['remotes/origin/HEAD', 'remote'],
+  ['refs/remotes/origin/HEAD', 'remote'],
+  ['origin~0', 'remote'],
+  ['HEAD~0', 'head'],
+  ['@~0', 'head'],
+  ['HEAD@{0}', 'head'],
+  ['HEAD~3', 'head'],
+  ['-', 'indirect'],
+  ['@{-1}', 'indirect'],
+  ['@{-2}', 'indirect'],
+  ['@{u}', 'indirect'],
+  ['@{upstream}', 'indirect'],
+  ['@{push}', 'indirect'],
+  ['feature@{u}', 'indirect'],
+  ['work@{upstream}~0', 'indirect'],
+  ['next@{1}', 'indirect'],
+  ['next@{yesterday}', 'indirect'],
+  [':/fix the thing', 'indirect'],
+  ['HEAD:path', 'indirect'],
+  ['a..b', 'indirect'],
+  ['feature', 'other'],
+  ['feature~0', 'other'],
+  ['upstream/next~0', 'other'],
+  ['nextgen', 'other'],
+];
+for (const [base, kind] of MA05_BASES) {
+  test('MA-05 detect: classifyBase(' + JSON.stringify(base) + ') === ' + JSON.stringify(kind), () => {
+    assert.strictEqual(classifyBase(base), kind);
+  });
+}
+
+for (const cmd of ['git worktree add p -', 'git worktree add -b f p @{u}', 'git worktree add -b f p @{-1}', 'git worktree add -b f p next@{1}']) {
+  test('MA-05 detect: ' + JSON.stringify(cmd) + ' -> uncertain (an indirect base)', () => {
+    oneUncertain(cmd);
+  });
+}
+
+test('MA-05 detect: `git worktree add -b f p next~0` is a local cut', () => {
+  assert.strictEqual(oneCut('git worktree add -b f p next~0').baseKind, 'local');
+});

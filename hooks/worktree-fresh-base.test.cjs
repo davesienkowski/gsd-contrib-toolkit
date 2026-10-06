@@ -1293,7 +1293,6 @@ const NO_FETCH = [
   ['base `feature`', 'git worktree add -b x p feature', {}],
   ['a 40-hex sha base', 'git worktree add -b x p ' + 'c'.repeat(40), {}],
   ['base `upstream/next`', 'git worktree add -b x p upstream/next', {}],
-  ['base `next~1`', 'git worktree add -b x p next~1', {}],
   ['base `NEXT` (case matters)', 'git worktree add -b x p NEXT', {}],
   ['`--orphan` (no base)', 'git worktree add --orphan -b o p', {}],
   ['HEAD base while on branch `work`', 'git worktree add -b f p', { branch: 'work' }],
@@ -1305,6 +1304,11 @@ const ONE_FETCH = [
   ['base `refs/remotes/origin/next`', 'git worktree add -b x p refs/remotes/origin/next', {}],
   ['HEAD base (omitted) while on `next`', 'git worktree add -b f p', { branch: 'next', held: [] }],
   ['the `../next` convenience form (branch named after the path)', 'git worktree add ../next', {}],
+  // 37-REVIEW MA-05: no-op / ancestry suffixes and origin/HEAD aliases name the trunk too.
+  ['base `next~1`', 'git worktree add -b x p next~1', {}],
+  ['base `next~0`', 'git worktree add -b x p next~0', {}],
+  ['base `origin/HEAD`', 'git worktree add -b x p origin/HEAD', {}],
+  ['base `origin`', 'git worktree add -b x p origin', {}],
 ];
 
 for (const [name, cmd, over] of NO_FETCH) {
@@ -2642,5 +2646,41 @@ test('ENF-25 MA-04 e2e (fx8): from clone A, `pushd <C> && git worktree add ... n
   } finally {
     fa.dispose();
     fc.dispose();
+  }
+});
+
+// ── MA-05: aliases and suffixes cannot route around the trunk check ──
+
+test('ENF-25 MA-05: `next~0` after a held-next deny still denies with the held fix (no suffix bypass)', () => {
+  const { deps, calls } = scenario({ held: ['/w/main'] });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b f p next~0'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.ok(d.permissionDecisionReason.includes('git -C /w/main merge --ff-only origin/next'), d.permissionDecisionReason);
+  assert.strictEqual(calls.casUpdateRef, 0);
+});
+
+for (const base of ['@{u}', '@{-1}', '-', 'next@{1}']) {
+  test('ENF-25 MA-05: base ' + JSON.stringify(base) + ' is indirect -> the constant uncertain deny, ZERO resolve and fetch', () => {
+    const { deps, calls } = scenario();
+    const d = runWorktreeFreshBaseGate(input('git worktree add -b f p ' + base), deps);
+    assert.strictEqual(d.permissionDecision, 'deny');
+    assert.strictEqual(calls.resolveTreeRoot, 0);
+    assert.strictEqual(calls.fetchOrigin, 0);
+  });
+}
+
+test('ENF-25 MA-05 e2e (fx6): origin/HEAD -> origin/next; `origin/HEAD` and `origin` refresh origin/next, `next~0` fast-forwards next', () => {
+  const fx = makeFixture();
+  try {
+    git(fx.A, 'remote', 'set-head', 'origin', 'next');
+    const tip = fx.advanceOrigin();
+    const r1 = spawnIn(fx.A, 'git worktree add -b f ' + path.join(fx.root, 'x') + ' origin/HEAD');
+    assert.strictEqual(r1.decision, 'allow', r1.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/remotes/origin/next'), tip, 'origin/HEAD must trigger the fetch');
+    const r2 = spawnIn(fx.A, 'git worktree add -b g ' + path.join(fx.root, 'y') + ' next~0');
+    assert.strictEqual(r2.decision, 'allow', r2.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), tip, '`next~0` must be judged (and refreshed) as next');
+  } finally {
+    fx.dispose();
   }
 });
