@@ -11,11 +11,18 @@
  * still approve) carried all the enforcement; the side with more authority — approving,
  * dismissing, merging, all outward-facing and effectively irreversible — carried none.
  *
- * A hook cannot evaluate judgement, and this gate does not try. It mechanizes the FOUR
- * re-review steps that are pure artifact-EXISTENCE checks (`full-system-map.md:169-174`):
+ * A hook cannot evaluate judgement, and this gate does not try. It mechanizes the FIVE
+ * re-review steps whose evidence is a machine fact, not a judgement: the four pure
+ * artifact-EXISTENCE checks (`full-system-map.md:169-174`) and, since CTK-ADR-0010 (Proposed,
+ * amending CTK-ADR-0006 Decision 4), step 8a's harness-recorded memtrace evidence:
  *
  *   step 8  -> `gh pr review`   two orthogonal isolated passes (`/code-review` AND
  *                               `/security-review`) recorded for THIS head oid.
+ *   step 8a -> a review verdict an approve / request-changes needs `get_impact` +
+ *                               `get_symbol_context` + one recorded-decision memtrace verb
+ *                               in tool-recorder's log for THIS session (R8a-memtrace);
+ *                               cannot-observe asks, and a filled `R8a-memtrace.json`
+ *                               unavailable attestation asks, never allows.
  *   step 10 -> a CLEAR verdict  the exogenous self-check, required before any CLEAR/Approve.
  *   step 13 -> `gh pr merge`    the `merge=#n` token, green CI conclusions, and a CI re-fetch
  *                               that POST-DATES the last analysis artifact.
@@ -59,9 +66,13 @@
  * token in particular is an ATTESTATION (the human's invocation token is not visible at
  * PreToolUse), checked only for consistency with the PR being merged. The gate converts
  * skipping from free-and-silent into deliberate-and-recorded. It must never be described as
- * closing that gap. The treadmill check is the one rung higher — it reads GitHub's own review
- * list rather than a self-report (trust ladder: attestation < artifact < independent
- * verification).
+ * closing that gap. Step 8a (CTK-ADR-0010) sits one rung above an artifact: its evidence is a
+ * row tool-recorder's PostToolUse hook wrote when the tool ran, not a file the reviewer
+ * authored. It is NOT proof of targeting — rows carry no tool inputs (tool-recorder D2), so it
+ * shows the verbs ran in this session, not which symbols they were run on — and the log is
+ * user-writable. The treadmill check is the highest rung — it reads GitHub's own review list
+ * rather than a self-report (trust ladder: attestation < artifact < harness-recorded
+ * execution < independent verification).
  *
  * @module hooks/review-artifact
  */
@@ -96,8 +107,8 @@ const { checkAssertion, readPath, isNonEmpty } = require('./protocol-artifact.cj
  * ISSUE comments now reach this gate — is paid back by `resolveIsPullRequest`, a real lookup
  * the gate is allowed to make and the pure classifier is not.
  *
- * NOT governed, deliberately: `issue-close`. None of the four mechanizable re-review steps
- * concerns closing an issue, and inventing a fifth obligation would put an entry in the frozen
+ * NOT governed, deliberately: `issue-close`. None of the five mechanizable re-review steps
+ * concerns closing an issue, and inventing another obligation would put an entry in the frozen
  * table that no declared step backs. Recorded as a known gap in the summary.
  */
 const GOVERNED_ACTIONS = Object.freeze(new Set(['pr-review', 'pr-merge', ...PR_COMMENT_EQUIVALENT_ACTIONS]));
@@ -181,16 +192,21 @@ const MEMTRACE_REQUIRED_ANY = Object.freeze(['recall_decision', 'why_is_this_her
  * an untracked file in every worktree of a repo the toolkit does not own, and a POLICY-02
  * commit hazard.
  *
- * Ordered CHEAPEST FIRST: the three disk-backed artifact checks, then the merge record, then
- * the treadmill guard, which is the only entry that costs a network round trip. The first
- * unmet requirement denies.
+ * Ordered CHEAPEST FIRST: the three disk-backed artifact checks, then the step-8a recorder-log
+ * read, then the merge record, then the treadmill guard, which is the only entry that costs a
+ * network round trip. The first unmet requirement denies; an ask is held while later entries
+ * are still checked, so a later deny wins over it.
  *
  * Fields:
  *   id       stable name used in every denial and in the tests.
  *   step     the re-review step number it mechanizes (surfaced in the denial).
  *   on       the classified actions it applies to.
- *   when     'always' | 'clear-verdict' | 'review-post' — see `gateApplies`.
+ *   when     'always' | 'clear-verdict' | 'review-post' | 'verdict' — see `gateApplies`.
+ *            'verdict' is an approve or request-changes (step 8a), never a `--comment`.
  *   file     the artifact, relative to the PR+oid directory (absent for a live-only check).
+ *   artifact an escape artifact the entry's own `verify` reads, NOT `file`, so requireArtifact
+ *            never runs for it (R8a-memtrace: `R8a-memtrace.json`, the sanctioned unavailable
+ *            attestation, scaffolded on a deny; a filled one asks, never allows).
  *   spec     the T2 scaffold spec. Every substantive field is an OBLIGATION; a spec may
  *            never carry a `value`/`default` (T2's `validateSpec` refuses it).
  *   assert   ENF-19 assertions, evaluated by the SHARED `checkAssertion`.
