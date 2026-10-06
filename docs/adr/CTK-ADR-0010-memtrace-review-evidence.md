@@ -230,6 +230,15 @@ is wrong.
   subcommand). GraphQL is one of these routes, not the only one. All predate this record
   (`classify.cjs` and `argv.cjs` are unchanged by Phase 38); closing them is a classifier change for
   a follow-up, not part of step 8a (38 review MJ-03).
+  Fixed by quick 261006-jsm: with only Bash rows in the session log, each of these now denies on R8a
+  as a recovered `pr-review`: a subshell `( gh pr review 42 -a )`, a brace group, `nohup` (and
+  `setsid`, `time` and a `!` negation), `eval`, `xargs` fed by `echo 42`, `gh -R o/r pr review 42 -a`
+  and `gh pr -R o/r review 42 -a`, `bash -c` / `sh -c` (and the `-lc` / `-ec` bundles),
+  `-fevent=APPROVE` / `-Fevent=APPROVE`, and a GraphQL `submitPullRequestReview` or
+  `addPullRequestReview` whose name and event are visible. A bare `--input` on `.../reviews` without
+  `-X`, and a visible GraphQL review mutation whose event is unreadable, ask with the MJ-02 UNRESOLVED
+  wording. `$(echo gh) pr review 42 -a` is an uncertain route that asks, with no PR lookup (see the
+  opaque-ask bullet below). What stays open is listed in the still-open bullet below.
 - **Extending the rotated log past the scan cap turns a deny into an ask.** `truncate -s 65M
   tool-log.1.jsonl` sparse-extends the file at once and loses no data. The recorder never writes the
   rotated slot, so every later read skips it as over `MAX_SCAN_BYTES` (64 MiB), the read is
@@ -258,6 +267,55 @@ is wrong.
 - **A CLEAR-verdict PR comment routes around 8a.** A `gh pr comment` or a POST to
   `/issues/<pr#>/comments` whose body carries `CLEAR` arms R10 (and R1) but not R8a, because R8a is
   scoped to `pr-review` verdicts. It is a route around the memtrace obligation; recorded, not fixed.
+  Fixed by quick 261006-jsm: R8a now governs `pr-comment` and `issue-comment` as well as `pr-review`,
+  and a `CLEAR` token in a comment body or a `--comment` review body is a step-8a verdict, so with
+  only Bash rows such a post denies on R8a. A comment with no `CLEAR` stays outside 8a.
+- **An opaque verdict route asks, it is not denied.** Since quick 261006-jsm a command that may submit
+  a verdict through a form the classifier cannot read is an UNCERTAIN verdict route, and the gate
+  asks without resolving a PR, scaffolding or reading the tool log. Inside an eval or shell -c payload
+  whose command word is an expansion (D7 A), no review hint is required: 17 / 47,642 Bash calls
+  (0.04%) in ~/.claude/projects transcripts on 2026-10-06, so `eval "$(ssh-agent -s)"` and
+  `eval "$CMD"` ask inside a gsd-core worktree and allow outside one (the gate allows before reading
+  anything there). The switch is `OPAQUE_SHELL_PAYLOAD_NEEDS_HINT` (false) in `hooks/lib/classify.cjs`.
+  A top-level program built by expansion (D7 B, `$(echo gh) pr review 42 -a`) asks only next to a
+  review hint, because 1,509 / 47,642 Bash calls (3.2%) start with an expansion. A payload that does
+  not parse, or that nests past `RECOVERY_MAX_DEPTH` (4), asks with no hint (D3); a wrapper stack
+  past `MAX_PREFIX_PEELS` (8) asks only with a hint. The grade is `ask`, not deny, because an opaque
+  command is not known to be a review (CTK-ADR-0005 Decision 2, CTK-ADR-0007 Decision 2, and the
+  MJ-02 unresolved-event ask as the direct precedent).
+- **The uncertain and unresolved asks are a prompt only in default mode.** Like every ask, they
+  degrade to allow under `--dangerously-skip-permissions` (the mode Dave runs) and in any unattended
+  run, so the opaque forms and the file-sourced GraphQL query are a human prompt only in default
+  permission mode. The statically recovered forms still deny in every mode.
+- **A file-sourced GraphQL query asks.** Since quick 261006-jsm a `gh api graphql` (or `/graphql`, or
+  curl to api.github.com/graphql) whose query comes from a file or stdin (`-F query=@...`,
+  `--input`, curl `-d @...`) asks in a gsd-core worktree with the MJ-02 UNRESOLVED wording, with
+  no PR lookup and no review hint required: the request names no PR (a node id would sit in the file),
+  and keying R8 to the current branch's PR would turn a possibly read-only query into a deny.
+  Measured: 0 genuine such calls in 48,055 Bash calls in ~/.claude/projects transcripts (2026-10-06;
+  the 2 regex hits were measurement scripts), against 31 `gh api graphql` calls in total.
+- **A `CLEAR` comment is a step-8a verdict.** The Decision table exempts `--comment` from 8a; quick
+  261006-jsm narrows that `--comment` exemption to a body without a `CLEAR` token, and extends 8a to
+  a PR comment carrying `CLEAR` (re-review step 11 treats `CLEAR` as the verdict),
+  without editing the Decision. The cost is one tool-log read per `CLEAR` comment.
+- **Verdict routes still open after quick 261006-jsm.** Only a wrapped `gh pr review` is recovered:
+  a `gh pr merge`, `gh pr comment`, `gh issue comment` or `gh pr create` wrapped in these forms, or
+  written `gh -R o/r pr merge` / `gh -R o/r pr create`, stays `other`. An unclassifiable mutating
+  `gh api` synonym inside a wrapped payload is discarded with every other non-review inner result and
+  never failed closed (D1). Also open: command substitution `x=$(gh pr review 42 -a)`; `$X 42 -a`
+  where X holds "gh pr review"; `dismissPullRequestReview` via GraphQL; a shell script file
+  (`bash review.sh`), `bash -s` or a heredoc-fed shell; a `gh pr review` on a later line of a
+  multi-line `-c` payload (argv does not split on a newline; pre-existing,
+  16 multi-line sh -c calls in 48,055); an attached-field create `gh api .../issues -ftitle=x`; and
+  zsh / ksh option parsing,
+  unverified locally (zsh is not installed).
+- **Some recovered verdicts are keyed to the current branch's PR.** A visible GraphQL mutation names
+  its PR by node id, and `echo 42 | xargs gh pr review -a` reads its selector from stdin, so the gate
+  keys R8, R10 and R1 to the current branch's PR (a wrong key denies, never allows).
+  R8a is session-scoped and unaffected.
+- **tool-recorder logs the recovered forms as `pr-review`.** Its action column comes from the same
+  classifier, so these forms now log `pr-review` instead of `other`; governed stays false, so this is
+  observability, not a gate.
 - **Un-isolated test suites pollute the shared log, and their rotation can evict real evidence.**
   Measured: suites run without `GSD_CONTRIB_LOG_DIR` wrote 26,726 gate rows in about 3.5 hours and
   forced a rotation, and the next rotation overwrites `tool-log.1.jsonl` and every recorder row in it.
