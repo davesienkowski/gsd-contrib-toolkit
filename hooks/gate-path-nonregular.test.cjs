@@ -362,3 +362,54 @@ for (const p of PLANTINGS) {
     assertPlanted(p.kind, fx.cache, target);
   });
 }
+
+// -------------------------------------------------------------------- P3: upstream-tip-cache.json write
+
+/** The cache file, read back in the TEST process, parses with the live tip. */
+function assertCacheIsTip(file) {
+  const st = fs.lstatSync(file);
+  assert.ok(st.isFile(), file + ' is not a regular file after the write');
+  const entry = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.strictEqual(entry.sha, TIP);
+}
+
+// The TIP stub plus a fresh stamp: the verdict is `fresh`, so the hook allows only if the
+// best-effort cache write returned. A FIFO is red only once P2 refuses it on the READ (C-2).
+for (const kind of ['fifo', 'fifo-link']) {
+  const p = planting(kind);
+  test('W5 P3: ' + p.label + ' at upstream-tip-cache.json (tip, fresh stamp) -> the cache write is skipped, ENF-21 allows within the bound', { skip: p.skip }, (t) => {
+    const fx = enf21Fixture(t, 'tip');
+    freshStamp(fx.home, fx.state);
+    const target = plant(t, kind, fx.cache);
+    assertDecided(t, runEnf21(fx), 'allow', null);
+    assertPlanted(kind, fx.cache, target);
+  });
+}
+
+test('W5 P3 guard: no cache (tip, fresh stamp) -> ENF-21 allows and writes a regular cache at the tip', (t) => {
+  const fx = enf21Fixture(t, 'tip');
+  freshStamp(fx.home, fx.state);
+  assertDecided(t, runEnf21(fx), 'allow', null);
+  assertCacheIsTip(fx.cache);
+});
+
+test('W5 P3 guard: a longer stale regular cache (tip, fresh stamp) -> ENF-21 allows and the cache is fully replaced', (t) => {
+  const fx = enf21Fixture(t, 'tip');
+  freshStamp(fx.home, fx.state);
+  fs.writeFileSync(fx.cache, JSON.stringify({ schema: 1, pad: 'x'.repeat(4096) }));
+  assertDecided(t, runEnf21(fx), 'allow', null);
+  assertCacheIsTip(fx.cache);
+});
+
+// C-2: a write to /dev/zero succeeds silently before the fix and is refused after it, so the
+// decision (allow) and the bound are the same both times: a guard, not a red.
+for (const kind of ['devzero-link', 'dir']) {
+  const p = planting(kind);
+  test('W5 P3 guard: ' + p.label + ' at upstream-tip-cache.json (tip, fresh stamp) -> ENF-21 allows within the bound, planting intact', { skip: p.skip }, (t) => {
+    const fx = enf21Fixture(t, 'tip');
+    freshStamp(fx.home, fx.state);
+    const target = plant(t, kind, fx.cache);
+    assertDecided(t, runEnf21(fx), 'allow', null);
+    assertPlanted(kind, fx.cache, target);
+  });
+}
