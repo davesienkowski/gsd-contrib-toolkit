@@ -11,7 +11,7 @@
  * check to the PreToolUse boundary: before `gh issue create` (and its gh-api/curl synonyms)
  * reaches GitHub, fetch the OPEN issue titles, score the new title against them with the
  * LIVE scoreCandidates, and DENY on a high-confidence duplicate — naming the #N to dedupe
- * against so the contributor can comment on the existing issue or override deliberately.
+ * against so the contributor can comment on the existing issue instead.
  *
  * Architecture (inherited from Waves 1-2, never re-implemented here):
  *   - argv.parseCommand        → robust char-by-char parse, fail-closed on unparseable
@@ -436,8 +436,12 @@ function gate(stdinString, deps) {
       'Likely DUPLICATE issue blocked by the LIVE dedupe scorer (ENF-11): the new title ' +
         'closely matches open issue #' + top.number + ' (' + pct + '% similar).\n' +
         'Possible duplicates:\n' + list + '\n' +
-        'Comment on the existing issue instead of filing a new one. If this is genuinely ' +
-        'distinct, set GSD_CONTRIB_OVERRIDE="<reason>" to override (logged).'
+        'Comment on the existing issue instead of filing a new one. If it is genuinely ' +
+        'distinct, give it a title that says what differs (the scorer compares titles only). ' +
+        '`GSD_CONTRIB_OVERRIDE` does not lift this deny: it rescues thrown gate errors only. ' +
+        'The accountable off switch is `node bin/contrib-capability.cjs off --reason "<why>"`, run ' +
+        'from the toolkit checkout: it turns off every toolkit gate, not just this one, and writes a ' +
+        'receipt.'
     );
   }
 

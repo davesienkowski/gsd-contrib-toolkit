@@ -613,8 +613,11 @@ function denialText(g, rel, problem, note) {
     g.shape.join('\n  ') +
     waiver +
     '\n\nThis step leaves no other trace, which is why it is the one that gets skipped. ' +
-    'Write the artifact and continue — do not stop and ask. ' +
-    'Deliberate bypass: a logged `GSD_CONTRIB_OVERRIDE=<reason>`. (CTK-ADR-0004)'
+    'Write the artifact and continue; do not stop and ask. ' +
+    '`GSD_CONTRIB_OVERRIDE` does not lift this deny: it rescues thrown gate errors only. ' +
+    'The accountable off switch is `node bin/contrib-capability.cjs off --reason "<why>"`, run from ' +
+    'the toolkit checkout: it turns off every toolkit gate, not just this one, and writes a receipt. ' +
+    '(CTK-ADR-0004)'
   );
 }
 

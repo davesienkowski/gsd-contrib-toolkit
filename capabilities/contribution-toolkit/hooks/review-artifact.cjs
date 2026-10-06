@@ -865,10 +865,18 @@ function unfilledFields(text) {
 
 // ── denial rendering ────────────────────────────────────────────────────────
 
-/** The one-line reminder every ENF-20 denial carries. */
-const OVERRIDE_NOTE =
-  'Write the artifact and continue — do not stop and ask. Deliberate bypass: a logged ' +
-  '`GSD_CONTRIB_OVERRIDE=<reason>`. (CTK-ADR-0004, ENF-20)';
+/**
+ * The truthful override note every non-R8a ENF-20 policy deny ends with: the override rescues
+ * thrown gate errors only, so it does not lift a returned deny; the off switch is named instead.
+ */
+const OVERRIDE_TAIL =
+  '`GSD_CONTRIB_OVERRIDE` does not lift this deny: it rescues thrown gate errors only. ' +
+  'The accountable off switch is `node bin/contrib-capability.cjs off --reason "<why>"`, run from ' +
+  'the toolkit checkout: it turns off every toolkit gate, not just this one, and writes a receipt. ' +
+  '(CTK-ADR-0004, ENF-20)';
+
+/** The closing note of an artifact-backed ENF-20 denial: write the artifact, then the tail. */
+const OVERRIDE_NOTE = 'Write the artifact and continue; do not stop and ask. ' + OVERRIDE_TAIL;
 
 /**
  * The denial for a MISSING artifact — the one case that also SCAFFOLDS. Names the exact path
@@ -925,7 +933,7 @@ function shortfallText(g, rel, problem) {
  * @returns {string}
  */
 function liveText(g, problem) {
-  return 'ENF-20 ' + g.id + ' (re-review step ' + g.step + ') — ' + problem + '\n\n' + OVERRIDE_NOTE;
+  return 'ENF-20 ' + g.id + ' (re-review step ' + g.step + ') — ' + problem + '\n\n' + OVERRIDE_TAIL;
 }
 
 // ── artifact checking ───────────────────────────────────────────────────────
