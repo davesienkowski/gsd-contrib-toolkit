@@ -20,5 +20,6 @@ Consequences).
 | [CTK-ADR-0006](CTK-ADR-0006-universal-step-enforcement-and-obligation-scaffolding.md) | Enforce every step; scaffold **obligations, never evidence**; review-side gating (ENF-20) bounded to four mechanizable steps (**amends 0004**) | Accepted | v2.7+ |
 | [CTK-ADR-0007](CTK-ADR-0007-runtime-freshness-and-the-network-unavailable-severity.md) | Gate on installed-runtime freshness via a digest-bound toolkit stamp (ENF-21); an unobtainable upstream tip resolves to `ask`, never `deny` (**amends 0005 §Decision.4**) | Accepted | v2.7+ |
 | [CTK-ADR-0008](CTK-ADR-0008-gsd-test-dispatch-gates.md) | Gate gsd-test dispatches at dispatch time: clean tracked tree + unmasked exit (ENF-23), viable config/bench/Docker (ENF-24); one shared detector, never a classifyAction action | Proposed | v2.8 |
+| [CTK-ADR-0009](CTK-ADR-0009-gate-bounded-monotonic-ref-refresh.md) | A gate may perform a bounded, monotonic, compare-and-swap ref refresh (ENF-25 fetches origin/next and fast-forwards an unheld stale next; an unobtainable origin asks) | Proposed | v2.8 |
 
 For the narrative design overview, see [../foundations.md](../foundations.md).
