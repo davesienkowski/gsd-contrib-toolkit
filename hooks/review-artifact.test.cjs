@@ -1981,3 +1981,253 @@ test('38 fix NT-04: the 8a line says find_code_review_issues is present on the l
     'the 8a line carries the live-surface note for find_code_review_issues'
   );
 });
+
+// ── 38 verifier fix VF-2: a non-regular or oversized ARTIFACT / body file denies, never hangs ──
+//
+// readTextLive and readBodyFileLive used readFileSync: a FIFO blocks until a writer opens it, and a
+// symlink to /dev/zero reads without end (the verifier measured ~23.7 GB RSS). Each case runs the
+// gate with its LIVE artifact and body-file readers in a CHILD process under a kill timeout, so a
+// reader that blocks or runs away fails the test instead of the runner, and asserts a 2 s bound.
+
+const RA_PATH = path.join(__dirname, 'review-artifact.cjs');
+const VF2_BOUND_MS = 2000;
+const LIVE_READ_CAP = 1024 * 1024;
+
+/** A temp root holding the artifact dir with every artifact filled; returns {root, adir}. */
+function vf2Root() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rev-art-vf2-root-'));
+  const adir = path.join(root, DIR);
+  fs.mkdirSync(adir, { recursive: true });
+  fs.writeFileSync(path.join(adir, R8_CODE), text(R8_CODE_OK));
+  fs.writeFileSync(path.join(adir, R8_SEC), text(R8_SEC_OK));
+  fs.writeFileSync(path.join(adir, R10), text(R10_OK));
+  fs.writeFileSync(path.join(adir, R13), text(R13_OK));
+  return { root, adir };
+}
+
+/** Replace `file` with a FIFO. */
+function plantFifo(file) {
+  fs.rmSync(file, { force: true });
+  execFileSync('mkfifo', [file]);
+}
+
+/** Replace `file` with a symlink to /dev/zero. */
+function plantDevZero(file) {
+  fs.rmSync(file, { force: true });
+  fs.symlinkSync('/dev/zero', file);
+}
+
+/**
+ * runReviewArtifactGate in a child: PR, posted reviews and the tool log are stubbed, while the
+ * artifact text, mtime, scaffold and body-file readers are the LIVE ones rooted at `root`.
+ */
+function gateLive(root, command, { records = COMPLETE_EVIDENCE.slice(), killMs = 4000 } = {}) {
+  const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rev-art-vf2-log-'));
+  const script =
+    'const ra = require(' + JSON.stringify(RA_PATH) + ');' +
+    'const d = ra.runReviewArtifactGate(' + JSON.stringify(input(command)) + ', {' +
+    '  worktreeRoot: ' + JSON.stringify(root) + ',' +
+    '  resolvePr: () => ({ number: ' + PR + ', headOid: ' + JSON.stringify(HEAD) + ' }),' +
+    '  resolveIsPullRequest: () => true,' +
+    '  readPostedReviews: () => [],' +
+    '  readToolLog: () => (' + JSON.stringify(toolLog(records)) + '),' +
+    '  overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },' +
+    '});' +
+    'process.stdout.write(JSON.stringify(d));';
+  const t0 = Date.now();
+  const res = spawnSync(process.execPath, ['-e', script], {
+    encoding: 'utf8',
+    timeout: killMs,
+    env: { PATH: process.env.PATH || '', GSD_CONTRIB_LOG_DIR: logDir },
+  });
+  const elapsed = Date.now() - t0;
+  fs.rmSync(logDir, { recursive: true, force: true });
+  let d = null;
+  if (res.status === 0 && !res.signal) d = JSON.parse(res.stdout);
+  return { elapsed, res, d };
+}
+
+function assertBoundedDeny(out, re) {
+  assert.strictEqual(out.res.signal, null, 'the gate was killed after ' + out.elapsed + ' ms: a read blocked or ran away');
+  assert.strictEqual(out.res.status, 0, out.res.stderr);
+  assert.ok(out.elapsed < VF2_BOUND_MS, 'decided in ' + out.elapsed + ' ms (bound ' + VF2_BOUND_MS + ' ms)');
+  assert.strictEqual(out.d.permissionDecision, 'deny', out.d.permissionDecisionReason);
+  assert.match(out.d.permissionDecisionReason, re);
+}
+
+const NOT_REGULAR = /not a regular file/;
+const NO_FIFO_HERE = !hasMkfifo() && 'no mkfifo on this platform';
+const NO_DEVZERO = (process.platform === 'win32' || !fs.existsSync('/dev/zero')) && 'no /dev/zero on this platform';
+
+for (const [label, artifact, command, records] of [
+  ['R8-code-review.json', R8_CODE, 'gh pr review 42 --approve', undefined],
+  ['R10-exogenous.json', R10, 'gh pr review 42 --approve', undefined],
+  ['R13-merge.json', R13, 'gh pr merge 42 --squash', undefined],
+  ['R8a-memtrace.json (evidence short in a complete read)', 'R8a-memtrace.json', 'gh pr review 42 --approve', ONLY_BASH.slice()],
+]) {
+  test('38 fix VF-2: a FIFO at ' + label + ' → deny in under 2 s, naming a non-regular file', { skip: NO_FIFO_HERE }, () => {
+    const { root, adir } = vf2Root();
+    try {
+      plantFifo(path.join(adir, artifact));
+      assertBoundedDeny(gateLive(root, command, { records }), NOT_REGULAR);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('38 fix VF-2: a symlink to /dev/zero at ' + label + ' → deny in under 2 s, naming a non-regular file', { skip: NO_DEVZERO }, () => {
+    const { root, adir } = vf2Root();
+    try {
+      plantDevZero(path.join(adir, artifact));
+      assertBoundedDeny(gateLive(root, command, { records }), NOT_REGULAR);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test('38 fix VF-2: a FIFO as --body-file → deny in under 2 s, naming a non-regular file', { skip: NO_FIFO_HERE }, () => {
+  const { root } = vf2Root();
+  try {
+    const body = path.join(root, 'body.md');
+    execFileSync('mkfifo', [body]);
+    assertBoundedDeny(gateLive(root, 'gh pr review 42 --approve --body-file ' + body), NOT_REGULAR);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('38 fix VF-2: /dev/zero as --body-file → deny in under 2 s, naming a non-regular file', { skip: NO_DEVZERO }, () => {
+  const { root } = vf2Root();
+  try {
+    assertBoundedDeny(gateLive(root, 'gh pr review 42 --approve --body-file /dev/zero'), NOT_REGULAR);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('38 fix VF-2: a directory at R8-code-review.json → deny naming a non-regular file', () => {
+  const { root, adir } = vf2Root();
+  try {
+    fs.rmSync(path.join(adir, R8_CODE));
+    fs.mkdirSync(path.join(adir, R8_CODE));
+    assertBoundedDeny(gateLive(root, 'gh pr review 42 --approve'), NOT_REGULAR);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('38 fix VF-2: an artifact over the 1 MiB read cap (valid JSON, padded) → deny naming the cap', () => {
+  const { root, adir } = vf2Root();
+  try {
+    fs.writeFileSync(path.join(adir, R8_CODE), text(R8_CODE_OK) + ' '.repeat(LIVE_READ_CAP + 1));
+    assertBoundedDeny(gateLive(root, 'gh pr review 42 --approve'), /read cap/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('38 fix VF-2: a --body-file over the 1 MiB read cap → deny naming the cap', () => {
+  const { root } = vf2Root();
+  try {
+    const body = path.join(root, 'body.md');
+    fs.writeFileSync(body, 'x'.repeat(LIVE_READ_CAP + 1));
+    assertBoundedDeny(gateLive(root, 'gh pr review 42 --approve --body-file ' + body), /read cap/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('38 fix VF-2: a symlink to a REGULAR artifact file is still read (decision: the type and size guards are the safety property, not the link)', () => {
+  const { root, adir } = vf2Root();
+  try {
+    const real = path.join(root, 'elsewhere-R8-code.json');
+    fs.writeFileSync(real, text(R8_CODE_OK));
+    fs.rmSync(path.join(adir, R8_CODE));
+    fs.symlinkSync(real, path.join(adir, R8_CODE));
+    const out = gateLive(root, 'gh pr review 42 --approve');
+    assert.strictEqual(out.res.status, 0, out.res.stderr);
+    assert.strictEqual(out.d.permissionDecision, 'allow', out.d.permissionDecisionReason);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('38 fix VF-2: a regular artifact at exactly the cap boundary is read (the cap is not off by one)', () => {
+  const { root, adir } = vf2Root();
+  try {
+    const t = text(R8_CODE_OK);
+    fs.writeFileSync(path.join(adir, R8_CODE), t + ' '.repeat(LIVE_READ_CAP - Buffer.byteLength(t)));
+    assert.strictEqual(fs.statSync(path.join(adir, R8_CODE)).size, LIVE_READ_CAP);
+    const out = gateLive(root, 'gh pr review 42 --approve');
+    assert.strictEqual(out.d.permissionDecision, 'allow', out.d.permissionDecisionReason);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The real entrypoint, end to end: temp sentinel root, fake gh first on PATH, a complete log whose
+// session ran only Bash (so R8a reads its attestation), and a FIFO / a /dev/zero symlink at
+// R8a-memtrace.json. The hook must emit a deny, not hang and be timed out (= allowed).
+for (const [label, plant, skip] of [
+  ['a FIFO', plantFifo, NO_FIFO_HERE],
+  ['a symlink to /dev/zero', plantDevZero, NO_DEVZERO],
+]) {
+  test('38 fix VF-2 e2e (spawned hook): ' + label + ' at R8a-memtrace.json → the real entrypoint emits a deny within its bound', { skip }, () => {
+    const { root, adir } = vf2Root();
+    const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rev-art-vf2-e2e-log-'));
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rev-art-vf2-e2e-bin-'));
+    try {
+      fs.mkdirSync(path.join(root, 'scripts'));
+      fs.writeFileSync(path.join(root, 'scripts', 'issue-dedupe.cjs'), '');
+      fs.mkdirSync(path.join(root, 'gsd-core', 'bin', 'lib'), { recursive: true });
+      plant(path.join(adir, 'R8a-memtrace.json'));
+      fs.writeFileSync(
+        path.join(binDir, 'gh'),
+        '#!/bin/sh\nif [ "$1" = "pr" ]; then printf \'%s\' \'{"number":42,"headRefOid":"' + HEAD + '"}\'; fi\nexit 0\n',
+        { mode: 0o755 }
+      );
+      const sid = 'sess-38-vf2-e2e';
+      fs.writeFileSync(
+        path.join(logDir, LOG_FILENAME),
+        serializeRecord(
+          recordToolCall(
+            JSON.stringify({
+              hook_event_name: 'PostToolUse',
+              session_id: sid,
+              tool_use_id: 'toolu_vf2',
+              tool_name: 'Bash',
+              tool_input: { command: 'ls' },
+              tool_response: {},
+              cwd: '/tmp/wt',
+            }),
+            { env: {} }
+          )
+        )
+      );
+      const env = Object.assign({}, process.env, {
+        PATH: binDir + path.delimiter + (process.env.PATH || ''),
+        GSD_CONTRIB_LOG_DIR: logDir,
+      });
+      delete env.GSD_CONTRIB_RECORD;
+      delete env.GSD_CONTRIB_OVERRIDE;
+      const t0 = Date.now();
+      const res = spawnSync(process.execPath, [RA_PATH], {
+        input: input('gh pr review 42 --approve', sid),
+        encoding: 'utf8',
+        cwd: root,
+        env,
+        timeout: 6000,
+      });
+      const elapsed = Date.now() - t0;
+      assert.strictEqual(res.signal, null, 'the hook was killed after ' + elapsed + ' ms without a decision');
+      assert.strictEqual(res.status, 0, res.stderr);
+      assert.ok(elapsed < 5000, 'the hook decided in ' + elapsed + ' ms');
+      const hso = JSON.parse(res.stdout.trim().split('\n').pop()).hookSpecificOutput;
+      assert.strictEqual(hso.permissionDecision, 'deny', hso.permissionDecisionReason);
+      assert.match(hso.permissionDecisionReason, NOT_REGULAR);
+    } finally {
+      for (const d of [root, logDir, binDir]) fs.rmSync(d, { recursive: true, force: true });
+    }
+  });
+}
