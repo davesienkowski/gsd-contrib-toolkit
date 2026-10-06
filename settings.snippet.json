@@ -83,6 +83,11 @@
             "type": "command",
             "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/gsd-test-viability.cjs\"",
             "timeout": 20
+          },
+          {
+            "type": "command",
+            "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/worktree-fresh-base.cjs\"",
+            "timeout": 45
           }
         ]
       },
@@ -93,6 +98,16 @@
             "type": "command",
             "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/binlib-edit.cjs\"",
             "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "EnterWorktree",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/worktree-fresh-base.cjs\"",
+            "timeout": 45
           }
         ]
       }

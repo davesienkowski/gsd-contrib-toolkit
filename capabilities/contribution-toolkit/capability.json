@@ -107,8 +107,18 @@
     },
     {
       "event": "PreToolUse",
+      "matcher": "Bash",
+      "script": "hooks/worktree-fresh-base.cjs"
+    },
+    {
+      "event": "PreToolUse",
       "matcher": "Write|Edit",
       "script": "hooks/binlib-edit.cjs"
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "EnterWorktree",
+      "script": "hooks/worktree-fresh-base.cjs"
     },
     {
       "event": "UserPromptSubmit",
