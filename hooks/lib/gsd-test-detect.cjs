@@ -846,6 +846,25 @@ function scanParsed(parsed, st) {
             for (const e of inner) out.push(e);
           }
         }
+      } else if (r.prog === 'eval' && r.idx !== -1) {
+        // M-04 (36-REVIEW): `eval` joins its arguments with spaces and runs the result as a
+        // command — the bash -c recursion, sharing its depth bound. argv already removed one
+        // quoting layer, which is exactly what eval's own parse sees.
+        const payload = toks.slice(r.idx + 1).join(' ');
+        if (st.depth + 1 > MAX_DASH_C_DEPTH) {
+          if (GSD_TEST_WORD.test(payload)) {
+            out.push({ kind: 'uncertain', reason: `eval payload nested deeper than ${MAX_DASH_C_DEPTH}` });
+          }
+        } else {
+          const pipedOut = attributePipe(segments, profile, i);
+          const inner = scanCommand(payload, {
+            depth: st.depth + 1,
+            inheritedPipefail: pipefail,
+            outerMasked: (pipedOut && !pipefail) || st.outerMasked,
+            prefixes: here(),
+          }, 'eval');
+          for (const e of inner) out.push(e);
+        }
       } else if (r.prog === 'set' && r.idx !== -1 && profile[i].level <= 0) {
         // Only a top-level `set` persists; one inside `( ... )` does not reach later segments
         // (a `{ ...; }` one does, but ignoring it only ever keeps a pipe masked: fail-safe).
@@ -870,15 +889,15 @@ function scanParsed(parsed, st) {
 }
 
 /**
- * Parse a payload through the existing parser and scan it (the `bash -c` recursion).
+ * Parse a payload through the existing parser and scan it (the `bash -c` and `eval` recursion).
  * An unparseable payload that names gsd-test is uncertain (HARD-01).
  */
-function scanCommand(payload, st) {
+function scanCommand(payload, st, label) {
   if (typeof payload !== 'string' || payload.trim().length === 0) return [];
   const parsed = parseCommand(payload);
   if (!parsed.ok) {
     return GSD_TEST_WORD.test(payload)
-      ? [{ kind: 'uncertain', reason: `unparseable bash -c payload names gsd-test (${parsed.reason})` }]
+      ? [{ kind: 'uncertain', reason: `unparseable ${label || 'bash -c'} payload names gsd-test (${parsed.reason})` }]
       : [];
   }
   return scanParsed(parsed, st).map((e) => (e.kind === 'dispatch' ? Object.assign(e, { viaDashC: true }) : e));
