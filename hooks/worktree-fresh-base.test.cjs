@@ -2603,3 +2603,44 @@ test('ENF-25 MA-03 e2e (fx5): A on work, origin advanced, `git checkout next && 
     fx.dispose();
   }
 });
+
+// ── MA-04: pushd / builtin cd / command cd target the repository they name; popd fails closed ──
+
+for (const [cmd, dir] of [
+  ['pushd /other && git worktree add -b f p next', '/other'],
+  ['builtin cd /other && git worktree add -b f p next', '/other'],
+  ['command cd /other && git worktree add -b f p next', '/other'],
+]) {
+  test('ENF-25 MA-04: `' + cmd + '` resolves the root from ' + dir + ', not the session cwd', () => {
+    const { deps, calls } = scenario();
+    runWorktreeFreshBaseGate(input(cmd), deps);
+    assert.deepStrictEqual(calls.dirs, [dir]);
+  });
+}
+
+test('ENF-25 MA-04: `popd && git worktree add p next` denies (unknowable start dir) with ZERO resolve and fetch', () => {
+  const { deps, calls } = scenario();
+  const d = runWorktreeFreshBaseGate(input('popd && git worktree add -b f p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /ENF-25/);
+  assert.strictEqual(calls.resolveTreeRoot, 0);
+  assert.strictEqual(calls.fetchOrigin, 0);
+});
+
+test('ENF-25 MA-04 e2e (fx8): from clone A, `pushd <C> && git worktree add ... next` refreshes C and leaves A untouched', () => {
+  const fa = makeFixture();
+  const fc = makeFixture();
+  try {
+    const tipA = fa.advanceOrigin();
+    const tipC = fc.advanceOrigin();
+    const r = spawnIn(fa.A, 'pushd ' + fc.A + ' && git worktree add -b f ' + path.join(fc.root, 'x') + ' next');
+    assert.strictEqual(r.decision, 'allow', r.reason);
+    assert.strictEqual(refOf(fa.A, 'refs/heads/next'), fa.initial, 'the untargeted session repo must not move');
+    assert.strictEqual(refOf(fa.A, 'refs/remotes/origin/next'), fa.initial, 'the untargeted session repo must not be fetched');
+    assert.notStrictEqual(tipA, fa.initial);
+    assert.strictEqual(refOf(fc.A, 'refs/heads/next'), tipC, 'the targeted repo is the one refreshed');
+  } finally {
+    fa.dispose();
+    fc.dispose();
+  }
+});

@@ -484,3 +484,21 @@ test('MA-03 detect: the switch state is per call (a later, unrelated command is 
   oneUncertain('git checkout next && git worktree add -b f ../x');
   assert.strictEqual(oneCut('git worktree add -b f ../x').baseKind, 'head');
 });
+
+// ───────────────────────── 37-REVIEW MA-04: pushd / builtin cd / command cd / popd (shared walk) ─────────────────────────
+
+const DIR_STACK_CUTS = [
+  ['pushd /repo && git worktree add p next', '/repo'],
+  ['builtin cd /repo && git worktree add p next', '/repo'],
+  ['command cd /repo && git worktree add p next', '/repo'],
+  ['pushd /repo >/dev/null && git worktree add p next', '/repo'],
+  ['command -v cd && git worktree add p next', '/CWD'],
+  ['popd && git worktree add p next', null],
+  ['pushd && git worktree add p next', null],
+  ['pushd -n /repo && git worktree add p next', null],
+];
+for (const [cmd, want] of DIR_STACK_CUTS) {
+  test('MA-04 variant: startDir(' + JSON.stringify(cmd) + ') from /CWD is ' + want, () => {
+    assert.strictEqual(startDir(oneCut(cmd), '/CWD'), want);
+  });
+}
