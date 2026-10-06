@@ -192,7 +192,10 @@ function classifyDockerResult(res) {
   const r = res && typeof res === 'object' ? res : {};
   const code = r.error && r.error.code;
   if (code === 'ENOENT') return { state: 'missing', detail: '' };
-  if (code === 'ETIMEDOUT' || (r.status === null && r.signal)) return { state: 'timeout', detail: '' };
+  // Only OUR bound is a timeout: spawnSync reports it as ETIMEDOUT (36-REVIEW m-05). A probe
+  // killed by any other signal is an unknown state -> error -> thrown deny, never an ask.
+  if (code === 'ETIMEDOUT') return { state: 'timeout', detail: '' };
+  if (r.status === null && r.signal) return { state: 'error', detail: 'docker info was killed by ' + String(r.signal).slice(0, 32) };
   if (r.error) return { state: 'error', detail: String(code || r.error.message || 'spawn error').slice(0, MAX_DOCKER_DETAIL) };
   if (r.status === 0) return { state: 'ok', detail: '' };
   if (typeof r.status === 'number') {
