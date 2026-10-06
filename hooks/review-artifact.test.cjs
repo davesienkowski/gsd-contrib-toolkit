@@ -2783,3 +2783,63 @@ test('261006-jsm parity: the re-review.md `8a.` line says a CLEAR body ends the 
   assert.ok(line.includes('a `--comment` review is exempt unless its body carries `CLEAR`'), line);
   assert.ok(line.includes('a PR comment whose body carries `CLEAR` needs the same evidence'), line);
 });
+
+// -- 261006-jsm review fix round CR-01: the GraphQL event reader never trusts the first `event:` --
+//
+// String literals ("..." and """...""") and `#` comments are stripped before the scan, EVERY
+// `event:` is read, an `input: $v` mutation is read through gh's bracket fields (`v[event]=...`), a
+// JSON `v=` field value or the curl `variables` object, repeated fields count every value (gh sends
+// the last), and an input or event variable that cannot be read statically asks (MJ-02); a pending
+// review is graded only when there is provably no event and no variable-sourced input.
+
+const JSM_CR01_SUBMIT = (inner) => "gh api graphql -f query='mutation { " + inner + " }'";
+const JSM_CR01_INPUT_Q =
+  "gh api graphql -f query='mutation($input: AddPullRequestReviewInput!) { addPullRequestReview(input: $input) { clientMutationId } }'";
+
+for (const cmd of [
+  JSM_CR01_SUBMIT('submitPullRequestReview(input:{body:"event: COMMENT", pullRequestReviewId:"X", event: APPROVE}) { clientMutationId }'),
+  JSM_CR01_SUBMIT('# event: COMMENT\n submitPullRequestReview(input:{pullRequestReviewId:"X", event: APPROVE}) { clientMutationId }'),
+  JSM_CR01_SUBMIT('a: addPullRequestReview(input:{pullRequestId:"P", event: COMMENT}) { clientMutationId } b: submitPullRequestReview(input:{pullRequestReviewId:"X", event: APPROVE}) { clientMutationId }'),
+  JSM_CR01_SUBMIT('event: addReaction(input:{subjectId:"S", content:HOORAY}) { clientMutationId } submitPullRequestReview(input:{pullRequestReviewId:"X", event: APPROVE}) { clientMutationId }'),
+  JSM_CR01_SUBMIT('submitPullRequestReview(input:{body:"""event: COMMENT""", pullRequestReviewId:"X", event: APPROVE}) { clientMutationId }'),
+  JSM_CR01_INPUT_Q + " -f 'input[pullRequestId]=P' -f 'input[event]=APPROVE'",
+  JSM_CR01_INPUT_Q + " -F 'input[event]=REQUEST_CHANGES'",
+  JSM_CR01_INPUT_Q + ' -f input=\'{"pullRequestId":"P","event":"APPROVE"}\'',
+  JSM_CR01_INPUT_Q + ' -F input=\'{"pullRequestId":"P","event":"REQUEST_CHANGES"}\'',
+  "gh api graphql -f query='" + JSM_GQL_VAR + "' -f e=COMMENT -f e=APPROVE",
+  "gh api graphql -f query='query { viewer { login } }' -f query='" + JSM_GQL_SUBMIT + "'",
+  "curl https://api.github.com/graphql -d '" +
+    '{"query":"mutation($input: AddPullRequestReviewInput!) { addPullRequestReview(input: $input) { clientMutationId } }","variables":{"input":{"pullRequestId":"P","event":"APPROVE"}}}' +
+    "'",
+]) {
+  test('261006-jsm CR-01 gate: `' + cmd.slice(0, 40) + ' ... ' + cmd.slice(-60) + '` with only Bash rows -> DENY R8a-memtrace', () => {
+    assertJsmR8aDeny(cmd);
+  });
+}
+
+for (const [label, cmd] of [
+  ['an `input: $input` with no source', JSM_CR01_INPUT_Q],
+  ['an `input: $input` read from a file', JSM_CR01_INPUT_Q + ' -F input=@in.json'],
+  ['an `input: $input` whose bracket fields carry no event', JSM_CR01_INPUT_Q + " -f 'input[pullRequestId]=P'"],
+  ['an `input[event]` built by expansion', JSM_CR01_INPUT_Q + " -f 'input[event]=$EV'"],
+  ['an `input=` JSON value that does not parse', JSM_CR01_INPUT_Q + " -f 'input={oops'"],
+]) {
+  test('261006-jsm CR-01 gate: ' + label + ' -> the MJ-02 UNRESOLVED ask, never a pending review', () => {
+    const d = runReviewArtifactGate(input(cmd), deps());
+    const why = assertUnresolvedAsk(d, /GraphQL review mutation whose input or event variable/);
+    assert.ok(!why.includes('$EV') && !why.includes('in.json'), 'the ask never echoes the value: ' + why);
+  });
+}
+
+for (const [label, cmd] of [
+  ['an `event: APPROVE` only inside a string', JSM_CR01_SUBMIT('addPullRequestReview(input:{pullRequestId:"P", body:"event: APPROVE"}) { clientMutationId }')],
+  ['an `event: APPROVE` only inside a block string', JSM_CR01_SUBMIT('addPullRequestReview(input:{pullRequestId:"P", body:"""\nevent: APPROVE\n"""}) { clientMutationId }')],
+  ['an `event: APPROVE` only inside a comment', JSM_CR01_SUBMIT('# event: APPROVE\n addPullRequestReview(input:{pullRequestId:"P"}) { clientMutationId }')],
+]) {
+  test('261006-jsm CR-01 gate: ' + label + ' is a pending review -> allow; the log is never read', () => {
+    const dp = depsWithLog(toolLog(ONLY_BASH.slice()));
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+    assert.deepStrictEqual(dp._calls.readToolLog, []);
+  });
+}

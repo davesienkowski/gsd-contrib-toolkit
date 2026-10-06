@@ -2389,3 +2389,8 @@ test('261006-jsm forms (Task 3): every Task 3 via code is a VERDICT_ROUTE_FORMS 
     assert.ok(typeof VERDICT_ROUTE_FORMS[via] === 'string' && /^[\x20-\x7e]+$/.test(VERDICT_ROUTE_FORMS[via]), via);
   }
 });
+
+// -- 261006-jsm review fix round CR-01: every `query` field counts (gh sends the last one) --------
+test('261006-jsm CR-01: a review mutation in a LATER repeated `-f query=` field is a recovered GraphQL pr-review', () => {
+  assertGraphqlReview("gh api graphql -f query='query { viewer { login } }' -f query='" + JSM_GQL_SUBMIT + "'");
+});
