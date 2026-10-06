@@ -930,4 +930,5 @@ test('ENF-24 m-08: parseDefaults reads pin and a one-line exclude array; a multi
   assert.deepStrictEqual(viability.parseDefaults('[defaults]\npin = "a"\nexclude = ["b", \'c\']\n'), { pin: 'a', exclude: ['b', 'c'] });
   assert.deepStrictEqual(viability.parseDefaults('[defaults]\nexclude = [\n  "b",\n]\n'), { pin: null, exclude: null });
   assert.deepStrictEqual(viability.parseDefaults('[other]\npin = "x"\n'), { pin: null, exclude: [] });
+  assert.deepStrictEqual(viability.parseDefaults('[defaults]\npin = "a"\n[other]\npin = "x"\n'), { pin: 'a', exclude: [] });
 });

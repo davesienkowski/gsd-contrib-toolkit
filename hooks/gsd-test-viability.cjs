@@ -31,10 +31,13 @@
  *           `<homedir>/.config/gsd-test/config.toml`. An unexpandable value -> ask;
  *           missing file -> deny;
  *        d. a named bench absent from the config -> deny; an unexpandable value -> ask;
- *        e. GTEST-06: when no bench is named or the named bench's host is exactly "local", probe
- *           Docker (at most ONCE per gate call): ok -> allow; missing CLI / daemon down -> deny;
- *           timeout -> ask; any other result or a throw -> deny. A bench with any other or no
- *           host skips the probe (remote ssh probing is deferred, CONTEXT §Deferred).
+ *        e. GTEST-06: when the bench gsd-test can use may be local (36-REVIEW m-08: the named
+ *           `--bench`, else `defaults.pin`, else any bench left after `--exclude` /
+ *           `defaults.exclude`; `run` / `submit --execute` pick from every bench; a bench whose
+ *           host is absent, empty or "local" is local, as in v1.8.0 config.go), probe Docker
+ *           (at most ONCE per gate call): ok -> allow; missing CLI / daemon down -> deny;
+ *           timeout -> ask; any other result or a throw -> deny. A remote-only choice skips the
+ *           probe (remote ssh probing is deferred, CONTEXT §Deferred).
  *   6. precedence across dispatches: the first policy deny returns at once; else the first held
  *      throw (an uncertain entry or a dispatch whose check threw); else the first ask; else
  *      allow.
@@ -134,6 +137,95 @@ function parseBenches(text) {
   }
   close();
   return out;
+}
+
+const DEFAULTS_HEADER = /^\[\s*defaults\s*\]\s*(?:#.*)?$/;
+const PIN_LINE = /^pin\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')\s*(?:#.*)?$/;
+const EXCLUDE_LINE = /^exclude\s*=\s*(.*)$/;
+const ONE_LINE_ARRAY = /^\[(.*)\]\s*(?:#.*)?$/;
+const TOML_STRING = /"((?:[^"\\]|\\.)*)"|'([^']*)'/g;
+
+/**
+ * Zero-dependency `[defaults]` reader for the probe scope (36-REVIEW m-08): `pin` (a string) and
+ * `exclude` (a ONE-LINE array of strings). Anything else for `exclude` (a multi-line array, a
+ * bare value) is unknown -> `exclude: null`, which the gate reads as "exclude nothing" — the
+ * conservative direction (more candidate benches, so the local probe is more likely to run).
+ *
+ * @param {string} text the config file text
+ * @returns {{pin:(string|null), exclude:(string[]|null)}}
+ */
+function parseDefaults(text) {
+  let src = typeof text === 'string' ? text : '';
+  if (src.charCodeAt(0) === 0xfeff) src = src.slice(1);
+  const out = { pin: null, exclude: [] };
+  let inDefaults = false;
+  for (const raw of src.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === '' || line.startsWith('#')) continue;
+    if (DEFAULTS_HEADER.test(line)) { inDefaults = true; continue; }
+    if (line.startsWith('[')) {
+      // Any other `[x]` / `[[x]]` header ends the section (a key line never starts with `[`).
+      inDefaults = false;
+      continue;
+    }
+    if (!inDefaults) continue;
+    const pin = PIN_LINE.exec(line);
+    if (pin) {
+      out.pin = pin[1] !== undefined ? pin[1].replace(/\\(.)/g, '$1') : pin[2];
+      continue;
+    }
+    const ex = EXCLUDE_LINE.exec(line);
+    if (ex) {
+      const arr = ONE_LINE_ARRAY.exec(ex[1].trim());
+      if (!arr) { out.exclude = null; continue; }
+      const names = [];
+      const rest = arr[1].replace(TOML_STRING, (m, dq, sq) => {
+        names.push(dq !== undefined ? dq.replace(/\\(.)/g, '$1') : sq);
+        return '';
+      });
+      out.exclude = /^[\s,]*$/.test(rest) ? names : null;
+    }
+  }
+  return out;
+}
+
+/** v1.8.0 internal/config/config.go: `Host: rb.Host, // empty is fine — means local`. */
+function isLocalHost(host) {
+  return host === null || host === undefined || host === '' || host === 'local';
+}
+
+/** The literal `--exclude` list, else `defaults.exclude`; null = unknown (exclude nothing). */
+function excludeList(d, defaults, ctx) {
+  const f = d.flags ? d.flags.exclude : undefined;
+  if (typeof f === 'string' && f !== '') {
+    const v = expandStatic(f, ctx);
+    if (v === null) return null;
+    return v.split(',').map((x) => x.trim()).filter((x) => x.length > 0);
+  }
+  return defaults.exclude;
+}
+
+/**
+ * Whether the bench this dispatch can run on may be LOCAL, so the local Docker probe applies
+ * (36-REVIEW m-08). A named bench decides alone. Otherwise, on the classic path, v1.8.0
+ * runner.ResolveEffective pins `defaults.pin` and excludes `--exclude` (else `defaults.exclude`);
+ * `run` / `submit --execute` (dispatchRun) pick by target with no pin and no exclude. With no
+ * candidate left (or none parsed) the probe still runs — the conservative reading.
+ */
+function mayUseLocalBench(d, text, named, ctx) {
+  if (named !== null) return isLocalHost(named.host);
+  const benches = parseBenches(text);
+  let candidates = benches;
+  if (d.subcommand === null || d.subcommand === undefined) {
+    const defaults = parseDefaults(text);
+    if (defaults.pin) {
+      const pinned = benches.find((b) => b.name === defaults.pin);
+      if (pinned) return isLocalHost(pinned.host);
+    }
+    const exclude = excludeList(d, defaults, ctx);
+    if (Array.isArray(exclude)) candidates = benches.filter((b) => !exclude.includes(b.name));
+  }
+  return candidates.length === 0 || candidates.some((b) => isLocalHost(b.host));
 }
 
 /** The comma list of configured bench names for a deny reason. */
@@ -359,8 +451,9 @@ function checkDispatch(d, deps, state) {
     if (!named) return deny(missingBenchReason(bench, cfg.path, benches));
   }
 
-  // (5e) GTEST-06: the local Docker probe, only for a local (or unnamed) bench.
-  if (named !== null && named.host !== 'local') return null;
+  // (5e) GTEST-06: the local Docker probe, only when the bench gsd-test can use may be local
+  // (m-08: --bench, else defaults.pin, else the non-excluded benches; an empty host is local).
+  if (!mayUseLocalBench(d, text, named, ctx)) return null;
   if (state.docker === null) state.docker = deps.dockerProbe();
   const docker = state.docker;
   const st = docker && docker.state;
@@ -477,6 +570,7 @@ module.exports = {
   runGsdTestViabilityGate,
   gate,
   parseBenches,
+  parseDefaults,
   classifyDockerResult,
   DOCKER_PROBE_TIMEOUT_MS,
   DOCKER_PROBE_ARGS,
