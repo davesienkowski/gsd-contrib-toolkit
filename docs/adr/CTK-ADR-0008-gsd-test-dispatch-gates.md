@@ -280,7 +280,9 @@ unbypassable. Known gaps, largest first:
   bare `>` before `|` as that redirect, but flags written after `>| file` are not read.
 - **Quoting edge:** a double-quoted `$(...)` whose nested quotes leave argv's quote view out of step
   with an unquoted paren later in the same command is graded uncertain and denies when the command
-  names gsd-test. `pushd` and `popd` are not followed as start-dir changes.
+  names gsd-test. Since 37-REVIEW MA-04 (the shared walk, fixed for ENF-25) `pushd <dir>`,
+  `builtin cd` and `command cd` are followed as start-dir changes, and `popd`, a bare `pushd`,
+  `pushd -n` and `pushd +N` / `-N` make the start dir unresolvable, so the gate fails closed.
 - **The bench deny echoes configured bench names only** (at most 20, each clipped to 64 characters),
   never hosts, users or other config values.
 - **Registration fact:** `capabilities/contribution-toolkit/capability.json` `hooks[]` is hand-

@@ -125,6 +125,17 @@ git -C <tree holding next> merge --ff-only origin/next
 Whether the harness itself fetches before an `EnterWorktree` cut under `worktree.baseRef=fresh` is
 **UNVERIFIED**. When this gate fires, it runs its own bounded fetch regardless.
 
+**When the refresh happens, and where.** The gate acts only in a clone whose `origin` is
+`open-gsd/gsd-core` (a fork-only clone, a vendored copy inside another repository, or a clone with
+no `origin` is left alone). Its fetch and fast-forward run in the `PreToolUse` hook, which fires
+when the agent PROPOSES the cut, before the permission prompt. They are not undone if you then
+decline the command, if another gate denies it, or if this gate denies a later cut in the same
+command. The change is always forward-only and recorded in `next`'s reflog
+(`git reflog show next`). It refuses to move a `next` that is a symbolic ref, checked out, or being
+rebased or bisected in any worktree. See [CTK-ADR-0009](docs/adr/CTK-ADR-0009-gate-bounded-monotonic-ref-refresh.md)
+for the full list of shapes it cannot see (shell functions, command substitutions, `xargs` and
+similar wrappers, git aliases).
+
 ## How It Works
 
 **Harness-boundary enforcement.** A `PreToolUse` hook is run by the Claude Code
