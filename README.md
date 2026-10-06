@@ -79,7 +79,7 @@ wired set exactly.
 | Gate hook | Event | Blocks | LIVE script / check it calls |
 | --------- | ----- | ------ | ---------------------------- |
 | `gh-issue-create.cjs` | Bash | issue with missing/invalid GSD Version | `scripts/issue-version-gate.cjs` |
-| `gh-pr-create.cjs` | Bash | PR with wrong target / bad template / un-green CI | `scripts/pr-target-policy.cjs`, `scripts/pr-template-policy.cjs` |
+| `gh-pr-create.cjs` | Bash | PR with wrong target, bad template, missing `Fixes #N`/`Closes #N` linked issue, bad branch name (`^(fix\|docs\|feat)/\d+-`), un-green CI check-runs on the head SHA (ENF-18), or a Feature/Enhancement PR whose linked issue lacks an `approved-*` label (CF-02; the Fix and Internal buckets are exempt). A tests-only or docs-only PR may use the non-closing `Refs #N` form (BUG-4645) | `scripts/pr-target-policy.cjs`, `scripts/pr-template-policy.cjs`; the linked-issue, branch-name, check-runs and CF-02 checks are toolkit-owned |
 | `gh-edit.cjs` | Bash | a `gh issue/pr edit` that rewrites a body to fail policy | the same create-gate policies (via REST synonyms) |
 | `githooks-seal.cjs` | Bash | `--no-verify` and `core.hooksPath` swaps | (flag/config seal — no LIVE script) |
 | `issue-dedupe.cjs` | Bash | filing a duplicate of an open issue | `scripts/issue-dedupe.cjs` (dedupe scorer) |
@@ -90,7 +90,7 @@ wired set exactly.
 | `git-commit-convention.cjs` | Bash | a commit with a missing/wrong conventional-commit prefix | (prefix check — no LIVE script) |
 | `scan-gate.cjs` | Bash | a push with a secret/injection/base64 hit | gsd-core's three LIVE scan scripts |
 | `protocol-artifact.cjs` | Bash | filing/pushing on a contribution branch without the P1-P3 protocol artifacts | reads the branch diff + the LIVE `gsd-test` run |
-| `review-artifact.cjs` | Bash | re-reviewing/approving/merging a PR without the mechanizable re-review evidence, keyed to PR + HEAD OID: the step 8 two orthogonal passes, step 13 merge gate, step 1 treadmill guard and step 10 exogenous check artifacts, and, for an approve or request-changes, step 8a memtrace evidence (`get_impact`, `get_symbol_context`, one recorded-decision verb) in tool-recorder's log for the session (`ask` when the log cannot answer, or when a filled `R8a-memtrace.json` attests memtrace was unavailable) | reads the review artifacts + the LIVE `gh` CI conclusions + tool-recorder's `tool-log.jsonl` for the session |
+| `review-artifact.cjs` | Bash | re-reviewing/approving/merging a PR (including the `gh api graphql` review-mutation route and a GraphQL query read from a file or stdin) without the mechanizable re-review evidence, keyed to PR + HEAD OID: the step 8 two orthogonal passes, step 13 merge gate, step 1 treadmill guard and step 10 exogenous check artifacts, and, for an approve or request-changes, step 8a memtrace evidence (`get_impact`, `get_symbol_context`, one recorded-decision verb) in tool-recorder's log for the session (`ask` when the log cannot answer, or when a filled `R8a-memtrace.json` attests memtrace was unavailable) | reads the review artifacts + the LIVE `gh` CI conclusions + tool-recorder's `tool-log.jsonl` for the session |
 | `runtime-drift.cjs` | Bash | filing/pushing to `open-gsd/gsd-core` while the installed `~/.claude/gsd-core` runtime is unstamped, digest-mismatched, or behind `origin/next` (ENF-21; `ask`, never deny, when the upstream tip is unobtainable) | (toolkit-owned stamp + `git ls-remote` — no LIVE script) |
 | `gsd-test-clean-tree.cjs` | Bash | a `gsd-test` dispatch from a gsd-core checkout whose tracked tree is dirty while the run tests the working HEAD, or whose output is piped without `pipefail` (ENF-23) | (toolkit-owned `git status` + `git rev-parse` — no LIVE script) |
 | `gsd-test-viability.cjs` | Bash | a `gsd-test` dispatch whose `config.toml` is missing, whose named `--bench` is absent from it, or whose local Docker daemon is missing/down (ENF-24; `ask`, never deny, when `docker info` overruns its 8 s bound) | (toolkit-owned config read + `docker info` — no LIVE script) |
@@ -166,7 +166,7 @@ PreToolUse hooks** unbypassable — they fire on every matching tool call even u
    READS that marker and DENIES if it is absent, stale (tree SHA mismatch), or the
    working tree is dirty.
 3. **Scan** — `hooks/scan-gate.cjs` runs gsd-core's secret/injection/base64 scans
-   over the diff about to be pushed and DENIES on any hit.
+   over the `<base>...HEAD` range (the commits this push carries) and DENIES on any hit.
 
 So the model is given a guided path to GREEN, and the harness-run hooks lock the
 outcome.
@@ -349,8 +349,8 @@ This section is load-bearing — the project's core value is honesty, not overse
 
 | Path                    | Purpose                                                                                  |
 | ----------------------- | ---------------------------------------------------------------------------------------- |
-| `hooks/`                | Harness-run `PreToolUse` gate scripts + the `UserPromptSubmit` advisory + the `PostToolUse`/`PostToolUseFailure` recorder, plus the shared anti-bypass `hooks/lib/` (argv tokenizer, classifier, LIVE-script resolver, fail-closed harness, tree-SHA marker, override receipt, doctor). `doctor.cjs` and `preflight-shipped-paths.cjs` live here but are deliberately **not wired** — they are CLIs, not hooks. |
-| `bin/`                  | Runnable tools: `verify-hooks`, `self-test`, `lint-ci-stamp`, `triage-assist`, `release-preflight`, `ruleset-drift`, `verify-capability`. |
+| `hooks/`                | Harness-run `PreToolUse` gate scripts + the `UserPromptSubmit` advisory + the `PostToolUse`/`PostToolUseFailure` recorder, plus the shared anti-bypass `hooks/lib/` (argv tokenizer, classifier, LIVE-script resolver, fail-closed harness, tree-SHA marker, override receipt, doctor, tool-log reader, verdict log, worktree-add detection, runtime stamp, sandbox/scaffold helpers). `doctor.cjs` and `preflight-shipped-paths.cjs` live here but are deliberately **not wired** — they are CLIs, not hooks. `gsd-planning-track.sh` (PostToolUse) and `gsd-planning-push.sh` (SessionEnd) are opt-in hooks that back up a private `.planning/` repo; they are not part of the capability's wired set. |
+| `bin/`                  | Runnable tools: `contrib-capability` (install/toggle), `build-capability` (bundle rebuild/check), `runtime-sync` (ENF-21 runtime), `verify-hooks`, `self-test`, `lint-ci-stamp`, `triage-assist`, `release-preflight`, `ruleset-drift`, `verify-capability`, `convention-drift`, `verdict-stats` (advisory), `prove-integrity-provenance`, plus the `gsd-plan-track`/`gsd-refresh` shell helpers. |
 | `commands/`             | Vendored slash commands: `gsd-submit`, `gsd-review-sweep`, `gsd-triage-assist`, `gsd-release-preflight`, `gsd-ruleset-drift`; symlinked into `~/.claude`. |
 | `skills/`               | Vendored Claude skills: `core-contribution`, `maintainer-review-sweep`; symlinked into `~/.claude`. |
 | `capabilities/`         | The share-form GSD capability: the **self-contained** `contribution-toolkit/` bundle — `capability.json` + `fragments/` + the bundled `hooks/` (20 scripts / 22 wired registrations), `skills/` (2), and `commands/` (5) a remote install delivers (NOT hooks-only). |
