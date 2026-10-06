@@ -157,7 +157,7 @@ Each skill carries an explicit advisory-only note. Full model:
 | `githooks-seal` | git hooks not tampered |
 | `scan-gate` | secret / prompt-injection / base64 scans before push |
 | `protocol-artifact` | filing/pushing on a contribution branch without the P1–P3 protocol artifacts |
-| `review-artifact` | reviewing/approving/merging a PR without the four mechanizable re-review artifacts — two orthogonal isolated passes (step 8), the merge gate (step 13), the treadmill guard (step 1), the exogenous self-check (step 10) — keyed to the PR number + HEAD OID |
+| `review-artifact` | reviewing/approving/merging a PR without the mechanizable re-review evidence — two orthogonal isolated passes (step 8), the merge gate (step 13), the treadmill guard (step 1), the exogenous self-check (step 10), and, for an approve or request-changes, step 8a memtrace evidence (`get_impact`, `get_symbol_context`, one recorded-decision verb) in tool-recorder's log for the session (`ask` when the log cannot answer, or when a filled `R8a-memtrace.json` attests memtrace was unavailable) — keyed to the PR number + HEAD OID |
 | `binlib-edit` | no hand-edits to generated `bin/lib/*.cjs` (ADR-457) |
 
 The two wired **non-blocking** hooks are outside this table by design: `protocol-reminder`

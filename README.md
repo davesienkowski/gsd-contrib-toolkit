@@ -65,7 +65,8 @@ contribution gets bounced (or merged red) for:
   leak of private files up to upstream gsd-core;
 - **adjudicating without the re-review evidence** — approving or merging a PR
   without the two orthogonal review passes, a green CI re-fetch, the exogenous
-  self-check, or on an unchanged head OID.
+  self-check, or on an unchanged head OID; or approving / requesting changes
+  without the memtrace graph pass (step 8a) recorded in this session.
 
 ### Gate Reference
 
@@ -89,7 +90,7 @@ wired set exactly.
 | `git-commit-convention.cjs` | Bash | a commit with a missing/wrong conventional-commit prefix | (prefix check — no LIVE script) |
 | `scan-gate.cjs` | Bash | a push with a secret/injection/base64 hit | gsd-core's three LIVE scan scripts |
 | `protocol-artifact.cjs` | Bash | filing/pushing on a contribution branch without the P1-P3 protocol artifacts | reads the branch diff + the LIVE `gsd-test` run |
-| `review-artifact.cjs` | Bash | re-reviewing/approving/merging a PR without the four mechanizable re-review artifacts (step 8 two orthogonal passes, step 13 merge gate, step 1 treadmill guard, step 10 exogenous check), keyed to PR + HEAD OID | reads the review artifacts + the LIVE `gh` CI conclusions |
+| `review-artifact.cjs` | Bash | re-reviewing/approving/merging a PR without the mechanizable re-review evidence, keyed to PR + HEAD OID: the step 8 two orthogonal passes, step 13 merge gate, step 1 treadmill guard and step 10 exogenous check artifacts, and, for an approve or request-changes, step 8a memtrace evidence (`get_impact`, `get_symbol_context`, one recorded-decision verb) in tool-recorder's log for the session (`ask` when the log cannot answer, or when a filled `R8a-memtrace.json` attests memtrace was unavailable) | reads the review artifacts + the LIVE `gh` CI conclusions + tool-recorder's `tool-log.jsonl` for the session |
 | `runtime-drift.cjs` | Bash | filing/pushing to `open-gsd/gsd-core` while the installed `~/.claude/gsd-core` runtime is unstamped, digest-mismatched, or behind `origin/next` (ENF-21; `ask`, never deny, when the upstream tip is unobtainable) | (toolkit-owned stamp + `git ls-remote` — no LIVE script) |
 | `gsd-test-clean-tree.cjs` | Bash | a `gsd-test` dispatch from a gsd-core checkout whose tracked tree is dirty while the run tests the working HEAD, or whose output is piped without `pipefail` (ENF-23) | (toolkit-owned `git status` + `git rev-parse` — no LIVE script) |
 | `gsd-test-viability.cjs` | Bash | a `gsd-test` dispatch whose `config.toml` is missing, whose named `--bench` is absent from it, or whose local Docker daemon is missing/down (ENF-24; `ask`, never deny, when `docker info` overruns its 8 s bound) | (toolkit-owned config read + `docker info` — no LIVE script) |
@@ -97,6 +98,15 @@ wired set exactly.
 | `binlib-edit.cjs` | Write/Edit | editing a generated `bin/lib/**/*.cjs` instead of its `src/*.cts` source | (generated-path candidate + repository pinning + read-only `git check-ignore` discriminator: ignored → deny, tracked or not ignored → allow, undecidable or redirected repository → deny — no LIVE script) |
 | `protocol-reminder.cjs` | UserPromptSubmit | *(advisory only — reminds, never denies)* | — |
 | `tool-recorder.cjs` | PostToolUse + PostToolUseFailure | *(observability only — records, never denies; the one hook wired on two events)* | — |
+
+**ENF-20 step 8a (memtrace evidence).** The evidence for an approve or request-changes is tool-recorder's own log
+for the session (`tool-log.jsonl` and the rotated `tool-log.1.jsonl`): it proves `get_impact`, `get_symbol_context` and
+a recorded-decision verb ran in this session, not which symbols they targeted, and a review-body section never counts.
+Subagent tool calls are documented by Claude Code to carry the parent `session_id`, but that is not measured with
+tool-recorder. When memtrace genuinely cannot run, or its calls are not visible to the recorder, the sanctioned escape
+is filling the scaffolded `.gsd/contrib/pr-<n>-<oid12>/R8a-memtrace.json` with `status: "unavailable"`: the gate then
+asks a human and never allows by itself. See
+[CTK-ADR-0010](docs/adr/CTK-ADR-0010-memtrace-review-evidence.md) (Proposed).
 
 ### Worktree cuts `worktree-fresh-base` cannot see
 
