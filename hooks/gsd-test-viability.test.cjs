@@ -723,3 +723,42 @@ test('ENF-24 GTEST-04 e2e: no config file -> DENY (before any probe)', () => {
   assert.strictEqual(o.permissionDecision, 'deny');
   assert.match(o.permissionDecisionReason, /does not exist/);
 });
+
+// ─────────────── M-01 (36-REVIEW): per-subcommand applicability ───────────────
+//
+// v1.8.0: `run` and `submit --execute` load the config and dispatch to a bench (dispatchRun);
+// `submit` without --execute only validates the spec; `wait` / `status` read run state;
+// `install-agent-hooks` installs files. Only the first two need a viable environment.
+
+test('ENF-24 M-01: `gsd-test run --config /x/missing.toml` checks THAT config and DENIES when it is missing', () => {
+  const { d, calls, reason } = run('gsd-test run --config /x/missing.toml', { config: null });
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.deepStrictEqual(calls.paths, [path.resolve('/x/missing.toml')]);
+  assert.ok(reason.includes('/x/missing.toml'));
+});
+
+test('ENF-24 M-01: `gsd-test run` with Docker down DENIES', () => {
+  const { d, calls } = run('gsd-test run', { probe: { state: 'down', detail: 'daemon down' } });
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(calls.dockerProbe, 1);
+});
+
+test('ENF-24 M-01: `gsd-test submit --execute --spec-file s.json --config /c.toml` checks /c.toml', () => {
+  const { d, calls } = run('gsd-test submit --execute --spec-file s.json --config /c.toml', { config: null });
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.deepStrictEqual(calls.paths, [path.resolve('/c.toml')]);
+});
+
+for (const cmd of [
+  'gsd-test submit --spec-file s.json',
+  'gsd-test submit --execute=false --spec-file s.json',
+  'gsd-test wait 20261005-abc',
+  'gsd-test status 20261005-abc',
+  'gsd-test install-agent-hooks --claude',
+]) {
+  test(`ENF-24 M-01: \`${cmd}\` with no config and Docker down ALLOWS with ZERO resolve/read/probe calls`, () => {
+    const { d, calls } = run(cmd, { config: null, probe: { state: 'down', detail: 'x' } });
+    assert.strictEqual(d.permissionDecision, 'allow');
+    assert.strictEqual(calls.resolveTreeRoot + calls.readConfig + calls.dockerProbe, 0);
+  });
+}

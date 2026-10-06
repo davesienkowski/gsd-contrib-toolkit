@@ -279,10 +279,76 @@ test('GTEST-01 walker: redirects before a flag are skipped (`> log 2>&1 --head x
   assert.strictEqual(d.flags.head, 'x');
 });
 
-test('GTEST-01 walker: a literal positional stops flag parsing (`run --head x`)', () => {
-  const d = oneDispatch('gsd-test run --head x');
+test('GTEST-01 walker: a literal positional stops flag parsing (`--quiet run --head x` is classic)', () => {
+  // v1.8.0 dispatches a subcommand only on args[0]; after a flag, `run` is a classic positional.
+  const d = oneDispatch('gsd-test --quiet run --head x');
+  assert.strictEqual(d.subcommand, null);
   assert.strictEqual(d.flags.head, undefined);
   assert.deepStrictEqual(d.args, ['run', '--head', 'x']);
+});
+
+// ─────────────── M-01 (36-REVIEW): v1.8.0 subcommands on args[0] ───────────────
+
+test('GTEST-01 M-01: a classic dispatch carries subcommand null', () => {
+  assert.strictEqual(oneDispatch('gsd-test --head HEAD').subcommand, null);
+});
+
+test('GTEST-01 M-01: `gsd-test run --config /x/missing.toml` reads the run flagset (flags after the subcommand)', () => {
+  const d = oneDispatch('gsd-test run --config /x/missing.toml');
+  assert.strictEqual(d.subcommand, 'run');
+  assert.strictEqual(d.flags.config, '/x/missing.toml');
+  assert.deepStrictEqual(d.args, []);
+});
+
+test('GTEST-01 M-01: `gsd-test run --target windows --async tests/a.test.cjs` reads run values, booleans and patterns', () => {
+  const d = oneDispatch('gsd-test run --target windows --async tests/a.test.cjs');
+  assert.strictEqual(d.flags.target, 'windows');
+  assert.strictEqual(d.flags.async, true);
+  assert.deepStrictEqual(d.args, ['tests/a.test.cjs']);
+});
+
+test('GTEST-01 M-01: a redirect before the subcommand is removed by the shell (`gsd-test >log run`)', () => {
+  assert.strictEqual(oneDispatch('gsd-test > log run').subcommand, 'run');
+});
+
+test('GTEST-01 M-01: `gsd-test submit --execute --spec-file s.json --config c.toml`', () => {
+  const d = oneDispatch('gsd-test submit --execute --spec-file s.json --config c.toml');
+  assert.strictEqual(d.subcommand, 'submit');
+  assert.strictEqual(d.flags.execute, true);
+  assert.strictEqual(d.flags['spec-file'], 's.json');
+  assert.strictEqual(d.flags.config, 'c.toml');
+});
+
+for (const sub of ['wait', 'status']) {
+  test(`GTEST-01 M-01: \`gsd-test ${sub} 20261005-abc\` is a ${sub} entry carrying the run id`, () => {
+    const d = oneDispatch(`gsd-test ${sub} 20261005-abc`);
+    assert.strictEqual(d.subcommand, sub);
+    assert.deepStrictEqual(d.args, ['20261005-abc']);
+  });
+  test(`GTEST-01 M-01: \`gsd-test ${sub} "$RUN_ID" | tail\` is a dispatch (an expanded run id is not uncertain)`, () => {
+    const d = oneDispatch(`gsd-test ${sub} "$RUN_ID" | tail`);
+    assert.strictEqual(d.subcommand, sub);
+    assert.strictEqual(d.pipeMasked, true);
+  });
+}
+
+test('GTEST-01 M-01: `gsd-test install-agent-hooks --claude --global` is an install-agent-hooks entry', () => {
+  const d = oneDispatch('gsd-test install-agent-hooks --claude --global');
+  assert.strictEqual(d.subcommand, 'install-agent-hooks');
+});
+
+test('GTEST-01 M-01: `gsd-test run $EXTRA` is uncertain (an expansion may carry run flags)', () => {
+  oneUncertain('gsd-test run $EXTRA');
+});
+
+test('GTEST-01 M-01: `gsd-test run -h` is informational (ErrHelp, no run)', () => {
+  assert.strictEqual(oneDispatch('gsd-test run -h').informational, true);
+});
+
+test('GTEST-01 M-01: `gsd-test run --head x` reads --head as an unknown run flag, never as the classic --head', () => {
+  const d = oneDispatch('gsd-test run --head x');
+  assert.strictEqual(d.subcommand, 'run');
+  assert.notStrictEqual(d.flags.head, 'x');
 });
 
 test('GTEST-01 walker: `--` ends flag parsing (`-- --head x`)', () => {

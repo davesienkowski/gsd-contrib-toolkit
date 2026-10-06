@@ -653,3 +653,64 @@ test('ENF-23 handoff e2e: on a real clean repo `gsd-test --bench "a(b" | tail` D
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ─────────────── M-01 (36-REVIEW): per-subcommand applicability + empty --base ───────────────
+//
+// v1.8.0 (cmd/gsd-test/main.go run()): `run` copies the WORKING tree (repoRoot + no base ->
+// worktree.Prepare runs the repo as-is), so the dirty-tree trap does not apply; its exit code is
+// the verdict, so the pipe trap does. `wait <id>` renders the verdict (pipe only). `submit` and
+// `status` / `install-agent-hooks` are not ENF-23's concern.
+
+test('ENF-23 M-01: dirty tree + `gsd-test run` ALLOWS (run tests the working tree) with ZERO git calls', () => {
+  const { deps, calls } = scenario({ porcelain: DIRTY_ONE });
+  const d = runGsdTestCleanTreeGate(input('gsd-test run'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(gitCalls(calls), 0);
+});
+
+test('ENF-23 M-01: `gsd-test run tests/x.test.cjs | tail` DENIES with PIPE_REASON', () => {
+  const { deps } = scenario();
+  const d = runGsdTestCleanTreeGate(input('gsd-test run tests/x.test.cjs | tail'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(d.permissionDecisionReason, PIPE_REASON);
+});
+
+test('ENF-23 M-01: dirty tree + `gsd-test wait 20261005-abc` ALLOWS; piped it DENIES with PIPE_REASON', () => {
+  const a = scenario({ porcelain: DIRTY_ONE });
+  assert.strictEqual(runGsdTestCleanTreeGate(input('gsd-test wait 20261005-abc'), a.deps).permissionDecision, 'allow');
+  assert.strictEqual(gitCalls(a.calls), 0);
+  const b = scenario({ porcelain: DIRTY_ONE });
+  const d = runGsdTestCleanTreeGate(input('gsd-test wait 20261005-abc | tail'), b.deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(d.permissionDecisionReason, PIPE_REASON);
+});
+
+for (const cmd of [
+  'gsd-test status 20261005-abc',
+  'gsd-test status 20261005-abc | tail',
+  'gsd-test install-agent-hooks',
+  'gsd-test submit --execute --spec-file s.json | tail',
+]) {
+  test(`ENF-23 M-01: dirty tree + \`${cmd}\` ALLOWS with ZERO resolve/git calls (not governed by ENF-23)`, () => {
+    const { deps, calls } = scenario({ porcelain: DIRTY_ONE });
+    const d = runGsdTestCleanTreeGate(input(cmd), deps);
+    assert.strictEqual(d.permissionDecision, 'allow');
+    assert.strictEqual(calls.resolveTreeRoot + gitCalls(calls), 0);
+  });
+}
+
+test('ENF-23 M-01: dirty tree + `gsd-test --base= --head HEAD` ALLOWS (an empty base runs the working tree as-is)', () => {
+  const { deps } = scenario({ porcelain: DIRTY_ONE });
+  assert.strictEqual(runGsdTestCleanTreeGate(input('gsd-test --base= --head HEAD'), deps).permissionDecision, 'allow');
+});
+
+test('ENF-23 M-01: `gsd-test --base= | tail` still DENIES with PIPE_REASON', () => {
+  const { deps } = scenario({ porcelain: DIRTY_ONE });
+  const d = runGsdTestCleanTreeGate(input('gsd-test --base= | tail'), deps);
+  assert.strictEqual(d.permissionDecisionReason, PIPE_REASON);
+});
+
+test('ENF-23 M-01: dirty tree + `gsd-test --base "$B"` DENIES (an expanded base may be non-empty: fail closed)', () => {
+  const { deps } = scenario({ porcelain: DIRTY_ONE });
+  assert.strictEqual(runGsdTestCleanTreeGate(input('gsd-test --base "$B"'), deps).permissionDecision, 'deny');
+});
