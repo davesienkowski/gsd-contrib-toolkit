@@ -663,6 +663,23 @@ function chdirPrefixes(chdirs) {
 }
 
 /**
+ * Whether a resolved gsd-test program is only LOOKED UP (36-REVIEW M-05): a `command` wrapper
+ * before it carries `-v` or `-V` (alone or clustered: `-pv`), which prints where gsd-test is and
+ * runs nothing. classify.resolveProgram skips `-v` as a boolean wrapper flag, so without this the
+ * standard "is it installed?" check drew a non-overridable policy deny. `type`, `hash` and
+ * `which` resolve to themselves and never reach here.
+ */
+function isCommandLookup(toks, idx) {
+  for (let k = 0; k < idx; k++) {
+    if (path.basename(toks[k]) !== 'command') continue;
+    for (let j = k + 1; j < idx && /^-[A-Za-z]+$/.test(toks[j]); j++) {
+      if (/[vV]/.test(toks[j])) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Walk a shell's options (`bash -o pipefail -lc '<payload>'`).
  *
  * @param {string[]} after tokens after the shell program token
@@ -801,6 +818,8 @@ function scanParsed(parsed, st) {
         if (GSD_TEST_WORD.test(toks.join(' '))) {
           out.push({ kind: 'uncertain', reason: 'ambiguous wrapper around a gsd-test mention' });
         }
+      } else if (r.prog === 'gsd-test' && r.idx !== -1 && isCommandLookup(toks, r.idx)) {
+        // M-05: `command -v gsd-test` — a lookup, not a dispatch.
       } else if (r.prog === 'gsd-test' && r.idx !== -1) {
         const sub = leadingSubcommand(toks.slice(r.idx + 1));
         const spec = sub.name === null ? CLASSIC_FLAGSET : SUBCOMMANDS[sub.name];
