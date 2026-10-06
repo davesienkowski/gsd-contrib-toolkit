@@ -561,6 +561,108 @@ function resolveSegmentProgram(tokens) {
 }
 
 /**
+ * The working-directory options of the `env` and `sudo` wrappers (36-REVIEW M-03): `env -C <dir>`
+ * / `--chdir[=]<dir>` and `sudo -D <dir>` / `--chdir[=]<dir>`. `value` lists each wrapper's OTHER
+ * value-taking options (short letters and long names), so a cluster or a value is never misread
+ * as the chdir. The short letters mirror classify.WRAPPER_VALUE_FLAGS (classify.cjs is unchanged).
+ */
+const CHDIR_WRAPPERS = Object.freeze({
+  env: { chdir: 'C', short: new Set(['u', 'S']), long: new Set(['unset', 'split-string']) },
+  sudo: {
+    chdir: 'D',
+    short: new Set(['u', 'g', 'U', 'C', 'h', 'p', 'r', 't']),
+    long: new Set(['user', 'group', 'other-user', 'close-from', 'host', 'prompt', 'role', 'type', 'command-timeout']),
+  },
+});
+
+/** A program-slot sentinel no real token can equal (a NUL is never in an argv token). */
+const SLOT_PROBE = '\u0000gsd-test-slot';
+
+/**
+ * Strip the chdir options of every `env` / `sudo` wrapper that sits in WRAPPER position (the
+ * token is where resolveSegmentProgram would look for the program), recording each directory in
+ * order. Without this, classify.resolveProgram reads `sudo -D /x gsd-test` as program `x` (its
+ * sudo value set has no `-D`) and `env --chdir /x gsd-test` as program `x`, hiding the dispatch,
+ * and `env -C /x gsd-test` resolves but the directory change was lost (M-03).
+ *
+ * @param {string[]} tokens normalised segment tokens
+ * @returns {{tokens:string[], chdirs:(string|null)[]}} `null` marks a chdir option whose value
+ *   is missing (unresolvable)
+ */
+function stripChdirOptions(tokens) {
+  let toks = tokens.slice();
+  const chdirs = [];
+  for (let i = 0; i < toks.length; i++) {
+    const spec = CHDIR_WRAPPERS[path.basename(toks[i])];
+    if (!spec) continue;
+    const slot = resolveSegmentProgram(toks.slice(0, i).concat([SLOT_PROBE]));
+    if (slot.ambiguous || slot.prog !== SLOT_PROBE || slot.idx !== i) continue;
+
+    let k = i + 1;
+    while (k < toks.length && toks[k].startsWith('-') && toks[k] !== '-') {
+      const t = toks[k];
+      if (t === '--') break;
+      if (t.startsWith('--')) {
+        const eq = t.indexOf('=');
+        const name = eq === -1 ? t.slice(2) : t.slice(2, eq);
+        if (name === 'chdir') {
+          if (eq !== -1) {
+            chdirs.push(t.slice(eq + 1));
+            toks.splice(k, 1);
+          } else {
+            chdirs.push(k + 1 < toks.length ? toks[k + 1] : null);
+            toks.splice(k, 2);
+          }
+          continue;
+        }
+        k += eq === -1 && spec.long.has(name) ? 2 : 1;
+        continue;
+      }
+      // A short cluster: booleans, then at most one value letter (its value is the rest of the
+      // token, or the next token).
+      let consumedNext = false;
+      let stripped = false;
+      for (let c = 1; c < t.length; c++) {
+        const L = t[c];
+        if (L === spec.chdir) {
+          const rest = t.slice(c + 1);
+          const head = t.slice(0, c);
+          if (rest !== '') {
+            chdirs.push(rest);
+          } else {
+            chdirs.push(k + 1 < toks.length ? toks[k + 1] : null);
+            if (k + 1 < toks.length) toks.splice(k + 1, 1);
+          }
+          if (head === '-') toks.splice(k, 1);
+          else { toks[k] = head; k += 1; }
+          stripped = true;
+          break;
+        }
+        if (spec.short.has(L)) {
+          consumedNext = c === t.length - 1;
+          break;
+        }
+      }
+      if (stripped) continue;
+      k += consumedNext ? 2 : 1;
+    }
+  }
+  return { tokens: toks, chdirs };
+}
+
+/** Synthetic `cd` prefixes for wrapper chdirs, folded by startDirFor after the real prefixes. */
+function chdirPrefixes(chdirs) {
+  return chdirs.map((dir) => ({
+    ok: true,
+    segments: [
+      dir === null
+        ? { program: 'cd', tokens: ['cd'], positionals: [], unresolvable: true }
+        : { program: 'cd', tokens: ['cd', '--', dir], positionals: [dir] },
+    ],
+  }));
+}
+
+/**
  * Walk a shell's options (`bash -o pipefail -lc '<payload>'`).
  *
  * @param {string[]} after tokens after the shell program token
@@ -688,15 +790,19 @@ function scanParsed(parsed, st) {
     for (const type of n.openers) frames.push({ type, segs: [] });
 
     if (n.tokens.length > 0) {
-      const r = resolveSegmentProgram(n.tokens);
+      // M-03: `env -C <dir>` / `sudo -D <dir>` change the directory of THIS segment only.
+      const cd = stripChdirOptions(n.tokens);
+      const toks = cd.tokens;
+      const here = () => st.prefixes.concat([prefixNow()], chdirPrefixes(cd.chdirs));
+      const r = resolveSegmentProgram(toks);
       const pipefail = runningPipefail || st.inheritedPipefail;
 
       if (r.ambiguous) {
-        if (GSD_TEST_WORD.test(n.tokens.join(' '))) {
+        if (GSD_TEST_WORD.test(toks.join(' '))) {
           out.push({ kind: 'uncertain', reason: 'ambiguous wrapper around a gsd-test mention' });
         }
       } else if (r.prog === 'gsd-test' && r.idx !== -1) {
-        const sub = leadingSubcommand(n.tokens.slice(r.idx + 1));
+        const sub = leadingSubcommand(toks.slice(r.idx + 1));
         const spec = sub.name === null ? CLASSIC_FLAGSET : SUBCOMMANDS[sub.name];
         const w = spec.positionalOnly ? walkPositionals(sub.rest) : walkGoFlags(sub.rest, spec);
         if (w.uncertainReason) {
@@ -707,7 +813,7 @@ function scanParsed(parsed, st) {
           out.push({
             kind: 'dispatch',
             subcommand: sub.name,
-            seg: toSeg(n.tokens, segments[i].nextOp),
+            seg: toSeg(toks, segments[i].nextOp),
             segIndex: i,
             args: w.positionals,
             flags: w.flags,
@@ -719,11 +825,11 @@ function scanParsed(parsed, st) {
             pipeMasked: (pipedOut && !pipefail) || st.outerMasked,
             viaDashC: st.depth > 0,
             depth: st.depth,
-            prefixes: st.prefixes.concat([prefixNow()]),
+            prefixes: here(),
           });
         }
       } else if (SHELLS.has(r.prog) && r.idx !== -1) {
-        const opt = readShellOptions(n.tokens.slice(r.idx + 1));
+        const opt = readShellOptions(toks.slice(r.idx + 1));
         if (opt.dashC && typeof opt.payload === 'string') {
           if (st.depth + 1 > MAX_DASH_C_DEPTH) {
             if (GSD_TEST_WORD.test(opt.payload)) {
@@ -735,7 +841,7 @@ function scanParsed(parsed, st) {
               depth: st.depth + 1,
               inheritedPipefail: opt.shellPipefail,
               outerMasked: (pipedOut && !pipefail) || st.outerMasked,
-              prefixes: st.prefixes.concat([prefixNow()]),
+              prefixes: here(),
             });
             for (const e of inner) out.push(e);
           }
@@ -743,7 +849,7 @@ function scanParsed(parsed, st) {
       } else if (r.prog === 'set' && r.idx !== -1 && profile[i].level <= 0) {
         // Only a top-level `set` persists; one inside `( ... )` does not reach later segments
         // (a `{ ...; }` one does, but ignoring it only ever keeps a pipe masked: fail-safe).
-        const change = setPipefailChange(n.tokens, r.idx);
+        const change = setPipefailChange(toks, r.idx);
         if (change !== null) runningPipefail = change;
       }
     }
@@ -920,6 +1026,7 @@ function expandCdTargets(prefix, ctx) {
       segments.push(seg);
       continue;
     }
+    if (seg.unresolvable) return null; // a wrapper chdir option with no value (M-03)
     const t = cdTarget(seg, ctx);
     if (t === null) return null;
     if (t.noop) continue; // `cd ""` stays put
