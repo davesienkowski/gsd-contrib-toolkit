@@ -249,6 +249,9 @@ function firstStderrLine(stderr) {
  */
 function classifyFetchResult(res) {
   const r = res || {};
+  // NI-04: exit 0 wins over a spawnSync error: a grandchild holding the pipe makes spawnSync report
+  // ETIMEDOUT after git itself finished successfully.
+  if (r.status === 0) return { state: 'ok', detail: '' };
   if (r.error) {
     const code = String(r.error.code || r.error.message || 'unknown error');
     if (code === 'ETIMEDOUT') {
@@ -813,7 +816,9 @@ function createDefaultSeams({ env, spawnSync, budget } = {}) {
       timeout: slice(GIT_TIMEOUT_MS, given),
       env: gitEnv(base),
     });
-    if (r.error) {
+    // NI-04: a git that exited 0 succeeded (its output is complete) even when spawnSync also
+    // reports ETIMEDOUT because a grandchild (a ref-transaction hook, an ssh master) held the pipe.
+    if (r.error && r.status !== 0) {
       throw new FailClosed(
         'ENF-25 worktree fresh-base gate: git ' + op + ' could not run (' + (r.error.code || r.error.message) +
           ') — failing closed.'
