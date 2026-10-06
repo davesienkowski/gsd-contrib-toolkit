@@ -594,10 +594,12 @@ test('ENF-24 GTEST-06 scope: a bench with host "ssh://bench1" -> NO probe, ALLOW
   assert.strictEqual(calls.dockerProbe, 0);
 });
 
-test('ENF-24 GTEST-06 scope: a bench with no host key -> NO probe, ALLOW', () => {
+// m-08 (36-REVIEW) correction: v1.8.0 internal/config/config.go builds each bench with
+// `Host: rb.Host, // empty is fine — means local`, so a bench with no host IS local and is probed.
+test('ENF-24 GTEST-06 scope (m-08): a bench with no host key is LOCAL in v1.8.0 -> the probe runs; Docker down DENIES', () => {
   const { d, calls } = run('gsd-test -bench nohost', { config: CONFIG_MIXED, probe: { state: 'down', detail: 'x' } });
-  assert.strictEqual(d.permissionDecision, 'allow');
-  assert.strictEqual(calls.dockerProbe, 0);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(calls.dockerProbe, 1);
 });
 
 // ───────────────────────── ordering / cost ─────────────────────────
@@ -845,4 +847,87 @@ test('ENF-24 m-05: the default probe killed by SIGSEGV DENIES (thrown), never as
   const d = runGsdTestViabilityGate(input('gsd-test'), deps);
   assert.strictEqual(d.permissionDecision, 'deny');
   assert.match(d.permissionDecisionReason, /SIGSEGV/);
+});
+
+// ─────────────── m-08 (36-REVIEW): defaults.pin, --exclude / defaults.exclude, empty host ───────────────
+//
+// v1.8.0 runner.ResolveEffective: pin = --bench, else config defaults.pin; exclude = --exclude,
+// else defaults.exclude. `run` / `submit --execute` (dispatchRun) pick a bench by target with no
+// pin and no exclude. The local probe runs only when the bench gsd-test can use may be local.
+
+const CONFIG_REMOTE_ONLY = '[[benches]]\nname = "remote"\nhost = "ssh://bench1"\n';
+const DOWN = { state: 'down', detail: 'daemon down' };
+
+test('ENF-24 m-08: a bench with host "" is local -> probed', () => {
+  const { calls } = run('gsd-test -bench e', { config: '[[benches]]\nname = "e"\nhost = ""\n' });
+  assert.strictEqual(calls.dockerProbe, 1);
+});
+
+test('ENF-24 m-08: no --bench, defaults.pin names a remote bench -> NO probe, ALLOW', () => {
+  const cfg = '[defaults]\npin = "remote"\n' + CONFIG_MIXED;
+  const { d, calls } = run('gsd-test', { config: cfg, probe: DOWN });
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.dockerProbe, 0);
+});
+
+test('ENF-24 m-08: no --bench, defaults.pin names a local bench -> probed', () => {
+  const cfg = '[defaults]\npin = "wsl-local"  # pinned\n' + CONFIG_MIXED;
+  const { d, calls } = run('gsd-test', { config: cfg, probe: DOWN });
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(calls.dockerProbe, 1);
+});
+
+test('ENF-24 m-08: --bench wins over defaults.pin (`--bench remote`, pin local) -> NO probe', () => {
+  const cfg = '[defaults]\npin = "wsl-local"\n' + CONFIG_MIXED;
+  const { d, calls } = run('gsd-test --bench remote', { config: cfg, probe: DOWN });
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.dockerProbe, 0);
+});
+
+test('ENF-24 m-08: `--exclude wsl-local,nohost` leaves only a remote bench -> NO probe', () => {
+  const { d, calls } = run('gsd-test --exclude wsl-local,nohost', { config: CONFIG_MIXED, probe: DOWN });
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.dockerProbe, 0);
+});
+
+test('ENF-24 m-08: `--exclude wsl-local` still leaves the local no-host bench -> probed', () => {
+  const { calls } = run('gsd-test --exclude wsl-local', { config: CONFIG_MIXED, probe: DOWN });
+  assert.strictEqual(calls.dockerProbe, 1);
+});
+
+test('ENF-24 m-08: defaults.exclude = ["wsl-local", "nohost"] leaves only a remote bench -> NO probe', () => {
+  const cfg = '[defaults]\nexclude = ["wsl-local", \'nohost\']\n' + CONFIG_MIXED;
+  const { d, calls } = run('gsd-test', { config: cfg, probe: DOWN });
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.dockerProbe, 0);
+});
+
+test('ENF-24 m-08: an unresolvable `--exclude $X` excludes nothing (conservative) -> probed', () => {
+  const { calls } = run('gsd-test --exclude $X', { config: CONFIG_MIXED, probe: DOWN });
+  assert.strictEqual(calls.dockerProbe, 1);
+});
+
+test('ENF-24 m-08: a remote-only config with no --bench -> NO probe', () => {
+  const { d, calls } = run('gsd-test', { config: CONFIG_REMOTE_ONLY, probe: DOWN });
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.dockerProbe, 0);
+});
+
+test('ENF-24 m-08: `gsd-test run` ignores defaults.pin (dispatchRun has no pin) -> probed when any bench is local', () => {
+  const cfg = '[defaults]\npin = "remote"\n' + CONFIG_MIXED;
+  const { calls } = run('gsd-test run', { config: cfg, probe: DOWN });
+  assert.strictEqual(calls.dockerProbe, 1);
+});
+
+test('ENF-24 m-08: `gsd-test run` with a remote-only config -> NO probe', () => {
+  const { d, calls } = run('gsd-test run', { config: CONFIG_REMOTE_ONLY, probe: DOWN });
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.dockerProbe, 0);
+});
+
+test('ENF-24 m-08: parseDefaults reads pin and a one-line exclude array; a multi-line array is unknown (null)', () => {
+  assert.strictEqual(typeof viability.parseDefaults, 'function', 'parseDefaults is exported');
+  assert.deepStrictEqual(viability.parseDefaults('[defaults]\npin = "a"\nexclude = ["b", \'c\']\n'), { pin: 'a', exclude: ['b', 'c'] });
+  assert.deepStrictEqual(viability.parseDefaults('[defaults]\nexclude = [\n  "b",\n]\n'), { pin: null, exclude: null });
+  assert.deepStrictEqual(viability.parseDefaults('[other]\npin = "x"\n'), { pin: null, exclude: [] });
 });
