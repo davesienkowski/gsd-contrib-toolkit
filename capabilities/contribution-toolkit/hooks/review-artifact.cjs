@@ -44,6 +44,12 @@
  * never classifies to a governed action and is therefore untouched, with no lookup, no
  * scaffold and no deny.
  *
+ * RECOVERED VERDICT ROUTES (261006-jsm, CTK-ADR-0010 residuals). A `gh pr review` issued through
+ * a wrapper the classifier does not peel (for example a `bash -c` / `sh -c` command string) is
+ * recovered by lib/classify as a `pr-review` carrying `verdictSegments`, the inner review
+ * segments. gate() runs EACH verdict segment through gateSegment, never the outer wrapper
+ * segment, so the R8a memtrace check (and R8, R10, R1) sees the real review command.
+ *
  * KEYED TO PR NUMBER + HEAD OID. An artifact keyed to the PR number alone would be satisfied
  * by a stale review of an older push — the exact staleness bug ENF-05 solved by keying its
  * marker to `git write-tree`, and that ENF-19 mirrors for the gsd-test matrix. So the payload
@@ -1610,6 +1616,9 @@ function gateSegment(seg, action, deps, opts = {}) {
  * `gh pr review 42 --approve && gh pr merge 42` cannot trade an R8a ask for the merge's deny);
  * a throw propagates to runGate's fail-closed path; only when nothing denies is the held ask
  * returned, else allow.
+ *
+ * 261006-jsm: a recovered verdict route (classify result `recovered: true`) contributes its
+ * `verdictSegments` to this loop in place of the outer segment, under the same precedence.
  */
 function gate(stdinString, deps) {
   const input = readHookInput(stdinString);
@@ -1647,11 +1656,19 @@ function gate(stdinString, deps) {
   for (const seg of segs) {
     const r = classifyAction({ ok: true, segments: [seg] });
     if (!r || !GOVERNED_ACTIONS.has(r.action)) continue;
-    const decision = gateSegment(seg, r.action, segDeps, { sessionId });
-    if (decision && decision.permissionDecision === 'ask') {
-      if (!firstAsk) firstAsk = decision; // held: a later segment may still deny
-    } else if (decision) {
-      return decision; // the first unmet requirement denies
+    // 261006-jsm: a RECOVERED verdict route (a `gh pr review` inside a wrapper such as
+    // `bash -c "..."`) is gated through each of its inner verdict segments, with the same
+    // precedence as the outer loop. The outer wrapper segment never reaches gateSegment: its
+    // tokens make isNativeGhSegment false, so its `-a` would not count as an approve.
+    const targets = r.recovered === true ? r.verdictSegments : [seg];
+    const action = r.recovered === true ? 'pr-review' : r.action;
+    for (const target of targets) {
+      const decision = gateSegment(target, action, segDeps, { sessionId });
+      if (decision && decision.permissionDecision === 'ask') {
+        if (!firstAsk) firstAsk = decision; // held: a later segment may still deny
+      } else if (decision) {
+        return decision; // the first unmet requirement denies
+      }
     }
   }
 

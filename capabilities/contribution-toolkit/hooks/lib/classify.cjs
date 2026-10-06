@@ -46,7 +46,9 @@
  */
 
 const path = require('node:path'); // CR-03: basename-normalize the program
-require('./argv.cjs'); // contract dependency (parseCommand output shape)
+// Contract dependency (parseCommand output shape). 261006-jsm: parseCommand also re-parses an
+// eval or shell -c payload in the verdict-route recovery (argv's own primitive, never a raw grep).
+const { parseCommand } = require('./argv.cjs');
 
 const MUTATING_METHODS = new Set(['POST', 'PATCH', 'PUT']);
 const GITHUB_API_HOSTS = new Set(['api.github.com']);
@@ -84,7 +86,7 @@ const REVIEW_SIDE_ACTIONS = Object.freeze(new Set([
 //     `commit`/`push` in a chain, changing six wired gates' existing classifications;
 //   - not REVIEW-SIDE: a review-side membership would let `git merge x && gh pr merge 1`
 //     collapse to `merge` and disarm ENF-20's review-artifact gate (T-ih5-01).
-// See classifyAction's THREE-PASS aggregation for why the separate tier is load-bearing.
+// See classifyAction's FOUR-PASS aggregation for why the separate tier is load-bearing.
 const MERGE_SIDE_ACTIONS = Object.freeze(new Set(['merge']));
 
 // ENF-20 disambiguation contract. GitHub posts a PR *conversation* comment to the
@@ -433,13 +435,14 @@ function extractTarget(seg, isCurl) {
 }
 
 /**
- * Classify a single parsed segment. Returns a result object or null when the
- * segment is not itself a recognized action (caller treats null as 'other').
+ * Classify a single parsed segment by its DIRECT form (the pre-261006-jsm classifier, unchanged).
+ * Returns a result object or null when the segment is not itself a recognized action. Callers go
+ * through classifySegment, which adds the verdict-route recovery on the null path only.
  *
  * @param {Object} seg
  * @returns {{action:string, route?:string, failClosed?:boolean}|null}
  */
-function classifySegment(seg) {
+function classifySegmentDirect(seg) {
   if (!seg || typeof seg !== 'object') return null;
 
   // CR-01/CR-03: resolve the effective program (basename, past wrapper builtins)
@@ -520,6 +523,185 @@ function classifySegment(seg) {
   if (wrapped) return null;
 
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// 261006-jsm: ENF-20 VERDICT-ROUTE RECOVERY (CONTEXT D1, D3, D4)
+//
+// A `gh pr review` verdict can be issued through a form whose direct classification is `other`
+// (a wrapper the shared walk deliberately does not peel, CONTEXT D1 and the 36-02a lock), which
+// let it skip ENF-20's R8a memtrace check. The recovery below runs ONLY where the direct
+// classifier returned null and may return ONLY a `pr-review` result carrying `recovered: true`:
+//
+//   { action: 'pr-review', route: 'recovered', recovered: true, via, verdictSegments: [seg, ...] }
+//
+// `verdictSegments` are the inner segments the review-artifact gate must run (re-parsed from the
+// static payload text with argv.parseCommand, never a raw-string grep, EP-2). Any other inner
+// result (push, pr-merge, failClosed, null) is discarded, so the segment stays `other` exactly as
+// before (D1). classifyAction's PASS 4 keeps every existing chain classification unchanged (D2).
+//
+// Recovery state, passed down explicitly (no module-level mutable state):
+//   depth          payload re-parses so far (eval, shell -c); bounded by RECOVERY_MAX_DEPTH
+//   peels          transparent prefixes stripped at this depth; bounded by MAX_PREFIX_PEELS
+//   inShellString  true inside an eval or shell -c payload
+// ---------------------------------------------------------------------------
+
+/** Payload re-parses (eval, shell -c) allowed before a payload is treated as opaque (D3). */
+const RECOVERY_MAX_DEPTH = 4;
+
+/** Transparent prefixes (subshell, nohup, time, ...) stripped at one depth before the bound. */
+const MAX_PREFIX_PEELS = 8;
+
+/**
+ * Stable `via` code -> FIXED ASCII description of the form, for gate messages. A description is
+ * never built from command text, so a gate reason can never echo a payload, a path or a body.
+ */
+const VERDICT_ROUTE_FORMS = Object.freeze({
+  'shell-c': 'a review command inside a bash or sh -c command string',
+});
+
+/** Shells whose `-c` command string the recovery re-parses (RESEARCH section 5). */
+const RECOVERY_SHELLS = new Set(['bash', 'sh', 'dash', 'zsh', 'ksh']);
+
+const ROOT_RECOVERY_STATE = Object.freeze({ depth: 0, peels: 0, inShellString: false });
+
+/**
+ * Classify a single parsed segment. Returns a result object or null when the segment is not
+ * itself a recognized action (caller treats null as 'other'). The direct classifier answers
+ * first; only a null answer reaches the verdict-route recovery, so no non-null result (and no
+ * `ambiguous` FAIL_CLOSED) is ever replaced.
+ *
+ * @param {Object} seg
+ * @param {{depth:number, peels:number, inShellString:boolean}} [state] internal recovery state
+ * @returns {{action:string, route?:string, failClosed?:boolean, recovered?:boolean}|null}
+ */
+function classifySegment(seg, state) {
+  const direct = classifySegmentDirect(seg);
+  if (direct !== null) return direct;
+  return recoverVerdictRoute(seg, state || ROOT_RECOVERY_STATE);
+}
+
+/**
+ * The verdict-route recovery: null, or a recovered `pr-review` result. Pure.
+ *
+ * Prefilter first: the program (resolved past env assignments and WRAPPER_BUILTINS by the shared
+ * resolveProgram) must be a recovery trigger, so an ordinary command pays one resolveProgram.
+ *
+ * @param {Object} seg
+ * @param {{depth:number, peels:number, inShellString:boolean}} state
+ * @returns {Object|null}
+ */
+function recoverVerdictRoute(seg, state) {
+  if (!seg || typeof seg !== 'object' || !Array.isArray(seg.tokens)) return null;
+  const { prog } = resolveProgram(seg);
+  if (RECOVERY_SHELLS.has(prog)) return recoverShellCommandString(seg, prog, state);
+  return null;
+}
+
+/**
+ * Index of the token that IS the resolved program: the first token whose basename equals `prog`
+ * and whose prefix resolves to it (the gsd-test-detect.programIndex rule; that module cannot be
+ * required here, it requires this one).
+ *
+ * @param {string[]} tokens
+ * @param {string} prog
+ * @returns {number} -1 when not found
+ */
+function programTokenIndex(tokens, prog) {
+  let fallback = -1;
+  for (let i = 0; i < tokens.length; i += 1) {
+    if (path.basename(tokens[i]) !== prog) continue;
+    if (fallback === -1) fallback = i;
+    if (resolveProgram({ tokens: tokens.slice(0, i + 1) }).prog === prog) return i;
+  }
+  return fallback;
+}
+
+/**
+ * The `-c` command string of a shell invocation, from the tokens AFTER the shell (RESEARCH
+ * section 5): a short bundle starting `-` or `+` that contains `c` sets -c (`-lc`, `-ec`, `+c`);
+ * each `o` / `O` letter in a bundle consumes the NEXT token as its value; `--rcfile` and
+ * `--init-file` consume the next token; other long options take no value; `--` or a lone `-`
+ * ends options. With -c set the command string is the first non-option operand (tokens after it
+ * are positionals). Returns undefined with no -c (a script file, `bash -s`, a heredoc-fed shell)
+ * or with -c and no operand.
+ *
+ * @param {string[]} after
+ * @returns {string|undefined}
+ */
+function shellCommandString(after) {
+  let dashC = false;
+  let i = 0;
+  while (i < after.length) {
+    const t = after[i];
+    if (t === '--' || t === '-') {
+      i += 1;
+      break;
+    }
+    if ((t[0] === '-' || t[0] === '+') && t.length > 1 && t[1] !== t[0]) {
+      const letters = t.slice(1);
+      if (letters.includes('c')) dashC = true;
+      let consumed = 0;
+      for (const letter of letters) {
+        if (letter === 'o' || letter === 'O') consumed += 1;
+      }
+      i += 1 + consumed;
+      continue;
+    }
+    if (t.startsWith('--')) {
+      i += t === '--rcfile' || t === '--init-file' ? 2 : 1;
+      continue;
+    }
+    break;
+  }
+  return dashC ? after[i] : undefined;
+}
+
+/**
+ * Recover a `bash|sh|dash|zsh|ksh -c STRING` verdict route.
+ *
+ * @param {Object} seg
+ * @param {string} prog
+ * @param {{depth:number, peels:number, inShellString:boolean}} state
+ * @returns {Object|null}
+ */
+function recoverShellCommandString(seg, prog, state) {
+  const at = programTokenIndex(seg.tokens, prog);
+  if (at === -1) return null;
+  const payload = shellCommandString(seg.tokens.slice(at + 1));
+  if (typeof payload !== 'string') return null;
+  return recoverPayload(payload, 'shell-c', state);
+}
+
+/**
+ * Re-parse a payload (a shell -c command string) with argv.parseCommand and collect EVERY inner
+ * pr-review segment, in order (D3), so a leading `--comment` cannot hide a later approve.
+ *
+ * @param {string} payload
+ * @param {string} via a VERDICT_ROUTE_FORMS code
+ * @param {{depth:number, peels:number, inShellString:boolean}} state
+ * @returns {Object|null}
+ */
+function recoverPayload(payload, via, state) {
+  // An empty or whitespace payload runs nothing: not a route, and not an unparseable payload.
+  if (payload.trim().length === 0) return null;
+  const depth = state.depth + 1;
+  // Past the depth bound: null in this tier (a later tier grades it uncertain, D3).
+  if (depth > RECOVERY_MAX_DEPTH) return null;
+  const inner = parseCommand(payload);
+  // A payload argv cannot parse: null in this tier (a later tier grades it uncertain, D3, D7).
+  if (!inner || inner.ok !== true) return null;
+  const innerState = { depth, peels: 0, inShellString: true };
+  const verdictSegments = [];
+  for (const innerSeg of inner.segments) {
+    const r = classifySegment(innerSeg, innerState);
+    // D1: only a pr-review is kept; every other inner result is discarded.
+    if (!r || r.action !== 'pr-review') continue;
+    if (r.recovered === true) verdictSegments.push(...r.verdictSegments);
+    else verdictSegments.push(innerSeg);
+  }
+  if (verdictSegments.length === 0) return null;
+  return { action: 'pr-review', route: 'recovered', recovered: true, via, verdictSegments };
 }
 
 /**
@@ -769,7 +951,7 @@ function classifyAction(parsed) {
     ? parsed.segments
     : [parsed];
 
-  // ENF-20 / ENF-22 THREE-PASS AGGREGATION — the mechanism that makes the six legacy
+  // ENF-20 / ENF-22 / 261006-jsm FOUR-PASS AGGREGATION - the mechanism that makes the six legacy
   // actions' classification byte-identical BY CONSTRUCTION rather than by luck.
   //
   // classifyAction returns ONE result for a whole chain, and six wired gates read that
@@ -809,6 +991,17 @@ function classifyAction(parsed) {
   // CF-05 all-segments chokepoint — NOT on classifyAction(parsed).action, which by design
   // still reports the legacy action for a chain like `gh pr merge … && git push` or
   // `git merge … && git push`.
+  //
+  // 261006-jsm ADDS PASS 4 FOR RECOVERED VERDICT ROUTES (CONTEXT D1, D2). classifySegment runs
+  // recoverVerdictRoute ONLY where its direct logic returned null, and a recovered result is
+  // ONLY ever action 'pr-review' with `recovered: true` (a `gh pr review` hidden inside a wrapper
+  // such as `bash -c "..."`). PASS 1, 2 and 3 skip every recovered result, and PASS 4 returns the
+  // first one. BYTE-IDENTITY ARGUMENT: a recovered result exists only for a segment that was null
+  // before this change, so PASS 1-3 see exactly the non-null results they saw before, and PASS 4
+  // is reachable only where the old aggregate was 'other'. Without the PASS 2 skip,
+  // `bash -c "gh pr review 1 -a" && gh pr merge 1` would collapse to the recovered pr-review
+  // (pr-review IS review-side) instead of the pr-merge it classifies as today: the same
+  // displacement hazard ENF-22 closed one tier down.
   const results = [];
   for (const seg of segments) {
     results.push(classifySegment(seg));
@@ -816,7 +1009,7 @@ function classifyAction(parsed) {
 
   // PASS 1 — legacy actions + failClosed (byte-identical to pre-ENF-20 behaviour).
   for (const res of results) {
-    if (res === null) continue;
+    if (res === null || res.recovered === true) continue;
     if (res.failClosed === true || LEGACY_MUTATION_ACTIONS.has(res.action)) {
       return { ...res };
     }
@@ -827,7 +1020,7 @@ function classifyAction(parsed) {
   // REVIEW_SIDE_ACTIONS test (ENF-22) is what stops a merge segment from winning here and
   // disarming review-artifact; do NOT relax it back to "first non-null of any kind".
   for (const res of results) {
-    if (res === null) continue;
+    if (res === null || res.recovered === true) continue;
     if (REVIEW_SIDE_ACTIONS.has(res.action)) {
       return { ...res };
     }
@@ -837,8 +1030,16 @@ function classifyAction(parsed) {
   // failClosed, or review-side segment exists — i.e. exactly where the pre-ENF-22 code
   // returned 'other'.
   for (const res of results) {
-    if (res === null) continue;
+    if (res === null || res.recovered === true) continue;
     return { ...res };
+  }
+
+  // PASS 4 - recovered verdict routes (261006-jsm). Reachable only when PASS 1-3 found nothing,
+  // i.e. exactly where the pre-261006-jsm code returned 'other'.
+  for (const res of results) {
+    if (res !== null && res.recovered === true) {
+      return { ...res };
+    }
   }
 
   // No segment classified as actionable ⇒ read-only / unrelated ⇒ other (allow).
@@ -1035,4 +1236,9 @@ module.exports = {
   // exported for unit-level reuse / testing
   classifyGithubPath,
   hostOf,
+  // 261006-jsm: the verdict-route recovery bounds and the fixed form descriptions the
+  // review-artifact gate names in its messages.
+  RECOVERY_MAX_DEPTH,
+  MAX_PREFIX_PEELS,
+  VERDICT_ROUTE_FORMS,
 };
