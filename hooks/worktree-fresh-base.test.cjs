@@ -816,3 +816,154 @@ test('ENF-25 WTREE-03: e2e: A on work, origin advanced, base omitted -> allow an
     fx.dispose();
   }
 });
+
+// ───────────────────────── 37-03 WTREE-02: compare-and-swap edges ─────────────────────────
+//
+// A refused CAS (local next moved between the gate's read and its write) is a POLICY deny with the
+// fix, attempted ONCE. The exported default seams are proven on real repos: a wrong old value
+// leaves refs/heads/next untouched, the right one moves it with an ENF-25 reflog entry, and a
+// repeat run finds next equal and makes no second move.
+
+const gateModule = require('./worktree-fresh-base.cjs');
+
+/** The exported default-seam factory, asserted (not destructured) so a missing export is a row failure. */
+function defaultSeams() {
+  assert.strictEqual(typeof gateModule.createDefaultSeams, 'function', 'worktree-fresh-base must export createDefaultSeams()');
+  return gateModule.createDefaultSeams({ env: process.env });
+}
+
+/** Fixture A (parked on work unless park:false) with origin advanced and fetched by SETUP: next = L, origin/next = R. */
+function fetchedFixture(opts) {
+  const fx = makeFixture(opts);
+  const R = fx.advanceOrigin();
+  git(fx.A, 'fetch', '-q', 'origin', 'next');
+  assert.strictEqual(refOf(fx.A, 'refs/remotes/origin/next'), R, 'setup: origin/next fetched');
+  return { fx, L: fx.initial, R };
+}
+
+test('ENF-25 WTREE-02: a refused CAS is a policy deny naming the change and the fix, attempted exactly once', () => {
+  const { deps, calls } = scenario({ casOk: false });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b feat p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  const why = d.permissionDecisionReason;
+  assert.match(why, /ENF-25/);
+  assert.match(why, /changed while the gate ran/);
+  assert.match(why, /re-issue/i);
+  assert.ok(why.includes('git worktree add -b <branch> <path> origin/next'), why);
+  assert.ok(!DESTRUCTIVE.test(why), 'no destructive suggestion: ' + why);
+  assert.strictEqual(calls.casUpdateRef, 1, 'no second update-ref attempt in the same call');
+});
+
+test('ENF-25 WTREE-02: the refused-CAS deny is NOT override-escapable (zero receipts)', () => {
+  const o = yesOverride();
+  const { deps, calls } = scenario({ casOk: false, overrideImpl: o.overrideImpl });
+  const d = runWorktreeFreshBaseGate(input('git worktree add p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(o.receipts.length, 0);
+  assert.strictEqual(calls.casUpdateRef, 1);
+});
+
+test('ENF-25 WTREE-02: local next equal to origin/next allows with ZERO CAS calls', () => {
+  const { deps, calls } = scenario({ refs: { 'refs/heads/next': SHA_REMOTE } });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b feat p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.casUpdateRef, 0);
+});
+
+test('ENF-25 WTREE-02: a CAS seam that THROWS FailClosed stays override-escapable (allow + one receipt)', () => {
+  const o = yesOverride();
+  const { deps } = scenario({
+    overrideImpl: o.overrideImpl,
+    casUpdateRef: () => {
+      throw new FailClosed('ENF-25 test: update-ref could not run');
+    },
+  });
+  const d = runWorktreeFreshBaseGate(input('git worktree add p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(o.receipts.length, 1);
+});
+
+test('ENF-25 WTREE-02: default casUpdateRef with a WRONG old value returns false and leaves refs/heads/next byte-identical', () => {
+  const { fx, L, R } = fetchedFixture();
+  try {
+    const seams = defaultSeams();
+    const before = fs.readFileSync(path.join(fx.A, '.git', 'refs', 'heads', 'next'), 'utf8');
+    assert.strictEqual(seams.casUpdateRef(fx.A, 'refs/heads/next', R, '0'.repeat(39) + '1'), false);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), L);
+    assert.strictEqual(fs.readFileSync(path.join(fx.A, '.git', 'refs', 'heads', 'next'), 'utf8'), before);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 WTREE-02: default casUpdateRef with the RIGHT old value returns true and writes an ENF-25 reflog entry', () => {
+  const { fx, L, R } = fetchedFixture();
+  try {
+    const seams = defaultSeams();
+    assert.strictEqual(seams.casUpdateRef(fx.A, 'refs/heads/next', R, L), true);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), R);
+    const first = git(fx.A, 'reflog', 'show', '--format=%gs', 'refs/heads/next').split('\n')[0];
+    assert.match(first, /ENF-25/);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 WTREE-02: default worktreesHolding returns the main tree for a clone on next', () => {
+  const fx = makeFixture({ park: false });
+  try {
+    assert.deepStrictEqual(defaultSeams().worktreesHolding(fx.A, 'refs/heads/next'), [fs.realpathSync(fx.A)]);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 WTREE-02: default worktreesHolding returns [] for a clone parked on work', () => {
+  const fx = makeFixture();
+  try {
+    assert.deepStrictEqual(defaultSeams().worktreesHolding(fx.A, 'refs/heads/next'), []);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 WTREE-02: default isAncestor is true for a real ancestor pair and false for its reverse', () => {
+  const { fx, L, R } = fetchedFixture();
+  try {
+    const seams = defaultSeams();
+    assert.strictEqual(seams.isAncestor(fx.A, L, R), true);
+    assert.strictEqual(seams.isAncestor(fx.A, R, L), false);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 WTREE-02: default currentBranch reads next, work and a detached HEAD (null), even with a tag named next', () => {
+  const fx = makeFixture({ park: false });
+  try {
+    const seams = defaultSeams();
+    git(fx.A, 'tag', 'next');
+    assert.strictEqual(seams.currentBranch(fx.A), 'next', 'a tag named next must not turn the branch into heads/next');
+    git(fx.A, 'switch', '-q', '-c', 'work');
+    assert.strictEqual(seams.currentBranch(fx.A), 'work');
+    git(fx.A, 'switch', '-q', '--detach');
+    assert.strictEqual(seams.currentBranch(fx.A), null);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 WTREE-02: e2e idempotency: the trunk cut run twice allows both times and next has exactly ONE ENF-25 reflog entry', () => {
+  const fx = makeFixture();
+  try {
+    const tip = fx.advanceOrigin();
+    const cmd = 'git worktree add -b f ' + path.join(fx.root, 'wt') + ' next';
+    assert.strictEqual(spawnIn(fx.A, cmd).decision, 'allow');
+    assert.strictEqual(spawnIn(fx.A, cmd).decision, 'allow');
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), tip);
+    const lines = git(fx.A, 'reflog', 'show', '--format=%gs', 'refs/heads/next').split('\n');
+    assert.strictEqual(lines.filter((l) => /ENF-25/.test(l)).length, 1, JSON.stringify(lines));
+  } finally {
+    fx.dispose();
+  }
+});
