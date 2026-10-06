@@ -11,7 +11,8 @@
  *     counted, so RES-01 (no worktree add -> zero resolve/fetch/git) and "no fetch on a non-trunk
  *     base" are asserted by COUNT;
  *   • e2e rows spawn the REAL entrypoint through proof-harness spawnHook inside a REAL fixture:
- *     a bare `origin.git` (default branch `next`), clone A (the gsd-core-shaped checkout, parked
+ *     a bare `open-gsd/gsd-core.git` origin (default branch `next`; the path makes `remote get-url
+ *     origin` parse as open-gsd/gsd-core, which arms the gate: 37-REVIEW MA-01), clone A (the gsd-core-shaped checkout, parked
  *     on `work`) and clone B (pushes one new commit to origin/next). Setup never fetches in A: the
  *     gate's own fetch is what must move A's origin/next. Temp dirs only, global/system git
  *     config disabled, never a real checkout.
@@ -167,7 +168,10 @@ function refOf(dir, ref) {
  */
 function makeFixture({ sentinel = true, park = true } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wtfb-fx-'));
-  const origin = path.join(root, 'origin.git');
+  // The origin path ends in open-gsd/gsd-core.git so the gate's MA-01 arming check (origin parses
+  // as open-gsd/gsd-core) passes for a local bare repo; no network is ever used.
+  const origin = path.join(root, 'open-gsd', 'gsd-core.git');
+  fs.mkdirSync(path.dirname(origin), { recursive: true });
   const A = path.join(root, 'A');
   const B = path.join(root, 'B');
   git(root, '-c', 'init.defaultBranch=next', 'init', '-q', '--bare', origin);
@@ -1581,7 +1585,7 @@ test('ENF-25 WTREE-04 e2e: origin URL is a nonexistent path -> ask; refs/heads/n
   const fx = makeFixture();
   try {
     fx.advanceOrigin();
-    git(fx.A, 'remote', 'set-url', 'origin', path.join(fx.root, 'nope.git'));
+    git(fx.A, 'remote', 'set-url', 'origin', path.join(fx.root, 'nope', 'open-gsd', 'gsd-core.git'));
     const r = spawnRaw(fx.A, CUT(fx));
     assert.strictEqual(r.decision, 'ask', r.reason);
     assert.match(r.reason, /ENF-25/);
@@ -2104,7 +2108,7 @@ test('ENF-25 EnterWorktree e2e: fresh pinned, A\'s origin is a nonexistent path 
   try {
     pinBaseRef(fx.A, 'fresh');
     fx.advanceOrigin();
-    git(fx.A, 'remote', 'set-url', 'origin', path.join(fx.root, 'nope.git'));
+    git(fx.A, 'remote', 'set-url', 'origin', path.join(fx.root, 'nope', 'open-gsd', 'gsd-core.git'));
     const r = spawnEnterWorktree(fx.A, { name: 'x' }, 'head');
     assert.strictEqual(r.decision, 'ask', r.reason);
     assert.match(r.reason, /ENF-25/);
