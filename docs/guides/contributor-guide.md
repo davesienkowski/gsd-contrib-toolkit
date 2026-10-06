@@ -139,10 +139,19 @@ real failure.
 
 ## 6. The override valve (rare, logged, accountable)
 
-`GSD_CONTRIB_OVERRIDE="<reason>"` is a deliberate escape for a genuinely-wrong gate (e.g. a false
-positive), **never** to dodge a real failure. It takes a **non-empty reason string** (not a boolean) and
-writes an append-only, per-worktree receipt at `.gsd-contrib/override-receipts.log`. If you can't write a
-real reason, you shouldn't be overriding.
+`GSD_CONTRIB_OVERRIDE="<reason>"` rescues a **thrown gate error**: a gate that could not run (a LIVE
+script that will not load, an unparseable command, a failed `gh` or file read). For that one fail-closed
+error it flips the deny to allow. It is **never** to dodge a real failure. It takes a **non-empty reason
+string** (not a boolean) and writes an append-only, per-worktree receipt at
+`.gsd-contrib/override-receipts.log`.
+
+It does **not** lift a returned policy deny, so a false-positive deny stays denied. The one exception
+names itself in its deny text: ENF-07 containment honors the override for a deliberate maintainer push to
+`origin`. Otherwise, fix what the deny names. If the gate itself is wrong, that is a human operator's
+decision: run `node bin/contrib-capability.cjs off --reason "<why>"` from the toolkit checkout (logged; it
+strips the toolkit's gates from that gsd-core checkout, not just one gate) and report the false positive.
+
+If you can't write a real reason, you shouldn't be overriding.
 
 ## Quick reference
 

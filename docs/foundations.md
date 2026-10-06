@@ -172,7 +172,7 @@ ones it held itself to.
 | Generated-from-source integrity (ADR-457) | `binlib-edit` + `freshness` gates |
 | A capability ecosystem for distributing extensions (ADR-1244) | Ships as a conformant `role:feature` capability with consent + ledger + tri-surface `declared == shipped` parity |
 | Honest, non-overstated tooling | Documented limits: `gates[]` empty; harness enforcement belongs to the installed hooks, not the capability; never labeled "unbypassable"; advisory-only off-Claude |
-| Accountable, not silent, escapes | The deliberate-bypass path is the existing logged, per-worktree `GSD_CONTRIB_OVERRIDE` receipt — no new mechanism |
+| Accountable, not silent, escapes | A thrown gate error (and ENF-07's maintainer push to `origin`) escapes only through the existing logged, per-worktree `GSD_CONTRIB_OVERRIDE` receipt; no new mechanism |
 
 ## 8. Alignment is not blind adoption
 

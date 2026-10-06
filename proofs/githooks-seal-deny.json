@@ -11,7 +11,7 @@
     "hookSpecificOutput": {
       "hookEventName": "PreToolUse",
       "permissionDecision": "deny",
-      "permissionDecisionReason": "`--no-verify` / `-n` bypasses the repo's `.githooks` gates (pre-commit / pre-push). Remove it and let the local gates run. If a bypass is TRULY necessary, use a logged `GSD_CONTRIB_OVERRIDE=<reason>` (which writes a receipt) — that is the sanctioned, accountable escape, distinct from silently skipping the hooks. (ENF-12)"
+      "permissionDecisionReason": "`--no-verify` / `-n` bypasses the repo's `.githooks` gates (pre-commit / pre-push). Remove it and let the local gates run. `GSD_CONTRIB_OVERRIDE` does not lift this deny: this gate honors it only for a thrown gate error. Turning the toolkit off is a human operator's decision, not a way past this deny: `node bin/contrib-capability.cjs off --reason \"<why>\"`, run from the toolkit checkout, strips the toolkit's gates from that gsd-core checkout and writes a receipt. (ENF-12)"
     }
   }
 }

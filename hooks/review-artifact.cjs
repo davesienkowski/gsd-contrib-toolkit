@@ -765,8 +765,8 @@ function unresolvedVerdictAsk(form) {
       'not check either.\n\n' +
       'Put the event on the command line so the gate can read it (`-f event=APPROVE`, ' +
       '`-f event=REQUEST_CHANGES`, `-f event=COMMENT`, or an inline JSON body), or let a human ' +
-      'decide here. `GSD_CONTRIB_OVERRIDE` does not answer this prompt: it rescues thrown gate ' +
-      'errors only. (CTK-ADR-0010, ENF-20)'
+      'decide here. `GSD_CONTRIB_OVERRIDE` does not answer this prompt: this gate honors it only ' +
+      'for a thrown gate error. (CTK-ADR-0010, ENF-20)'
   );
 }
 
@@ -865,10 +865,19 @@ function unfilledFields(text) {
 
 // ── denial rendering ────────────────────────────────────────────────────────
 
-/** The one-line reminder every ENF-20 denial carries. */
-const OVERRIDE_NOTE =
-  'Write the artifact and continue — do not stop and ask. Deliberate bypass: a logged ' +
-  '`GSD_CONTRIB_OVERRIDE=<reason>`. (CTK-ADR-0004, ENF-20)';
+/**
+ * The truthful override note every non-R8a ENF-20 policy deny ends with: this gate honors the
+ * override only for a thrown error (runGate's catch), so it does not lift a returned deny; the off
+ * switch is named as a human operator's decision, never as a way past the deny.
+ */
+const OVERRIDE_TAIL =
+  '`GSD_CONTRIB_OVERRIDE` does not lift this deny: this gate honors it only for a thrown gate ' +
+  'error. Turning the toolkit off is a human operator\'s decision, not a way past this deny: ' +
+  '`node bin/contrib-capability.cjs off --reason "<why>"`, run from the toolkit checkout, strips ' +
+  'the toolkit\'s gates from that gsd-core checkout and writes a receipt. (CTK-ADR-0004, ENF-20)';
+
+/** The closing note of an artifact-backed ENF-20 denial: write the artifact, then the tail. */
+const OVERRIDE_NOTE = 'Write the artifact and continue; do not stop and ask. ' + OVERRIDE_TAIL;
 
 /**
  * The denial for a MISSING artifact — the one case that also SCAFFOLDS. Names the exact path
@@ -925,7 +934,7 @@ function shortfallText(g, rel, problem) {
  * @returns {string}
  */
 function liveText(g, problem) {
-  return 'ENF-20 ' + g.id + ' (re-review step ' + g.step + ') — ' + problem + '\n\n' + OVERRIDE_NOTE;
+  return 'ENF-20 ' + g.id + ' (re-review step ' + g.step + ') — ' + problem + '\n\n' + OVERRIDE_TAIL;
 }
 
 // ── artifact checking ───────────────────────────────────────────────────────
@@ -1156,7 +1165,7 @@ const R8A_ASK_NOTE =
   'A human decides: approve this prompt only if the memtrace graph pass (re-review.md step 8a) ' +
   'ran in this session or memtrace was genuinely unavailable (name the unavailable verb in the ' +
   'review); otherwise reject it and run the tools. `GSD_CONTRIB_OVERRIDE` does not answer this ' +
-  'prompt: it rescues thrown gate errors only. (CTK-ADR-0005, ENF-20)';
+  'prompt: this gate honors it only for a thrown gate error. (CTK-ADR-0005, ENF-20)';
 
 /**
  * An R8a cannot-observe ASK (CONTEXT §Severity map: cannot-observe is not did-not-run).
@@ -1291,8 +1300,8 @@ function verifyMemtraceEvidence(g, ctx, deps) {
 
 /** The closing note of every R8a deny: the override does not lift it. */
 const R8A_DENY_NOTE =
-  '`GSD_CONTRIB_OVERRIDE` does not lift this deny: it rescues thrown gate errors only. ' +
-  '(CTK-ADR-0004, ENF-20)';
+  '`GSD_CONTRIB_OVERRIDE` does not lift this deny: this gate honors it only for a thrown gate ' +
+  'error. (CTK-ADR-0004, ENF-20)';
 
 /**
  * The head of every R8a missing-evidence deny: what is required and which tools have not run.

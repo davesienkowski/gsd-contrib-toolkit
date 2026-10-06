@@ -24,7 +24,8 @@
  *   - classify.classifyAction  → only action:'commit' triggers (the checks are heavy)
  *   - resolve.resolveGsdCoreRoot→ the worktree whose index + npm scripts we read/run
  *   - failclosed.runGate       → an npm/git/infra failure DENIES (HARD-01); a lint failure
- *                                is a normal deny; only a logged override allows past either
+ *                                is a normal (returned) deny; a logged override allows past
+ *                                the infra failure only, never the lint deny
  *
  * @module hooks/freshness
  */
