@@ -2337,3 +2337,65 @@ test('261006-jsm e2e (spawned hook): `bash -c "gh pr review 42 -a"` with only a 
     for (const d of [root, logDir, binDir]) fs.rmSync(d, { recursive: true, force: true });
   }
 });
+
+// -- 261006-jsm Task 2a: transparent prefix verdict routes reach R8a ----------------------------
+
+/** With only Bash rows in the session log, `cmd` must DENY naming R8a-memtrace. */
+function assertJsmR8aDeny(cmd) {
+  const dp = depsWithLog(toolLog(ONLY_BASH.slice()));
+  const d = runReviewArtifactGate(input(cmd), dp);
+  assert.strictEqual(d.permissionDecision, 'deny', cmd + ': ' + d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /R8a-memtrace/, cmd);
+  assert.deepStrictEqual(dp._calls.readToolLog, [SESSION], cmd + ' reads the log once');
+}
+
+for (const cmd of [
+  '( gh pr review 42 -a )',
+  '(gh pr review 42 -a)',
+  '{ gh pr review 42 -a; }',
+  '! gh pr review 42 -a',
+  'nohup gh pr review 42 -a',
+  'nohup -- gh pr review 42 -a',
+  'setsid -f gh pr review 42 -a',
+  'time gh pr review 42 -a',
+  'time -p gh pr review 42 -a',
+  '/usr/bin/time -f %e -o /dev/null gh pr review 42 -a',
+  'sudo nohup gh pr review 42 -a',
+  'nohup sudo gh pr review 42 -a',
+  '( time nohup gh pr review 42 -a )',
+]) {
+  test('261006-jsm gate prefix: `' + cmd + '` with only Bash rows -> DENY R8a-memtrace', () => {
+    assertJsmR8aDeny(cmd);
+  });
+}
+
+// D8 false-deny corpus at the gate: allow, no PR lookup, no scaffold, no log read. Locks.
+for (const cmd of [
+  'eval "echo hi"',
+  "eval 'echo hi'",
+  'bash -c "npm test"',
+  "sh -c 'ls | wc -l'",
+  'ls | xargs grep foo',
+  'find . -name x | xargs rm -f',
+  "xargs -I{} sh -c 'echo {}'",
+  'nohup npm start',
+  '( cd x && make )',
+  '{ echo a; echo b; }',
+  '"$CHROME" --headless',
+  '$CHROME --headless',
+  '$G query commit x',
+  'time make',
+  'bash script.sh',
+  "gh api graphql -f query='query { viewer { login } }'",
+  'gh api repos/o/r/pulls/42/reviews',
+  'gh api -X GET repos/o/r/pulls/42/reviews --input f',
+]) {
+  test('261006-jsm gate D8 false-deny lock: `' + cmd + '` -> allow with no PR lookup, scaffold or log read', () => {
+    const dp = deps();
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assert.strictEqual(d.permissionDecision, 'allow', cmd + ': ' + d.permissionDecisionReason);
+    assert.strictEqual(dp._calls.resolvePr, 0, cmd);
+    assert.deepStrictEqual(dp._calls.scaffolded, [], cmd);
+    assert.deepStrictEqual(dp._calls.readToolLog, [], cmd);
+  });
+}

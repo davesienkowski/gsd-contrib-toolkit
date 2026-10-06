@@ -1812,3 +1812,135 @@ test('261006-jsm D2 shell -c corpus lock: F is non-governed for every existing g
 test('261006-jsm D2 shell -c corpus: F IS governed by the review-artifact set', () => {
   assert.strictEqual(hasGovernedSegment(parseCommand(JSM_SHELL_F), REVIEW_ARTIFACT_GOVERNED), true);
 });
+
+// ---------------------------------------------------------------------------
+// 261006-jsm Task 2a: transparent prefix verdict routes (subshell, brace group, negation, nohup,
+// setsid, time). Each strip removes one prefix from the SAME visible argv and re-classifies the
+// rest; only an inner pr-review is kept (D1). The D8 false-deny corpus below is a lock set: it
+// passes before and after every Task 2 fix.
+// ---------------------------------------------------------------------------
+
+/** Assert `cmd` recovers as a pr-review named by `via` with one verdict segment `tokens`. */
+function assertPrefixReview(cmd, via, tokens = JSM_REVIEW_TOKENS) {
+  assertRecoveredReview(cmd, [tokens]);
+  assert.strictEqual(cls(cmd).via, via, cmd + ' via');
+}
+
+for (const [cmd, via] of [
+  ['( gh pr review 42 -a )', 'subshell'],
+  ['(gh pr review 42 -a)', 'subshell'],
+  ['{ gh pr review 42 -a; }', 'brace-group'],
+  ['! gh pr review 42 -a', 'negation'],
+  ['nohup gh pr review 42 -a', 'nohup'],
+  ['nohup -- gh pr review 42 -a', 'nohup'],
+  ['setsid -f gh pr review 42 -a', 'setsid'],
+  ['time gh pr review 42 -a', 'time'],
+  ['time -p gh pr review 42 -a', 'time'],
+  ['/usr/bin/time -f %e -o /dev/null gh pr review 42 -a', 'time'],
+  ['sudo nohup gh pr review 42 -a', 'nohup'],
+  ['( time nohup gh pr review 42 -a )', 'subshell'],
+]) {
+  test('261006-jsm prefix: `' + cmd + '` -> recovered pr-review, via ' + via + ', one verdict segment', () => {
+    assertPrefixReview(cmd, via);
+  });
+}
+
+test('261006-jsm prefix: `nohup sudo gh pr review 42 -a` keeps the WRAPPER_BUILTINS sudo the direct classifier resolves', () => {
+  // Stripping nohup leaves `sudo gh pr review 42 -a`, which the unchanged direct classifier reads
+  // as a native pr-review through resolveProgram; that inner segment is the verdict segment.
+  assertPrefixReview('nohup sudo gh pr review 42 -a', 'nohup', ['sudo', 'gh', 'pr', 'review', '42', '-a']);
+});
+
+test('261006-jsm prefix: GNU time value spellings (`-f` attached, `--format=`, `--output`) are skipped', () => {
+  assertPrefixReview('/usr/bin/time -f%e gh pr review 42 -a', 'time');
+  assertPrefixReview('/usr/bin/time --format=%e gh pr review 42 -a', 'time');
+  assertPrefixReview('/usr/bin/time --output /dev/null gh pr review 42 -a', 'time');
+  assertPrefixReview('/usr/bin/time -pf %e gh pr review 42 -a', 'time');
+});
+
+for (const cmd of ['nohup', 'setsid', 'time', '( )', '()', 'nohup --', '!', '{']) {
+  test('261006-jsm prefix lock: bare wrapper `' + cmd + '` stays other and never throws', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+  });
+}
+
+for (const cmd of ['nohup git push', 'setsid git push', 'time git push', '( git push )', '! git push']) {
+  test('261006-jsm prefix lock (D1, 36-02a): `' + cmd + '` stays other and no push gate starts firing', () => {
+    const parsed = parseCommand(cmd);
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasGovernedSegment(parsed, ['push']), false);
+    assert.strictEqual(hasFailClosedSegment(parsed), false);
+  });
+}
+
+/**
+ * The D2 four rows + the governed-set corpus for a recovered form F (CONTEXT D2, orchestrator B2).
+ * `merge` overrides the `F && gh pr merge 1` chain (xargs reads its command to the chain end).
+ */
+function jsmD2Rows(label, F, { merge = F + ' && gh pr merge 1', lone = null } = {}) {
+  test('261006-jsm D2 ' + label + ' lock: `F && gh pr merge 1` is pr-merge', () => {
+    assert.strictEqual(cls(merge).action, 'pr-merge', merge);
+  });
+  test('261006-jsm D2 ' + label + ' lock: `gh pr review 1 -a; F` is the NATIVE pr-review, no recovered key', () => {
+    assert.deepStrictEqual(cls('gh pr review 1 -a; ' + F), { action: 'pr-review', route: 'native' });
+  });
+  test('261006-jsm D2 ' + label + ': lone F classifies as the task specifies', () => {
+    const r = cls(F);
+    assert.strictEqual(r.action, 'pr-review', F + ' -> ' + JSON.stringify(r));
+    assert.strictEqual(r.recovered, true, F);
+    if (lone) lone(r);
+  });
+  test('261006-jsm D2 ' + label + ' lock: hasGovernedSegment still finds pr-merge after F', () => {
+    assert.strictEqual(hasGovernedSegment(parseCommand(merge), ['pr-merge']), true, merge);
+  });
+  test('261006-jsm D2 ' + label + ' corpus lock: F is non-governed for every existing gate set and never fails closed', () => {
+    const parsed = parseCommand(F);
+    assert.strictEqual(hasFailClosedSegment(parsed), false);
+    for (const [gate, actions] of Object.entries(EXISTING_GATE_SETS)) {
+      assert.strictEqual(hasGovernedSegment(parsed, actions), false, gate + ' must NOT be governed by ' + F);
+      assert.strictEqual(isNonGovernedCommand(parsed, actions), true, gate + ' must short-circuit for ' + F);
+    }
+  });
+  test('261006-jsm D2 ' + label + ' corpus: F IS governed by the review-artifact set', () => {
+    assert.strictEqual(hasGovernedSegment(parseCommand(F), REVIEW_ARTIFACT_GOVERNED), true, F);
+  });
+}
+
+jsmD2Rows('subshell', '( gh pr review 42 -a )');
+jsmD2Rows('brace-group', '{ gh pr review 42 -a; }');
+jsmD2Rows('nohup', 'nohup gh pr review 42 -a');
+
+// D8 false-deny corpus (CONTEXT D8, must_haves): each classifies other, never fails closed, and is
+// non-governed for every existing gate set AND the review-artifact set. Locks: green pre-fix.
+const JSM_D8_CORPUS = [
+  'eval "echo hi"',
+  "eval 'echo hi'",
+  'bash -c "npm test"',
+  "sh -c 'ls | wc -l'",
+  'ls | xargs grep foo',
+  'find . -name x | xargs rm -f',
+  "xargs -I{} sh -c 'echo {}'",
+  'nohup npm start',
+  '( cd x && make )',
+  '{ echo a; echo b; }',
+  '"$CHROME" --headless',
+  '$CHROME --headless',
+  '$G query commit x',
+  'time make',
+  'bash script.sh',
+  "gh api graphql -f query='query { viewer { login } }'",
+  'gh api repos/o/r/pulls/42/reviews',
+  'gh api -X GET repos/o/r/pulls/42/reviews --input f',
+];
+
+for (const cmd of JSM_D8_CORPUS) {
+  test('261006-jsm D8 false-deny lock: `' + cmd + '` is other and non-governed for every gate', () => {
+    const parsed = parseCommand(cmd);
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasFailClosedSegment(parsed), false, cmd);
+    for (const [gate, actions] of Object.entries(EXISTING_GATE_SETS)) {
+      assert.strictEqual(isNonGovernedCommand(parsed, actions), true, gate + ': ' + cmd);
+    }
+    assert.strictEqual(isNonGovernedCommand(parsed, REVIEW_ARTIFACT_GOVERNED), true, 'review-artifact: ' + cmd);
+  });
+}
