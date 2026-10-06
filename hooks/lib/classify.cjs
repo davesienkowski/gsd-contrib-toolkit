@@ -822,8 +822,9 @@ const CURL_BODY_FLAGS = Object.freeze(['-d', '--data', '--data-binary', '--data-
 
 /**
  * Is this segment a request to the GitHub GraphQL endpoint? `gh api graphql` or `gh api /graphql`
- * (the endpoint is the first subcommand or positional after `api`), or curl whose URL host is
- * api.github.com and whose path is `/graphql`. Returns 'gh', 'curl' or null.
+ * (the endpoint is the first subcommand or positional after `api`; a query string or trailing slash
+ * is ignored), `gh api https://api.github.com/graphql` (review fix round CR-03), or curl whose URL
+ * host is api.github.com and whose path is `/graphql`. Returns 'gh', 'curl' or null.
  *
  * @param {Object} seg
  * @returns {'gh'|'curl'|null}
@@ -835,18 +836,33 @@ function graphqlTarget(seg) {
     const candidates = [...(seg.subcommands || []), ...(seg.positionals || [])];
     const at = candidates.indexOf('api');
     const endpoint = at === -1 ? undefined : candidates[at + 1];
-    return endpoint === 'graphql' || endpoint === '/graphql' ? 'gh' : null;
+    if (typeof endpoint !== 'string') return null;
+    // Review fix round CR-03: gh also takes a full URL (it sends the same POST to its path) and a
+    // query string or a trailing slash on the endpoint; the curl branch's host + path rule applies.
+    if (endpoint.indexOf('://') !== -1) return graphqlUrlPath(endpoint) === '/graphql' ? 'gh' : null;
+    const bare = endpoint.split('?')[0].split('#')[0].replace(/\/+$/, '');
+    return bare === 'graphql' || bare === '/graphql' ? 'gh' : null;
   }
   if (prog === 'curl') {
     const target = curlUrl(seg);
-    if (!target || hostOf(target) !== 'api.github.com') return null;
-    const scheme = target.indexOf('://');
-    const rest = scheme === -1 ? target : target.slice(scheme + 3);
-    const slash = rest.indexOf('/');
-    const p = slash === -1 ? '' : rest.slice(slash).split('?')[0].split('#')[0].replace(/\/+$/, '');
-    return p === '/graphql' ? 'curl' : null;
+    return target && graphqlUrlPath(target) === '/graphql' ? 'curl' : null;
   }
   return null;
+}
+
+/**
+ * The path of an api.github.com URL with its query, fragment and trailing slashes dropped, or null
+ * for any other host. Shared by the gh full-URL endpoint (review fix round CR-03) and curl.
+ *
+ * @param {string} url
+ * @returns {string|null}
+ */
+function graphqlUrlPath(url) {
+  if (hostOf(url) !== 'api.github.com') return null;
+  const scheme = url.indexOf('://');
+  const rest = scheme === -1 ? url : url.slice(scheme + 3);
+  const slash = rest.indexOf('/');
+  return slash === -1 ? '' : rest.slice(slash).split('?')[0].split('#')[0].replace(/\/+$/, '');
 }
 
 /**
