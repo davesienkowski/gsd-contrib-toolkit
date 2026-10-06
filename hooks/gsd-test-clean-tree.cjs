@@ -19,13 +19,15 @@
  *      resolve, git or fs work (RES-01; 36-CONTEXT Addendum 2 — `isNonGovernedCommand` is
  *      deliberately NOT used, gsd-test is not a classifyAction action);
  *   3. any `uncertain` entry -> throw FailClosed (HARD-01), still before any I/O;
- *   4. informational dispatches (`--version`, `-h`, `--help`) are dropped; none left
- *      -> allow;
+ *   4. informational dispatches (`--version`, `-h`, `--help`) and subcommands ENF-23 does not
+ *      govern (`submit`, `status`, `install-agent-hooks`) are dropped; none left -> allow;
  *   5. per dispatch, in command order (first deny wins):
  *        a. tree = `-source` resolved against the dispatch's start dir, else that start dir;
  *           unresolvable -> throw FailClosed;
  *        b. not a gsd-core checkout -> this dispatch contributes allow (ROB-01 precedent);
- *        c. pipe masked -> deny(PIPE_REASON), before any git call (GTEST-03);
+ *        c. pipe masked -> deny(PIPE_REASON), before any git call (GTEST-03) — classic, `run`
+ *           and `wait` (their exit code is the verdict);
+ *           `run`, `wait` and a classic `--base=` (empty) test the working tree: next dispatch;
  *        d. `git status --porcelain --untracked-files=no`; clean -> next dispatch;
  *        e. the run tests the working HEAD -> deny(dirty reason) (GTEST-02).
  *
@@ -71,6 +73,27 @@ const PIPE_REASON =
   '  2. prefix the pipeline with `set -o pipefail;` so the pipeline fails when gsd-test fails;\n' +
   '  3. redirect to a file and read the log after: `gsd-test ... > gsd-test.log 2>&1`, then ' +
   'inspect `gsd-test.log` and the exit status.';
+
+/**
+ * What ENF-23 checks per gsd-test v1.8.0 subcommand (36-REVIEW M-01; orchestrator-amended
+ * decision recorded in CTK-ADR-0008). `null` is the classic (no-subcommand) path.
+ *   classic — pipe + dirty tree: ref-based, it tests the `--head` commit (unless `--base=` is
+ *             empty, which runs the working tree as-is: worktree.Prepare, `baseRef == ""`);
+ *   run     — pipe only: it copies the WORKING tree (repoRoot, no base), so uncommitted edits
+ *             ARE tested; its exit code is the verdict;
+ *   wait    — pipe only: it renders the verdict of an earlier async run;
+ *   submit / status / install-agent-hooks — not governed here.
+ */
+const APPLIES = Object.freeze({
+  classic: { pipe: true, dirty: true },
+  run: { pipe: true, dirty: false },
+  wait: { pipe: true, dirty: false },
+});
+
+function appliesTo(d) {
+  const key = d.subcommand === null || d.subcommand === undefined ? 'classic' : d.subcommand;
+  return Object.prototype.hasOwnProperty.call(APPLIES, key) ? APPLIES[key] : null;
+}
 
 /** Non-empty porcelain lines. */
 function porcelainLines(porcelain) {
@@ -162,8 +185,9 @@ function gate(stdinString, deps) {
     );
   }
 
-  // (4) Informational invocations only print; they test nothing.
-  const dispatches = entries.filter((e) => e.kind === 'dispatch' && !e.informational);
+  // (4) Informational invocations only print; they test nothing. Subcommands ENF-23 does not
+  // govern (submit / status / install-agent-hooks) are dropped here too, before any I/O.
+  const dispatches = entries.filter((e) => e.kind === 'dispatch' && !e.informational && appliesTo(e) !== null);
   if (dispatches.length === 0) return allow();
 
   const cache = { porcelain: new Map(), headSha: new Map() };
@@ -183,7 +207,14 @@ function gate(stdinString, deps) {
     if (root === null) continue;
 
     // (5c) Trap 2: a piped dispatch masks the exit code, whatever it tests.
-    if (d.pipeMasked) return deny(PIPE_REASON);
+    const applies = appliesTo(d);
+    if (applies.pipe && d.pipeMasked) return deny(PIPE_REASON);
+
+    // Trap 1 does not apply when the run tests the working tree itself: `run`, `wait`, or a
+    // classic dispatch with an empty `--base=` (v1.8.0 worktree.Prepare: `baseRef == ""` runs the
+    // repo as-is). An expanded `--base "$B"` may be non-empty, so it stays on the dirty path.
+    if (!applies.dirty) continue;
+    if (d.flags && d.flags.base === '') continue;
 
     // (5d) Dirtiness of tracked files.
     if (!cache.porcelain.has(root)) cache.porcelain.set(root, porcelainLines(deps.gitStatus(root)));

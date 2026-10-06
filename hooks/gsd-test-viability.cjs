@@ -18,8 +18,9 @@
  *   2. the shared detector: no entry -> allow, BEFORE any resolve, fs or spawn work (RES-01;
  *      36-CONTEXT Addendum 2 — `isNonGovernedCommand` is deliberately NOT used);
  *   3. any `uncertain` entry -> throw FailClosed (HARD-01), still before any I/O;
- *   4. informational dispatches (`--version`, `-h`, `--help`) are dropped; none left
- *      -> allow;
+ *   4. informational dispatches (`--version`, `-h`, `--help`) and subcommands that need no
+ *      viable environment (`wait`, `status`, `install-agent-hooks`, `submit` without
+ *      `--execute`) are dropped; none left -> allow;
  *   5. per dispatch, in command order:
  *        a. tree = `treeDirFor` (start dir + `-source`); unresolvable -> throw FailClosed;
  *        b. not a gsd-core checkout -> this dispatch contributes allow (ROB-01 precedent);
@@ -218,6 +219,22 @@ const DOCKER_TIMEOUT_ASK =
   'you know Docker is starting up. ' + ASK_LIMIT_NOTE;
 
 /**
+ * Whether ENF-24 governs a dispatch, per gsd-test v1.8.0 subcommand (36-REVIEW M-01;
+ * orchestrator-amended decision recorded in CTK-ADR-0008):
+ *   classic — config + named bench + Docker;
+ *   run     — config + Docker (dispatchRun loads the config and picks a bench by target);
+ *   submit  — only with a truthy `--execute` (without it, runSubmit validates and echoes the
+ *             spec; it loads no config and starts no container);
+ *   wait / status / install-agent-hooks — not governed (they read run state or install files).
+ */
+function governs(d) {
+  const sub = d.subcommand === undefined ? null : d.subcommand;
+  if (sub === null || sub === 'run') return true;
+  if (sub === 'submit') return Boolean(d.flags && d.flags.execute !== undefined && d.flags.execute !== false);
+  return false;
+}
+
+/**
  * The config path this dispatch reads, or `{ask}` when `--config` cannot be expanded.
  *
  * @returns {{path:string}|{ask:Object}}
@@ -269,8 +286,9 @@ function gate(stdinString, deps) {
     );
   }
 
-  // (4) Informational invocations only print; they need no config, bench or Docker.
-  const dispatches = entries.filter((e) => e.kind === 'dispatch' && !e.informational);
+  // (4) Informational invocations only print; they need no config, bench or Docker. Nor do the
+  // subcommands ENF-24 does not govern (see `governs`).
+  const dispatches = entries.filter((e) => e.kind === 'dispatch' && !e.informational && governs(e));
   if (dispatches.length === 0) return allow();
 
   const ctx = { env: deps.env, homedir: deps.homedir };

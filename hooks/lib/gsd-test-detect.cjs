@@ -23,8 +23,10 @@
  *                                    (unparseable, ambiguous wrapper, over-deep `-c`,
  *                                    unbalanced substitution, shell expansion in flag
  *                                    position). Gates fail closed on it (HARD-01).
- *   { kind: 'dispatch', seg, segIndex, args, flags, unresolved, informational, background,
- *     pipedOut, pipefail, pipeMasked, viaDashC, depth, prefixes }
+ *   { kind: 'dispatch', subcommand, seg, segIndex, args, flags, unresolved, informational,
+ *     background, pipedOut, pipefail, pipeMasked, viaDashC, depth, prefixes }
+ *   `subcommand` is null for the classic path, else one of SUBCOMMANDS (36-REVIEW M-01); each
+ *   gate decides which subcommands it governs.
  *
  * Pure: no fs, no child_process, no env reads (env and homedir are always passed in). Never
  * executes the command it classifies. Never throws on a string input.
@@ -62,6 +64,25 @@ const BOOLEAN_FLAGS = new Set([
  * config.Load and then runs the full suite — only `--version` returns before runner.Run.
  */
 const INFORMATIONAL_FLAGS = new Set(['version', 'help', 'h']);
+
+/** The classic (no-subcommand) flagset: `parseFlags` in v1.8.0 cmd/gsd-test/main.go. */
+const CLASSIC_FLAGSET = Object.freeze({ value: VALUE_FLAGS, bool: BOOLEAN_FLAGS });
+
+/**
+ * v1.8.0 subcommands (36-REVIEW M-01). `run()` dispatches on `args[0]` ONLY, before any flag
+ * parsing, so `gsd-test --quiet run` is the classic path with a positional. Each walked
+ * subcommand has its own Go flagset (main.go runRun / runSubmit / runInstallHooks); `wait` and
+ * `status` take a bare run id (no flagset), so their arguments are collected as positionals and an
+ * expanded run id is NOT uncertain. `__run-worker` (internal, spawned by gsd-test itself) is
+ * deliberately absent: it falls to the classic path, which over-governs it (fail-safe).
+ */
+const SUBCOMMANDS = Object.freeze({
+  run: { value: new Set(['target', 'config', 'estimate-ms']), bool: new Set(['async', 'keep', 'help', 'h']) },
+  submit: { value: new Set(['spec-file', 'config']), bool: new Set(['execute', 'help', 'h']) },
+  'install-agent-hooks': { positionalOnly: true },
+  wait: { positionalOnly: true },
+  status: { positionalOnly: true },
+});
 
 /** Go's flag package reads these boolean values as false. */
 const GO_FALSE = new Set(['false', '0', 'f', 'F', 'FALSE', 'False']);
@@ -113,7 +134,8 @@ function substitutionOpen(value) {
  * @returns {{flags:Object, unresolved:Set<string>, positionals:string[], background:boolean,
  *   uncertainReason:(string|null)}}
  */
-function walkGoFlags(tokens) {
+function walkGoFlags(tokens, flagset) {
+  const fset = flagset && flagset.value && flagset.bool ? flagset : CLASSIC_FLAGSET;
   const toks = Array.isArray(tokens) ? tokens.filter((t) => typeof t === 'string') : [];
   const flags = {};
   const unresolved = new Set();
@@ -176,7 +198,7 @@ function walkGoFlags(tokens) {
       break;
     }
 
-    if (VALUE_FLAGS.has(name)) {
+    if (fset.value.has(name)) {
       let value;
       if (eq !== -1) {
         value = body.slice(eq + 1);
@@ -216,12 +238,62 @@ function walkGoFlags(tokens) {
       flags[name] = true;
     } else {
       const v = body.slice(eq + 1);
-      flags[name] = BOOLEAN_FLAGS.has(name) ? !GO_FALSE.has(v) : v;
+      flags[name] = fset.bool.has(name) ? !GO_FALSE.has(v) : v;
     }
     i += 1;
   }
 
   return { flags, unresolved, positionals, background, uncertainReason };
+}
+
+/**
+ * The positional-only walk for `wait` / `status` / `install-agent-hooks` arguments: redirects
+ * dropped, a lone `&` backgrounds, everything else is a positional. Never uncertain — these
+ * entries are governed (if at all) only by the pipe attribution, which does not read arguments.
+ */
+function walkPositionals(tokens) {
+  const toks = Array.isArray(tokens) ? tokens.filter((t) => typeof t === 'string') : [];
+  const positionals = [];
+  let background = false;
+  for (let k = 0; k < toks.length; ) {
+    const m = REDIRECT.exec(toks[k]);
+    if (m) { k += m[2] === '' ? 2 : 1; continue; }
+    if (toks[k] === '&') { background = true; break; }
+    positionals.push(toks[k]);
+    k += 1;
+  }
+  return { flags: {}, unresolved: new Set(), positionals, background, uncertainReason: null };
+}
+
+/**
+ * The v1.8.0 subcommand at `args[0]` (the first token after the program once the shell has
+ * removed redirects), or null for the classic path. Returns the remaining tokens with the
+ * subcommand word removed (redirects kept; the walkers skip them).
+ *
+ * @param {string[]} after tokens after the gsd-test program token
+ * @returns {{name:(string|null), rest:string[]}}
+ */
+function leadingSubcommand(after) {
+  let k = 0;
+  while (k < after.length) {
+    const m = REDIRECT.exec(after[k]);
+    if (!m) break;
+    k += m[2] === '' ? 2 : 1;
+  }
+  const word = after[k];
+  if (typeof word === 'string' && Object.prototype.hasOwnProperty.call(SUBCOMMANDS, word)) {
+    return { name: word, rest: after.slice(0, k).concat(after.slice(k + 1)) };
+  }
+  return { name: null, rest: after };
+}
+
+/** Whether a walked dispatch only prints information (help / version) and runs nothing. */
+function isInformational(flags, subcommand) {
+  for (const f of INFORMATIONAL_FLAGS) {
+    if (subcommand !== null && f === 'version') continue; // not a subcommand flag
+    if (flags[f] !== undefined && flags[f] !== false) return true;
+  }
+  return false;
 }
 
 /**
@@ -624,15 +696,17 @@ function scanParsed(parsed, st) {
           out.push({ kind: 'uncertain', reason: 'ambiguous wrapper around a gsd-test mention' });
         }
       } else if (r.prog === 'gsd-test' && r.idx !== -1) {
-        const w = walkGoFlags(n.tokens.slice(r.idx + 1));
+        const sub = leadingSubcommand(n.tokens.slice(r.idx + 1));
+        const spec = sub.name === null ? CLASSIC_FLAGSET : SUBCOMMANDS[sub.name];
+        const w = spec.positionalOnly ? walkPositionals(sub.rest) : walkGoFlags(sub.rest, spec);
         if (w.uncertainReason) {
           out.push({ kind: 'uncertain', reason: w.uncertainReason });
         } else {
           const pipedOut = attributePipe(segments, profile, i);
-          let informational = false;
-          for (const f of INFORMATIONAL_FLAGS) if (w.flags[f] !== undefined && w.flags[f] !== false) informational = true;
+          const informational = isInformational(w.flags, sub.name);
           out.push({
             kind: 'dispatch',
+            subcommand: sub.name,
             seg: toSeg(n.tokens, segments[i].nextOp),
             segIndex: i,
             args: w.positionals,
@@ -876,6 +950,7 @@ module.exports = {
   startDirFor,
   treeDirFor,
   INFORMATIONAL_FLAGS,
+  SUBCOMMANDS,
   MAX_DASH_C_DEPTH,
   GSD_TEST_WORD,
 };
