@@ -16,8 +16,14 @@
  * never a reset, bounded time) are recorded in CTK-ADR-0009, authored in 37-08.
  *
  * ── ORDER (load-bearing) ────────────────────────────────────────────────────────────────
- *   1. read the harness payload (malformed JSON throws -> fail-closed deny); command =
- *      `tool_input.command` or '' (EnterWorktree arrives in 37-05);
+ *   1. read the harness payload (malformed JSON throws -> fail-closed deny). An `EnterWorktree`
+ *      payload (37-05) takes its own branch and never reaches the Bash detector: a non-empty string
+ *      `tool_input.path` enters an existing worktree -> allow with zero work; every other shape is a
+ *      cut on a new branch (unknown shapes are treated as a cut, the conservative reading) -> the
+ *      hook-env redirect check below, then root = resolveTreeRoot(cwd) (null -> allow), then ONE
+ *      synthetic cut whose base kind comes from the effective `worktree.baseRef` (readBaseRef:
+ *      `fresh` -> origin/next, `head` -> the current HEAD), judged by the same checkCut as step 4.
+ *      Otherwise command = `tool_input.command` or '';
  *   2. the detector (hooks/lib/worktree-add-detect.cjs): no entry -> allow, BEFORE any resolve,
  *      fs, git or network work (RES-01). An `uncertain` entry throws FailClosed (HARD-01). So does
  *      a trunk-naming cut while the HOOK's own environment carries GIT_DIR / GIT_WORK_TREE /
@@ -63,11 +69,15 @@
  * would aim the mutation at another repo). The base token never reaches git: classification is
  * pure string matching, and only shas that pass SHA_RE are passed to merge-base / update-ref.
  *
+ * The settings reader (37-05) only reads: three fixed layers, a regular-file check, a 1 MiB cap,
+ * JSON.parse in a try, one key. It never writes and never reads any other path.
+ *
  * Not registered in settings.snippet.json until 37-06 (until then it is not wired and not bundled).
  *
  * @module hooks/worktree-fresh-base
  */
 
+const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const childProcess = require('node:child_process');
@@ -96,6 +106,8 @@ const MIN_CALL_MS = 100;
 const MAX_GIT_CALLS_PER_ROOT = 7;
 /** The fetch detail that reaches a reason is cut to this many characters. */
 const DETAIL_MAX = 200;
+/** A settings layer larger than this (1 MiB) contributes nothing to the worktree.baseRef cascade. */
+const MAX_SETTINGS_BYTES = 1024 * 1024;
 
 const NEXT_REF = 'refs/heads/next';
 const ORIGIN_NEXT_REF = 'refs/remotes/origin/next';
@@ -254,6 +266,67 @@ function originNextMissingReason(root) {
 }
 
 /**
+ * The default settings-layer reader: the file's text, or null when it is missing, not a regular
+ * file, larger than MAX_SETTINGS_BYTES, or unreadable (any error). Read-only: stat + readFileSync,
+ * the text is only ever JSON.parse'd by readBaseRef, never required or evaluated.
+ *
+ * @param {string} p absolute settings path
+ * @returns {string|null}
+ */
+function defaultReadSettings(p) {
+  try {
+    const st = fs.statSync(p);
+    if (!st.isFile() || st.size > MAX_SETTINGS_BYTES) return null;
+    const text = fs.readFileSync(p, 'utf8');
+    // The file may have grown between the stat and the read.
+    return Buffer.byteLength(text, 'utf8') > MAX_SETTINGS_BYTES ? null : text;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The effective `worktree.baseRef` for an EnterWorktree cut (Addendum 4; the shape of gsd-core's
+ * resolveEffectiveBaseRef, mirrored, not required). Layers, first answer wins:
+ *   1. <root>/.claude/settings.local.json
+ *   2. <root>/.claude/settings.json
+ *   3. <homedir>/.claude/settings.json — skipped when it is the same file as layer 2.
+ * A layer answers only when its JSON parses and `worktree` is a non-array object with a string
+ * `baseRef`; an absent, unreadable, non-regular, oversized or unparseable layer contributes nothing.
+ * The result is 'head' only for the exact string 'head', otherwise 'fresh' (the harness default).
+ * No other path is ever read, and nothing is written.
+ *
+ * @param {string} root the gsd-core tree root
+ * @param {string} homedir the user's home directory
+ * @param {(p:string)=>(string|null)} [readSettings] text of a layer, or null (default: the real fs)
+ * @returns {'head'|'fresh'}
+ */
+function readBaseRef(root, homedir, readSettings) {
+  const read = typeof readSettings === 'function' ? readSettings : defaultReadSettings;
+  const project = path.join(String(root), '.claude', 'settings.json');
+  const layers = [path.join(String(root), '.claude', 'settings.local.json'), project];
+  if (typeof homedir === 'string' && homedir !== '') {
+    const user = path.join(homedir, '.claude', 'settings.json');
+    if (path.resolve(user) !== path.resolve(project)) layers.push(user);
+  }
+  for (const p of layers) {
+    const text = read(p);
+    if (typeof text !== 'string') continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      continue;
+    }
+    const wt = parsed && typeof parsed === 'object' ? parsed.worktree : undefined;
+    if (!wt || typeof wt !== 'object' || Array.isArray(wt)) continue;
+    if (typeof wt.baseRef !== 'string') continue;
+    return wt.baseRef === 'head' ? 'head' : 'fresh';
+  }
+  return 'fresh';
+}
+
+/**
  * The pure gate decision with every impure dep injected.
  *
  * @param {string} stdinString raw PreToolUse JSON
@@ -269,6 +342,8 @@ function originNextMissingReason(root) {
  * @param {(root:string, ref:string)=>string[]} deps.worktreesHolding worktree paths holding ref
  * @param {(root:string, ref:string, newSha:string, oldSha:string)=>boolean} deps.casUpdateRef
  *   Every seam also receives its time slice in ms as a trailing argument (the fetch: its belt).
+ * @param {(root:string, homedir:string)=>string} deps.readBaseRef the effective worktree.baseRef
+ *   for an EnterWorktree cut ('head' -> HEAD base; anything else -> the origin/next base)
  * @param {Object} [deps.hookEnv] the hook process's own environment (default process.env)
  * @param {()=>number} [deps.now] clock for the per-call deadline (default Date.now)
  * @param {(capMs:number)=>number} [deps.budget] a shared deadline (default: a new one from `now`)
@@ -276,6 +351,7 @@ function originNextMissingReason(root) {
  */
 function gate(stdinString, deps) {
   const input = readHookInput(stdinString);
+  if (input && input.tool_name === 'EnterWorktree') return enterWorktree(input, deps);
   const command = (input && input.tool_input && typeof input.tool_input.command === 'string')
     ? input.tool_input.command
     : '';
@@ -291,20 +367,14 @@ function gate(stdinString, deps) {
   // 37-02 deferred item 1 (environment half): a redirect inherited by the HOOK process means the
   // real cut runs in a repository the gate cannot see (its own git calls scrub these variables).
   // Only a trunk-naming cut matters; nothing else here does I/O either.
-  const hookEnv = deps.hookEnv || process.env;
   if (
-    HOOK_REDIRECT_VARS.some((k) => typeof hookEnv[k] === 'string') &&
+    hookRedirected(deps) &&
     entries.some((e) => e.kind === 'cut' && TRUNK_KINDS.has(e.baseKind))
   ) {
     throw new FailClosed(UNCERTAIN_REASON);
   }
 
-  const ctx = {
-    deps,
-    budget: typeof deps.budget === 'function' ? deps.budget : makeBudget(deps.now),
-    // root -> null (fetched) or the ask decision (origin unobtainable): one fetch per root per call.
-    fetchState: new Map(),
-  };
+  const ctx = checkContext(deps);
 
   // (5) Verdict cache per root (and base kind) within this gate call; first deny wins, an ask is
   // held so a later deny (or throw) still wins.
@@ -330,6 +400,50 @@ function gate(stdinString, deps) {
     return decision;
   }
   return pendingAsk || allow();
+}
+
+/** True when the HOOK process's own environment carries a repository redirect (HOOK_REDIRECT_VARS). */
+function hookRedirected(deps) {
+  const hookEnv = deps.hookEnv || process.env;
+  return HOOK_REDIRECT_VARS.some((k) => typeof hookEnv[k] === 'string');
+}
+
+/** The per-gate-call state checkCut needs: one deadline and one fetch per root. */
+function checkContext(deps) {
+  return {
+    deps,
+    budget: typeof deps.budget === 'function' ? deps.budget : makeBudget(deps.now),
+    // root -> null (fetched) or the ask decision (origin unobtainable): one fetch per root per call.
+    fetchState: new Map(),
+  };
+}
+
+/**
+ * The EnterWorktree surface (37-05, CONTEXT §Trigger surfaces, v2.8-LOCKED-CONTEXT schema).
+ *
+ *   `path` a non-empty string -> enters an existing worktree, no cut: allow with zero work.
+ *   anything else (`name`, `{}`, a missing / null tool_input, an empty or non-string `path`) -> a
+ *   cut on a new branch in the hook cwd's repository. The harness takes its base from
+ *   `worktree.baseRef` (no base parameter exists), so the gate reads the same setting:
+ *   'head' -> a HEAD base (the trunk only when the current branch is `next`), anything else ->
+ *   the origin/next base (fetched, local next untouched). A forged setting changes the harness's
+ *   own base the same way, so it cannot steer the check away from the base actually used.
+ *
+ * The hook-env redirect check applies as for a Bash trunk cut: the harness's own `git worktree add`
+ * inherits the same environment, so a GIT_DIR there would cut in a repository the gate cannot see.
+ */
+function enterWorktree(input, deps) {
+  const ti = input.tool_input;
+  if (ti && typeof ti === 'object' && typeof ti.path === 'string' && ti.path !== '') return allow();
+
+  if (hookRedirected(deps)) throw new FailClosed(UNCERTAIN_REASON);
+
+  const root = deps.resolveTreeRoot(deps.cwd);
+  if (root === null || root === undefined) return allow();
+
+  const mode = deps.readBaseRef(root, deps.homedir);
+  const cut = { kind: 'cut', baseKind: mode === 'head' ? 'head' : 'remote' };
+  return checkCut(cut, root, checkContext(deps)) || allow();
 }
 
 /**
@@ -689,6 +803,8 @@ function runWorktreeFreshBaseGate(stdinString, deps = {}) {
     }
     // The hook's own environment, read for an inherited repository redirect (HOOK_REDIRECT_VARS).
     if (!resolved.hookEnv) resolved.hookEnv = process.env;
+    // The effective worktree.baseRef for an EnterWorktree cut, read from the real settings layers.
+    if (!resolved.readBaseRef) resolved.readBaseRef = (root, homedir) => readBaseRef(root, homedir);
     // ONE deadline for this gate call, shared by the gate's slices and the default seams.
     if (typeof resolved.budget !== 'function') resolved.budget = makeBudget(resolved.now);
     // The real seams spawn git with the HOOK's environment (scrubbed), not `deps.env`, which only
@@ -721,8 +837,10 @@ module.exports = {
   gate,
   createDefaultSeams,
   classifyFetchResult,
+  readBaseRef,
   FetchUnavailable,
   ASK_LIMIT_NOTE,
+  MAX_SETTINGS_BYTES,
   FETCH_ARGV,
   FETCH_TIMEOUT_S,
   FETCH_KILL_AFTER_S,
