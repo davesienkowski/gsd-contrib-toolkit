@@ -17,6 +17,11 @@
  *   (g) Phase 38 (38-04): README.md's review-artifact.cjs (ENF-20) row names step 8a, memtrace and `ask`,
  *       and no longer says "four mechanizable".
  *
+ *   (h) Phase 38 code review (MJ-03, MN-01, MN-02, NT-05, BL-01 scope): CTK-ADR-0010's residuals list
+ *       every route that classifies `other` (GraphQL, `-fevent=`, bare `--input`, `bash -c`) as one
+ *       ENF-20-wide pre-existing gap, the sparse-extend scan-cap downgrade, the no-newline scan cost,
+ *       the over-gating verdict forms and the live-slot FIFO that still blocks the verdict writer.
+ *
  * Approving ADR-0008 is Dave's call: when he does, update (a) and (b) here deliberately.
  * Approving ADR-0009 is also Dave's call: when he does, update (e) here deliberately.
  * Approving ADR-0010 is Dave's call: when he does, update (f) here deliberately.
@@ -129,4 +134,56 @@ test('38-04: README.md review-artifact.cjs row names step 8a, memtrace and `ask`
   assert.match(row, /memtrace/);
   assert.match(row, /`ask`/);
   assert.doesNotMatch(row, /four mechanizable/);
+});
+
+// ── 38 review (MJ-03, MN-01, MN-02, NT-05, BL-01 scope): CTK-ADR-0010's residuals are complete ──
+
+/** CTK-ADR-0010's "Negative / accepted residuals" list, as one string of bullets. */
+function adr10Residuals() {
+  const text = fs.readFileSync(adrFile(10), 'utf8');
+  const start = text.indexOf('**Negative / accepted residuals.**');
+  const end = text.indexOf('## Alternatives considered');
+  assert.ok(start !== -1 && end > start, 'CTK-ADR-0010 has a residuals list before Alternatives considered');
+  return text.slice(start, end);
+}
+
+/** The single residual bullet whose bold lead matches `re`. */
+function adr10Bullet(re) {
+  const bullets = adr10Residuals().split(/\n(?=- \*\*)/);
+  const hits = bullets.filter((b) => re.test(b));
+  assert.strictEqual(hits.length, 1, 'exactly one residual bullet matches ' + re + ': ' + hits.length);
+  return hits[0];
+}
+
+test('38 review MJ-03: CTK-ADR-0010 lists every route that classifies `other` as one ENF-20-wide pre-existing gap, not GraphQL alone', () => {
+  const b = adr10Bullet(/classif(y|ies) `other`/);
+  for (const route of ['GraphQL', '-fevent=APPROVE', '--input', 'bash -c']) {
+    assert.ok(b.includes(route), 'the residual names ' + route + ': ' + b);
+  }
+  assert.match(b, /pre-existing/);
+  assert.match(b, /ENF-20-wide/);
+  assert.doesNotMatch(adr10Residuals(), /\*\*GraphQL is outside the obligation\.\*\*/, 'GraphQL is no longer presented as the one gap');
+});
+
+test('38 review MN-01: CTK-ADR-0010 records the sparse-extend downgrade of the rotated log past the scan cap', () => {
+  const b = adr10Bullet(/scan cap/);
+  assert.match(b, /truncate/);
+  assert.match(b, /tool-log\.1\.jsonl/);
+  assert.match(b, /\bask\b/);
+});
+
+test('38 review MN-02: CTK-ADR-0010 records the cost of a log line with no newline', () => {
+  const b = adr10Bullet(/no newline/);
+  assert.match(b, /quadratic/);
+});
+
+test('38 review NT-05: CTK-ADR-0010 records the over-gating verdict forms (`--approve=false`)', () => {
+  const b = adr10Bullet(/over-gat/);
+  assert.ok(b.includes('--approve=false'), b);
+});
+
+test('38 review BL-01 scope: CTK-ADR-0010 records that a FIFO at the LIVE slot still blocks the verdict writer', () => {
+  const b = adr10Bullet(/live slot/i);
+  assert.match(b, /FIFO/);
+  assert.match(b, /verdict/);
 });
