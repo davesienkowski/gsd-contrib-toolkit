@@ -99,13 +99,18 @@ const MAX_LOG_BYTES = 50 * 1024 * 1024;
 const MAX_RECORD_BYTES = 2048;
 
 /**
- * Open flags for the append (quick 261006-jox): write-only, append, create, non-blocking.
- * O_NONBLOCK makes the open of a FIFO with no reader fail at once with ENXIO instead of waiting
- * for a reader; on a regular file it changes nothing. Where the platform has no O_NONBLOCK (win32
- * has no FIFOs either) the flag is simply absent.
+ * Open flags for the append (quick 261006-jox): write-only, append, create, non-blocking, no
+ * controlling tty. O_NONBLOCK makes the open of a FIFO with no reader fail at once with ENXIO
+ * instead of waiting for a reader; on a regular file it changes nothing. O_NOCTTY keeps a terminal
+ * swapped in after the type check from becoming the controlling tty. Where the platform lacks a
+ * flag (win32 has neither, and no FIFOs either) it is simply absent.
  */
 const APPEND_OPEN_FLAGS =
-  fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | (fs.constants.O_NONBLOCK || 0);
+  fs.constants.O_WRONLY |
+  fs.constants.O_APPEND |
+  fs.constants.O_CREAT |
+  (fs.constants.O_NONBLOCK || 0) |
+  (fs.constants.O_NOCTTY || 0);
 
 /**
  * Per-field character caps. Bounded BEFORE serialization so no single field can push a record past
@@ -371,8 +376,9 @@ function resolveLogDir(env = process.env) {
  * here worth surfacing to a user mid-turn.
  *
  * A slot that is not a regular file (a FIFO with or without a reader, a device, a directory, or a
- * symlink to one) is skipped: it is opened with APPEND_OPEN_FLAGS so the open never blocks, the fd
- * is fstat-checked before any write, and it is never rotated (quick 261006-jox). The line goes out
+ * symlink to one) is skipped: a stat refuses it before any open, the open uses APPEND_OPEN_FLAGS so
+ * it never blocks, the fd is fstat-checked before any write as a backstop for a swapped slot, and a
+ * non-regular slot is never rotated (quick 261006-jox, review WR-01). The line goes out
  * in a single write on the O_APPEND fd, and the fd is closed in a finally.
  *
  * @param {string} line
@@ -395,17 +401,23 @@ function appendRecord(line, deps = {}) {
     return null; // cannot create the log dir → drop the record silently (D4)
   }
 
+  // Type check BEFORE any open (review WR-01, mirroring tool-log-reader's scanFile): a slot that
+  // stat (which follows a symlink) shows is not a regular file is refused without being opened, so
+  // a FIFO with a live reader never sees an open-then-close EOF and a device is never opened. An
+  // absent slot (ENOENT, including a dangling symlink) is created by the open below.
+  //
   // Rotate ONCE, overwriting any previous rotation, so the on-disk footprint is bounded at two
-  // files. An unreadable/absent log is simply "not yet big enough".
-  // Only a regular file is ever rotated: a FIFO, device or directory (or a symlink to one) at the
-  // slot is never renamed into the rotated slot.
+  // files. An unreadable/absent log is simply "not yet big enough". Only a regular file is ever
+  // renamed; a slot swapped between this stat and the rename is the one narrow exception, and the
+  // reader refuses a non-regular rotated slot.
   try {
     const st = impl.statSync(file);
-    if (st && typeof st.isFile === 'function' && st.isFile() && st.size > MAX_LOG_BYTES) {
+    if (!st || typeof st.isFile !== 'function' || !st.isFile()) return null;
+    if (st.size > MAX_LOG_BYTES) {
       impl.renameSync(file, path.join(dir, ROTATED_FILENAME));
     }
   } catch (_) {
-    /* no existing log, or an unreadable stat — nothing to rotate */
+    /* no existing log, or an unreadable stat — nothing to rotate; the fd check below still holds */
   }
 
   // Open non-blocking. A FIFO with no reader (or a symlink to one) fails here with ENXIO, a
@@ -417,8 +429,8 @@ function appendRecord(line, deps = {}) {
     return null;
   }
 
-  // Refuse anything the fd does not show to be a regular file (a FIFO with a reader, /dev/zero, a
-  // socket, or a slot swapped after the rotation stat), then write the whole line ONCE so the
+  // Refuse anything the fd does not show to be a regular file (the backstop for a slot swapped to a
+  // FIFO, device or socket after the stat above), then write the whole line ONCE so the
   // O_APPEND write stays atomic. The fd is closed exactly once, on every path.
   try {
     const st = impl.fstatSync(fd);
