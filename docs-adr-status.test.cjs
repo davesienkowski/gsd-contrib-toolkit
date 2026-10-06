@@ -456,6 +456,8 @@ test('W5: CTK-ADR-0010 has exactly one W5 residual bullet naming every same-clas
   // W5 review WR-01: the CLI receipt preflight was aligned with writeReceipt, so the residual must not
   // still describe it as a blocking open.
   assert.ok(!/preflight opens\s+first/.test(b), 'the W5 residual must not call the aligned CLI preflight unguarded: ' + b);
+});
+
 // -- quick 261006-jsm (CONTEXT D10, coordinator, orchestrator B1): CTK-ADR-0010 marks the fixed ENF-20
 // verdict routes and records the new residuals. Every lock anchors on its own bullet's bold lead
 // (adr10Bullet asserts exactly one match); no Status line and no Decision text changes. --
@@ -542,8 +544,6 @@ test('261006-jsm: the keying and observability consequences are recorded', () =>
 // published branch, and a squash merge, a rebase or a fresh clone would lose it.
 const { createHash: jsmCreateHash } = require('node:crypto');
 const jsmSha256 = (t) => jsmCreateHash('sha256').update(t, 'utf8').digest('hex');
-// sha256 of e2690ca's CTK-ADR-0010 text before `## Consequences` (17,042 characters).
-const JSM_BASE_PREFIX_SHA256 = 'f3403f98e0114b4bacd8100b76dadc4744ac296f794d652f507eed0d003614c6';
 // sha256 of each non-ASCII line in e2690ca's residual list (one line, the `gh api .../reviews
 // -fevent=APPROVE` line of the classify-`other` bullet, written with an ellipsis character).
 const JSM_BASE_NON_ASCII_RESIDUAL_SHA256 = new Set([
@@ -559,10 +559,14 @@ test('261006-jsm: every line this branch added to the CTK-ADR-0010 residual list
   }
 });
 
-test('261006-jsm: CTK-ADR-0010 is byte-identical to e2690ca up to `## Consequences` (no Status or Decision edit)', () => {
+// The branch-time pin (the text above `## Consequences` byte-identical to e2690ca) held only on the
+// 261006-jsm branch: the W4 merge (quick 261006-jq4) rewrote Context with the measured subagent
+// session_id, and Dave's acceptance flips Status. The invariant that survives the merge is that no
+// 261006-jsm text sits above `## Consequences`.
+test('261006-jsm: CTK-ADR-0010 carries no 261006-jsm text above `## Consequences` (no Status or Decision edit)', () => {
   const now = fs.readFileSync(adrFile(10), 'utf8');
   assert.ok(now.indexOf('## Consequences') > 0);
-  assert.strictEqual(jsmSha256(now.slice(0, now.indexOf('## Consequences'))), JSM_BASE_PREFIX_SHA256);
+  assert.ok(!now.slice(0, now.indexOf('## Consequences')).includes('261006-jsm'));
 });
 
 // -- quick 261006-jsm review fix round WR-02: the keying bullet no longer says a wrong key cannot allow
