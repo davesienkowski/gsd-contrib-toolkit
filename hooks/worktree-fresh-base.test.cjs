@@ -1991,3 +1991,127 @@ test('ENF-25 EnterWorktree: a readBaseRef that THROWS fails closed (deny via run
   const d = runWorktreeFreshBaseGate(ewInput({ name: 'x' }), deps);
   assert.strictEqual(d.permissionDecision, 'deny');
 });
+
+// ───────────────────────── 37-05 WTREE-01: EnterWorktree e2e (spawned hook, real fixture) ─────────────────────────
+//
+// The mode is pinned with a project `.claude/settings.local.json` written into clone A (layer 1),
+// and the spawned hook runs with HOME = a temp dir whose user settings.json says the OPPOSITE mode,
+// so the user's real ~/.claude/settings.json is unreachable by construction and every row also
+// proves layer 1 beats layer 3. spawnSync directly (spawnHook treats ask as inconclusive).
+
+/** Write `{"worktree":{"baseRef":mode}}` to <dir>/.claude/<file> (temp fixtures only). */
+function pinBaseRef(dir, mode, file) {
+  fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.claude', file || 'settings.local.json'), JSON.stringify({ worktree: { baseRef: mode } }));
+}
+
+/** Spawn the real hook with an EnterWorktree payload from `dir`, HOME = a temp dir saying `homeMode`. */
+function spawnEnterWorktree(dir, toolInput, homeMode) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wtfb-home-'));
+  try {
+    if (homeMode) pinBaseRef(home, homeMode, 'settings.json');
+    const r = childProcess.spawnSync(process.execPath, [HOOK], {
+      input: ewInput(toolInput),
+      cwd: dir,
+      env: Object.assign({}, process.env, { HOME: home }),
+      encoding: 'utf8',
+    });
+    assert.strictEqual(r.status, 0, 'hook exit ' + r.status + ' ' + r.stderr);
+    const out = JSON.parse(r.stdout).hookSpecificOutput;
+    return { decision: out.permissionDecision, reason: out.permissionDecisionReason || '' };
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
+test('ENF-25 EnterWorktree e2e: fresh pinned, A on work, origin advanced, `name` -> allow; origin/next fetched to the tip, local next unchanged', () => {
+  const fx = makeFixture();
+  try {
+    pinBaseRef(fx.A, 'fresh');
+    const tip = fx.advanceOrigin();
+    const r = spawnEnterWorktree(fx.A, { name: 'x' }, 'head');
+    assert.strictEqual(r.decision, 'allow', r.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/remotes/origin/next'), tip, 'the gate fetch must advance origin/next');
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), fx.initial, 'a fresh cut never touches local next');
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 EnterWorktree e2e: head pinned, A on next, origin advanced -> deny naming A and `merge --ff-only origin/next`; next unchanged', () => {
+  const fx = makeFixture({ park: false });
+  try {
+    pinBaseRef(fx.A, 'head');
+    const tip = fx.advanceOrigin();
+    const r = spawnEnterWorktree(fx.A, { name: 'x' }, 'fresh');
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.ok(r.reason.includes('git -C ' + fs.realpathSync(fx.A) + ' merge --ff-only origin/next'), r.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), fx.initial, 'a checked-out next is never moved');
+    assert.strictEqual(refOf(fx.A, 'refs/remotes/origin/next'), tip, 'the fetch ran');
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 EnterWorktree e2e: head pinned, A on work, origin advanced -> allow; origin/next unchanged (no fetch)', () => {
+  const fx = makeFixture();
+  try {
+    pinBaseRef(fx.A, 'head');
+    fx.advanceOrigin();
+    const r = spawnEnterWorktree(fx.A, { name: 'x' }, 'fresh');
+    assert.strictEqual(r.decision, 'allow', r.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/remotes/origin/next'), fx.initial, 'a HEAD base off next does not fetch');
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), fx.initial);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 EnterWorktree e2e: `path` (enter an existing worktree) from A, origin advanced -> allow; origin/next unchanged', () => {
+  const fx = makeFixture();
+  try {
+    pinBaseRef(fx.A, 'fresh');
+    fx.advanceOrigin();
+    const r = spawnEnterWorktree(fx.A, { path: path.join(fx.root, 'wt') }, 'fresh');
+    assert.strictEqual(r.decision, 'allow', r.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/remotes/origin/next'), fx.initial, 'entering a worktree does no work');
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), fx.initial);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 EnterWorktree e2e: fresh pinned in a plain clone with no gsd-core sentinel -> allow; origin/next unchanged', () => {
+  const fx = makeFixture({ sentinel: false });
+  try {
+    for (let d = fx.A; ; d = path.dirname(d)) {
+      assert.strictEqual(hasSentinel(d), false, 'unexpected gsd-core sentinel at ' + d);
+      if (path.dirname(d) === d) break;
+    }
+    pinBaseRef(fx.A, 'fresh');
+    fx.advanceOrigin();
+    const r = spawnEnterWorktree(fx.A, { name: 'x' }, 'fresh');
+    assert.strictEqual(r.decision, 'allow', r.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/remotes/origin/next'), fx.initial);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), fx.initial);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 EnterWorktree e2e: fresh pinned, A\'s origin is a nonexistent path -> ask naming ENF-25 and its limit; next unchanged', () => {
+  const fx = makeFixture();
+  try {
+    pinBaseRef(fx.A, 'fresh');
+    fx.advanceOrigin();
+    git(fx.A, 'remote', 'set-url', 'origin', path.join(fx.root, 'nope.git'));
+    const r = spawnEnterWorktree(fx.A, { name: 'x' }, 'head');
+    assert.strictEqual(r.decision, 'ask', r.reason);
+    assert.match(r.reason, /ENF-25/);
+    assert.match(r.reason, /dangerously-skip-permissions/);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), fx.initial);
+    assert.strictEqual(refOf(fx.A, 'refs/remotes/origin/next'), fx.initial);
+  } finally {
+    fx.dispose();
+  }
+});
