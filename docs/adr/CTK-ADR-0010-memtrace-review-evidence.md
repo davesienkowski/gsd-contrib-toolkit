@@ -183,7 +183,7 @@ is wrong.
 | Requires `find_code_review_issues` | Not required | The canonical re-review.md 8a lists it as optional; the floor is the required set |
 | A CodeGraph fallback section with a `Memtrace unavailable:` line satisfies the gate | No CodeGraph section. The sanctioned fallback is the scaffolded `R8a-memtrace.json` attestation, which asks a human and never allows | An unavailability claim cannot be checked by the gate, so a human decides it |
 | Cannot find the evidence: deny | Cannot observe (no session id, recorder off, log unreadable, zero rows, partial read): ask | CTK-ADR-0007 Decision 2; the subagent `session_id` question is unmeasured, and a wrong guess must not deadlock reviews |
-| `gh pr review` forms only | Also the REST and `gh api` / curl review forms with `event=APPROVE` or `REQUEST_CHANGES` | ENF-15 synonym coverage, which ENF-20 already has |
+| `gh pr review` forms only | Also the REST and `gh api` / curl review forms with `event=APPROVE` or `REQUEST_CHANGES`; an event the gate cannot read asks. The routes that classify `other` are a residual (Consequences) | ENF-15 synonym coverage, which ENF-20 already has |
 | Exempts `--comment` | Exempts `--comment` from 8a; R8 still applies to it | Parity on 8a; no weakening of R8 |
 
 ## Consequences
@@ -216,8 +216,39 @@ is wrong.
 - **Session-scoped, not head-oid-scoped.** A graph pass run earlier in the same session, for an older
   push of the same PR or for another PR, satisfies the gate; binding evidence to a head oid would need
   the inputs the recorder does not keep.
-- **GraphQL is outside the obligation.** A `gh api graphql` `submitPullRequestReview` mutation
-  classifies `other`, so no ENF-20 entry sees it. That gap is pre-existing and ENF-20-wide.
+- **Routes that classify `other` reach no ENF-20 entry (pre-existing, ENF-20-wide).** The shared
+  `hooks/lib/classify.cjs` classifies each of these `other`, so R8, R10, R8a and R1 never see them:
+  a `gh api graphql` `submitPullRequestReview` mutation; the attached short field
+  `gh api …/pulls/<n>/reviews -fevent=APPROVE` (gh's flag parser accepts it); `gh api …/reviews
+  --input <file|->` without `-X POST` (with `-X POST` it classifies `pr-review`, and step 8a grades
+  it an unresolved verdict that asks); and a review wrapped in `bash -c "gh pr review <n> -a"` or
+  `sh -c`. GraphQL is one of these routes, not the only one. All predate this record
+  (`classify.cjs` and `argv.cjs` are unchanged by Phase 38); closing them is a classifier change for
+  a follow-up, not part of step 8a (38 review MJ-03).
+- **Extending the rotated log past the scan cap turns a deny into an ask.** `truncate -s 65M
+  tool-log.1.jsonl` sparse-extends the file at once and loses no data. The recorder never writes the
+  rotated slot, so every later read skips it as over `MAX_SCAN_BYTES` (64 MiB), the read is
+  incomplete, and a real shortfall becomes the cannot-observe ask, which an unattended run allows.
+  It gives no capability beyond the accepted forgery residual (an appended row already gets an
+  allow), so it is recorded, not fixed (38 review MN-01).
+- **A log line with no newline costs quadratic time and memory to skip.** Until a newline is seen,
+  the reader's carry buffer grows to the whole file and is concatenated and rescanned per 1 MiB
+  chunk: a 63 MiB file with no newline measured 1.2 s and about 300 MB RSS, against 0.09 s and
+  112 MB for a healthy 52 MiB log. The size limit bounds it, and with one read per hook call it is
+  paid once per call. Dropping a carry longer than a few `MAX_RECORD_BYTES` is a possible later
+  hardening (38 review MN-02).
+- **Some non-verdicts over-gate.** `gh pr review <n> --approve=false` (gh reads it as not-approve),
+  `gh pr review <n> -b "-a"` and `gh pr review <n> --comment -b event=APPROVE` classify as verdicts,
+  so R8a and R10 apply though gh submits none. The error only over-gates (an avoidable ask or deny,
+  never an allow), so it is recorded, not fixed (38 review NT-05).
+- **A FIFO at the live slot still blocks the verdict writer.** The reader refuses a non-regular file
+  in either slot (38 review BL-01). But every gate's verdict row (OBS-02, `verdict-log.cjs` through
+  tool-recorder's `appendRecord`) and every recorder row is appended to `tool-log.jsonl` with a
+  blocking open for write, so a FIFO planted at the live slot hangs the hook before it emits
+  (measured: still blocked when a 6 s probe killed it), and the toolkit's gap backlog (#2a) records
+  that the harness then allows the call. That writer issue is toolkit-wide, predates this record
+  (OBS-01/OBS-02), sits outside step 8a, and is recorded for a follow-up. The rotated slot, which
+  no writer opens, is the persistent case the reader fix closes.
 - **A CLEAR-verdict PR comment routes around 8a.** A `gh pr comment` or a POST to
   `/issues/<pr#>/comments` whose body carries `CLEAR` arms R10 (and R1) but not R8a, because R8a is
   scoped to `pr-review` verdicts. It is a route around the memtrace obligation; recorded, not fixed.
