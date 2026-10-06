@@ -923,3 +923,28 @@ test('GTEST-01 m-02: `HOME=$(mktemp -d) gsd-test` records the HOME assignment as
   const d = oneDispatch('HOME=$(mktemp -d) gsd-test');
   assert.deepStrictEqual(d.envOps, [{ op: 'set', name: 'HOME', value: '$(mktemp -d)' }]);
 });
+
+// ─────────────── Nits (36-REVIEW N-01, N-02, N-03) ───────────────
+
+test('GTEST-03 N-01: the noclobber redirect `>|` is not a pipe (`gsd-test --head origin/next >| out.log`)', () => {
+  const d = oneDispatch('gsd-test --head origin/next >| out.log');
+  assert.strictEqual(d.pipedOut, false);
+  assert.strictEqual(d.pipeMasked, false);
+  assert.strictEqual(d.flags.head, 'origin/next');
+});
+
+test('GTEST-03 N-01: `gsd-test 2>| e.log | tail` is still piped after the noclobber redirect', () => {
+  assert.strictEqual(oneDispatch('gsd-test 2>| e.log | tail').pipeMasked, true);
+});
+
+for (const cmd of ['set -- -o pipefail; gsd-test | tail', 'false && set -o pipefail; gsd-test | tail', 'true || set -o pipefail; gsd-test | tail']) {
+  test(`GTEST-03 N-02: \`${cmd}\` is still masked (not a pipefail that is known to run)`, () => {
+    assert.strictEqual(oneDispatch(cmd).pipeMasked, true);
+  });
+}
+
+for (const flag of ['-h=0', '-help=false', '--h=false']) {
+  test(`GTEST-01 N-03: \`gsd-test ${flag}\` is informational (Go returns ErrHelp for an undefined h/help whatever the value)`, () => {
+    assert.strictEqual(oneDispatch(`gsd-test ${flag}`).informational, true);
+  });
+}
