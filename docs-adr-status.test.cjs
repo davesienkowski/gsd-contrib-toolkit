@@ -82,6 +82,11 @@ test('36-06a: CTK-ADR-0008 Status line says Accepted with the dated sign-off and
   const text = para.join(' ').replace(/\s+/g, ' ');
   assert.ok(text.includes('Dave has approved this record'), text);
   assert.doesNotMatch(text, PENDING_WORDING, text);
+  // The negative also covers the whole header list (to the first blank line), as the pre-acceptance
+  // check did, so pending wording cannot return in the Review or Date bullet either.
+  const header = [];
+  for (let i = start; i < lines.length && lines[i].trim() !== ""; i++) header.push(lines[i]);
+  assert.doesNotMatch(header.join(" ").replace(/\s+/g, " "), PENDING_WORDING, header.join(" "));
   assert.ok(text.includes('The sign-off covers the whole record, including the orchestrator-amended Decision 3 (36-REVIEW M-01).'), text);
 });
 
@@ -104,6 +109,11 @@ test('37-08: CTK-ADR-0009 Status line says Accepted with the dated sign-off and 
   const text = para.join(' ').replace(/\s+/g, ' ');
   assert.ok(text.includes('Dave has approved this record'), text);
   assert.doesNotMatch(text, PENDING_WORDING, text);
+  // The negative also covers the whole header list (to the first blank line), as the pre-acceptance
+  // check did, so pending wording cannot return in the Review or Date bullet either.
+  const header = [];
+  for (let i = start; i < lines.length && lines[i].trim() !== ""; i++) header.push(lines[i]);
+  assert.doesNotMatch(header.join(" ").replace(/\s+/g, " "), PENDING_WORDING, header.join(" "));
 });
 
 test('37-08: CTK-ADR-0009 docs/adr/README.md row says Accepted (not Proposed)', () => {
@@ -125,6 +135,11 @@ test('38-04: CTK-ADR-0010 Status line says Accepted with the dated sign-off and 
   const text = para.join(' ').replace(/\s+/g, ' ');
   assert.ok(text.includes('Dave has approved this record'), text);
   assert.doesNotMatch(text, PENDING_WORDING, text);
+  // The negative also covers the whole header list (to the first blank line), as the pre-acceptance
+  // check did, so pending wording cannot return in the Review or Date bullet either.
+  const header = [];
+  for (let i = start; i < lines.length && lines[i].trim() !== ""; i++) header.push(lines[i]);
+  assert.doesNotMatch(header.join(" ").replace(/\s+/g, " "), PENDING_WORDING, header.join(" "));
 });
 
 test('38-04: CTK-ADR-0010 docs/adr/README.md row says Accepted (not Proposed)', () => {
