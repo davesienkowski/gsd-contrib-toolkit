@@ -2592,3 +2592,23 @@ test('261006-jsm CR-04 forms: `builtin` is a VERDICT_ROUTE_FORMS key with an ASC
   const { VERDICT_ROUTE_FORMS } = require('./classify.cjs');
   assert.ok(typeof VERDICT_ROUTE_FORMS.builtin === 'string' && /^[\x20-\x7e]+$/.test(VERDICT_ROUTE_FORMS.builtin));
 });
+
+// -- 261006-jsm review fix round WR-01: the recovery's program-index lookup is linear ------------
+// A wrapper whose value flags repeat the program name (`sudo -u bash -u bash ... bash -c "..."`)
+// made programTokenIndex re-resolve every growing prefix: O(N^2), 11 s per classify at N=36,000.
+const JSM_WR01_BASH = 'sudo ' + '-u bash '.repeat(36000) + 'bash -c "gh pr review 42 -a"';
+const JSM_WR01_NOHUP = 'sudo ' + '-u nohup '.repeat(20000) + 'nohup ls';
+
+for (const [label, cmd, action] of [
+  ['the 36,000-pair `-u bash` shell -c input', JSM_WR01_BASH, 'pr-review'],
+  ['the 20,000-pair `-u nohup` input', JSM_WR01_NOHUP, 'other'],
+]) {
+  test('261006-jsm WR-01: ' + label + ' classifies in under 1000 ms, with the same result', () => {
+    const parsed = parseCommand(cmd);
+    const t0 = Date.now();
+    const r = classifyAction(parsed);
+    const ms = Date.now() - t0;
+    assert.strictEqual(r.action, action, label);
+    assert.ok(ms < 1000, label + ' took ' + ms + ' ms');
+  });
+}

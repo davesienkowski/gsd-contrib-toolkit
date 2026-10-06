@@ -2914,3 +2914,20 @@ for (const cmd of ['eval -- "gh pr review 42 -a"', 'builtin eval "gh pr review 4
     assertJsmR8aDeny(cmd);
   });
 }
+
+// -- 261006-jsm review fix round WR-01: a hostile wrapper stack cannot push the gate past its timeout
+// The manifest sets no per-hook timeout, so Claude Code's 60 s default applies; the review measured
+// 64 s at 288 KB. The bound asserted here (5 s) leaves an order of magnitude below that default.
+for (const [label, cmd, want] of [
+  ['`sudo` + 36,000 `-u bash` pairs + `bash -c "gh pr review 42 -a"`', 'sudo ' + '-u bash '.repeat(36000) + 'bash -c "gh pr review 42 -a"', 'deny'],
+  ['`sudo` + 20,000 `-u nohup` pairs + `nohup ls`', 'sudo ' + '-u nohup '.repeat(20000) + 'nohup ls', 'allow'],
+]) {
+  test('261006-jsm WR-01 gate: ' + label + ' with only Bash rows decides ' + want + ' in under 5000 ms', () => {
+    const dp = depsWithLog(toolLog(ONLY_BASH.slice()));
+    const t0 = Date.now();
+    const d = runReviewArtifactGate(input(cmd), dp);
+    const ms = Date.now() - t0;
+    assert.strictEqual(d.permissionDecision, want, d.permissionDecisionReason);
+    assert.ok(ms < 5000, label + ' took ' + ms + ' ms');
+  });
+}
