@@ -105,8 +105,8 @@ local state, and they call no gsd-core gate script.
 
    **Per-subcommand applicability (orchestrator-amended decision, 36-REVIEW M-01).** This reverses
    36-CONTEXT Addendum 7 ("no subcommands; a dispatch is a dispatch"), which rested on a false
-   premise. Decided by the review orchestrator on the v1.8.0 source; awaiting Dave's approval with the
-   rest of this record.
+   premise. Decided by the review orchestrator on the v1.8.0 source; approved by Dave with the rest of this
+   record on 2026-10-06.
 
    | Invocation | ENF-23 pipe | ENF-23 dirty tree | ENF-24 viability | Grounds (v1.8.0 `cmd/gsd-test/main.go`) |
    |---|---|---|---|---|
@@ -313,7 +313,7 @@ in place and listed here:
 1. **`--probe-benches` is not informational.** It runs the full suite after probing benches (B-01).
 2. **v1.8.0 has subcommands** (`submit`, `run`, `install-agent-hooks`, `wait`, `status`), and `run`
    tests the working tree. The per-subcommand map in Decision 3 replaces "a dispatch is a dispatch"
-   (M-01, an orchestrator-amended decision awaiting Dave's approval).
+   (M-01, an orchestrator-amended decision, approved by Dave with this record on 2026-10-06).
 3. **A bench with no host is local**, so it is probed (m-08). CONTEXT had it skip the probe.
 4. **A relative `XDG_CONFIG_HOME` is used as given**, relative to gsd-test's working directory; the
    gate used to fall back to the home default (m-02). The review itself attributed this to
