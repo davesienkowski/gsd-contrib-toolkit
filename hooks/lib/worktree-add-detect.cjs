@@ -40,7 +40,8 @@
  * a `GIT_DIR=` / `GIT_WORK_TREE=` / `GIT_COMMON_DIR=` assignment before git, a shell expansion in
  * the base slot, in an omitted-base path, in an option, or among more than two positionals; plus
  * everything the walk itself grades (unparseable, ambiguous wrapper, over-deep `-c`) when the
- * command mentions WORKTREE_ADD_WORD.
+ * command mentions WORKTREE_ADD_WORD; plus (37-REVIEW MA-03) a HEAD-kind cut after an earlier
+ * `git checkout` / `git switch` anywhere in the same command.
  *
  * @module hooks/lib/worktree-add-detect
  */
@@ -222,13 +223,24 @@ function parseWorktreeAddArgs(tail) {
   return { path: p, base, newBranch, detach, orphan, baseKind, uncertainReason };
 }
 
+/** git verbs that change HEAD (37-REVIEW MA-03): a HEAD-kind cut after one is unattributable. */
+const HEAD_CHANGING_VERBS = new Set(['checkout', 'switch']);
+
 /**
  * The shared walk's per-segment hook for a resolved `git` program.
  *
+ * `state` (37-REVIEW MA-03) is per findWorktreeAdds call: the walk visits segments in command order
+ * (a `bash -c` / `eval` payload inline, a subshell too), so `state.switched` is true for every cut
+ * AFTER a `git checkout` / `git switch` (any arguments, any repository: conservative) anywhere
+ * earlier in the same command. A HEAD-kind cut (omitted base, `HEAD`, `@`) then reads a HEAD the
+ * gate cannot see at hook time -> uncertain.
+ *
  * @param {Object} ctx the walk's segment context (toks, idx, segIndex, depth, seg(), prefixes())
+ * @param {{switched:boolean}} [state] per-call state (default: a fresh, never-switched one)
  * @returns {Object[]} [] (not a cut), [cut] or [uncertain]
  */
-function worktreeAddSegment(ctx) {
+function worktreeAddSegment(ctx, state) {
+  const st = state || { switched: false };
   const toks = ctx.toks;
   const uncertain = (reason) => [{ kind: 'uncertain', reason }];
 
@@ -268,6 +280,10 @@ function worktreeAddSegment(ctx) {
     break;
   }
 
+  if (HEAD_CHANGING_VERBS.has(toks[k])) {
+    st.switched = true;
+    return [];
+  }
   if (toks[k] !== 'worktree') {
     return expandedGlobal && WORKTREE_ADD_WORD.test(toks.slice(k).join(' '))
       ? uncertain('shell expansion before a git worktree add verb')
@@ -282,6 +298,9 @@ function worktreeAddSegment(ctx) {
   if (expandedGlobal) return uncertain('shell expansion among the git global options');
   if (redirected) return uncertain('git is pointed at another repository (--git-dir, --work-tree or GIT_DIR)');
   if (a.uncertainReason) return uncertain(a.uncertainReason);
+  if (a.baseKind === 'head' && st.switched) {
+    return uncertain('an earlier git checkout / switch in the same command changes HEAD before this cut');
+  }
 
   return [{
     kind: 'cut',
@@ -298,12 +317,15 @@ function worktreeAddSegment(ctx) {
   }];
 }
 
-/** The program matcher for the shared walk. */
+/**
+ * The program matcher for the shared walk. Its `segment` carries no checkout state (MA-03), so
+ * findWorktreeAdds builds a per-call copy whose `segment` shares one state object.
+ */
 const WORKTREE_ADD_MATCHER = Object.freeze({
   label: 'git worktree add',
   word: WORKTREE_ADD_WORD,
   programs: new Set(['git']),
-  segment: worktreeAddSegment,
+  segment: (ctx) => worktreeAddSegment(ctx),
 });
 
 /**
@@ -314,7 +336,9 @@ const WORKTREE_ADD_MATCHER = Object.freeze({
  */
 function findWorktreeAdds(command) {
   if (typeof command !== 'string') return [];
-  return findProgramEntries(command, WORKTREE_ADD_MATCHER);
+  const state = { switched: false };
+  const matcher = Object.assign({}, WORKTREE_ADD_MATCHER, { segment: (ctx) => worktreeAddSegment(ctx, state) });
+  return findProgramEntries(command, matcher);
 }
 
 module.exports = {
