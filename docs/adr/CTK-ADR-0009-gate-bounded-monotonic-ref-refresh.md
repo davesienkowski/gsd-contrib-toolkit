@@ -32,8 +32,8 @@ Every earlier toolkit gate leaves the repository it judges untouched: it inspect
 calls a LIVE gsd-core script, and returns `allow`, `ask` or `deny`. (Toolkit-owned state, such as the
 ENF-21 stamp and tip cache, the verdict log and override receipts, lives outside that repository.)
 ENF-25 is the first gate that changes repository state. It
-fetches `origin next`, which writes `refs/remotes/origin/next`, `FETCH_HEAD` and objects, and it can
-move the local branch `refs/heads/next`. That is a precedent, so it gets its own record.
+fetches `origin next`, which writes `refs/remotes/origin/next` and objects (no `FETCH_HEAD`: the
+fetch passes `--no-write-fetch-head`), and it can move the local branch `refs/heads/next`. That is a precedent, so it gets its own record.
 
 **CTK-ADR-0007 said the opposite for ENF-21, and that decision stands.** Its Alternatives rejected
 "a `git fetch` in the local clone to learn the tip" because it mutates a repository the toolkit does
@@ -50,22 +50,30 @@ differs on each point:
    fetch and the compare-and-swap happen when the agent PROPOSES the cut, and they persist when the
    user then declines the call, when another gate denies it, or when this gate denies a later cut
    in the same command (37-REVIEW MI-03). The mutation is acceptable without consent only because
-   of point 2: it is the same forward-only refresh the user's own `git fetch` plus `merge --ff-only`
-   would make.
-2. **The mutation is small, monotonic and reversible.** It touches two refs and nothing else: the
-   remote-tracking ref (exactly what any `git fetch` does) and a local `next` that is moved only
-   forward, only when the old value is a proven ancestor, only through a compare-and-swap that never
-   writes through a symbolic ref, and only when no worktree has it checked out or is rebasing or
-   bisecting it. The previous value stays in `next`'s reflog under an ENF-25 message (the reflog is
+   of point 2: it is the same refresh the user's own `git fetch` plus `merge --ff-only` would make.
+2. **The mutation is small, monotonic for local `next`, and reversible.** It touches two refs and
+   nothing else, and only when both are plain refs: before any fetch the gate refuses a symbolic
+   `refs/heads/next` or `refs/remotes/origin/next`, a filesystem symlink at either loose ref, its
+   reflog or any parent ref directory, and an unreadable trunk ref (verifier gap VG-01: the forced
+   refspec writes THROUGH a symbolic `origin/next`, which moved a checked-out branch and force-rewound
+   `next` in the verifier's P6 probes). The fetch writes only that plain, non-symlinked
+   remote-tracking ref (exactly what any `git fetch` does, so after an upstream force-push it may
+   move `origin/next` backward, as git's own fetch would). Local `next` is moved only forward, only
+   when the old value is a proven ancestor, only through a compare-and-swap that never writes
+   through a symbolic ref, and only when no worktree has it checked out or is rebasing or bisecting
+   it. The previous value stays in `next`'s reflog under an ENF-25 message (the reflog is
    created if it does not exist). Nothing is rewritten, no working tree changes, and no index
    changes.
 3. **It is bounded.** The fetch has a coreutils `timeout` and a spawnSync belt, every subprocess draws
    on one per-call deadline, and the whole gate fits inside its hook timeout with headroom, asserted
    by test. A reinstall cannot be bounded that way; a two-ref refresh can.
 4. **When it cannot refresh safely, it does not try.** A held or diverged `next` is denied with the
-   exact non-destructive command; an unobtainable origin asks, unless the last-fetched `origin/next`
-   already proves a held or diverged `next`, which is denied (37-REVIEW MI-01). The gate never falls
-   back to a stronger mutation, and never moves `next` on unrefreshed data.
+   exact non-destructive command; an unobtainable origin ALWAYS asks (CTK-ADR-0007 Decision 2,
+   locked). When the last-fetched `origin/next` already shows a held or diverged `next`, that local
+   evidence and its exact fix command are added to the ask reason, but the grade stays ask. 37-REVIEW
+   MI-01 had briefly made that case a deny; the orchestrator reverted it to honor the locked
+   decision. The gate never falls back to a stronger mutation, and never moves `next` on unrefreshed
+   data.
 
 **Why CTK-ADR-0001 Decision 3 has nothing to reuse.** No LIVE gsd-core script decides whether a
 local trunk is stale before a cut. GSD's own worktree engine runs `git worktree add` from its own
@@ -96,9 +104,11 @@ toolkit-owned.
    repository never touches that repository, and a clone whose `origin` is a fork is not judged.
 
 2. **Bounded fetch inside one shared budget.** The fetch is
-   `timeout -k 2 15 git -C <root> fetch --quiet --no-auto-maintenance --no-tags origin +refs/heads/next:refs/remotes/origin/next`
+   `timeout -k 2 15 git -C <root> fetch --quiet --no-auto-maintenance --no-tags --no-write-fetch-head origin +refs/heads/next:refs/remotes/origin/next`
    (37-REVIEW MA-02: a fully qualified, forced refspec, so a narrowed `remote.origin.fetch` cannot
-   leave `origin/next` stale and a tag named `next` on origin cannot shadow the branch), spawned as
+   leave `origin/next` stale and a tag named `next` on origin cannot shadow the branch; verifier gap
+   VG-01: no `FETCH_HEAD` is written, and the forced destination is safe only because a symbolic or
+   symlinked `origin/next` is refused first), spawned as
    an argv array with `GIT_TERMINAL_PROMPT=0`, `SSH_ASKPASS_REQUIRE=never` and
    `GCM_INTERACTIVE=never`, stdin ignored, and `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and
    `GIT_COMMON_DIR` removed from its environment, under a 20 s spawnSync belt with SIGKILL. The
@@ -113,12 +123,20 @@ toolkit-owned.
    writes no `timeout` (gsd-core's materializer drops it), so an installed registration runs under
    the harness default, which the reviewer read as 60 s; the budget fits that too (asserted).
 
-3. **Only two refs may change.** The gate's own git argv is limited to `fetch` (through `timeout`),
-   `remote get-url`, `rev-parse` (including `--git-common-dir`), `symbolic-ref`,
-   `merge-base --is-ancestor`, `worktree list --porcelain` and `update-ref`. Only
-   `refs/remotes/origin/next` (by the fetch) and `refs/heads/next` may change. `next` moves only when
-   all of these hold: `refs/heads/next` is not a symbolic ref (`symbolic-ref -q` exits 1; a symbolic
-   `next` is refused before any fetch, 37-REVIEW BL-01), the fetch succeeded, local `next` is a strict
+3. **Only two refs may change, and only when both are plain.** The gate's own git argv is limited to
+   `fetch` (through `timeout`), `remote get-url`, `rev-parse` (including `--git-common-dir`),
+   `symbolic-ref` (HEAD only), `for-each-ref` (the two trunk refs), `merge-base --is-ancestor`,
+   `worktree list --porcelain` and `update-ref`. Before ANY fetch, for every trunk base kind (local,
+   remote, HEAD on `next`, `EnterWorktree`), one
+   `for-each-ref --format='%(refname) %(symref)' refs/heads/next refs/remotes/origin/next` plus
+   fs-only checks in the common dir must find both refs plain: not symbolic (including a dangling
+   loose `ref:` file the listing omits), not a filesystem symlink, not under a symlinked `refs/` or
+   `logs/` directory, no symlinked reflog, and readable as a full SHA when loose; otherwise a
+   thrown deny with a constant reason (37-REVIEW BL-01, widened by verifier gap VG-01). Only a plain
+   `refs/remotes/origin/next` (by the fetch, forced, so it follows an upstream force-push like any
+   `git fetch`) and a plain `refs/heads/next` (forward only) may change; no other branch, no
+   working tree and no index. `next` moves only when all of these hold: the trunk-ref check passed,
+   the fetch succeeded, local `next` is a strict
    ancestor of `origin/next` (`merge-base --is-ancestor` exits 0), `next` is not **checked out** in any
    worktree, and one compare-and-swap
    `update-ref --no-deref --create-reflog -m 'ENF-25 worktree-fresh-base: fast-forward next to origin/next' refs/heads/next <new> <old>`
@@ -150,7 +168,7 @@ toolkit-owned.
    | A trunk base with a trailing `~N` / `^N` / `^{...}` / `@{0}` chain (`next~0`, `origin/next^{commit}`, `HEAD~0`) | judged as the stripped base (no suffix bypass of a held-next deny) | 37-REVIEW MA-05 |
    | An indirect base: `-`, `@{-N}`, `@{u}`, `@{upstream}`, `@{push}`, `@{N>0}`, any other `@{...}`, `rev:path`, `:/text`, `a..b` | deny (thrown, constant reason) | 37-REVIEW MA-05; `@{N>0}` deliberately not stripped (after a CAS, `next@{1}` is the stale pre-move value) |
    | A HEAD-kind cut after a `git checkout` / `git switch` (any arguments, any repository) earlier in the same command | deny (thrown, constant reason) | 37-REVIEW MA-03 |
-   | `refs/heads/next` is a symbolic ref (local or HEAD-on-next cut) | deny (thrown, constant reason), checked before the fetch | 37-REVIEW BL-01 |
+   | `refs/heads/next` or `refs/remotes/origin/next` is symbolic (dangling included), a filesystem symlink or under a symlinked ref / reflog directory, has a symlinked reflog, or is unreadable; any trunk base kind, including `EnterWorktree` | deny (thrown, constant reason), checked once per root BEFORE any fetch | 37-REVIEW BL-01 (`next` only, local kinds only); widened by verifier gap VG-01 (P6/P6b/P6d/P6e/P6f: the forced fetch wrote through a symbolic `origin/next`) |
    | Local `next` equals `origin/next` | allow | CONTEXT |
    | Local `next` strictly behind, held by no worktree, CAS succeeds | allow after the fast-forward | CONTEXT |
    | Local `next` strictly behind and checked out in any worktree (including the HEAD-on-next case) | policy deny with `git -C <holder> merge --ff-only origin/next`, a stash note, and the `origin/next` alternative | CONTEXT |
@@ -161,7 +179,7 @@ toolkit-owned.
    | The CAS is refused (a concurrent writer moved `next`) | policy deny, one attempt | CONTEXT said "deny with fix"; executor refinement (37-03) made it a policy deny instead of a thrown one |
    | Local `next` missing | allow: with `-b` git rejects the missing base; with no `-b`, `git worktree add <path> next` DWIMs to `--track -b next <path> origin/next`, which the gate has just fetched (37-REVIEW NI-02 corrected the reason) | addition in 37-03, not in CONTEXT |
    | Fetch unobtainable: coreutils exit 124/137, belt timeout or signal, any other non-zero git exit (unreachable, auth, a held ref lock, a remote with no `next`) | ask, with a redacted reason, the manual `git -C <root> fetch origin next`, and the note that ask degrades to allow under `--dangerously-skip-permissions` | CONTEXT (CTK-ADR-0007 Decision 2) |
-   | Fetch unobtainable, local or HEAD-on-next base, and the LAST-FETCHED `origin/next` already proves `next` behind and checked out (or rebasing / bisecting), or diverged | policy deny worded as stale evidence ("the last-fetched value: the gate could not refresh origin/next (...)"); never a CAS on that data | 37-REVIEW MI-01 (Trek-e's incident was exactly a known-stale `next`) |
+   | Fetch unobtainable, local or HEAD-on-next base, and the LAST-FETCHED `origin/next` already shows `next` behind and checked out (or rebasing / bisecting), or diverged | ask, whose reason adds a LOCAL EVIDENCE section with the held / in-progress / diverged text and its exact fix command, worded as stale evidence; never a CAS on that data | CTK-ADR-0007 Decision 2 (locked). 37-REVIEW MI-01 made this a deny; the orchestrator REVERTED it to ask to honor the locked decision |
    | The fetch succeeded but `origin/next` does not resolve | ask | PLANNER ADDITION (orchestrator-accepted) |
    | Credentials in fetch stderr: redacted to `scheme://***@` before a 200-character cap, control characters stripped, first line only | (reason hygiene) | PLANNER ADDITION |
    | `--no-auto-maintenance` on the fetch, so no gc runs inside the hook | (fetch argv) | PLANNER ADDITION |
@@ -212,8 +230,8 @@ toolkit-owned.
 
 **Negative / accepted residuals.** The gate is not complete and can be bypassed. Known gaps:
 
-- **The first gate that mutates state.** A trunk cut writes `refs/remotes/origin/next`, `FETCH_HEAD`
-  and fetched objects, and may move `next` and append to its reflog. Repository hooks in the target
+- **The first gate that mutates state.** A trunk cut writes `refs/remotes/origin/next` and fetched
+  objects (no `FETCH_HEAD`), and may move `next` and append to its reflog. Repository hooks in the target
   repo, such as `reference-transaction`, run for those ref updates.
 - **`ask` is not a block.** The unobtainable-origin path asks, and `ask` degrades to allow under
   `--dangerously-skip-permissions` and in any unattended run (the limit CTK-ADR-0005 and CTK-ADR-0007
@@ -253,6 +271,13 @@ toolkit-owned.
   `git worktree add ../a next && git -C <held-clone> worktree add ../b next` moves the first root's
   `next`, then denies the call). Deferring every CAS until the call's final verdict is a possible
   refinement; it would still precede the permission prompt.
+- **Trunk-ref hazard detection limits (verifier gap VG-01).** The fs checks read the loose-ref layout;
+  under the reftable backend (git 2.45 and later) a DANGLING symbolic trunk ref is invisible to
+  `for-each-ref` and has no loose file, so it is not detected. The git dir is located with fs reads
+  (`.git` dir or `gitdir:` file plus `commondir`); a layout that git resolves some other way
+  (`core.worktree` tricks, a `GIT_DIR` the harness itself sets) is not modelled, and a git dir that
+  cannot be located is treated as a hazard (deny). The check and the fetch are not atomic: a ref
+  turned symbolic between them is not caught.
 - **Inherited parser gaps (37-REVIEW MI-02).** The shared walk does not see a cut in: a lone `&`
   background (`sleep 1 & git worktree add ../x next`), a command substitution (`x=$(git worktree add
   ../x next)` or backticks), the `setsid`, `xargs`, `find -exec`, `flock`, `script -qc` and `watch`

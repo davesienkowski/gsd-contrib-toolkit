@@ -130,9 +130,11 @@ Whether the harness itself fetches before an `EnterWorktree` cut under `worktree
 no `origin` is left alone). Its fetch and fast-forward run in the `PreToolUse` hook, which fires
 when the agent PROPOSES the cut, before the permission prompt. They are not undone if you then
 decline the command, if another gate denies it, or if this gate denies a later cut in the same
-command. The change is always forward-only and recorded in `next`'s reflog
-(`git reflog show next`). It refuses to move a `next` that is a symbolic ref, checked out, or being
-rebased or bisected in any worktree. See [CTK-ADR-0009](docs/adr/CTK-ADR-0009-gate-bounded-monotonic-ref-refresh.md)
+command. Local `next` only ever moves forward, and each move is recorded in `next`'s reflog
+(`git reflog show next`). `origin/next` is updated the way any `git fetch` updates it, so it follows
+an upstream force-push. The gate refuses to move a `next` that is checked out, or being rebased or
+bisected in any worktree. Before any fetch it also refuses when `next` or `origin/next` is a
+symbolic ref or a filesystem symlink, because the write would land on another branch. See [CTK-ADR-0009](docs/adr/CTK-ADR-0009-gate-bounded-monotonic-ref-refresh.md)
 for the full list of shapes it cannot see (shell functions, command substitutions, `xargs` and
 similar wrappers, git aliases).
 
