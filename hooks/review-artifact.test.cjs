@@ -33,7 +33,18 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
+// 38-01 (Phase 36 m-07 pattern): runGate records every verdict (OBS-02). Point the log at a
+// per-file temp dir BEFORE the hook is required, so this suite never appends synthetic verdicts
+// (now carrying real-looking session ids) to the real ~/.gsd-contrib/tool-log.jsonl that the
+// R8a-memtrace obligation itself reads as evidence.
+process.env.GSD_CONTRIB_LOG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'rev-art-vlog-'));
+process.on('exit', () => fs.rmSync(process.env.GSD_CONTRIB_LOG_DIR, { recursive: true, force: true }));
+
+const reviewArtifact = require('./review-artifact.cjs');
 const {
   runReviewArtifactGate,
   GATES,
@@ -49,7 +60,8 @@ const {
   CLEAR_VERDICT_RE,
   REVIEW_POST_RE,
   TREADMILL_MAX_POSTS_PER_OID,
-} = require('./review-artifact.cjs');
+} = reviewArtifact;
+const { recordToolCall, serializeRecord, LOG_FILENAME } = require('./tool-recorder.cjs');
 
 const { parseCommand } = require('./lib/argv.cjs');
 const { scaffold, validateSpec, hasUnfilledPlaceholders } = require('./lib/scaffold.cjs');
@@ -116,9 +128,30 @@ const R13_OK = {
   ],
 };
 
-function input(command) {
-  return JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
+/** The PreToolUse payload's session id every default fixture carries (38-01). */
+const SESSION = 'sess-A';
+
+const MT = 'mcp__memtrace__';
+
+/** A PreToolUse payload. `sessionId: null` omits the key entirely (a payload with no session). */
+function input(command, sessionId = SESSION) {
+  const payload = { tool_name: 'Bash', tool_input: { command } };
+  if (sessionId !== null) payload.session_id = sessionId;
+  return JSON.stringify(payload);
 }
+
+/** The reader's result shape (hooks/lib/tool-log-reader.cjs readSessionRecords). */
+function toolLog(records, over = {}) {
+  return Object.assign({ recorderOff: false, complete: true, records, problems: [] }, over);
+}
+
+/** Complete step-8a memtrace evidence: both REQUIRED_ALL verbs plus one recorded-decision verb. */
+const COMPLETE_EVIDENCE = Object.freeze([
+  Object.freeze({ tool_name: MT + 'get_impact', outcome: 'ok' }),
+  Object.freeze({ tool_name: MT + 'get_symbol_context', outcome: 'ok' }),
+  Object.freeze({ tool_name: MT + 'recall_decision', outcome: 'ok' }),
+  Object.freeze({ tool_name: 'Bash', outcome: 'ok' }),
+]);
 
 /** JSON text on disk — the gate reads RAW TEXT so the placeholder scan can run first. */
 function text(obj) {
@@ -141,7 +174,13 @@ function deps(over = {}) {
     over.files || {}
   );
   const mtimes = Object.assign({}, over.mtimes || {});
-  const calls = { resolvePr: 0, resolveIsPullRequest: 0, readPostedReviews: 0, scaffolded: [] };
+  const calls = {
+    resolvePr: 0,
+    resolveIsPullRequest: 0,
+    readPostedReviews: 0,
+    scaffolded: [],
+    readToolLog: [],
+  };
 
   const base = {
     worktreeRoot: '/tmp/wt',
@@ -171,6 +210,11 @@ function deps(over = {}) {
     readBodyFile: () => {
       throw new Error('no body file in this fixture');
     },
+    // 38-01: complete step-8a evidence by default, so every pre-existing verdict test stays green.
+    readToolLog: (sid) => {
+      calls.readToolLog.push(sid);
+      return toolLog(COMPLETE_EVIDENCE.slice());
+    },
     overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
   };
 
@@ -193,12 +237,12 @@ test('the gate table is frozen, complete, and ordered cheapest-first', () => {
   assert.ok(Object.isFrozen(GATES), 'GATES must be frozen (CTK-ADR-0004 §Decision.2)');
   assert.deepStrictEqual(
     GATES.map((g) => g.id),
-    ['R8-code', 'R8-security', 'R10', 'R13', 'R1'],
+    ['R8-code', 'R8-security', 'R10', 'R8a-memtrace', 'R13', 'R1'],
     'disk checks before the network treadmill lookup'
   );
   assert.deepStrictEqual(
     GATES.map((g) => g.step),
-    [8, 8, 10, 13, 1],
+    [8, 8, 10, '8a', 13, 1],
     'every entry names the re-review step it mechanizes'
   );
   for (const g of GATES) {
@@ -821,4 +865,114 @@ test('the verdict/re-review detectors do not fire on ordinary prose', () => {
   assert.strictEqual(CLEAR_VERDICT_RE.test('## Re-Review — PR #42 · **CLEAR**'), true);
   assert.strictEqual(REVIEW_POST_RE.test('## Re-Review — PR #42 · **CHANGES REQUESTED**'), true);
   assert.strictEqual(REVIEW_POST_RE.test('rebased, please re-review when you get a chance'), false);
+});
+
+// ── 38-01: ENF-20 R8a-memtrace (re-review step 8a) tracer ───────────────────
+
+/** Every full memtrace tool name the R8a deny must name when NO memtrace call ran. */
+const ALL_FIVE = [
+  MT + 'get_impact',
+  MT + 'get_symbol_context',
+  MT + 'recall_decision',
+  MT + 'why_is_this_here',
+  MT + 'governing_contracts',
+];
+
+/**
+ * APPEND recorder-format rows for `sessionId` to this file's temp tool-log.jsonl, built by
+ * tool-recorder's OWN recordToolCall + serializeRecord (never a hand-written shape). Append, never
+ * overwrite: verdict-log writes the gate rows into the same file.
+ */
+function appendRecorderRows(sessionId, toolNames) {
+  const file = path.join(process.env.GSD_CONTRIB_LOG_DIR, LOG_FILENAME);
+  let i = 0;
+  for (const tool_name of toolNames) {
+    i += 1;
+    const payload = {
+      hook_event_name: 'PostToolUse',
+      session_id: sessionId,
+      tool_use_id: 'toolu_38_01_' + sessionId + '_' + i,
+      tool_name,
+      tool_input: tool_name === 'Bash' ? { command: 'ls' } : {},
+      tool_response: {},
+      cwd: '/tmp/wt',
+    };
+    const line = serializeRecord(recordToolCall(JSON.stringify(payload), { env: {} }));
+    assert.ok(line, 'the recorder produced a line for ' + tool_name);
+    fs.appendFileSync(file, line, 'utf8');
+  }
+}
+
+test('38-01 m-07: this file points GSD_CONTRIB_LOG_DIR at its own temp dir, and the gate verdict lands there', () => {
+  const dir = process.env.GSD_CONTRIB_LOG_DIR || '';
+  assert.ok(
+    path.basename(dir).startsWith('rev-art-vlog-'),
+    "GSD_CONTRIB_LOG_DIR is this file's mkdtemp dir, not ~/.gsd-contrib: " + dir
+  );
+  runReviewArtifactGate(input('gh pr review 42 --approve'), deps());
+  assert.ok(fs.existsSync(path.join(dir, 'tool-log.jsonl')), 'the verdict was recorded in the temp dir');
+});
+
+test('38-01 R8a tracer: an approve whose session holds no memtrace call is DENIED, naming the tools', () => {
+  const dp = deps({
+    readToolLog: (sid) => {
+      dp._calls.readToolLog.push(sid);
+      return toolLog([
+        { tool_name: 'Read', outcome: 'ok' },
+        { tool_name: 'Bash', outcome: 'ok' },
+      ]);
+    },
+  });
+  const d = runReviewArtifactGate(input('gh pr review 42 --approve'), dp);
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-20 R8a-memtrace \(re-review step 8a\)/);
+  for (const t of ALL_FIVE) {
+    assert.ok(d.permissionDecisionReason.includes(t), 'the deny names ' + t);
+  }
+  assert.deepStrictEqual(dp._calls.readToolLog, ['sess-A'], 'the payload session id reaches the reader');
+});
+
+test('38-01 R8a tracer: an approve with complete memtrace evidence for its session → allow', () => {
+  const dp = deps();
+  const d = runReviewArtifactGate(input('gh pr review 42 --approve'), dp);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.deepStrictEqual(dp._calls.readToolLog, ['sess-A'], 'read exactly once, for the payload session');
+});
+
+test('38-01 R8a tracer (real file): the default reader reads the temp tool-log.jsonl; no memtrace rows → deny', () => {
+  appendRecorderRows('sess-38-01-deny', ['Read', 'Bash']);
+  const dp = deps();
+  delete dp.readToolLog;
+  const d = runReviewArtifactGate(input('gh pr review 42 --approve', 'sess-38-01-deny'), dp);
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-20 R8a-memtrace \(re-review step 8a\)/);
+  for (const t of ALL_FIVE) {
+    assert.ok(d.permissionDecisionReason.includes(t), 'the deny names ' + t);
+  }
+});
+
+test('38-01 R8a tracer (real file): the session ran get_impact + get_symbol_context + recall_decision → allow', () => {
+  appendRecorderRows('sess-38-01-allow', [
+    MT + 'get_impact',
+    MT + 'get_symbol_context',
+    MT + 'recall_decision',
+  ]);
+  const dp = deps();
+  delete dp.readToolLog;
+  const d = runReviewArtifactGate(input('gh pr review 42 --approve', 'sess-38-01-allow'), dp);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('38-01 MEMEV-03: the required memtrace set is exact, frozen, and phantom-free', () => {
+  const all = reviewArtifact.MEMTRACE_REQUIRED_ALL;
+  const any = reviewArtifact.MEMTRACE_REQUIRED_ANY;
+  assert.deepStrictEqual(all, ['get_impact', 'get_symbol_context']);
+  assert.deepStrictEqual(any, ['recall_decision', 'why_is_this_here', 'governing_contracts']);
+  assert.ok(Object.isFrozen(all), 'MEMTRACE_REQUIRED_ALL is frozen');
+  assert.ok(Object.isFrozen(any), 'MEMTRACE_REQUIRED_ANY is frozen');
+  assert.ok(
+    !all.concat(any).includes('find_code_review_issues'),
+    'find_code_review_issues exists on the live surface but is optional in re-review.md step 8a'
+  );
+  assert.strictEqual(reviewArtifact.MEMTRACE_TOOL_PREFIX, 'mcp__memtrace__');
 });
