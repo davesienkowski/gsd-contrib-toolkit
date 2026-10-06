@@ -257,3 +257,91 @@ test('W5 P5 guard: a valid regular P1 artifact is still read (it passes P1 and s
   assert.ok(!/could not read/.test(out.hso.permissionDecisionReason), out.hso.permissionDecisionReason);
   assert.ok(!/not a regular file/.test(out.hso.permissionDecisionReason), out.hso.permissionDecisionReason);
 });
+
+// -------------------------------------------------------------------- ENF-21 fixtures (P1-P3)
+
+const rs = require('./lib/runtime-stamp.cjs');
+
+/** The tip the `tip` git stub reports. */
+const TIP = 'a'.repeat(40);
+/** ENF-21 arms on a pure-argv upstream target from a cwd with no gsd-core sentinel. */
+const ENF21_CMD = 'gh pr create --repo open-gsd/gsd-core --title t --body b';
+
+/**
+ * A tiny fake installed runtime under `<home>/.claude/gsd-core` (the hook computes RUNTIME_ROOT
+ * from its own HOME at module load; runtimeDigest fails closed on a missing root).
+ */
+function fakeRuntime(home) {
+  const root = path.join(home, '.claude', 'gsd-core');
+  fs.mkdirSync(path.join(root, 'workflows'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'workflows', 'a.md'), 'w5 fake runtime\n');
+  return root;
+}
+
+/**
+ * A stub `git` first on PATH so `ls-remote` never reaches the network. `offline`: every call
+ * fails (the tip is unobtainable, so the gate asks). `tip`: `ls-remote` prints TIP for next.
+ */
+function stubGit(binDir, mode) {
+  const body =
+    mode === 'tip'
+      ? '#!/bin/sh\nif [ "$1" = "ls-remote" ]; then printf \'%s\\trefs/heads/next\\n\' ' + TIP + '; exit 0; fi\n' +
+        'echo "stub git: unexpected $*" >&2\nexit 97\n'
+      : '#!/bin/sh\necho "stub git: offline ($*)" >&2\nexit 128\n';
+  fs.writeFileSync(path.join(binDir, 'git'), body, { mode: 0o755 });
+  return binDir;
+}
+
+/** A valid stamp at TIP whose digest matches the fake runtime, written in the TEST process. */
+function freshStamp(home, state) {
+  const digest = rs.runtimeDigest(path.join(home, '.claude', 'gsd-core'));
+  rs.writeStamp(rs.buildStamp({ sha: TIP, runtimeDigest: digest, mode: 'payload-verified', engineVerified: false }), {
+    stampPath: path.join(state, rs.STAMP_FILENAME),
+  });
+}
+
+/** Temp HOME with a fake runtime, temp state/log, a git stub of `mode`, and a sentinel-free cwd. */
+function enf21Fixture(t, mode) {
+  const dirs = freshDirs(t);
+  fakeRuntime(dirs.home);
+  const bin = stubGit(tmp(t, 'bin'), mode);
+  return {
+    home: dirs.home,
+    state: dirs.state,
+    cwd: tmp(t, 'cwd'),
+    stamp: path.join(dirs.state, rs.STAMP_FILENAME),
+    cache: path.join(dirs.state, rs.CACHE_FILENAME),
+    env: baseEnv(Object.assign({ pathPrefix: bin }, dirs)),
+  };
+}
+
+const runEnf21 = (fx) => spawnBounded('runtime-drift.cjs', { cwd: fx.cwd, env: fx.env, command: ENF21_CMD });
+
+const ENF21_ASK = /ENF-21 could not verify/;
+
+// -------------------------------------------------------------------- P1: runtime-stamp.json read
+
+const P1_UNREADABLE = /runtime stamp at .*runtime-stamp\.json exists but could not be read/;
+const P1_NOT_REGULAR = /runtime stamp at .*runtime-stamp\.json exists but could not be read \(not a regular file/;
+
+test('W5 P1 guard: offline, no stamp, no cache -> ENF-21 arms and asks (the spawned gate is live)', (t) => {
+  const fx = enf21Fixture(t, 'offline');
+  assertDecided(t, runEnf21(fx), 'ask', ENF21_ASK);
+});
+
+for (const kind of ['fifo', 'fifo-link', 'devzero-link']) {
+  const p = planting(kind);
+  test('W5 P1: ' + p.label + ' at runtime-stamp.json -> ENF-21 denies (not a regular file) within the bound, no hang', { skip: p.skip }, (t) => {
+    const fx = enf21Fixture(t, 'offline');
+    const target = plant(t, kind, fx.stamp);
+    assertDecided(t, runEnf21(fx), 'deny', P1_NOT_REGULAR);
+    assertPlanted(kind, fx.stamp, target);
+  });
+}
+
+test('W5 P1 guard: a directory at runtime-stamp.json -> ENF-21 denies (could not be read) within the bound', (t) => {
+  const fx = enf21Fixture(t, 'offline');
+  plant(t, 'dir', fx.stamp);
+  assertDecided(t, runEnf21(fx), 'deny', P1_UNREADABLE);
+  assertPlanted('dir', fx.stamp, null);
+});
