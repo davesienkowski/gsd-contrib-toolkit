@@ -1692,3 +1692,123 @@ test('WTREE-01 ENF-22 displacement: a lone worktree add classifies as other', ()
 test('WTREE-01 ENF-22 displacement: hasGovernedSegment still finds pr-merge after a worktree add', () => {
   assert.strictEqual(hasGovernedSegment(parseCommand('git worktree add p next && gh pr merge 1'), ['pr-merge']), true);
 });
+
+// ---------------------------------------------------------------------------
+// 261006-jsm ENF-20 verdict routes
+//
+// A `gh pr review` verdict issued through a wrapper (here: a `bash -c` / `sh -c` command string)
+// used to classify `other`, so ENF-20's R8a memtrace check never saw it. The recovery step in
+// classifySegment re-parses the -c payload with argv.parseCommand and returns ONLY a recovered
+// `pr-review` (D1); classifyAction's fourth pass keeps every existing chain classification
+// unchanged (D2). Rows marked "lock" pass before the fix too; the per-form rows are red before it.
+// ---------------------------------------------------------------------------
+
+// The review-artifact gate's governed set (hooks/review-artifact.cjs GOVERNED_ACTIONS), restated
+// here so this pure-module suite does not require the gate.
+const REVIEW_ARTIFACT_GOVERNED = ['pr-review', 'pr-merge', 'pr-comment', 'issue-comment'];
+
+const JSM_REVIEW_TOKENS = ['gh', 'pr', 'review', '42', '-a'];
+
+/** Assert `cmd` is a recovered pr-review whose verdict segments carry exactly `want` tokens. */
+function assertRecoveredReview(cmd, want = [JSM_REVIEW_TOKENS]) {
+  const r = cls(cmd);
+  assert.strictEqual(r.action, 'pr-review', cmd + ' -> ' + JSON.stringify(r));
+  assert.strictEqual(r.recovered, true, cmd + ' is a recovered route');
+  assert.ok(!('uncertain' in r), cmd + ' is statically readable, not uncertain');
+  assert.ok(Array.isArray(r.verdictSegments), cmd + ' carries verdictSegments');
+  assert.deepStrictEqual(r.verdictSegments.map((s) => s.tokens), want, cmd);
+}
+
+for (const cmd of [
+  'bash -c "gh pr review 42 -a"',
+  "sh -c 'gh pr review 42 -a'",
+  "dash -c 'gh pr review 42 -a'",
+  'bash -lc "gh pr review 42 -a"',
+  'bash -ec "gh pr review 42 -a"',
+  "bash -c -x 'gh pr review 42 -a'",
+  "bash -c -- 'gh pr review 42 -a'",
+  "bash -o errexit -c 'gh pr review 42 -a'",
+  "bash +c 'gh pr review 42 -a'",
+]) {
+  test('261006-jsm shell -c: `' + cmd + '` -> recovered pr-review with one verdict segment', () => {
+    assertRecoveredReview(cmd);
+  });
+}
+
+test('261006-jsm shell -c: an inner chain returns EVERY inner pr-review segment, in order (D3)', () => {
+  assertRecoveredReview("bash -c 'gh pr review 1 --comment; gh pr review 1 -a'", [
+    ['gh', 'pr', 'review', '1', '--comment'],
+    ['gh', 'pr', 'review', '1', '-a'],
+  ]);
+});
+
+test('261006-jsm shell -c: the recovered result names the shell-c form', () => {
+  const r = cls('bash -c "gh pr review 42 -a"');
+  assert.strictEqual(r.via, 'shell-c');
+  assert.strictEqual(r.route, 'recovered');
+});
+
+for (const cmd of [
+  'bash -c "git push"',
+  'bash -c "npm test"',
+  "sh -c 'ls | wc -l'",
+  'bash script.sh',
+  "bash -- -c 'x'",
+  'bash -c',
+  "bash -c ''",
+  "echo 'bash -c gh pr review 42 -a'",
+  'bash -c "cd x\nmake\necho ok"',
+  'bash <<EOF\nmake\nEOF',
+]) {
+  test('261006-jsm shell -c lock: `' + JSON.stringify(cmd) + '` stays other', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+  });
+}
+
+test('261006-jsm shell -c lock (D1): a wrapped push is discarded, so no push gate starts firing', () => {
+  const parsed = parseCommand('bash -c "git push"');
+  assert.strictEqual(hasGovernedSegment(parsed, ['push']), false);
+  assert.strictEqual(isNonGovernedCommand(parsed, ['push']), true);
+  assert.strictEqual(hasFailClosedSegment(parsed), false);
+});
+
+// D2 four rows + corpus for F = `bash -c "gh pr review 42 -a"`.
+const JSM_SHELL_F = 'bash -c "gh pr review 42 -a"';
+
+test('261006-jsm D2 shell -c lock: `F && gh pr merge 1` is pr-merge (a recovered form never displaces it)', () => {
+  assert.strictEqual(cls(JSM_SHELL_F + ' && gh pr merge 1').action, 'pr-merge');
+});
+
+test('261006-jsm D2 shell -c lock: `gh pr merge 1 && F` is pr-merge', () => {
+  assert.strictEqual(cls('gh pr merge 1 && ' + JSM_SHELL_F).action, 'pr-merge');
+});
+
+test('261006-jsm D2 shell -c lock: `gh pr review 1 -a; F` is the NATIVE pr-review, no recovered key', () => {
+  assert.deepStrictEqual(cls('gh pr review 1 -a; ' + JSM_SHELL_F), { action: 'pr-review', route: 'native' });
+});
+
+test('261006-jsm D2 shell -c lock: `F && git push` is push and `git commit -m x && F` is commit', () => {
+  assert.deepStrictEqual(cls(JSM_SHELL_F + ' && git push'), { action: 'push' });
+  assert.deepStrictEqual(cls('git commit -m x && ' + JSM_SHELL_F), { action: 'commit' });
+});
+
+test('261006-jsm D2 shell -c lock: hasGovernedSegment still finds pr-merge after F', () => {
+  assert.strictEqual(hasGovernedSegment(parseCommand(JSM_SHELL_F + ' && gh pr merge 1'), ['pr-merge']), true);
+});
+
+test('261006-jsm D2 shell -c: lone F is a recovered pr-review', () => {
+  assertRecoveredReview(JSM_SHELL_F);
+});
+
+test('261006-jsm D2 shell -c corpus lock: F is non-governed for every existing gate set and never fails closed', () => {
+  const parsed = parseCommand(JSM_SHELL_F);
+  assert.strictEqual(hasFailClosedSegment(parsed), false);
+  for (const [gate, actions] of Object.entries(EXISTING_GATE_SETS)) {
+    assert.strictEqual(hasGovernedSegment(parsed, actions), false, gate + ' must NOT be governed by F');
+    assert.strictEqual(isNonGovernedCommand(parsed, actions), true, gate + ' must short-circuit for F');
+  }
+});
+
+test('261006-jsm D2 shell -c corpus: F IS governed by the review-artifact set', () => {
+  assert.strictEqual(hasGovernedSegment(parseCommand(JSM_SHELL_F), REVIEW_ARTIFACT_GOVERNED), true);
+});

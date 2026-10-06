@@ -2231,3 +2231,109 @@ for (const [label, plant, skip] of [
     }
   });
 }
+
+// -- 261006-jsm ENF-20 verdict routes: a `bash -c` / `sh -c` verdict reaches R8a ---------------
+//
+// The classifier now recovers a `gh pr review` inside a shell -c command string as a pr-review
+// with `verdictSegments`; gate() runs each verdict segment (never the outer `bash -c` segment,
+// whose tokens hide `-a` from isNativeGhSegment) through gateSegment.
+
+test('261006-jsm gate: `bash -c "gh pr review 42 -a"` with only Bash rows -> DENY R8a-memtrace, log read once', () => {
+  const dp = depsWithLog(toolLog(ONLY_BASH.slice()));
+  const d = runReviewArtifactGate(input('bash -c "gh pr review 42 -a"'), dp);
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /R8a-memtrace/);
+  assert.deepStrictEqual(dp._calls.readToolLog, [SESSION]);
+});
+
+test("261006-jsm gate: `sh -c 'gh pr review 42 -a'` with only Bash rows -> DENY R8a-memtrace", () => {
+  const d = runReviewArtifactGate(input("sh -c 'gh pr review 42 -a'"), depsWithLog(toolLog(ONLY_BASH.slice())));
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /R8a-memtrace/);
+});
+
+test('261006-jsm gate: a comment-then-approve inner chain -> DENY R8a-memtrace on the later approve', () => {
+  const d = runReviewArtifactGate(
+    input("bash -c 'gh pr review 42 --comment -b x; gh pr review 42 -a'"),
+    depsWithLog(toolLog(ONLY_BASH.slice()))
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /R8a-memtrace/);
+});
+
+test('261006-jsm gate lock: `bash -c "gh pr review 42 --comment -b x"` with only Bash rows -> allow, log never read', () => {
+  const dp = depsWithLog(toolLog(ONLY_BASH.slice()));
+  const d = runReviewArtifactGate(input('bash -c "gh pr review 42 --comment -b x"'), dp);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.deepStrictEqual(dp._calls.readToolLog, []);
+});
+
+// W2 false-ask locks: a multi-line -c payload and a heredoc-fed shell stay ungoverned.
+for (const cmd of ['bash -c "cd x\nmake\necho ok"', 'bash <<EOF\nmake\nEOF']) {
+  test('261006-jsm gate W2 lock: `' + JSON.stringify(cmd) + '` -> allow with no PR lookup and no scaffold', () => {
+    const dp = deps();
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+    assert.strictEqual(dp._calls.resolvePr, 0);
+    assert.deepStrictEqual(dp._calls.scaffolded, []);
+    assert.deepStrictEqual(dp._calls.readToolLog, []);
+  });
+}
+
+// The real entrypoint, end to end: the VF-2 harness layout with NO planted FIFO, a fake gh first on
+// PATH answering `pr view`, and a temp log whose only row is this session's Bash call.
+test('261006-jsm e2e (spawned hook): `bash -c "gh pr review 42 -a"` with only a Bash row -> deny naming R8a-memtrace', () => {
+  const { root } = vf2Root();
+  const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rev-art-jsm-e2e-log-'));
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rev-art-jsm-e2e-bin-'));
+  try {
+    fs.mkdirSync(path.join(root, 'scripts'));
+    fs.writeFileSync(path.join(root, 'scripts', 'issue-dedupe.cjs'), '');
+    fs.mkdirSync(path.join(root, 'gsd-core', 'bin', 'lib'), { recursive: true });
+    fs.writeFileSync(
+      path.join(binDir, 'gh'),
+      '#!/bin/sh\nif [ "$1" = "pr" ]; then printf \'%s\' \'{"number":42,"headRefOid":"' + HEAD + '"}\'; fi\nexit 0\n',
+      { mode: 0o755 }
+    );
+    const sid = 'sess-jsm-e2e';
+    fs.writeFileSync(
+      path.join(logDir, LOG_FILENAME),
+      serializeRecord(
+        recordToolCall(
+          JSON.stringify({
+            hook_event_name: 'PostToolUse',
+            session_id: sid,
+            tool_use_id: 'toolu_jsm',
+            tool_name: 'Bash',
+            tool_input: { command: 'ls' },
+            tool_response: {},
+            cwd: '/tmp/wt',
+          }),
+          { env: {} }
+        )
+      )
+    );
+    const env = Object.assign({}, process.env, {
+      PATH: binDir + path.delimiter + (process.env.PATH || ''),
+      GSD_CONTRIB_LOG_DIR: logDir,
+    });
+    delete env.GSD_CONTRIB_RECORD;
+    delete env.GSD_CONTRIB_OVERRIDE;
+    const res = spawnSync(process.execPath, [RA_PATH], {
+      input: input('bash -c "gh pr review 42 -a"', sid),
+      encoding: 'utf8',
+      cwd: root,
+      env,
+      timeout: 6000,
+    });
+    assert.strictEqual(res.signal, null, 'the hook was killed without a decision');
+    assert.strictEqual(res.status, 0, res.stderr);
+    const out = res.stdout.trim();
+    assert.ok(out.length > 0, 'the hook emitted a decision (empty stdout is an allow)');
+    const hso = JSON.parse(out.split('\n').pop()).hookSpecificOutput;
+    assert.strictEqual(hso.permissionDecision, 'deny', hso.permissionDecisionReason);
+    assert.match(hso.permissionDecisionReason, /R8a-memtrace/);
+  } finally {
+    for (const d of [root, logDir, binDir]) fs.rmSync(d, { recursive: true, force: true });
+  }
+});
