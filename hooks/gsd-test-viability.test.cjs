@@ -411,3 +411,302 @@ test('ENF-24 GTEST-04: an out-of-tree dispatch (resolveTreeRoot null) ALLOWS wit
   assert.strictEqual(calls.readConfig, 0);
   assert.strictEqual(calls.dockerProbe, 0);
 });
+
+// ═════════════════════════ Task 2: GTEST-06 bounded docker probe ═════════════════════════
+
+const { spawnSync } = require('node:child_process');
+
+const HOOK = path.join(__dirname, 'gsd-test-viability.cjs');
+
+// ───────────────────────── classifyDockerResult table ─────────────────────────
+
+const DOCKER_TABLE = [
+  ['exit 0 -> ok', { status: 0, stdout: '27.1.1\n' }, 'ok'],
+  ['spawn ENOENT -> missing', { error: { code: 'ENOENT' } }, 'missing'],
+  ['ETIMEDOUT + SIGKILL -> timeout', { error: { code: 'ETIMEDOUT' }, status: null, signal: 'SIGKILL' }, 'timeout'],
+  ['status null + signal -> timeout', { status: null, signal: 'SIGKILL' }, 'timeout'],
+  ['exit 1 -> down', { status: 1, stderr: 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock\n' }, 'down'],
+  ['spawn EACCES -> error', { error: { code: 'EACCES' } }, 'error'],
+];
+for (const [label, res, state] of DOCKER_TABLE) {
+  test(`ENF-24 GTEST-06: classifyDockerResult ${label}`, () => {
+    assert.strictEqual(typeof viability.classifyDockerResult, 'function', 'classifyDockerResult is exported');
+    assert.strictEqual(viability.classifyDockerResult(res).state, state);
+  });
+}
+
+test('ENF-24 GTEST-06: classifyDockerResult down carries the first stderr line, at most 200 chars', () => {
+  assert.strictEqual(typeof viability.classifyDockerResult, 'function');
+  const down = viability.classifyDockerResult({
+    status: 1,
+    stderr: 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock\nsecond line\n',
+  });
+  assert.strictEqual(down.detail, 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock');
+  const long = viability.classifyDockerResult({ status: 1, stderr: 'e'.repeat(500) });
+  assert.ok(long.detail.length <= 200, 'detail is capped at 200 chars');
+});
+
+test('ENF-24 GTEST-06: DOCKER_PROBE_TIMEOUT_MS is exported and at most 8000; DOCKER_PROBE_ARGS is the fixed argv', () => {
+  assert.strictEqual(typeof viability.DOCKER_PROBE_TIMEOUT_MS, 'number');
+  assert.ok(viability.DOCKER_PROBE_TIMEOUT_MS <= 8000);
+  assert.deepStrictEqual(Array.from(viability.DOCKER_PROBE_ARGS || []), ['info', '--format', '{{.ServerVersion}}']);
+  assert.ok(Object.isFrozen(viability.DOCKER_PROBE_ARGS), 'the argv is frozen');
+});
+
+// ───────────────────────── spawn seam (checker item 4) ─────────────────────────
+
+function recordingSpawn(result) {
+  const rec = { count: 0, calls: [] };
+  const fn = (cmd, args, opts) => {
+    rec.count += 1;
+    rec.calls.push({ cmd, args, opts });
+    return result;
+  };
+  return { fn, rec };
+}
+
+test('ENF-24 GTEST-06 seam: an injected dockerProbe is called once and the spawnSync seam ZERO times', () => {
+  const spawn = recordingSpawn({ status: 0, stdout: '27\n' });
+  const { d, calls } = run('gsd-test -bench wsl-local', { spawnSync: spawn.fn });
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.dockerProbe, 1);
+  assert.strictEqual(spawn.rec.count, 0);
+});
+
+test('ENF-24 GTEST-06 seam: the default probe calls the injected spawnSync exactly once with docker, the fixed argv, timeout 8000, SIGKILL', () => {
+  const spawn = recordingSpawn({ status: 0, stdout: '27\n' });
+  const { deps } = scenario({ spawnSync: spawn.fn });
+  delete deps.dockerProbe;
+  const d = runGsdTestViabilityGate(input('gsd-test -bench wsl-local'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(spawn.rec.count, 1);
+  const c = spawn.rec.calls[0];
+  assert.strictEqual(c.cmd, 'docker');
+  assert.deepStrictEqual(c.args, ['info', '--format', '{{.ServerVersion}}']);
+  assert.strictEqual(c.opts.timeout, 8000);
+  assert.strictEqual(c.opts.killSignal, 'SIGKILL');
+  assert.notStrictEqual(c.opts.shell, true, 'never through a shell');
+});
+
+test('ENF-24 GTEST-06 seam: the default probe maps a fake spawn exit 1 to a deny carrying the detail', () => {
+  const spawn = recordingSpawn({ status: 1, stdout: '', stderr: 'Cannot connect to the Docker daemon\n' });
+  const { deps } = scenario({ spawnSync: spawn.fn });
+  delete deps.dockerProbe;
+  const d = runGsdTestViabilityGate(input('gsd-test'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /Cannot connect to the Docker daemon/);
+});
+
+// ───────────────────────── gate with an injected probe ─────────────────────────
+
+test('ENF-24 GTEST-06: probe ok -> ALLOW', () => {
+  const { d, calls } = run('gsd-test -bench wsl-local', { probe: { state: 'ok', detail: '' } });
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.dockerProbe, 1);
+});
+
+test('ENF-24 GTEST-06: probe missing (no docker CLI) -> DENY naming docker and the fix', () => {
+  const { d, reason } = run('gsd-test -bench wsl-local', { probe: { state: 'missing', detail: '' } });
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(reason, /ENF-24/);
+  assert.match(reason, /docker/i);
+  assert.match(reason, /WSL integration/);
+});
+
+test('ENF-24 GTEST-06: probe down -> DENY including the exit detail and the start-Docker fix', () => {
+  const { d, reason } = run('gsd-test', { probe: { state: 'down', detail: 'Cannot connect to the Docker daemon' } });
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(reason, /ENF-24/);
+  assert.match(reason, /Cannot connect to the Docker daemon/);
+  assert.match(reason, /start Docker/i);
+});
+
+test('ENF-24 GTEST-06: probe timeout -> ASK naming ENF-24 and the dangerously-skip-permissions limit', () => {
+  const { d, reason } = run('gsd-test', { probe: { state: 'timeout', detail: '' } });
+  assert.strictEqual(d.permissionDecision, 'ask');
+  assert.match(reason, /ENF-24/);
+  assert.match(reason, /dangerously-skip-permissions/);
+  assert.doesNotMatch(reason, /^Blocked/, 'the ask is not described as blocking');
+});
+
+test('ENF-24 GTEST-06: probe error -> DENY (thrown)', () => {
+  const { d, reason } = run('gsd-test', { probe: { state: 'error', detail: 'EACCES' } });
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(reason, /ENF-24/);
+});
+
+test('ENF-24 GTEST-06: the probe throwing a plain Error -> DENY', () => {
+  const { d } = run('gsd-test', {
+    dockerProbe: () => {
+      throw new Error('boom');
+    },
+  });
+  assert.strictEqual(d.permissionDecision, 'deny');
+});
+
+test('ENF-24 GTEST-06: the probe returning an unknown state -> DENY', () => {
+  const { d } = run('gsd-test', { probe: { state: 'weird' } });
+  assert.strictEqual(d.permissionDecision, 'deny');
+});
+
+test('ENF-24 GTEST-06: docker down/missing are POLICY denies, NOT override-escapable', () => {
+  const { d, calls } = run('gsd-test', { probe: { state: 'down', detail: 'x' }, override: true });
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(calls.writeReceipt, 0);
+});
+
+// ───────────────────────── probe scope ─────────────────────────
+
+const CONFIG_MIXED =
+  '[[benches]]\nname = "wsl-local"\nhost = "local"\n' +
+  '[[benches]]\nname = "remote"\nhost = "ssh://bench1"\n' +
+  '[[benches]]\nname = "nohost"\n';
+
+test('ENF-24 GTEST-06 scope: no bench named -> the local probe runs', () => {
+  const { calls } = run('gsd-test', { config: CONFIG_MIXED });
+  assert.strictEqual(calls.dockerProbe, 1);
+});
+
+test('ENF-24 GTEST-06 scope: `-bench wsl-local` (host "local") -> the probe runs', () => {
+  const { calls } = run('gsd-test -bench wsl-local', { config: CONFIG_MIXED });
+  assert.strictEqual(calls.dockerProbe, 1);
+});
+
+test('ENF-24 GTEST-06 scope: a bench with host "ssh://bench1" -> NO probe, ALLOW (remote probing deferred)', () => {
+  const { d, calls } = run('gsd-test -bench remote', { config: CONFIG_MIXED, probe: { state: 'down', detail: 'x' } });
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.dockerProbe, 0);
+});
+
+test('ENF-24 GTEST-06 scope: a bench with no host key -> NO probe, ALLOW', () => {
+  const { d, calls } = run('gsd-test -bench nohost', { config: CONFIG_MIXED, probe: { state: 'down', detail: 'x' } });
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.dockerProbe, 0);
+});
+
+// ───────────────────────── ordering / cost ─────────────────────────
+
+test('ENF-24 GTEST-06 cost: config missing -> ZERO probes', () => {
+  const { d, calls } = run('gsd-test', { config: null, probe: { state: 'down', detail: 'x' } });
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /does not exist/);
+  assert.strictEqual(calls.dockerProbe, 0);
+});
+
+test('ENF-24 GTEST-06 cost: bench absent -> ZERO probes', () => {
+  const { d, calls } = run('gsd-test -bench nope', { probe: { state: 'down', detail: 'x' } });
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /Configured benches/);
+  assert.strictEqual(calls.dockerProbe, 0);
+});
+
+test('ENF-24 GTEST-06 cost: two dispatches `gsd-test -bench wsl-local; gsd-test` -> exactly ONE probe', () => {
+  const { d, calls } = run('gsd-test -bench wsl-local; gsd-test');
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.dockerProbe, 1);
+});
+
+test('ENF-24 GTEST-06 cost: the probe memo does not leak across gate calls (one probe per call)', () => {
+  const { deps, calls } = scenario();
+  runGsdTestViabilityGate(input('gsd-test'), deps);
+  runGsdTestViabilityGate(input('gsd-test'), deps);
+  assert.strictEqual(calls.dockerProbe, 2);
+});
+
+// ───────────────────────── precedence ─────────────────────────
+
+test('ENF-24 GTEST-06 precedence: dispatch A unresolved config (ask) + dispatch B docker down (deny) -> DENY', () => {
+  const { d, calls } = run('gsd-test --config $CFG; gsd-test', { probe: { state: 'down', detail: 'daemon down' } });
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /daemon down/);
+  assert.strictEqual(calls.dockerProbe, 1);
+});
+
+test('ENF-24 GTEST-06 precedence: only asks -> ASK', () => {
+  const { d } = run('gsd-test --config $CFG; gsd-test', { probe: { state: 'timeout', detail: '' } });
+  assert.strictEqual(d.permissionDecision, 'ask');
+});
+
+// ───────────────────────── every throw denies, never asks ─────────────────────────
+
+for (const seam of ['resolveTreeRoot', 'readConfig', 'dockerProbe']) {
+  test(`ENF-24 GTEST-06 floor: a throwing ${seam} DENIES (never ask)`, () => {
+    const { d } = run('gsd-test -bench wsl-local', {
+      [seam]: () => {
+        throw new Error(`${seam} exploded`);
+      },
+    });
+    assert.strictEqual(d.permissionDecision, 'deny');
+    assert.match(d.permissionDecisionReason, new RegExp(`${seam} exploded`));
+  });
+}
+
+// ───────────────────────── spawned e2e with a fake docker on a temp-only PATH ─────────────────────────
+
+/** A temp dir holding the gsd-core sentinel layout. */
+function makeSentinelDir() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gtest-via-root-'));
+  fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'gsd-core', 'bin', 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'scripts', 'issue-dedupe.cjs'), '');
+  return dir;
+}
+
+/**
+ * Spawn the REAL hook. `dockerExit` null -> the temp bin dir holds NO docker; a number -> a fake
+ * `#!/bin/sh` docker exiting with it. PATH is EXACTLY the temp bin dir, so /usr/bin/docker is
+ * unreachable; node is launched by its absolute path.
+ */
+function e2e({ dockerExit, withConfig, command }) {
+  const root = makeSentinelDir();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gtest-via-home-'));
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'gtest-via-bin-'));
+  try {
+    if (withConfig) {
+      fs.mkdirSync(path.join(home, '.config', 'gsd-test'), { recursive: true });
+      fs.writeFileSync(path.join(home, '.config', 'gsd-test', 'config.toml'), CONFIG_LOCAL);
+    }
+    if (typeof dockerExit === 'number') {
+      fs.writeFileSync(path.join(bin, 'docker'), `#!/bin/sh\nexit ${dockerExit}\n`, { mode: 0o755 });
+    }
+    const env = Object.assign({}, process.env);
+    delete env.XDG_CONFIG_HOME;
+    delete env.GSD_CONTRIB_OVERRIDE;
+    env.HOME = home;
+    env.PATH = bin;
+    const r = spawnSync(process.execPath, [HOOK], {
+      input: input(command || 'gsd-test -bench wsl-local'),
+      cwd: root,
+      env,
+      encoding: 'utf8',
+      timeout: 30000,
+    });
+    assert.strictEqual(r.status, 0, 'the hook exits 0: ' + r.stderr);
+    const out = JSON.parse(String(r.stdout).trim().split('\n').pop());
+    return out.hookSpecificOutput;
+  } finally {
+    for (const d of [root, home, bin]) fs.rmSync(d, { recursive: true, force: true });
+  }
+}
+
+test('ENF-24 GTEST-06 e2e: config + fake docker exiting 0 on a temp-only PATH -> ALLOW', () => {
+  assert.strictEqual(e2e({ dockerExit: 0, withConfig: true }).permissionDecision, 'allow');
+});
+
+test('ENF-24 GTEST-06 e2e: fake docker exiting 1 -> DENY', () => {
+  const o = e2e({ dockerExit: 1, withConfig: true });
+  assert.strictEqual(o.permissionDecision, 'deny');
+  assert.match(o.permissionDecisionReason, /ENF-24/);
+});
+
+test('ENF-24 GTEST-06 e2e: no docker anywhere on PATH -> DENY', () => {
+  const o = e2e({ dockerExit: null, withConfig: true });
+  assert.strictEqual(o.permissionDecision, 'deny');
+  assert.match(o.permissionDecisionReason, /docker/i);
+});
+
+test('ENF-24 GTEST-04 e2e: no config file -> DENY (before any probe)', () => {
+  const o = e2e({ dockerExit: 0, withConfig: false });
+  assert.strictEqual(o.permissionDecision, 'deny');
+  assert.match(o.permissionDecisionReason, /does not exist/);
+});
