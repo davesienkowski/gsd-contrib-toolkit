@@ -1946,3 +1946,38 @@ test('38 fix NT-02: a mismatched head_oid is echoed cleaned (controls, bidi, zer
   assert.ok(Array.from(m[1]).length <= 80, 'at most 80 characters: ' + Array.from(m[1]).length);
   assert.ok(m[1].startsWith('dead beef'), JSON.stringify(m[1].slice(0, 12)));
 });
+
+// ── 38 review fix NT-04: skill ↔ constant parity in BOTH directions, and the live-surface note ─
+
+/** The snake_case backticked verbs of `line` between the first `start` and the next `end`. */
+function verbsBetween(line, start, end) {
+  const i = line.indexOf(start);
+  assert.ok(i !== -1, 'the 8a line contains ' + JSON.stringify(start));
+  const j = line.indexOf(end, i + start.length);
+  assert.ok(j !== -1, 'the 8a line contains ' + JSON.stringify(end) + ' after ' + JSON.stringify(start));
+  const clause = line.slice(i + start.length, j);
+  return new Set(Array.from(clause.matchAll(/`([a-z]+(?:_[a-z]+)+)`/g), (m) => m[1]));
+}
+
+function requiredVerbSet() {
+  return new Set([...reviewArtifact.MEMTRACE_REQUIRED_ALL, ...reviewArtifact.MEMTRACE_REQUIRED_ANY]);
+}
+
+test('38 fix NT-04 parity: the 8a floor clause names exactly MEMTRACE_REQUIRED_ALL ∪ MEMTRACE_REQUIRED_ANY (both directions)', () => {
+  const floor = verbsBetween(reReview8aLine(), '**confirmed-available** floor', "trek-e's richer");
+  assert.deepStrictEqual([...floor].sort(), [...requiredVerbSet()].sort());
+});
+
+test('38 fix NT-04 parity: the 8a "Enforced" clause names exactly MEMTRACE_REQUIRED_ALL ∪ MEMTRACE_REQUIRED_ANY (both directions)', () => {
+  const enforced = verbsBetween(reReview8aLine(), 'for successful', 'in THIS session');
+  assert.deepStrictEqual([...enforced].sort(), [...requiredVerbSet()].sort());
+});
+
+test('38 fix NT-04: the 8a line says find_code_review_issues is present on the live surface 2026-10-05 but not required', () => {
+  const line = reReview8aLine();
+  assert.ok(line.includes('`find_code_review_issues`'), 'the 8a line names find_code_review_issues');
+  assert.ok(
+    line.includes('present on the live surface 2026-10-05 but not required'),
+    'the 8a line carries the live-surface note for find_code_review_issues'
+  );
+});
