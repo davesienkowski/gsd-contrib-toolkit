@@ -587,3 +587,53 @@ test('ENF-23 hardening e2e: dirty real repo + `--head $(git rev-parse HEAD)` DEN
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ─────────────── 36-03 handoff fixes (detector residuals from 36-02), at the gate ───────────────
+
+test('ENF-23 handoff: `cd "$X" && gsd-test` DENIES (unresolved start dir, thrown) with ZERO resolve/git calls', () => {
+  const { deps, calls } = scenario();
+  const d = runGsdTestCleanTreeGate(input('cd "$X" && gsd-test'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /ENF-23/);
+  assert.match(d.permissionDecisionReason, /literal path/);
+  assert.strictEqual(calls.resolveTreeRoot, 0, 'never trusts <cwd>/$X');
+  assert.strictEqual(gitCalls(calls), 0);
+});
+
+test('ENF-23 handoff: `cd "$HOME/w/a" && gsd-test` resolves the tree from the injected HOME', () => {
+  const { deps, calls } = scenario({ env: { HOME: '/h' } });
+  runGsdTestCleanTreeGate(input('cd "$HOME/w/a" && gsd-test'), deps);
+  assert.deepStrictEqual(calls.dirs, [path.resolve('/h/w/a')]);
+});
+
+test('ENF-23 handoff: `echo "("; cd /w/a; echo ")"; gsd-test` resolves the tree at /w/a (quoted parens do not group)', () => {
+  const { deps, calls } = scenario({ cwd: '/w/sub' });
+  runGsdTestCleanTreeGate(input('echo "("; cd /w/a; echo ")"; gsd-test'), deps);
+  assert.deepStrictEqual(calls.dirs, [path.resolve('/w/a')]);
+});
+
+test('ENF-23 handoff: `gsd-test --bench "a(b" | tail` DENIES with PIPE_REASON (a quoted paren must not hide the pipe)', () => {
+  const { deps, calls } = scenario();
+  const d = runGsdTestCleanTreeGate(input('gsd-test --bench "a(b" | tail'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(d.permissionDecisionReason, PIPE_REASON);
+  assert.strictEqual(calls.gitStatus, 0);
+});
+
+test('ENF-23 handoff: nested quotes `gsd-test --bench "$(echo "(")" | tail` DENIES (uncertain) with ZERO calls', () => {
+  const { deps, calls } = scenario();
+  const d = runGsdTestCleanTreeGate(input('gsd-test --bench "$(echo "(")" | tail'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(calls.resolveTreeRoot + gitCalls(calls), 0);
+});
+
+test('ENF-23 handoff e2e: on a real clean repo `gsd-test --bench "a(b" | tail` DENIES with PIPE_REASON', () => {
+  const { dir } = makeGitRepo();
+  try {
+    const r = spawnIn(dir, 'gsd-test --bench "a(b" | tail');
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.strictEqual(r.reason, PIPE_REASON);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
