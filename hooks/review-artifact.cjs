@@ -18,7 +18,7 @@
  *
  *   step 8  -> `gh pr review`   two orthogonal isolated passes (`/code-review` AND
  *                               `/security-review`) recorded for THIS head oid.
- *   step 8a -> a review verdict an approve / request-changes needs `get_impact` +
+ *   step 8a -> a review verdict an approve / request-changes / CLEAR needs `get_impact` +
  *                               `get_symbol_context` + one recorded-decision memtrace verb
  *                               in tool-recorder's log for THIS session (R8a-memtrace);
  *                               cannot-observe asks, and a filled `R8a-memtrace.json`
@@ -210,7 +210,8 @@ const MEMTRACE_REQUIRED_ANY = Object.freeze(['recall_decision', 'why_is_this_her
  *   step     the re-review step number it mechanizes (surfaced in the denial).
  *   on       the classified actions it applies to.
  *   when     'always' | 'clear-verdict' | 'review-post' | 'verdict' — see `gateApplies`.
- *            'verdict' is an approve or request-changes (step 8a), never a `--comment`.
+ *            'verdict' is an approve, a request-changes or a CLEAR body (step 8a), never a
+ *            plain `--comment` or comment.
  *   file     the artifact, relative to the PR+oid directory (absent for a live-only check).
  *   artifact an escape artifact the entry's own `verify` reads, NOT `file`, so requireArtifact
  *            never runs for it (R8a-memtrace: `R8a-memtrace.json`, the sanctioned unavailable
@@ -360,9 +361,11 @@ const GATES = Object.freeze([
   Object.freeze({
     id: 'R8a-memtrace',
     step: '8a',
-    on: Object.freeze(['pr-review']),
-    // Verdict-bearing reviews only (approve / request-changes); a `--comment` review is not
-    // governed by this obligation.
+    // 261006-jsm (CONTEXT D5): a CLEAR verdict posted as a PR comment (or to the issues endpoint,
+    // the PR conversation route) is a step-8a verdict too, so both comment actions are governed.
+    on: Object.freeze(['pr-review', ...PR_COMMENT_EQUIVALENT_ACTIONS]),
+    // Verdict-bearing posts only (approve / request-changes / a CLEAR token in the body); a plain
+    // `--comment` review or comment is not governed by this obligation.
     when: 'verdict',
     // `artifact`, deliberately NOT `file`: the evidence is the recorder log, so requireArtifact
     // must never run for this entry (a missing file must not deny when the evidence exists).
@@ -1534,7 +1537,8 @@ function quoteAttestation(value, max = ATTESTATION_QUOTE_MAX) {
  * @param {{approve:boolean, requestChanges:boolean, clear:boolean, reviewPost:boolean}} post
  *   `approve` from isApproveEvent, `requestChanges` from isRequestChangesEvent, `clear` and
  *   `reviewPost` from the body. A `--comment` review and a REST review with no event are neither
- *   verdict, so 'verdict' (step 8a) never applies to them.
+ *   an approve nor a request-changes; 'verdict' (step 8a) applies to them, and to a comment, only
+ *   when the body carries a `CLEAR` token (261006-jsm, CONTEXT D5).
  * @returns {boolean}
  */
 function gateApplies(g, action, post) {
@@ -1549,9 +1553,10 @@ function gateApplies(g, action, post) {
     // comment only when it carries the re-review header or a verdict.
     case 'review-post':
       return action === 'pr-review' || post.reviewPost || post.clear;
-    // Step 8a: a VERDICT-bearing review (approve or request-changes), never a plain comment.
+    // Step 8a: a VERDICT-bearing post: an approve, a request-changes, or a CLEAR token in the
+    // body (CLEAR_VERDICT_RE, the signal R10 uses; re-review step 11), never a plain comment.
     case 'verdict':
-      return post.approve || post.requestChanges;
+      return post.approve || post.requestChanges || post.clear;
     default:
       throw new FailClosed('ENF-20 contract bug: gate ' + g.id + ' has an unknown `when`');
   }
