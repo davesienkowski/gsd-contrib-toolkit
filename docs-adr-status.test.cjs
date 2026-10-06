@@ -22,6 +22,13 @@
  *       ENF-20-wide pre-existing gap, the sparse-extend scan-cap downgrade, the no-newline scan cost,
  *       the over-gating verdict forms and the live-slot FIFO that still blocks the verdict writer.
  *
+ *   (i) Quick 261006-jq4 (W4 measurement): CTK-ADR-0010, README.md and re-review.md step 8a record the
+ *       subagent session_id as MEASURED (Claude Code 2.1.291, 2026-10-06): a subagent's tool calls reach
+ *       PreToolUse/PostToolUse under the parent session_id. The documented-only wording is gone, and the
+ *       CTK-ADR-0007 Decision 2 rationale for ask-not-deny stays. The code review (WR-01..WR-04) adds
+ *       pins for the MCP-call measurement, every unmeasured form, the claim phrase and its scope (with
+ *       the inversions banned), and a leak guard over the four published jq4 scopes.
+ *
  * Approving ADR-0008 is Dave's call: when he does, update (a) and (b) here deliberately.
  * Approving ADR-0009 is also Dave's call: when he does, update (e) here deliberately.
  * Approving ADR-0010 is Dave's call: when he does, update (f) here deliberately.
@@ -207,4 +214,207 @@ test('38 verifier: the live-slot FIFO residual says it hangs every gate and poin
   const b = adr10Bullet(/live slot/i);
   assert.match(b, /every gate/);
   assert.ok(b.includes('SEED-live-tool-log-fifo-hangs-all-gates'), b);
+});
+
+// -- quick-261006-jq4 (W4 measurement): the subagent session_id is recorded as measured --
+//
+// The evidence lives in the local, unpublished planning corpus. This file is published, so it pins
+// the SHAPE of a session UUID and an agent id (never the real values). The leak guard at the end of
+// this block applies those two shapes plus `/home/` and `/tmp/` to exactly four scopes: the whole of
+// CTK-ADR-0010, the README.md step 8a paragraph, the whole of skills/maintainer-review-sweep/re-review.md
+// and the whole of its bundle copy under capabilities/contribution-toolkit/.
+//
+// Review WR-03: the tests pin the claim phrase and its scope and ban the inversions, so a negated or
+// widened sentence reds even when every token is still present.
+
+const JQ4_EVIDENCE = '.planning/quick/261006-jq4-measure-subagent-session-id-in-posttoolu/evidence/';
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+const AGENT_ID_RE = /\ba[0-9a-f]{16}\b/;
+const LOCAL_PATH_RE = /\/home\/|\/tmp\//;
+/** A sentence that inverts the measured claim ("not logged", "never count(s)"). */
+const INVERSION_RE = /\b(not|never) (logged|count)/;
+
+/** CTK-ADR-0010's text from `startMarker` to `endMarker` (or to the end when endMarker is null). */
+function adr10Section(startMarker, endMarker) {
+  const text = fs.readFileSync(adrFile(10), 'utf8');
+  const start = text.indexOf(startMarker);
+  assert.ok(start !== -1, 'CTK-ADR-0010 contains ' + JSON.stringify(startMarker));
+  if (endMarker === null) return text.slice(start);
+  const end = text.indexOf(endMarker, start);
+  assert.ok(end > start, 'CTK-ADR-0010 has ' + JSON.stringify(endMarker) + ' after ' + JSON.stringify(startMarker));
+  return text.slice(start, end);
+}
+
+/** The single item in `items` matching `re`. */
+function exactlyOne(items, re, what) {
+  const hits = items.filter((s) => re.test(s));
+  assert.strictEqual(hits.length, 1, 'exactly one ' + what + ' matches ' + re + ': ' + hits.length);
+  return hits[0];
+}
+
+function assertAscii(s, what) {
+  assert.match(s, /^[\x00-\x7F]*$/, what + ' is plain ASCII');
+}
+
+function assertHasAll(s, tokens, what) {
+  for (const token of tokens) {
+    assert.ok(s.includes(token), what + ' names ' + JSON.stringify(token) + ': ' + s);
+  }
+}
+
+/** `s` with every run of whitespace collapsed to one space, so a re-wrap cannot red a token match. */
+function norm(s) {
+  return s.replace(/\s+/g, ' ');
+}
+
+/** Review WR-01: the text says an MCP tool call made inside a subagent was measured. */
+function assertNamesMcpMeasurement(s, what) {
+  assert.match(s, /\bMCP\b/, what + ' names MCP: ' + s);
+  assert.match(s, /mcp__|MCP tool call/, what + ' names the MCP tool call: ' + s);
+}
+
+/**
+ * Review WR-02: the "not measured" text names every scope limit the research recorded: interactive and
+ * `--agent` sessions, nested subagents, forks, agent teams, the `PostToolUseFailure` event, hooks
+ * installed through the capability rather than project settings, and that the MCP call was not memtrace.
+ */
+function assertNamesEveryUnmeasuredForm(s, what) {
+  assertHasAll(s, ['`--agent`', '`PostToolUseFailure`', 'context7'], what);
+  for (const re of [/interactive/i, /nested/, /fork/, /team/, /capability/, /project settings/, /context7, not memtrace/]) {
+    assert.match(s, re, what + ' matches ' + re + ': ' + s);
+  }
+}
+
+/** README.md's ENF-20 step 8a paragraph (raw). */
+function readme8aParagraph() {
+  const lines = fs.readFileSync(path.join(REPO, 'README.md'), 'utf8').split('\n');
+  const start = lines.findIndex((l) => l.startsWith('**ENF-20 step 8a (memtrace evidence).**'));
+  assert.ok(start !== -1, 'README.md has the ENF-20 step 8a paragraph');
+  const out = [];
+  for (let i = start; i < lines.length && lines[i].trim() !== ''; i++) out.push(lines[i]);
+  return out.join('\n');
+}
+
+const RE_REVIEW_REL = path.join('skills', 'maintainer-review-sweep', 're-review.md');
+const RE_REVIEW_BUNDLE_REL = path.join('capabilities', 'contribution-toolkit', RE_REVIEW_REL);
+
+test('quick-261006-jq4: CTK-ADR-0010 Context records the subagent session_id as measured (version, date, fields, modes, scope, evidence)', () => {
+  const ctx = adr10Section('## Context', '## Decision');
+  const paragraphs = ctx.split(/\n[ \t]*\n/);
+  const raw = exactlyOne(paragraphs, /^\*\*Subagent sessions: measured/, 'Context paragraph');
+  const p = norm(raw);
+  assertHasAll(p, [
+    '2.1.291', '2026-10-06', JQ4_EVIDENCE,
+    '`session_id`', '`agent_id`', '`agent_type`', '`transcript_path`', '`agent_transcript_path`',
+    'SubagentStop', 'PostToolUse', 'tool-recorder', 'run_in_background',
+  ], 'the measured Context paragraph');
+  for (const re of [/foreground/, /indistinguishable/, /print mode/, /one level deep/,
+    /not published|unpublished/, /parent/]) {
+    assert.match(p, re);
+  }
+  // WR-03: the claim itself, not just its tokens.
+  assert.match(p, /a `session_id` equal to the parent session's/);
+  // WR-01: the MCP run is cited and the run count is consistent (four `claude -p` runs).
+  assertNamesMcpMeasurement(p, 'the measured Context paragraph');
+  assert.match(p, /\b[Ff]our `claude -p` runs\b/);
+  assert.doesNotMatch(p, /\b([Tt]hree|[Tt]wo) `claude -p` runs\b/);
+  // WR-02: every scope limit.
+  assertNamesEveryUnmeasuredForm(p, 'the measured Context paragraph');
+  assert.doesNotMatch(p, UUID_RE, 'no session UUID in the published ADR');
+  assert.doesNotMatch(p, AGENT_ID_RE, 'no agent id in the published ADR');
+  assert.doesNotMatch(p, LOCAL_PATH_RE, 'no /home/ or /tmp/ path in the published ADR');
+  assertAscii(raw, 'the measured Context paragraph');
+  const whole = fs.readFileSync(adrFile(10), 'utf8');
+  assert.ok(!whole.includes('documented, not measured'), 'CTK-ADR-0010 no longer says "documented, not measured"');
+});
+
+test('quick-261006-jq4: CTK-ADR-0010 residual says the subagent session_id is measured and keeps the attestation fallback', () => {
+  const raw = adr10Bullet(/^- \*\*Subagent `session_id`/);
+  const b = norm(raw);
+  assertHasAll(b, ['2.1.291', '2026-10-06', '`agent_id`'], 'the subagent residual');
+  assert.match(b, /^- \*\*Subagent `session_id`: measured/);
+  assert.match(b, /attestation/);
+  assert.match(b, /\bask/);
+  // WR-02: every scope limit; WR-03: no inversion of the claim.
+  assertNamesEveryUnmeasuredForm(b, 'the subagent residual');
+  assert.doesNotMatch(b, /never counts|\bnot logged\b/);
+  assert.doesNotMatch(b, /documented, not measured/);
+  assert.doesNotMatch(b, UUID_RE);
+  assert.doesNotMatch(b, AGENT_ID_RE);
+  assertAscii(raw, 'the subagent residual');
+});
+
+test('quick-261006-jq4: CTK-ADR-0010 trek-e row keeps CTK-ADR-0007 Decision 2 and states the subagent answer as measured', () => {
+  const lines = fs.readFileSync(adrFile(10), 'utf8').split('\n');
+  const row = exactlyOne(lines, /^\| Cannot find the evidence: deny \|/, 'trek-e divergence row');
+  assert.ok(row.includes('CTK-ADR-0007 Decision 2'), 'the row still cites CTK-ADR-0007 Decision 2: ' + row);
+  // WR-03: the claim phrase, and no "never measured" / "not measured" / "unmeasured" reversion.
+  assert.match(row, /logged under the parent `session_id` \(measured/);
+  assert.doesNotMatch(row, /\bnever measured\b|\bnot measured\b|unmeasured/);
+  assertAscii(row, 'the trek-e divergence row');
+});
+
+test("quick-261006-jq4: CTK-ADR-0010 'Deny when the log cannot be observed' keeps the CTK-ADR-0007 rationale and drops the unmeasured-subagent clause", () => {
+  const alt = adr10Section('## Alternatives considered', null);
+  const bullets = alt.split(/\n(?=- \*\*)/);
+  const raw = exactlyOne(bullets, /^- \*\*Deny when the log cannot be observed\.\*\*/, 'Alternatives bullet');
+  const b = norm(raw);
+  assertHasAll(b, ['cannot observe is not did not run', 'CTK-ADR-0007', 'Decision 2'], 'the deny alternative');
+  assert.match(b, /\bmeasured\b/);
+  assert.doesNotMatch(b, /subagent question unmeasured/);
+  assertAscii(raw, 'the deny alternative');
+});
+
+test('quick-261006-jq4: README.md step 8a paragraph states the subagent session_id as measured', () => {
+  const raw = readme8aParagraph();
+  const p = norm(raw);
+  assertHasAll(p, ['2.1.291', '2026-10-06', '`session_id`', '`agent_id`', 'CTK-ADR-0010'], 'the README step 8a paragraph');
+  assert.doesNotMatch(p, /documented by Claude Code to carry/);
+  assert.doesNotMatch(p, /not measured with\s+tool-recorder/);
+  // WR-03: the claim phrase and its scope. The inversion ban is scoped to the subagent sentences
+  // (from "Subagent tool calls" to "When memtrace genuinely"), because the paragraph's earlier
+  // "a review-body section never counts" is correct and would match it.
+  const i = p.indexOf('Subagent tool calls');
+  assert.ok(i !== -1, 'the README 8a paragraph has a "Subagent tool calls" sentence');
+  const j = p.indexOf('When memtrace genuinely', i);
+  const sub = j === -1 ? p.slice(i) : p.slice(i, j);
+  assert.match(sub, /are logged under the parent `session_id` \(measured 2026-10-06/);
+  for (const re of [/one level deep/, /print mode/, /foreground and background/]) assert.match(sub, re);
+  assert.doesNotMatch(sub, INVERSION_RE);
+  assert.doesNotMatch(p, /every (mode|depth)/);
+  // WR-01: the MCP measurement.
+  assertNamesMcpMeasurement(sub, 'the README subagent sentences');
+  assertAscii(raw, 'the README step 8a paragraph');
+});
+
+test('quick-261006-jq4: re-review.md step 8a ends with the measured subagent answer', () => {
+  const lines = fs.readFileSync(path.join(REPO, RE_REVIEW_REL), 'utf8').split('\n');
+  const line = exactlyOne(lines, /^8a\. /, 're-review.md step 8a line');
+  const i = line.indexOf('Subagent tool calls');
+  assert.ok(i !== -1, 'the 8a line has a "Subagent tool calls" sentence');
+  const tail = line.slice(i);
+  assertHasAll(tail, ['2.1.291', '2026-10-06', 'parent session', 'CTK-ADR-0010'], 'the 8a subagent sentence');
+  assert.doesNotMatch(line, /per the Claude Code hooks docs, but that is not measured/);
+  // WR-03: the claim phrase, its scope, the forms not measured, and no inversion.
+  assert.match(tail, /are logged under the parent session: measured/);
+  for (const re of [/one level deep/, /print mode/, /interactive/i, /nested/, /fork/, /team/]) assert.match(tail, re);
+  assert.doesNotMatch(tail, INVERSION_RE);
+  assert.doesNotMatch(tail, /every (mode|depth)/);
+  // WR-01: the MCP measurement.
+  assertNamesMcpMeasurement(tail, 'the 8a subagent sentence');
+  assertAscii(tail, 'the 8a subagent sentence');
+});
+
+test('quick-261006-jq4: no session UUID, agent id, /home/ or /tmp/ path in the four published jq4 scopes (review WR-04)', () => {
+  const scopes = [
+    ['CTK-ADR-0010 (whole file)', fs.readFileSync(adrFile(10), 'utf8')],
+    ['README.md step 8a paragraph', readme8aParagraph()],
+    [RE_REVIEW_REL + ' (whole file)', fs.readFileSync(path.join(REPO, RE_REVIEW_REL), 'utf8')],
+    [RE_REVIEW_BUNDLE_REL + ' (whole file)', fs.readFileSync(path.join(REPO, RE_REVIEW_BUNDLE_REL), 'utf8')],
+  ];
+  for (const [what, text] of scopes) {
+    assert.doesNotMatch(text, UUID_RE, 'no session UUID in ' + what);
+    assert.doesNotMatch(text, AGENT_ID_RE, 'no agent id in ' + what);
+    assert.doesNotMatch(text, LOCAL_PATH_RE, 'no /home/ or /tmp/ path in ' + what);
+  }
 });

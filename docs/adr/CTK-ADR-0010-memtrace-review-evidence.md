@@ -63,15 +63,30 @@ full read plus a substring filter took 206 ms for the 52 MB file and 14 ms for t
 shipped reader (38-02) scanned a synthetic 52 MiB log built with the recorder's own serializer in
 about 40 ms.
 
-**Subagent sessions: documented, not measured.** The Claude Code hooks documentation (fetched through
-Context7, `/websites/code_claude`) shows a `SubagentStop` payload whose `session_id` is the parent
-session's, with the subagent's transcript nested under that session's `subagents/` folder and a
-separate `agent_id`. The Agent SDK hooks page says `agent_id` and `agent_type` are populated when a
-hook fires inside a subagent, on a base input that also carries `session_id`. From that, a
-`PostToolUse` inside a subagent is expected to carry the parent `session_id`, so a granted subagent's
-memtrace calls would count for the parent's verdict. No page states this for `PostToolUse` directly,
-and it has not been measured with tool-recorder. The design below must therefore not deadlock if it
-is wrong.
+**Subagent sessions: measured, under the parent's `session_id`.** Measured on 2026-10-06 with Claude
+Code 2.1.291: a tool call made inside a subagent fires the configured `PreToolUse` and `PostToolUse`
+hooks with a `session_id` equal to the parent session's. The subagent's tool-event payloads add
+`agent_id` and `agent_type`, which the parent's tool-event payloads lack (the parent's `SubagentStart`
+and `SubagentStop` events do carry them), and their `transcript_path` is the parent's transcript; only
+`SubagentStop` carries `agent_transcript_path`, the subagent's own transcript in a `subagents/` folder
+under the parent session. tool-recorder keeps `session_id` and drops `agent_id` and `agent_type` (they
+are outside its D2 field set), so a subagent's row is indistinguishable from a parent row, and the
+shipped reader returned the subagent's rows for the parent's id in a complete read. Four `claude -p`
+runs (print mode) were captured with a raw stdin hook beside the real `hooks/tool-recorder.cjs`: two
+with a foreground subagent, one with `run_in_background: true`, and one with a foreground subagent that
+made one MCP tool call (`mcp__context7__resolve-library-id`). In each of the first three runs all eight
+of the subagent's `PreToolUse` and `PostToolUse` events carried the parent's id; in the fourth all ten
+did, including the MCP call's pair, and tool-recorder logged the MCP call under the parent's id. A
+memtrace verb is an MCP tool call on the same hook path, so a granted subagent's memtrace calls count
+for the parent's verdict. Not measured: interactive sessions, `--agent` sessions, nested subagents,
+forks and agent teams, and the `PostToolUseFailure` event (no tool call failed in any run); the runs
+were one level deep, registered the hooks through `--settings` and project settings rather than the
+installed capability, and the MCP call measured was context7, not memtrace. The hooks documentation says a
+subagent's tool events fire the same hooks and carry `agent_id` and `agent_type`, but states no
+`session_id` for them; the measurement closes that gap. Evidence:
+`.planning/quick/261006-jq4-measure-subagent-session-id-in-posttoolu/evidence/`, in the toolkit's local
+planning corpus, which is not published. For the forms not measured, the design below must still not
+deadlock if one of them logs under another id.
 
 ## Decision
 
@@ -183,7 +198,7 @@ is wrong.
 | Evidence is a `### Memtrace Evidence` section in the review body | Evidence is tool-recorder's log for the session; a body section counts for nothing | A section is the reviewer's own text (attestation); a recorder row is written by the harness when the tool ran |
 | Requires `find_code_review_issues` | Not required | The canonical re-review.md 8a lists it as optional; the floor is the required set |
 | A CodeGraph fallback section with a `Memtrace unavailable:` line satisfies the gate | No CodeGraph section. The sanctioned fallback is the scaffolded `R8a-memtrace.json` attestation, which asks a human and never allows | An unavailability claim cannot be checked by the gate, so a human decides it |
-| Cannot find the evidence: deny | Cannot observe (no session id, recorder off, log unreadable, zero rows, partial read): ask | CTK-ADR-0007 Decision 2; the subagent `session_id` question is unmeasured, and a wrong guess must not deadlock reviews |
+| Cannot find the evidence: deny | Cannot observe (no session id, recorder off, log unreadable, zero rows, partial read): ask | CTK-ADR-0007 Decision 2; a subagent's calls are logged under the parent `session_id` (measured, see Context), and a subagent form the runs did not cover must still not deadlock reviews |
 | `gh pr review` forms only | Also the REST and `gh api` / curl review forms with `event=APPROVE` or `REQUEST_CHANGES`; an event the gate cannot read asks. The routes that classify `other` are a residual (Consequences) | ENF-15 synonym coverage, which ENF-20 already has |
 | Exempts `--comment` | Exempts `--comment` from 8a; R8 still applies to it | Parity on 8a; no weakening of R8 |
 
@@ -269,10 +284,15 @@ is wrong.
   forced a rotation, and the next rotation overwrites `tool-log.1.jsonl` and every recorder row in it.
   `hooks/review-artifact.test.cjs` now isolates itself (an m-07 lock row); other suites that run the
   gates are a residual.
-- **Subagent `session_id` is documented, not measured.** Subagent calls carry the parent `session_id`
-  per the Claude Code hooks docs (the `SubagentStop` payload and the `agent_id` field), which was not
-  measured with tool-recorder. If it is wrong, a verdict whose graph pass ran in a subagent asks or
-  denies; the attestation escape asks in both cases.
+- **Subagent `session_id`: measured one level deep, not for every form.** A subagent's tool calls are
+  logged under the parent's `session_id` (measured 2026-10-06 on Claude Code 2.1.291, print mode,
+  foreground and `run_in_background`, including one MCP tool call; see Context), so a graph pass a
+  granted subagent ran counts for the parent's verdict. tool-recorder drops `agent_id`, so the log
+  cannot say which agent ran a verb: the evidence is session-scoped, not agent-scoped. Not measured:
+  interactive sessions, `--agent` sessions, nested subagents, forks and agent teams, the
+  `PostToolUseFailure` event, and hooks installed through the capability rather than project settings;
+  the MCP call measured was context7, not memtrace. If any of these logs under another id, a verdict
+  whose graph pass ran there asks or denies, and the attestation escape asks in both cases.
 - **The shared ENF-20 override note overstates the valve.** `OVERRIDE_NOTE`, which the other ENF-20
   denies carry, says a logged `GSD_CONTRIB_OVERRIDE=<reason>` is a deliberate bypass. For a returned
   policy deny it is not: `failclosed.runGateInner` rescues thrown errors only. The R8a deny and ask
@@ -291,7 +311,9 @@ is wrong.
 - **Scope evidence to the head oid.** Rejected for now: impossible without inputs, which the recorder
   does not keep.
 - **Deny when the log cannot be observed.** Rejected: cannot observe is not did not run (CTK-ADR-0007
-  Decision 2), and with the subagent question unmeasured a deny could deadlock every review.
+  Decision 2). Subagent calls are measured to log under the parent `session_id` (see Context), but a
+  form the runs did not cover (the "Not measured" list in Context) could still deadlock every review
+  under a deny.
 - **Require `find_code_review_issues`.** Rejected: the canonical skill treats it as optional, and the
   gate must not demand more than the procedure it enforces.
 - **Read only a tail window of the log.** Rejected: a graph pass early in a long session would fall
