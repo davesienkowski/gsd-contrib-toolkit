@@ -948,3 +948,29 @@ for (const flag of ['-h=0', '-help=false', '--h=false']) {
     assert.strictEqual(oneDispatch(`gsd-test ${flag}`).informational, true);
   });
 }
+
+// ── 37-REVIEW MA-04 (shared walk): pushd / builtin cd / command cd move the start dir; popd is unknowable ──
+
+const DIR_STACK = [
+  ['pushd /x && gsd-test', '/x'],
+  ['pushd -- /x && gsd-test', '/x'],
+  ['pushd x && gsd-test', '/r/x'],
+  ['builtin cd /x && gsd-test', '/x'],
+  ['command cd /x && gsd-test', '/x'],
+  ['command -p cd /x && gsd-test', '/x'],
+  ['builtin pushd /x && gsd-test', '/x'],
+  ['command -v cd && gsd-test', '/r'],
+  ['popd && gsd-test', null],
+  ['pushd && gsd-test', null],
+  ['pushd -n /x && gsd-test', null],
+  ['pushd +1 && gsd-test', null],
+  ['pushd "$X" && gsd-test', null],
+  ['builtin popd && gsd-test', null],
+  ['(pushd /x); gsd-test', '/r'],
+];
+for (const [cmd, want] of DIR_STACK) {
+  test(`MA-04 dir-stack: startDirFor(${cmd}) from /r is ${want}`, () => {
+    const d = oneDispatch(cmd);
+    assert.strictEqual(exported('startDirFor')(d, '/r', { env: {}, homedir: '/h' }), want);
+  });
+}

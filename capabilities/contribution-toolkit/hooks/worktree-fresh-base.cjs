@@ -30,7 +30,8 @@
  *      GIT_COMMON_DIR (37-04): the real cut would run in a repository the gate cannot see;
  *   3. per cut, in command order: a base that does not name the trunk ('other', 'none') is
  *      skipped with no I/O (no fetch on non-trunk cuts); the target dir = the cut's start dir
- *      (gsd-test-detect `startDirFor`: `cd`, `env -C`, `sudo -D`) with each git `-C` statically
+ *      (gsd-test-detect `startDirFor`: `cd`, `pushd <dir>`, `builtin cd`, `command cd`, `env -C`,
+ *      `sudo -D`; `popd` -> FailClosed: 37-REVIEW MA-04) with each git `-C` statically
  *      expanded and folded on (37-02; either unresolvable -> FailClosed before any I/O); not a
  *      gsd-core checkout -> skipped;
  *   4. freshness, once per root: a HEAD base (omitted, `HEAD`, `@`) is the trunk only when the
@@ -47,20 +48,28 @@
  *
  * UNOBTAINABLE ORIGIN -> ASK (37-04, CTK-ADR-0007): the fetch seam throws FetchUnavailable (not a
  * FailClosed) when origin cannot be fetched: timeout, unreachable remote, auth failure, a held ref
- * lock, no `origin` remote. A try/catch around the fetch call ALONE maps exactly that class to
+ * lock (no `origin` remote is not armed at all: MA-01). A try/catch around the fetch call ALONE maps exactly that class to
  * `ask`; origin/next missing after a good fetch asks too. Every other throw denies through
  * runGate. An ask degrades to an allow under --dangerously-skip-permissions (ASK_LIMIT_NOTE, stated
  * in the reason). A failed fetch is not retried for a second cut of the same root in one call.
+ * 37-REVIEW MI-01: for a local / HEAD-on-next base the gate first judges next against the
+ * LAST-FETCHED origin/next; when that already proves next held-and-behind or diverged it returns
+ * the POLICY deny (worded as stale evidence) instead of the ask. It never moves next on that data.
  *
  * TIME BOUND (37-04, the 36-REVIEW m-06 per-call deadline mirrored from gsd-test-clean-tree): one
  * GATE_BUDGET_MS deadline per gate call is shared by every subprocess. A non-fetch git call gets
  * min(GIT_TIMEOUT_MS, remaining), the fetch belt min(FETCH_BELT_MS, remaining); with less than
  * MIN_CALL_MS left the gate throws FailClosed (deny, override-escapable). One trunk cut spawns at
  * most MAX_GIT_CALLS_PER_ROOT non-fetch git processes, so FETCH_BELT_MS + MAX * GIT_TIMEOUT_MS fits
- * the budget, and the budget plus 3 s fits the 45 s hook timeout (asserted by tests).
+ * the budget, and the budget plus 3 s fits the HOOK_TIMEOUT_S (60 s) hook timeout (asserted by tests).
+ *
+ * ARMING (37-REVIEW MA-01): a sentinel root is acted on only when `git remote get-url origin` there
+ * parses as open-gsd/gsd-core (resolve.repoSpecTargetsGsdCore: owner and repo, case-folded, any
+ * host). Anything else, including no `origin`, is out of scope: allow with no fetch.
  *
  * The gate's own git argv is limited to: remote get-url origin, fetch (via coreutils timeout),
- * rev-parse, symbolic-ref, merge-base --is-ancestor, worktree list --porcelain and update-ref. The
+ * rev-parse, symbolic-ref, merge-base --is-ancestor, worktree list --porcelain and update-ref
+ * --no-deref --create-reflog. The
  * fix commands it names in deny and ask reasons are text for the operator; the gate never runs them.
  *
  * A returned deny is a POLICY deny: GSD_CONTRIB_OVERRIDE rescues THROWN errors only and never
@@ -69,10 +78,11 @@
  * would aim the mutation at another repo). The base token never reaches git: classification is
  * pure string matching, and only shas that pass SHA_RE are passed to merge-base / update-ref.
  *
- * The settings reader (37-05) only reads: three fixed layers, a regular-file check, a 1 MiB cap,
- * JSON.parse in a try, one key. It never writes and never reads any other path.
- *
- * Not registered in settings.snippet.json until 37-06 (until then it is not wired and not bundled).
+ * The settings reader (37-05, widened by 37-REVIEW MI-04) only reads: the managed-settings file and
+ * its sorted `managed-settings.d` drop-ins, the two project layers, the main checkout's two project
+ * layers when the root is a linked worktree (found through `<root>/.git` and `<admin>/commondir`),
+ * and the user layer; a regular-file check, a 1 MiB cap, JSON.parse in a try, one key. It never
+ * writes and never reads any other path.
  *
  * @module hooks/worktree-fresh-base
  */
@@ -82,12 +92,19 @@ const os = require('node:os');
 const path = require('node:path');
 const childProcess = require('node:child_process');
 const { runGate, readHookInput, allow, ask, deny, emit, safeCommand, FailClosed } = require('./lib/failclosed.cjs');
-const { resolveGsdCoreRoot, ScriptResolveError } = require('./lib/resolve.cjs');
+const { resolveGsdCoreRoot, ScriptResolveError, repoSpecTargetsGsdCore } = require('./lib/resolve.cjs');
 const { startDirFor, expandStatic } = require('./lib/gsd-test-detect.cjs');
 const { findWorktreeAdds } = require('./lib/worktree-add-detect.cjs');
 
-/** The fetch argv after `git -C <root>`: literal, frozen; `--no-auto-maintenance` = no gc here. */
-const FETCH_ARGV = Object.freeze(['fetch', '--quiet', '--no-auto-maintenance', 'origin', 'next']);
+/**
+ * The fetch argv after `git -C <root>`: literal, frozen; `--no-auto-maintenance` = no gc here.
+ * 37-REVIEW MA-02: a fully qualified, forced refspec, so `refs/remotes/origin/next` is ALWAYS the
+ * remote BRANCH (a narrowed `remote.origin.fetch` would otherwise leave it stale, and a tag named
+ * `next` on origin would win the DWIM of a bare `next`); `--no-tags` fetches no tags at all.
+ */
+const FETCH_ARGV = Object.freeze([
+  'fetch', '--quiet', '--no-auto-maintenance', '--no-tags', 'origin', '+refs/heads/next:refs/remotes/origin/next',
+]);
 /** coreutils `timeout` duration and kill-after grace for the fetch. */
 const FETCH_TIMEOUT_S = 15;
 const FETCH_KILL_AFTER_S = 2;
@@ -96,14 +113,22 @@ const FETCH_BELT_MS = 20000;
 /** Per local git call (rev-parse, merge-base, worktree list, update-ref). */
 const GIT_TIMEOUT_MS = 3000;
 /** One deadline per gate call shared by every subprocess (36-REVIEW m-06 pattern). */
-const GATE_BUDGET_MS = 42000;
+const GATE_BUDGET_MS = 50000;
+/**
+ * The settings.snippet.json timeout of both ENF-25 registrations, in seconds. GATE_BUDGET_MS plus
+ * 3 s of headroom (node start-up, the verdict write) must fit it, and it equals the harness default
+ * the capability install falls back to (that install writes no timeout: 37-REVIEW NI-07).
+ */
+const HOOK_TIMEOUT_S = 60;
 /** Below this many ms left before a call, the gate fails closed instead of starting it. */
 const MIN_CALL_MS = 100;
 /**
- * Worst case non-fetch git processes for ONE trunk cut in one root: symbolic-ref (HEAD base),
- * remote get-url (inside the fetch seam), rev-parse x2, merge-base, worktree list, update-ref.
+ * Worst case non-fetch git processes for ONE trunk cut in one root (37-REVIEW TIME BUDGET):
+ * symbolic-ref HEAD (HEAD base), remote get-url origin (the arming check), symbolic-ref -q
+ * refs/heads/next (BL-01), rev-parse x2, merge-base, worktree list, rev-parse --git-common-dir
+ * (BL-02), update-ref. FETCH_BELT_MS + 9 x GIT_TIMEOUT_MS = 47 s <= GATE_BUDGET_MS.
  */
-const MAX_GIT_CALLS_PER_ROOT = 7;
+const MAX_GIT_CALLS_PER_ROOT = 9;
 /** The fetch detail that reaches a reason is cut to this many characters. */
 const DETAIL_MAX = 200;
 /** A settings layer larger than this (1 MiB) contributes nothing to the worktree.baseRef cascade. */
@@ -120,6 +145,17 @@ const SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const UNCERTAIN_REASON =
   'ENF-25 worktree fresh-base gate cannot attribute this `git worktree add` command (its repository or ' +
   'base is not statically known) — failing closed. Re-run it as a plain command with literal paths and base.';
+
+/**
+ * The constant reason for a symbolic `refs/heads/next` (37-REVIEW BL-01). rev-parse and update-ref
+ * would read and write THROUGH the symref, so the CAS could move whatever branch it points at,
+ * including a checked-out one. The gate cannot attribute such a trunk: thrown, override-escapable.
+ */
+const SYMREF_REASON =
+  'ENF-25 worktree fresh-base gate: refs/heads/next in this repository is a symbolic ref, so the gate ' +
+  'will not read or move it (a move would land on the branch it points at) — failing closed. Make ' +
+  '`next` a plain branch, or base the worktree on the remote ref:\n' +
+  '  git worktree add -b <branch> <path> origin/next';
 
 /** Inherited variables that would redirect a git call away from the target repo. */
 const GIT_REDIRECT_VARS = Object.freeze(['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']);
@@ -143,8 +179,8 @@ const ASK_LIMIT_NOTE =
   'accepted limit ENF-11\'s advisory carries.';
 
 /**
- * The upstream could not be fetched (timeout, unreachable remote, auth failure, a held ref lock, no
- * `origin` remote). Deliberately NOT a FailClosed: the gate catches exactly this class around the
+ * The upstream could not be fetched (timeout, unreachable remote, auth failure, a held ref lock, a
+ * remote with no `next`). Deliberately NOT a FailClosed: the gate catches exactly this class around the
  * fetch call and maps it to `ask` (CTK-ADR-0007 — an unobtainable upstream is a network limit, not
  * a policy decision). A fetch that cannot be BOUNDED (no coreutils `timeout`) is a FailClosed.
  */
@@ -214,6 +250,9 @@ function firstStderrLine(stderr) {
  */
 function classifyFetchResult(res) {
   const r = res || {};
+  // NI-04: exit 0 wins over a spawnSync error: a grandchild holding the pipe makes spawnSync report
+  // ETIMEDOUT after git itself finished successfully.
+  if (r.status === 0) return { state: 'ok', detail: '' };
   if (r.error) {
     const code = String(r.error.code || r.error.message || 'unknown error');
     if (code === 'ETIMEDOUT') {
@@ -254,11 +293,11 @@ function fetchUnavailableReason(root, message) {
   );
 }
 
-/** The `ask` for a fetch that succeeded but left no origin/next (no `next` mapped by the refspec). */
+/** The `ask` for a fetch that succeeded but left no origin/next (MA-02: the refspec always maps it). */
 function originNextMissingReason(root) {
   return (
-    'ENF-25 worktree fresh-base gate: origin/next does not resolve after the fetch of `origin next` ' +
-    'succeeded (the `origin` fetch refspec maps no refs/remotes/origin/next), so the gate cannot tell ' +
+    'ENF-25 worktree fresh-base gate: origin/next does not resolve after the fetch of origin\'s ' +
+    '`refs/heads/next` into it succeeded (something removed or replaced it), so the gate cannot tell ' +
     'whether local `next` is current. This is a remote-configuration and network limit, not a policy ' +
     'decision. Check the `origin` remote, run\n\n  git -C ' + shellWord(root) + ' fetch origin next\n\n' +
     'then re-issue your command.\n\n' + ASK_LIMIT_NOTE
@@ -285,43 +324,140 @@ function defaultReadSettings(p) {
   }
 }
 
+/** At most this many managed-settings.d drop-in files are consulted (sorted; the rest ignored). */
+const MAX_MANAGED_DROPINS = 64;
+
+/**
+ * 37-REVIEW MI-04: the directory Claude Code reads managed (policy) settings from, per platform.
+ * Verified 2026-10-06 against the installed Claude Code 2.1.291 binary: `/Library/Application
+ * Support/ClaudeCode` (macOS), `C:\Program Files\ClaudeCode` (Windows), else `/etc/claude-code`,
+ * each holding `managed-settings.json` plus a sorted `managed-settings.d/` drop-in directory.
+ *
+ * @param {string} [platform] default process.platform
+ * @returns {string}
+ */
+function defaultManagedSettingsDir(platform) {
+  const p = platform || process.platform;
+  if (p === 'darwin') return '/Library/Application Support/ClaudeCode';
+  if (p === 'win32') return 'C:\\Program Files\\ClaudeCode';
+  return '/etc/claude-code';
+}
+
+/** The default drop-in lister: the entry names of `dir`, or [] when it cannot be listed. */
+function defaultListDir(dir) {
+  try {
+    return fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * MI-04: the main checkout of a LINKED worktree `root`, read with the bounded settings reader (no
+ * git call): `<root>/.git` is a file `gitdir: <admin>`, `<admin>/commondir` names the common dir,
+ * and a common dir named `.git` sits in the main checkout. null when `root` is not a linked
+ * worktree (`.git` is a directory, missing or unreadable), the common dir is bare, or the main
+ * checkout is `root` itself.
+ *
+ * @param {string} root
+ * @param {(p:string)=>(string|null)} read the settings reader (text or null)
+ * @returns {string|null}
+ */
+function mainCheckoutRoot(root, read) {
+  const gitFile = read(path.join(String(root), '.git'));
+  if (typeof gitFile !== 'string') return null;
+  const m = /^gitdir:[ \t]*(.+?)[ \t]*$/m.exec(gitFile);
+  if (!m) return null;
+  const admin = path.resolve(String(root), m[1]);
+  const commondir = read(path.join(admin, 'commondir'));
+  if (typeof commondir !== 'string' || commondir.trim() === '') return null;
+  const common = path.resolve(admin, commondir.trim());
+  if (path.basename(common) !== '.git') return null; // a bare common dir has no main checkout
+  const main = path.dirname(common);
+  return path.resolve(main) === path.resolve(String(root)) ? null : main;
+}
+
 /**
  * The effective `worktree.baseRef` for an EnterWorktree cut (Addendum 4; the shape of gsd-core's
- * resolveEffectiveBaseRef, mirrored, not required). Layers, first answer wins:
+ * resolveEffectiveBaseRef, mirrored, not required, widened by 37-REVIEW MI-04). Layers, first
+ * answer wins:
+ *   0. managed: `<managedDir>/managed-settings.d/*.json` (drop-ins, the LAST sorted name first, so
+ *      a later file wins), then `<managedDir>/managed-settings.json` (highest precedence in the
+ *      harness);
  *   1. <root>/.claude/settings.local.json
  *   2. <root>/.claude/settings.json
- *   3. <homedir>/.claude/settings.json — skipped when it is the same file as layer 2.
+ *   3. when `root` is a linked worktree: <main>/.claude/settings.local.json, then
+ *      <main>/.claude/settings.json (mainCheckoutRoot: `<root>/.git` and `<admin>/commondir`)
+ *   4. <homedir>/.claude/settings.json — skipped when it is the same file as layer 2.
  * A layer answers only when its JSON parses and `worktree` is a non-array object with a string
  * `baseRef`; an absent, unreadable, non-regular, oversized or unparseable layer contributes nothing.
  * The result is 'head' only for the exact string 'head', otherwise 'fresh' (the harness default).
- * No other path is ever read, and nothing is written.
+ * Only these paths (plus the drop-in directory listing) are read, and nothing is written. CLI
+ * `--settings` layers and the optional WSL Windows-policy chain are not read (CTK-ADR-0009).
  *
  * @param {string} root the gsd-core tree root
  * @param {string} homedir the user's home directory
  * @param {(p:string)=>(string|null)} [readSettings] text of a layer, or null (default: the real fs)
+ * @param {{managedDir?:string, listDir?:(dir:string)=>string[]}} [opts] the managed-settings dir
+ *   (default defaultManagedSettingsDir()) and the drop-in lister (default fs.readdirSync, [] on error)
  * @returns {'head'|'fresh'}
  */
-function readBaseRef(root, homedir, readSettings) {
+function readBaseRef(root, homedir, readSettings, opts) {
   const read = typeof readSettings === 'function' ? readSettings : defaultReadSettings;
-  const project = path.join(String(root), '.claude', 'settings.json');
-  const layers = [path.join(String(root), '.claude', 'settings.local.json'), project];
-  if (typeof homedir === 'string' && homedir !== '') {
-    const user = path.join(homedir, '.claude', 'settings.json');
-    if (path.resolve(user) !== path.resolve(project)) layers.push(user);
-  }
-  for (const p of layers) {
+  const o = opts || {};
+  const managedDir = typeof o.managedDir === 'string' && o.managedDir !== '' ? o.managedDir : defaultManagedSettingsDir();
+  const listDir = typeof o.listDir === 'function' ? o.listDir : defaultListDir;
+
+  /** The baseRef one layer answers, or null when it contributes nothing. */
+  const answer = (p) => {
     const text = read(p);
-    if (typeof text !== 'string') continue;
+    if (typeof text !== 'string') return null;
     let parsed;
     try {
       parsed = JSON.parse(text);
     } catch {
-      continue;
+      return null;
     }
     const wt = parsed && typeof parsed === 'object' ? parsed.worktree : undefined;
-    if (!wt || typeof wt !== 'object' || Array.isArray(wt)) continue;
-    if (typeof wt.baseRef !== 'string') continue;
+    if (!wt || typeof wt !== 'object' || Array.isArray(wt)) return null;
+    if (typeof wt.baseRef !== 'string') return null;
     return wt.baseRef === 'head' ? 'head' : 'fresh';
+  };
+
+  // Each entry is a path or a thunk producing more paths (the main checkout is probed lazily).
+  const dropDir = path.join(managedDir, 'managed-settings.d');
+  let dropins = [];
+  try {
+    const names = listDir(dropDir);
+    dropins = (Array.isArray(names) ? names : [])
+      .filter((n) => typeof n === 'string' && n.endsWith('.json') && !n.startsWith('.'))
+      .sort()
+      .slice(0, MAX_MANAGED_DROPINS)
+      .reverse()
+      .map((n) => path.join(dropDir, n));
+  } catch {
+    dropins = [];
+  }
+  const project = path.join(String(root), '.claude', 'settings.json');
+  const layers = dropins.concat([
+    path.join(managedDir, 'managed-settings.json'),
+    path.join(String(root), '.claude', 'settings.local.json'),
+    project,
+    () => {
+      const main = mainCheckoutRoot(root, read);
+      return main === null ? [] : [path.join(main, '.claude', 'settings.local.json'), path.join(main, '.claude', 'settings.json')];
+    },
+  ]);
+  if (typeof homedir === 'string' && homedir !== '') {
+    const user = path.join(homedir, '.claude', 'settings.json');
+    if (path.resolve(user) !== path.resolve(project)) layers.push(user);
+  }
+  for (const layer of layers) {
+    const paths = typeof layer === 'function' ? layer() : [layer];
+    for (const p of paths) {
+      const a = answer(p);
+      if (a !== null) return a;
+    }
   }
   return 'fresh';
 }
@@ -335,11 +471,15 @@ function readBaseRef(root, homedir, readSettings) {
  * @param {Object} deps.env environment for static `cd` target expansion
  * @param {string} deps.homedir home directory for `~` expansion
  * @param {(dir:string)=>(string|null)} deps.resolveTreeRoot gsd-core root, or null
+ * @param {(root:string)=>(string|null)} deps.originUrl `remote get-url origin`, or null (no origin)
  * @param {(root:string)=>void} deps.fetchOrigin bounded fetch; throws FetchUnavailable
  * @param {(root:string)=>(string|null)} deps.currentBranch branch name, or null when detached
  * @param {(root:string, ref:string)=>(string|null)} deps.revParse commit sha or null
  * @param {(root:string, a:string, b:string)=>boolean} deps.isAncestor
  * @param {(root:string, ref:string)=>string[]} deps.worktreesHolding worktree paths holding ref
+ * @param {(root:string, ref:string)=>boolean} deps.isSymbolicRef true when `ref` is a symbolic ref
+ * @param {(root:string, ref:string)=>{path:string, op:string}[]} deps.nextInProgress worktrees
+ *   mid-rebase / mid-bisect of `ref` (op 'rebase' | 'bisect')
  * @param {(root:string, ref:string, newSha:string, oldSha:string)=>boolean} deps.casUpdateRef
  *   Every seam also receives its time slice in ms as a trailing argument (the fetch: its belt).
  * @param {(root:string, homedir:string)=>string} deps.readBaseRef the effective worktree.baseRef
@@ -413,8 +553,11 @@ function checkContext(deps) {
   return {
     deps,
     budget: typeof deps.budget === 'function' ? deps.budget : makeBudget(deps.now),
-    // root -> null (fetched) or the ask decision (origin unobtainable): one fetch per root per call.
+    // root -> null (fetched) or {decision: the ask, detail} (origin unobtainable): one fetch per root
+    // per call.
     fetchState: new Map(),
+    // root -> whether its origin parses as open-gsd/gsd-core (MA-01): one `remote get-url` per root.
+    armed: new Map(),
   };
 }
 
@@ -460,7 +603,8 @@ function targetDir(e, deps) {
   if (start === null) {
     throw new FailClosed(
       'ENF-25 worktree fresh-base gate cannot resolve the target repository statically (an earlier ' +
-        '`cd`, `env -C` or `sudo -D` target is a shell expansion, `~user` or `-`) — failing closed. ' +
+        '`cd` / `pushd` / `env -C` / `sudo -D` target is a shell expansion, `~user` or `-`, or a `popd` or ' +
+        'stack-rotating `pushd` precedes the cut) — failing closed. ' +
         'Pass a literal path.'
     );
   }
@@ -495,34 +639,76 @@ function shellWord(p) {
 const ORIGIN_ALTERNATIVE = '  git worktree add -b <branch> <path> origin/next';
 
 /**
+ * 37-REVIEW MI-01: how a reason describes origin/next. `stale` is null after a good fetch, else the
+ * fetch failure's detail: the deny then rests on the LAST-FETCHED origin/next, which can only make
+ * the true trunk newer, so a "behind" or "diverged" verdict on it still holds.
+ */
+function remoteNote(stale) {
+  if (stale === null || stale === undefined) return ', just fetched by this gate';
+  return ', the last-fetched value: the gate could not refresh origin/next (' + (cleanDetail(stale, DETAIL_MAX) || 'origin is unobtainable') + ')';
+}
+
+/** The remote-ref alternative, worded for fresh or last-fetched (MI-01) evidence. */
+function remoteAlternative(stale) {
+  if (stale === null || stale === undefined) {
+    return 'Or base the worktree on the remote ref, which is already current:\n' + ORIGIN_ALTERNATIVE;
+  }
+  return 'Or, once origin is reachable, run `git fetch origin next` and base the worktree on the remote ref:\n' +
+    ORIGIN_ALTERNATIVE;
+}
+
+/**
  * POLICY deny: local next is a strict ancestor of origin/next but checked out in a worktree, so the
  * gate will not move it. The fix fast-forwards it in the holder tree (`merge --ff-only` refuses
  * rather than rewrites when the holder has conflicting changes).
  */
-function heldReason(holders, local, remote) {
+function heldReason(holders, local, remote, stale) {
   const listed = holders.slice(0, 3).map((h) => (h === '' ? '<unknown worktree>' : h));
   const more = holders.length > 3 ? ' (and ' + (holders.length - 3) + ' more)' : '';
   const first = holders[0] ? shellWord(holders[0]) : '<the worktree holding next>';
   return (
     'ENF-25 worktree fresh-base gate: local `next` (' + short(local) + ') is behind origin/next (' +
-    short(remote) + ', just fetched by this gate) and is checked out in ' + listed.join(', ') + more +
+    short(remote) + remoteNote(stale) + ') and is checked out in ' + listed.join(', ') + more +
     ', so the gate will not move it. A worktree cut from it now would start from a stale trunk.\n' +
     'Fast-forward the checked-out trunk first, then re-issue your command:\n' +
     '  git -C ' + first + ' merge --ff-only origin/next\n' +
     'If that working tree has uncommitted changes, park them first with `git stash push -m <msg>` ' +
     '(recoverable), then fast-forward.\n' +
-    'Or base the worktree on the remote ref, which is already current:\n' +
-    ORIGIN_ALTERNATIVE
+    remoteAlternative(stale)
+  );
+}
+
+/**
+ * POLICY deny (37-REVIEW BL-02): local next is behind origin/next and no worktree has it checked out,
+ * but a worktree is in the middle of a rebase or bisect that started from it (HEAD is detached there,
+ * so `worktree list` shows no `branch` line). git's own `branch -f next` refuses the same move
+ * (find_shared_symref reads the rebase head-name files and BISECT_START), so the gate does too.
+ */
+function inProgressReason(entries, local, remote, stale) {
+  const listed = entries.slice(0, 3).map((x) => (x.path === '' ? '<unknown worktree>' : x.path) + ' (' +
+    (x.op === 'bisect' ? 'bisecting' : 'rebasing') + ')');
+  const more = entries.length > 3 ? ' (and ' + (entries.length - 3) + ' more)' : '';
+  const first = entries[0] && entries[0].path ? shellWord(entries[0].path) : '<the worktree>';
+  const fix = entries[0] && entries[0].op === 'bisect'
+    ? '  git -C ' + first + ' bisect reset\n'
+    : '  git -C ' + first + ' rebase --continue    (or: rebase --abort)\n';
+  return (
+    'ENF-25 worktree fresh-base gate: local `next` (' + short(local) + ') is behind origin/next (' +
+    short(remote) + remoteNote(stale) + '), but a rebase or bisect of `next` is in progress in ' +
+    listed.join(', ') + more + ', so the gate will not move it (git itself refuses to move a branch in ' +
+    'that state). Finish or abort that operation first, then re-issue your command:\n' + fix +
+    remoteAlternative(stale)
   );
 }
 
 /** POLICY deny: neither sha contains the other. Names the divergence; suggests nothing that rewrites. */
-function divergedReason(local, remote) {
+function divergedReason(local, remote, stale) {
   return (
     'ENF-25 worktree fresh-base gate: local `next` (' + short(local) + ') and origin/next (' + short(remote) +
-    ', just fetched by this gate) have diverged: neither contains the other, so local next cannot be ' +
+    remoteNote(stale) + ') have diverged: neither contains the other, so local next cannot be ' +
     'fast-forwarded and a worktree cut from it would not start from the current trunk. Leave local next ' +
-    'as it is and base the worktree on the remote ref instead:\n' +
+    'as it is and base the worktree on the remote ref instead' +
+    (stale === null || stale === undefined ? '' : ' (once origin is reachable, after `git fetch origin next`)') + ':\n' +
     ORIGIN_ALTERNATIVE
   );
 }
@@ -552,13 +738,20 @@ function casLostReason(local, remote) {
  *             moved. Neither: deny(diverged).
  */
 function checkCut(e, root, ctx) {
-  const { deps, budget, fetchState } = ctx;
+  const { deps, budget, fetchState, armed } = ctx;
   const git = () => budget(GIT_TIMEOUT_MS);
   let kind = e.baseKind;
   if (kind === 'head') {
     if (deps.currentBranch(root, git()) !== 'next') return null;
     kind = 'local';
   }
+  // MA-01: the sentinel layout only nominates a root. The gate fetches and moves refs only in a
+  // clone whose `origin` parses as open-gsd/gsd-core; any other repository (a vendored sentinel, a
+  // fork-only clone, no `origin`) is out of scope: allow with no fetch.
+  if (!armed.has(root)) armed.set(root, repoSpecTargetsGsdCore(deps.originUrl(root, git()) || ''));
+  if (!armed.get(root)) return null;
+  // BL-01: a symbolic next is refused BEFORE any fetch, read or write of it.
+  if (kind === 'local' && deps.isSymbolicRef(root, NEXT_REF, git())) throw new FailClosed(SYMREF_REASON);
 
   if (!fetchState.has(root)) {
     const belt = budget(FETCH_BELT_MS);
@@ -570,11 +763,17 @@ function checkCut(e, root, ctx) {
       fetchState.set(root, null);
     } catch (err) {
       if (!(err instanceof FetchUnavailable)) throw err;
-      fetchState.set(root, ask(fetchUnavailableReason(root, err.message)));
+      fetchState.set(root, { decision: ask(fetchUnavailableReason(root, err.message)), detail: err.message });
     }
   }
   const unobtainable = fetchState.get(root);
-  if (unobtainable) return unobtainable; // nothing below runs: no rev-parse, merge-base or CAS
+  if (unobtainable) {
+    // MI-01: nothing local can prove a remote base current -> ask. For a local base, the
+    // LAST-FETCHED origin/next may already prove next held-and-behind or diverged: deny on that
+    // proof; otherwise ask. Never a CAS on unrefreshed data.
+    if (kind === 'remote') return unobtainable.decision;
+    return judgeLocal(root, ctx, unobtainable.detail) || unobtainable.decision;
+  }
 
   const remote = deps.revParse(root, ORIGIN_NEXT_REF, git());
   if (remote === null || remote === undefined) return ask(originNextMissingReason(root));
@@ -586,6 +785,9 @@ function checkCut(e, root, ctx) {
   if (deps.isAncestor(root, local, remote, git())) {
     const holders = deps.worktreesHolding(root, NEXT_REF, git());
     if (holders.length > 0) return deny(heldReason(holders, local, remote));
+    // BL-02: a rebase or bisect of next in any worktree holds it too (git's branch -f rule).
+    const busy = deps.nextInProgress(root, NEXT_REF, git());
+    if (busy.length > 0) return deny(inProgressReason(busy, local, remote));
     // ONE compare-and-swap attempt. Refused = next moved since it was read: a POLICY deny, never a
     // retry (a retry would act on a value this call did not prove is an ancestor).
     if (deps.casUpdateRef(root, NEXT_REF, remote, local, git())) return null;
@@ -593,6 +795,69 @@ function checkCut(e, root, ctx) {
   }
   if (deps.isAncestor(root, remote, local, git())) return null; // ahead: not stale, nothing to move
   return deny(divergedReason(local, remote));
+}
+
+/**
+ * MI-01: judge local next against the LAST-FETCHED origin/next after a failed fetch. Returns a
+ * POLICY deny only when that evidence already proves next held-and-behind (checked out, or being
+ * rebased / bisected) or diverged; null (the caller asks) when it cannot decide: no origin/next, no
+ * next, equal, ahead, or behind and unheld (a move on unrefreshed data is never made).
+ */
+function judgeLocal(root, ctx, stale) {
+  const { deps, budget } = ctx;
+  const git = () => budget(GIT_TIMEOUT_MS);
+  const remote = deps.revParse(root, ORIGIN_NEXT_REF, git());
+  if (remote === null || remote === undefined) return null;
+  const local = deps.revParse(root, NEXT_REF, git());
+  if (local === null || local === undefined || local === remote) return null;
+  if (deps.isAncestor(root, local, remote, git())) {
+    const holders = deps.worktreesHolding(root, NEXT_REF, git());
+    if (holders.length > 0) return deny(heldReason(holders, local, remote, stale));
+    const busy = deps.nextInProgress(root, NEXT_REF, git());
+    if (busy.length > 0) return deny(inProgressReason(busy, local, remote, stale));
+    return null;
+  }
+  if (deps.isAncestor(root, remote, local, git())) return null;
+  return deny(divergedReason(local, remote, stale));
+}
+
+/** fs errors that mean "this state file / dir is absent". */
+const ABSENT_CODES = new Set(['ENOENT', 'ENOTDIR']);
+
+function stateReadFailed(p, err) {
+  return new FailClosed(
+    'ENF-25 worktree fresh-base gate: could not read git state file ' + path.basename(p) + ' (' +
+      String((err && err.code) || 'error') + ') — failing closed rather than moving next.'
+  );
+}
+
+/** A small git state file's text, or null when it is absent; any other error fails closed. */
+function readOrNull(p) {
+  try {
+    return fs.readFileSync(p, 'utf8');
+  } catch (err) {
+    if (err && ABSENT_CODES.has(err.code)) return null;
+    throw stateReadFailed(p, err);
+  }
+}
+
+/** A directory's entry names (sorted), or [] when it is absent; any other error fails closed. */
+function readDirOrEmpty(p) {
+  try {
+    return fs.readdirSync(p).sort();
+  } catch (err) {
+    if (err && ABSENT_CODES.has(err.code)) return [];
+    throw stateReadFailed(p, err);
+  }
+}
+
+/** realpath of p, or p itself when it cannot be resolved (a label only). */
+function realOr(p) {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return p;
+  }
 }
 
 /** A copy of `base` (plus `extra`) without the variables that would redirect git to another repo. */
@@ -625,8 +890,8 @@ function requireSha(op, sha) {
  * @param {{env?: Object, spawnSync?: Function, budget?: (capMs:number)=>number}} [opts]
  *   `spawnSync` defaults to child_process.spawnSync; `budget` is the gate call's shared deadline
  *   (absent: each call gets its full cap).
- * @returns {{fetchOrigin: Function, revParse: Function, currentBranch: Function, isAncestor: Function,
- *   worktreesHolding: Function, casUpdateRef: Function}}
+ * @returns {{originUrl: Function, fetchOrigin: Function, revParse: Function, currentBranch: Function, isSymbolicRef: Function,
+ *   isAncestor: Function, worktreesHolding: Function, nextInProgress: Function, casUpdateRef: Function}}
  */
 function createDefaultSeams({ env, spawnSync, budget } = {}) {
   const base = env || process.env;
@@ -649,7 +914,9 @@ function createDefaultSeams({ env, spawnSync, budget } = {}) {
       timeout: slice(GIT_TIMEOUT_MS, given),
       env: gitEnv(base),
     });
-    if (r.error) {
+    // NI-04: a git that exited 0 succeeded (its output is complete) even when spawnSync also
+    // reports ETIMEDOUT because a grandchild (a ref-transaction hook, an ssh master) held the pipe.
+    if (r.error && r.status !== 0) {
       throw new FailClosed(
         'ENF-25 worktree fresh-base gate: git ' + op + ' could not run (' + (r.error.code || r.error.message) +
           ') — failing closed.'
@@ -687,6 +954,18 @@ function createDefaultSeams({ env, spawnSync, budget } = {}) {
     throw unexpected('symbolic-ref', r);
   }
 
+  /**
+   * BL-01: `git symbolic-ref -q <ref>`: exit 0 (a symbolic ref) -> true, 1 (not a symbolic ref,
+   * or missing) -> false, else FailClosed. A git call, not a file read: packed-refs and reftable
+   * mean the ref need not be a loose file.
+   */
+  function isSymbolicRef(dir, ref, ms) {
+    const r = runGit(dir, ['symbolic-ref', '-q', '--', ref], 'symbolic-ref', ms);
+    if (r.status === 0) return true;
+    if (r.status === 1) return false;
+    throw unexpected('symbolic-ref', r);
+  }
+
   /** exit 0 -> true, 1 -> false, else FailClosed. */
   function isAncestor(dir, a, b, ms) {
     requireSha('merge-base', a);
@@ -712,36 +991,91 @@ function createDefaultSeams({ env, spawnSync, budget } = {}) {
   }
 
   /**
+   * BL-02: every worktree whose git dir records a rebase or bisect of `ref` — the states in which
+   * git's own find_shared_symref treats the branch as checked out although HEAD is detached (so the
+   * porcelain has no `branch` line). One git call (`rev-parse --git-common-dir`); the state files are
+   * plain reads in the common dir (the main worktree) and in each `worktrees/<id>/` admin dir:
+   *   rebase-merge/head-name, rebase-apply/head-name  == ref                      -> rebase
+   *   rebase-merge/update-refs                         a line == ref (--update-refs) -> rebase
+   *   BISECT_START                                     == ref or its short name     -> bisect
+   * A missing file is "not in progress"; any other read error fails closed (when unsure, do not move).
+   *
+   * @returns {{path:string, op:'rebase'|'bisect'}[]}
+   */
+  function nextInProgress(dir, ref, ms) {
+    const r = runGit(dir, ['rev-parse', '--git-common-dir'], 'rev-parse --git-common-dir', ms);
+    const out = String(r.stdout || '').trim();
+    if (r.status !== 0 || out === '') throw unexpected('rev-parse --git-common-dir', r);
+    const common = path.resolve(dir, out);
+    const shortName = ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref;
+
+    const admins = [{ gitdir: common, wt: path.basename(common) === '.git' ? path.dirname(common) : common }];
+    for (const id of readDirOrEmpty(path.join(common, 'worktrees'))) {
+      const admin = path.join(common, 'worktrees', id);
+      const link = readOrNull(path.join(admin, 'gitdir'));
+      admins.push({ gitdir: admin, wt: link ? path.dirname(path.resolve(admin, link.trim())) : '' });
+    }
+
+    const found = [];
+    for (const a of admins) {
+      const headNames = ['rebase-merge/head-name', 'rebase-apply/head-name'].map((f) => readOrNull(path.join(a.gitdir, f)));
+      const updateRefs = readOrNull(path.join(a.gitdir, 'rebase-merge', 'update-refs'));
+      const rebasing = headNames.some((t) => t !== null && t.trim() === ref) ||
+        (updateRefs !== null && updateRefs.split(/\r?\n/).some((l) => l.trim() === ref));
+      const bisectStart = readOrNull(path.join(a.gitdir, 'BISECT_START'));
+      const bisecting = bisectStart !== null && (bisectStart.trim() === ref || bisectStart.trim() === shortName);
+      if (!rebasing && !bisecting) continue;
+      found.push({ path: a.wt === '' ? '' : realOr(a.wt), op: rebasing ? 'rebase' : 'bisect' });
+    }
+    return found;
+  }
+
+  /**
    * Compare-and-swap ref move: exit 0 -> true, any other exit -> false (the ref did not hold
    * `oldSha`, so git's ref transaction left it untouched); spawn error -> FailClosed.
+   * `--no-deref` (BL-01): never write through a symbolic ref. `--create-reflog` (NI-03): the move
+   * is recorded even with core.logAllRefUpdates=false and no existing reflog for the ref.
    */
   function casUpdateRef(dir, ref, newSha, oldSha, ms) {
     requireSha('update-ref', newSha);
     requireSha('update-ref', oldSha);
-    const r = runGit(dir, ['update-ref', '-m', REFLOG_MESSAGE, ref, newSha, oldSha], 'update-ref', ms);
+    const r = runGit(
+      dir,
+      ['update-ref', '--no-deref', '--create-reflog', '-m', REFLOG_MESSAGE, ref, newSha, oldSha],
+      'update-ref',
+      ms
+    );
     return r.status === 0;
   }
 
   /**
-   * The bounded fetch, hardened (37-04). Absolute dir only (else FailClosed, nothing spawned). Then:
-   *   1. `git remote get-url origin` (one GIT_TIMEOUT_MS slice): exit 0 continues; exit 2 (no such
-   *      remote) throws FetchUnavailable; anything else throws FailClosed;
-   *   2. `timeout -k 2 <s> git -C <dir> fetch --quiet --no-auto-maintenance origin next`, argv only,
+   * MA-01: `git remote get-url origin`: exit 0 -> the trimmed URL, exit 2 (no such remote) -> null,
+   * anything else -> FailClosed. The caller only parses it (repoSpecTargetsGsdCore); it is never
+   * passed to another command.
+   */
+  function originUrl(dir, ms) {
+    const r = runGit(dir, ['remote', 'get-url', 'origin'], 'remote get-url', ms);
+    if (r.status === 0) return String(r.stdout || '').trim();
+    if (r.status === 2) return null;
+    throw unexpected('remote get-url', r);
+  }
+
+  /**
+   * The bounded fetch, hardened (37-04). Absolute dir only (else FailClosed, nothing spawned). Then
+   * (the `remote get-url` that used to run first is the originUrl seam since 37-REVIEW MA-01):
+   *   1. `timeout -k 2 <s> git -C <dir> <FETCH_ARGV>` (MA-02 explicit refspec), argv only,
    *      with a SIGKILL belt of min(FETCH_BELT_MS, the gate's slice, the shared deadline), the
-   *      scrubbed env plus GIT_TERMINAL_PROMPT=0, stdin ignored. <s> is FETCH_TIMEOUT_S, shortened
+   *      scrubbed env plus GIT_TERMINAL_PROMPT=0, SSH_ASKPASS_REQUIRE=never, GCM_INTERACTIVE=never
+   *      (NI-05), stdin ignored. <s> is FETCH_TIMEOUT_S, shortened
    *      when the belt is reduced so coreutils kills git before the belt kills `timeout` (a belt
    *      kill reaps only `timeout` and would orphan a git holding the ref lock);
-   *   3. classifyFetchResult: ok returns, unavailable throws FetchUnavailable (redacted detail),
+   *   2. classifyFetchResult: ok returns, unavailable throws FetchUnavailable (redacted detail),
    *      error throws FailClosed (no coreutils `timeout` means the fetch cannot be bounded).
    */
   function fetchOrigin(dir, beltMs) {
     if (typeof dir !== 'string' || !path.isAbsolute(dir)) {
       throw new FailClosed('ENF-25 worktree fresh-base gate: fetch target is not an absolute path — failing closed.');
     }
-    const u = runGit(dir, ['remote', 'get-url', 'origin'], 'remote get-url');
-    if (u.status === 2) throw new FetchUnavailable('this repository has no `origin` remote');
-    if (u.status !== 0) throw unexpected('remote get-url', u);
-
     const belt = slice(FETCH_BELT_MS, beltMs);
     const seconds = Math.max(1, Math.min(FETCH_TIMEOUT_S, Math.floor(belt / 1000) - FETCH_KILL_AFTER_S - 1));
     const r = spawn(
@@ -752,7 +1086,10 @@ function createDefaultSeams({ env, spawnSync, budget } = {}) {
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: belt,
         killSignal: 'SIGKILL',
-        env: gitEnv(base, { GIT_TERMINAL_PROMPT: '0' }),
+        // NI-05: no terminal prompt, no ssh-askpass, no Git Credential Manager window. A prompt on
+        // the session's controlling terminal (ssh) is not suppressible from spawnSync (it has no
+        // `detached`); it is bounded by the fetch timeout and recorded as a CTK-ADR-0009 residual.
+        env: gitEnv(base, { GIT_TERMINAL_PROMPT: '0', SSH_ASKPASS_REQUIRE: 'never', GCM_INTERACTIVE: 'never' }),
       }
     );
     const graded = classifyFetchResult(r);
@@ -764,7 +1101,7 @@ function createDefaultSeams({ env, spawnSync, budget } = {}) {
     throw new FailClosed('ENF-25 worktree fresh-base gate: ' + graded.detail + ' — failing closed.');
   }
 
-  return { fetchOrigin, revParse, currentBranch, isAncestor, worktreesHolding, casUpdateRef };
+  return { originUrl, fetchOrigin, revParse, currentBranch, isSymbolicRef, isAncestor, worktreesHolding, nextInProgress, casUpdateRef };
 }
 
 /**
@@ -838,6 +1175,8 @@ module.exports = {
   createDefaultSeams,
   classifyFetchResult,
   readBaseRef,
+  defaultManagedSettingsDir,
+  mainCheckoutRoot,
   FetchUnavailable,
   ASK_LIMIT_NOTE,
   MAX_SETTINGS_BYTES,
@@ -847,6 +1186,7 @@ module.exports = {
   FETCH_BELT_MS,
   GIT_TIMEOUT_MS,
   GATE_BUDGET_MS,
+  HOOK_TIMEOUT_S,
   MIN_CALL_MS,
   MAX_GIT_CALLS_PER_ROOT,
 };

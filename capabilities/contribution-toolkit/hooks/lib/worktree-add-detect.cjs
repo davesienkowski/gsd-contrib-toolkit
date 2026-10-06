@@ -28,7 +28,8 @@
  *   gitChdirs  the git GLOBAL `-C <dir>` values, in order, unexpanded (the gate expands them)
  *   path       the new worktree's path (first positional after `add`)
  *   base       the commit-ish (second positional), or null when omitted
- *   baseKind   'remote' | 'local' | 'head' | 'other' | 'none' ('none' = `--orphan`)
+ *   baseKind   'remote' | 'local' | 'head' | 'other' | 'none' ('none' = `--orphan`); an 'indirect'
+ *              base (MA-05) never reaches an entry: it is graded uncertain
  *   newBranch  the `-b`/`-B` value, or null
  *
  * `-C` is read from the tokens AFTER the resolved git program index, so `FOO=1 git -C /a`,
@@ -40,7 +41,8 @@
  * a `GIT_DIR=` / `GIT_WORK_TREE=` / `GIT_COMMON_DIR=` assignment before git, a shell expansion in
  * the base slot, in an omitted-base path, in an option, or among more than two positionals; plus
  * everything the walk itself grades (unparseable, ambiguous wrapper, over-deep `-c`) when the
- * command mentions WORKTREE_ADD_WORD.
+ * command mentions WORKTREE_ADD_WORD; plus (37-REVIEW MA-03) a HEAD-kind cut after an earlier
+ * `git checkout` / `git switch` anywhere in the same command.
  *
  * @module hooks/lib/worktree-add-detect
  */
@@ -81,22 +83,61 @@ const ADD_SHORT_VALUE = new Set(['b', 'B']);
 const ADD_SHORT_BOOL = Object.freeze({ f: 'force', d: 'detach', q: 'quiet' });
 
 const LOCAL_TRUNK = new Set(['next', 'refs/heads/next', 'heads/next']);
-const REMOTE_TRUNK = new Set(['origin/next', 'refs/remotes/origin/next', 'remotes/origin/next']);
+/**
+ * 37-REVIEW MA-05: `origin` and the origin/HEAD forms resolve through refs/remotes/origin/HEAD,
+ * which on a gsd-core clone points at origin/next. Treating them as the remote trunk costs at
+ * worst one unneeded fetch when origin/HEAD points elsewhere.
+ */
+const REMOTE_TRUNK = new Set([
+  'origin/next', 'refs/remotes/origin/next', 'remotes/origin/next',
+  'origin', 'origin/HEAD', 'remotes/origin/HEAD', 'refs/remotes/origin/HEAD',
+]);
 const HEAD_FORMS = new Set(['HEAD', '@']);
 
 /**
- * Classify a `worktree add` base by exact, case-sensitive string equality (no normalisation:
- * `NEXT`, `next~1`, `upstream/next`, a look-alike and a sha are all 'other').
+ * One trailing ancestry / peel suffix (MA-05): `~N` / `~`, `^N` / `^`, `^{...}` (a peel or a
+ * `^{/text}` search; every form starts from the named ref), and `@{0}` (the ref's current value).
+ * `@{N>0}` is NOT stripped: after a CAS it is the pre-move (stale) value, so it stays indirect.
+ */
+const BASE_SUFFIX = /(?:~\d*|\^\d*|\^\{[^{}]*\}|@\{0\})$/;
+/** Bounded strip (a suffix chain longer than this is left as is -> classified on what remains). */
+const MAX_SUFFIXES = 16;
+/**
+ * A base that resolves through state the gate cannot read statically (MA-05): `-` (@{-1}), any
+ * remaining `@{...}` (@{-N}, @{u}, @{upstream}, @{push}, @{N>0}, @{date}), `rev:path` / `:/text`,
+ * and a `..` range.
+ */
+const INDIRECT_BASE = /@\{|:|\.\./;
+
+/** `base` with a trailing chain of BASE_SUFFIX forms removed (MA-05). */
+function stripBaseSuffixes(base) {
+  let b = base;
+  for (let i = 0; i < MAX_SUFFIXES; i++) {
+    const next = b.replace(BASE_SUFFIX, '');
+    if (next === b) break;
+    b = next;
+  }
+  return b;
+}
+
+/**
+ * Classify a `worktree add` base: a trailing chain of `~N` / `^N` / `^{...}` / `@{0}` suffixes is
+ * stripped first (37-REVIEW MA-05: `next~0` names next), then exact, case-sensitive matching
+ * (`NEXT`, `upstream/next`, a look-alike and a sha are 'other'). `-` and any remaining `@{`, `:` or
+ * `..` form are 'indirect' (the detector grades that uncertain).
  *
  * @param {string|null|undefined} base
- * @returns {'remote'|'local'|'head'|'other'}
+ * @returns {'remote'|'local'|'head'|'other'|'indirect'}
  */
 function classifyBase(base) {
   if (base === null || base === undefined) return 'head';
   if (typeof base !== 'string') return 'other';
-  if (HEAD_FORMS.has(base)) return 'head';
-  if (LOCAL_TRUNK.has(base)) return 'local';
-  if (REMOTE_TRUNK.has(base)) return 'remote';
+  if (base === '-') return 'indirect';
+  const b = stripBaseSuffixes(base);
+  if (b === '' || HEAD_FORMS.has(b)) return 'head';
+  if (LOCAL_TRUNK.has(b)) return 'local';
+  if (REMOTE_TRUNK.has(b)) return 'remote';
+  if (b === '-' || INDIRECT_BASE.test(b)) return 'indirect';
   return 'other';
 }
 
@@ -208,6 +249,9 @@ function parseWorktreeAddArgs(tail) {
   if (!uncertainReason && base !== null && hasExpansion(base)) {
     uncertainReason = 'shell expansion in the worktree add base';
   }
+  if (!uncertainReason && base !== null && classifyBase(base) === 'indirect') {
+    uncertainReason = 'a worktree add base that resolves indirectly (`-`, `@{...}`, `:` or `..`)';
+  }
 
   let baseKind;
   if (orphan) baseKind = 'none';
@@ -222,13 +266,24 @@ function parseWorktreeAddArgs(tail) {
   return { path: p, base, newBranch, detach, orphan, baseKind, uncertainReason };
 }
 
+/** git verbs that change HEAD (37-REVIEW MA-03): a HEAD-kind cut after one is unattributable. */
+const HEAD_CHANGING_VERBS = new Set(['checkout', 'switch']);
+
 /**
  * The shared walk's per-segment hook for a resolved `git` program.
  *
+ * `state` (37-REVIEW MA-03) is per findWorktreeAdds call: the walk visits segments in command order
+ * (a `bash -c` / `eval` payload inline, a subshell too), so `state.switched` is true for every cut
+ * AFTER a `git checkout` / `git switch` (any arguments, any repository: conservative) anywhere
+ * earlier in the same command. A HEAD-kind cut (omitted base, `HEAD`, `@`) then reads a HEAD the
+ * gate cannot see at hook time -> uncertain.
+ *
  * @param {Object} ctx the walk's segment context (toks, idx, segIndex, depth, seg(), prefixes())
+ * @param {{switched:boolean}} [state] per-call state (default: a fresh, never-switched one)
  * @returns {Object[]} [] (not a cut), [cut] or [uncertain]
  */
-function worktreeAddSegment(ctx) {
+function worktreeAddSegment(ctx, state) {
+  const st = state || { switched: false };
   const toks = ctx.toks;
   const uncertain = (reason) => [{ kind: 'uncertain', reason }];
 
@@ -268,6 +323,10 @@ function worktreeAddSegment(ctx) {
     break;
   }
 
+  if (HEAD_CHANGING_VERBS.has(toks[k])) {
+    st.switched = true;
+    return [];
+  }
   if (toks[k] !== 'worktree') {
     return expandedGlobal && WORKTREE_ADD_WORD.test(toks.slice(k).join(' '))
       ? uncertain('shell expansion before a git worktree add verb')
@@ -282,6 +341,9 @@ function worktreeAddSegment(ctx) {
   if (expandedGlobal) return uncertain('shell expansion among the git global options');
   if (redirected) return uncertain('git is pointed at another repository (--git-dir, --work-tree or GIT_DIR)');
   if (a.uncertainReason) return uncertain(a.uncertainReason);
+  if (a.baseKind === 'head' && st.switched) {
+    return uncertain('an earlier git checkout / switch in the same command changes HEAD before this cut');
+  }
 
   return [{
     kind: 'cut',
@@ -298,12 +360,15 @@ function worktreeAddSegment(ctx) {
   }];
 }
 
-/** The program matcher for the shared walk. */
+/**
+ * The program matcher for the shared walk. Its `segment` carries no checkout state (MA-03), so
+ * findWorktreeAdds builds a per-call copy whose `segment` shares one state object.
+ */
 const WORKTREE_ADD_MATCHER = Object.freeze({
   label: 'git worktree add',
   word: WORKTREE_ADD_WORD,
   programs: new Set(['git']),
-  segment: worktreeAddSegment,
+  segment: (ctx) => worktreeAddSegment(ctx),
 });
 
 /**
@@ -314,7 +379,9 @@ const WORKTREE_ADD_MATCHER = Object.freeze({
  */
 function findWorktreeAdds(command) {
   if (typeof command !== 'string') return [];
-  return findProgramEntries(command, WORKTREE_ADD_MATCHER);
+  const state = { switched: false };
+  const matcher = Object.assign({}, WORKTREE_ADD_MATCHER, { segment: (ctx) => worktreeAddSegment(ctx, state) });
+  return findProgramEntries(command, matcher);
 }
 
 module.exports = {
