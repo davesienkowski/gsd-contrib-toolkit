@@ -11,7 +11,7 @@
  * verdict, plus how long the gate itself took.
  *
  * It is called from ONE place — `runGate` in `failclosed.cjs` — so a single ~10-line wrapper
- * instruments all 15 wired gates at **zero new process spawns**. (The obvious alternative,
+ * instruments all 18 wired gates at **zero new process spawns**. (The obvious alternative,
  * registering a recorder on `PreToolUse` with matcher `*`, would spawn a subprocess on every tool
  * call in every session and would still have to infer denies by absence — ambiguous between a
  * toolkit deny, a declined permission prompt, and an unrelated hook.)
@@ -19,7 +19,7 @@
  * ── THE HAZARD IS L3 LOOKING BACK AT US ───────────────────────────────────────────────────────
  * `failclosed.cjs` is precisely the file whose blast radius is the whole suite. Instrumentation
  * that could itself fail closed would BE the defect it is meant to measure — one component's
- * misfire taking all fifteen gates offline. So, non-negotiably:
+ * misfire taking all eighteen gates offline. So, non-negotiably:
  *
  *   1. NEVER THROWS. `recordVerdict` is a total function: every path is inside a try/catch that
  *      swallows everything, including filesystem and serialization errors and hostile getters.

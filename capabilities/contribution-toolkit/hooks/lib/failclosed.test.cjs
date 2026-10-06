@@ -313,7 +313,7 @@ test('runGate still DENIES on a throw even though ask now exists (HARD-01 unweak
 // runGate now wraps the (unchanged) fail-closed path so every gate's verdict is recorded at one
 // chokepoint. These pin the four non-negotiables AT THE runGate LEVEL — verdict-log.test.cjs pins
 // them inside the recorder; these prove the wiring cannot betray them either. failclosed.cjs is
-// the file whose blast radius is all 15 gates, so "the instrumentation is safe" is not something
+// the file whose blast radius is all 18 gates, so "the instrumentation is safe" is not something
 // to take on trust.
 
 const NOOP_OVERRIDE = { checkOverride: () => ({ override: false }), writeReceipt: () => {} };

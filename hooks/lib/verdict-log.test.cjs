@@ -6,7 +6,7 @@
  * Every impure seam (env, the fs writer) is injected, so nothing here touches a real log. The
  * cases below pin the four NON-NEGOTIABLE constraints from
  * `.planning/notes/2026-07-29-L2-observability-design.md`, because this module is called from
- * `failclosed.cjs` — the one file whose blast radius is all 15 gates:
+ * `failclosed.cjs` — the one file whose blast radius is all 18 gates:
  *
  *   1. it can NEVER throw (fs, serialization, malformed ctx — anything);
  *   2. it NEVER alters the decision it is handed;

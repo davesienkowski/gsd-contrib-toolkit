@@ -192,7 +192,7 @@ function runGate(gateFn, ctx = {}) {
   const startedAt = Date.now();
   const result = runGateInner(gateFn, ctx);
   // ── OBS-02 (Half B) ────────────────────────────────────────────────────────────────────────
-  // The ONLY instrumentation point for all 15 wired gates, at zero new process spawns.
+  // The ONLY instrumentation point for all 18 wired gates, at zero new process spawns.
   //
   // This shape is chosen so three of the four non-negotiables hold STRUCTURALLY rather than by
   // discipline: the call cannot run before the decision (it is sequenced after), cannot alter it
@@ -206,7 +206,7 @@ function runGate(gateFn, ctx = {}) {
   // wrapper removes.
   // `recordVerdict` is itself total, so this catch is the SECOND layer. It is not decoration: a
   // future edit to verdict-log (or a require-time swap) could reintroduce a throw, and the cost of
-  // being wrong here is all 15 gates going offline. `ctx.recordVerdictImpl` exists so this outer
+  // being wrong here is all 18 gates going offline. `ctx.recordVerdictImpl` exists so this outer
   // guard is actually TESTABLE — mutation-testing showed that without an injectable recorder,
   // deleting this try/catch failed zero tests, i.e. the guarantee was asserted but not proven.
   const record = ctx.recordVerdictImpl || recordVerdict;
@@ -252,7 +252,7 @@ function runGateInner(gateFn, ctx = {}) {
     // unreachable for exactly the inputs it existed to catch.
     //
     // Narrows-not-weakens: every gate already returns allow()/deny()/ask(), so no legitimate path
-    // changes (proven by the full suite staying green across all 15 gates).
+    // changes (proven by the full suite staying green across all 18 gates).
     if (decision && decision.permissionDecision === 'allow') {
       return allow();
     }
