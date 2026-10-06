@@ -1192,7 +1192,11 @@ function memtraceRemedy(rel) {
  *   absent              → scaffold (obligations only) + DENY naming the path and the tools
  *   unreadable          → THROW (fail closed)
  *   placeholders left   → DENY naming the unfilled fields (checked before any shape)
- *   filled              → DENY: not yet evaluated (KNOWN STUB, 38-03 Task 2; Task 3 replaces it)
+ *   malformed JSON      → THROW (fail closed)
+ *   a shape assertion   → DENY (pass, then status exactly `unavailable`, then a non-blank reason)
+ *   head_oid mismatch   → DENY (a >= 7-char hex prefix of the live head, as requireArtifact)
+ *   filled and valid    → ASK, quoting the reason as the reviewer's unverified attestation
+ * With complete evidence this branch is never reached, so the file is never read.
  *
  * @param {Object} g
  * @param {Object} ctx
@@ -1228,12 +1232,61 @@ function memtraceArtifactBranch(g, ctx, deps, short) {
     );
   }
 
-  // KNOWN STUB (38-03 Task 2): a filled attestation is not yet evaluated; Task 3 replaces this
-  // deny with the parse → assert → head_oid → ask sequence.
-  return deny(
-    head + '\n\n`' + rel + '` is filled, but the unavailable attestation is not yet evaluated.\n\n' +
-      memtraceRemedy(rel) + '\n\n' + R8A_DENY_NOTE
+  const doc = parseArtifact(rel, text); // malformed → FailClosed
+
+  for (const a of g.assert) {
+    const problem = checkAssertion(doc, a); // shared ENF-19 predicate (throws on a contract bug)
+    if (problem !== null) {
+      return deny(
+        head + '\n\n`' + rel + '` does not yet record a valid unavailable attestation.\n' + problem +
+          '\n\n' + memtraceRemedy(rel) + '\n\n' + R8A_DENY_NOTE
+      );
+    }
+  }
+
+  // Same rule as requireArtifact: a >= OID_MIN_LENGTH hex prefix of the live head.
+  const claimed = normalizeOid(readPath(doc, 'head_oid'));
+  if (!claimed || !ctx.headOid.startsWith(claimed)) {
+    return deny(
+      head + '\n\n`' + rel + '` records `head_oid` `' + String(readPath(doc, 'head_oid')).slice(0, 80) +
+        '`, but PR #' + ctx.number + ' now heads at `' + ctx.headOid.slice(0, OID_KEY_LENGTH) +
+        '`. An attestation for an older push does not cover this one.\n\n' + memtraceRemedy(rel) +
+        '\n\n' + R8A_DENY_NOTE
+    );
+  }
+
+  const quoted = quoteAttestation(readPath(doc, 'unavailable_reason'));
+  return ask(
+    'ENF-20 ' + g.id + ' (re-review step ' + g.step + ') — this verdict has no memtrace evidence ' +
+      'in this session (not yet run: ' + shortfallClause(short) + '), and `' + rel + '` attests ' +
+      'that memtrace was unavailable.\n\n' +
+      'The reviewer\'s own unverified attestation (at most ' + ATTESTATION_QUOTE_MAX + ' characters, ' +
+      'control characters replaced): «' + quoted.text + '»' + (quoted.truncated ? ' (truncated)' : '') +
+      '\n\nThe gate cannot verify this attestation. It checked only that the file is filled, records ' +
+      '`status: "unavailable"` with a reason, and names this push\'s head oid. A filled attestation ' +
+      'never allows on its own.\n\n' + R8A_ASK_NOTE
   );
+}
+
+/** The most characters of an attested `unavailable_reason` a human ask may quote. */
+const ATTESTATION_QUOTE_MAX = 300;
+
+/**
+ * The attested reason as it may appear in a human prompt (prompt-injection guard, T-38-11):
+ * C0/C1 control characters and the Unicode line/paragraph separators become spaces, the quote
+ * delimiters `«` `»` become `"` so the text cannot close its own quote, and at most
+ * ATTESTATION_QUOTE_MAX code points are kept (replace first, then cut, so a cut never lands
+ * inside a surrogate pair).
+ *
+ * @param {*} value
+ * @returns {{text:string, truncated:boolean}}
+ */
+function quoteAttestation(value) {
+  const clean = String(value === undefined || value === null ? '' : value)
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
+    .replace(/[«»]/g, '"');
+  const chars = Array.from(clean);
+  return { text: chars.slice(0, ATTESTATION_QUOTE_MAX).join(''), truncated: chars.length > ATTESTATION_QUOTE_MAX };
 }
 
 // ── the gate ────────────────────────────────────────────────────────────────
