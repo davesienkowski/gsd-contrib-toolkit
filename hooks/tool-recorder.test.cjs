@@ -302,13 +302,18 @@ test('GSD_CONTRIB_LOG_DIR overrides the directory', () => {
 
 // ── D4: rotation + best-effort append (seam ported to the 261006-jox primitives) ──
 //
-// appendRecord opens the slot with O_WRONLY|O_APPEND|O_CREAT|O_NONBLOCK, fstats the fd, writes the
-// whole line once and closes in a finally. fakeFs records every call so the tests below can assert
+// appendRecord refuses a slot that statSync shows is not a regular file BEFORE any open, opens the
+// rest with O_WRONLY|O_APPEND|O_CREAT|O_NONBLOCK|O_NOCTTY, fstats the fd, writes the whole line once
+// and closes in a finally. fakeFs records every call so the tests below can assert
 // the exact primitive sequence without touching a real file. It deliberately has NO appendFileSync.
 
 /** The open flags appendRecord must use, computed here from fs.constants (not from the module). */
 const JOX_APPEND_FLAGS =
-  fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | (fs.constants.O_NONBLOCK || 0);
+  fs.constants.O_WRONLY |
+  fs.constants.O_APPEND |
+  fs.constants.O_CREAT |
+  (fs.constants.O_NONBLOCK || 0) |
+  (fs.constants.O_NOCTTY || 0);
 
 /** A recording fake fs. `over` replaces any primitive. */
 function fakeFs(over = {}) {
@@ -408,7 +413,7 @@ test('a failing append drops the record rather than escalating', () => {
   assert.strictEqual(appendRecord(null, { env: OBS_ENV, fsImpl: impl }), null);
 });
 
-test('261006-jox seam: openSync is called once on the live slot with O_WRONLY|O_APPEND|O_CREAT|O_NONBLOCK', () => {
+test('261006-jox seam: openSync is called once on the live slot with O_WRONLY|O_APPEND|O_CREAT|O_NONBLOCK|O_NOCTTY', () => {
   const { impl, calls } = fakeFs();
   appendRecord('{"a":1}\n', { env: OBS_ENV, fsImpl: impl });
   assert.strictEqual(calls.open.length, 1, 'one open');
@@ -432,11 +437,21 @@ test('261006-jox seam: fstatSync reporting a non-regular file refuses the write 
   assert.deepStrictEqual(calls.close, [42]);
 });
 
-test('261006-jox seam: a non-regular slot over MAX_LOG_BYTES is never renamed', () => {
+test('261006-jox seam: a non-regular slot over MAX_LOG_BYTES is never renamed and never opened', () => {
   const { impl, calls } = fakeFs({ statSync: () => ({ size: MAX_LOG_BYTES + 1, isFile: () => false }) });
-  appendRecord('{"a":1}\n', { env: OBS_ENV, fsImpl: impl });
+  assert.strictEqual(appendRecord('{"a":1}\n', { env: OBS_ENV, fsImpl: impl }), null);
   assert.strictEqual(calls.rename.length, 0);
-  assert.strictEqual(calls.open.length, 1, 'the append is still attempted (and fstat-checked)');
+  assert.strictEqual(calls.open.length, 0, 'a slot the stat shows is not a regular file is refused before any open');
+});
+
+test('261006-jox seam (review WR-01): a non-regular slot of any size is refused before any open', () => {
+  // A FIFO with a live reader, or a device, must not even be opened: an open-then-close hands a
+  // reader EOF, and some devices act on open. The fd fstat stays as the backstop for a swap.
+  const { impl, calls } = fakeFs({ statSync: () => ({ size: 0, isFile: () => false }) });
+  assert.strictEqual(appendRecord('{"a":1}\n', { env: OBS_ENV, fsImpl: impl }), null);
+  assert.strictEqual(calls.open.length, 0);
+  assert.strictEqual(calls.write.length, 0);
+  assert.strictEqual(calls.close.length, 0);
 });
 
 test('261006-jox seam: openSync throwing ENXIO returns null, never writes and never closes', () => {
