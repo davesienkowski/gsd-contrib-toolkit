@@ -290,25 +290,32 @@ test('261006-jsm: the keying and observability consequences are recorded', () =>
   assert.match(o, /governed stays false/);
 });
 
-const { execFileSync: jsmExecFileSync } = require('node:child_process');
-const JSM_ADR10_REL = 'docs/adr/CTK-ADR-0010-memtrace-review-evidence.md';
-const JSM_BASE = 'e2690ca';
+// Review fix round WR-03: the pre-branch state of CTK-ADR-0010 is pinned by sha256 digests computed
+// from commit e2690ca's text (2026-10-06), so these rows never read a git object: e2690ca is on no
+// published branch, and a squash merge, a rebase or a fresh clone would lose it.
+const { createHash: jsmCreateHash } = require('node:crypto');
+const jsmSha256 = (t) => jsmCreateHash('sha256').update(t, 'utf8').digest('hex');
+// sha256 of e2690ca's CTK-ADR-0010 text before `## Consequences` (17,042 characters).
+const JSM_BASE_PREFIX_SHA256 = 'f3403f98e0114b4bacd8100b76dadc4744ac296f794d652f507eed0d003614c6';
+// sha256 of each non-ASCII line in e2690ca's residual list (one line, the `gh api .../reviews
+// -fevent=APPROVE` line of the classify-`other` bullet, written with an ellipsis character).
+const JSM_BASE_NON_ASCII_RESIDUAL_SHA256 = new Set([
+  '9a0a2d51f02a2dbbec2b9dc71fb33b2390d995734af50de23559a8170a7cff53',
+]);
 
 test('261006-jsm: every line this branch added to the CTK-ADR-0010 residual list is plain ASCII', () => {
-  const before = new Set(
-    jsmExecFileSync('git', ['show', JSM_BASE + ':' + JSM_ADR10_REL], { cwd: REPO, encoding: 'utf8' }).split('\n')
-  );
-  const added = adr10Residuals().split('\n').filter((l) => !before.has(l));
-  assert.ok(added.length > 0, 'the residual list gained lines');
-  for (const l of added) assert.match(l, /^[\x20-\x7e]*$/, 'non-ASCII in an added line: ' + l);
+  const lines = adr10Residuals().split('\n');
+  assert.ok(lines.some((l) => l.includes('261006-jsm')), 'the residual list carries the 261006-jsm lines');
+  for (const l of lines) {
+    if (/^[\x20-\x7e]*$/.test(l)) continue;
+    assert.ok(JSM_BASE_NON_ASCII_RESIDUAL_SHA256.has(jsmSha256(l)), 'non-ASCII in a line not present at e2690ca: ' + l);
+  }
 });
 
-test('261006-jsm: CTK-ADR-0010 is byte-identical to ' + JSM_BASE + ' up to `## Consequences` (no Status or Decision edit)', () => {
-  const cut = (t) => t.slice(0, t.indexOf('## Consequences'));
-  const base = jsmExecFileSync('git', ['show', JSM_BASE + ':' + JSM_ADR10_REL], { cwd: REPO, encoding: 'utf8' });
+test('261006-jsm: CTK-ADR-0010 is byte-identical to e2690ca up to `## Consequences` (no Status or Decision edit)', () => {
   const now = fs.readFileSync(adrFile(10), 'utf8');
-  assert.ok(base.indexOf('## Consequences') > 0 && now.indexOf('## Consequences') > 0);
-  assert.strictEqual(cut(now), cut(base));
+  assert.ok(now.indexOf('## Consequences') > 0);
+  assert.strictEqual(jsmSha256(now.slice(0, now.indexOf('## Consequences'))), JSM_BASE_PREFIX_SHA256);
 });
 
 // -- quick 261006-jsm review fix round WR-02: the keying bullet no longer says a wrong key cannot allow
