@@ -2684,3 +2684,24 @@ test('ENF-25 MA-05 e2e (fx6): origin/HEAD -> origin/next; `origin/HEAD` and `ori
     fx.dispose();
   }
 });
+
+// ── NI-04: a git that EXITED 0 is a success even when spawnSync also reports ETIMEDOUT (a grandchild held the pipe) ──
+
+test('ENF-25 NI-04: classifyFetchResult: exit 0 with a spawnSync ETIMEDOUT is ok (git finished; a grandchild held the pipe)', () => {
+  assert.strictEqual(exp('classifyFetchResult')({ status: 0, error: { code: 'ETIMEDOUT' } }).state, 'ok');
+});
+
+test('ENF-25 NI-04 seam: casUpdateRef exit 0 with ETIMEDOUT -> true (the ref DID move; never a FailClosed claiming it did not)', () => {
+  const rec = recSpawn(() => ({ status: 0, error: { code: 'ETIMEDOUT' } }));
+  assert.strictEqual(seamsWith(rec).casUpdateRef('/abs/dir', 'refs/heads/next', SHA_REMOTE, SHA_LOCAL), true);
+});
+
+test('ENF-25 NI-04 seam: revParse exit 0 with ETIMEDOUT and a full sha -> the sha', () => {
+  const rec = recSpawn(() => ({ status: 0, stdout: SHA_REMOTE + '\n', error: { code: 'ETIMEDOUT' } }));
+  assert.strictEqual(seamsWith(rec).revParse('/abs/dir', 'refs/remotes/origin/next'), SHA_REMOTE);
+});
+
+test('ENF-25 NI-04 seam: a NON-zero exit with ETIMEDOUT still fails closed', () => {
+  const rec = recSpawn(() => ({ status: null, signal: 'SIGTERM', error: { code: 'ETIMEDOUT' } }));
+  assert.throws(() => seamsWith(rec).casUpdateRef('/abs/dir', 'refs/heads/next', SHA_REMOTE, SHA_LOCAL), (err) => err instanceof FailClosed);
+});
