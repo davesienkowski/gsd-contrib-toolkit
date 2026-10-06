@@ -2931,3 +2931,56 @@ for (const [label, cmd, want] of [
     assert.ok(ms < 5000, label + ' took ' + ms + ' ms');
   });
 }
+
+// -- 261006-jsm review fix round WR-02: a recovered verdict whose PR number is not on the command line
+//
+// xargs feeds the number from stdin and a GraphQL mutation names a node id, so prSelector is null
+// and the PR lookup falls back to the current branch's PR. Keying R8, R10 and R1 to that PR can
+// allow an approve of a DIFFERENT PR on the wrong PR's artifacts, so the gate holds a fixed ask
+// naming the form (it echoes nothing) and still gates the segment, so any deny wins.
+
+const JSM_WR02_GQL =
+  "gh api graphql -f query='mutation { submitPullRequestReview(input:{pullRequestReviewId:\"PRR_zzmarker\", event: APPROVE}) { clientMutationId } }'";
+
+/** The WR-02 held ask: fixed text, names the form, says the artifacts were keyed to the branch's PR. */
+function assertUnkeyedAsk(d, formRe) {
+  assert.strictEqual(d.permissionDecision, 'ask', d.permissionDecisionReason);
+  const why = d.permissionDecisionReason;
+  assert.match(why, /^ENF-20 /);
+  assert.match(why, /cannot be read from the command/);
+  assert.match(why, /current branch's PR/);
+  assert.match(why, formRe);
+  assert.match(why, /does not answer this prompt/);
+  assert.ok(!why.includes('99') && !why.includes('zzmarker'), 'the ask never echoes the command: ' + why);
+  return why;
+}
+
+for (const [label, cmd, formRe] of [
+  ['`echo 99 | xargs gh pr review -a`', 'echo 99 | xargs gh pr review -a', /run through xargs/],
+  ['a GraphQL approve keyed by node id', JSM_WR02_GQL, /GraphQL review mutation/],
+  ['`bash -c "gh pr review -a"` (no number on the command line)', 'bash -c "gh pr review -a"', /bash or sh -c/],
+]) {
+  test('261006-jsm WR-02 gate: ' + label + ' with complete evidence and artifacts -> the held UNKEYED ask (was allow)', () => {
+    const dp = deps();
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assertUnkeyedAsk(d, formRe);
+    assert.strictEqual(dp._calls.resolvePr, 1, 'the segment is still gated against the current branch PR');
+  });
+}
+
+test('261006-jsm WR-02 gate: the xargs approve with only Bash rows still DENIES R8a (deny beats the held ask)', () => {
+  assertJsmR8aDeny('echo 99 | xargs gh pr review -a');
+});
+
+test('261006-jsm WR-02 gate: the xargs approve with R10 absent still DENIES R10', () => {
+  const d = runReviewArtifactGate(input('echo 99 | xargs gh pr review -a'), deps({ files: absent(R10) }));
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-20 R10/);
+});
+
+for (const cmd of ['bash -c "gh pr review 42 -a"', 'echo x | xargs gh pr review 42 -a', 'gh pr review -a', 'gh pr review 42 -a']) {
+  test('261006-jsm WR-02 gate lock: `' + cmd + '` with complete evidence -> allow (the number is readable, or the form is native)', () => {
+    const d = runReviewArtifactGate(input(cmd), deps());
+    assert.strictEqual(d.permissionDecision, 'allow', cmd + ': ' + d.permissionDecisionReason);
+  });
+}

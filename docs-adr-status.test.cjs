@@ -310,3 +310,12 @@ test('261006-jsm: CTK-ADR-0010 is byte-identical to ' + JSM_BASE + ' up to `## C
   assert.ok(base.indexOf('## Consequences') > 0 && now.indexOf('## Consequences') > 0);
   assert.strictEqual(cut(now), cut(base));
 });
+
+// -- quick 261006-jsm review fix round WR-02: the keying bullet no longer says a wrong key cannot allow
+test('261006-jsm WR-02: the keying bullet says a wrong key can allow and that the gate now asks', () => {
+  const k = adr10Bullet(/^- \*\*Some recovered verdicts are keyed to the current branch's PR/);
+  assert.ok(!k.includes('denies, never allows'), k);
+  assert.match(k, /can be allowed/);
+  assert.match(k, /asks/);
+  assert.match(k, /any deny still wins/);
+});
