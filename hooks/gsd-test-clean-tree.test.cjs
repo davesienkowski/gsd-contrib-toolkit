@@ -889,3 +889,120 @@ test('m-07: this file points GSD_CONTRIB_LOG_DIR at its own temp dir, and the ga
   runGsdTestCleanTreeGate(input(PIPED), scenario().deps);
   assert.ok(fs.existsSync(path.join(dir, 'tool-log.jsonl')), 'the verdict was recorded in the temp dir');
 });
+
+// ───────────────────────── 36-03a prohibition lock: the gate never mutates the repo ─────────────────────────
+
+/**
+ * Run `fn` with child_process.execFileSync/spawnSync/execSync/spawn/execFile wrapped so every git
+ * argv is recorded, against a FRESH copy of the gate module (its destructured child_process
+ * bindings are captured at require time). Everything is restored afterwards.
+ */
+function withGitSpy(fn) {
+  const cp = require('node:child_process');
+  const names = ['execFileSync', 'spawnSync', 'execSync', 'spawn', 'execFile'];
+  const orig = {};
+  const seen = [];
+  const gatePath = require.resolve('./gsd-test-clean-tree.cjs');
+  const cached = require.cache[gatePath];
+  for (const n of names) {
+    orig[n] = cp[n];
+    cp[n] = function (...a) {
+      if (n === 'execSync') seen.push({ via: n, file: 'sh', args: [String(a[0])] });
+      else seen.push({ via: n, file: a[0], args: Array.isArray(a[1]) ? a[1] : [] });
+      return orig[n].apply(this, a);
+    };
+  }
+  delete require.cache[gatePath];
+  try {
+    const fresh = require('./gsd-test-clean-tree.cjs');
+    fn(fresh);
+  } finally {
+    for (const n of names) cp[n] = orig[n];
+    if (cached) require.cache[gatePath] = cached;
+    else delete require.cache[gatePath];
+  }
+  return seen;
+}
+
+/** Real-git deps: only the tree root is injected, so gitStatus/resolveRef are the REAL defaults. */
+function realGitDeps(dir) {
+  return {
+    cwd: dir,
+    env: process.env,
+    resolveTreeRoot: () => dir,
+    overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
+  };
+}
+
+test('ENF-23 36-03a lock: every real git call is read-only (status/rev-parse) and every status carries --no-optional-locks', () => {
+  const { dir } = makeGitRepo();
+  try {
+    fs.writeFileSync(path.join(dir, 'tracked.txt'), 'dirty\n');
+    const seen = withGitSpy((fresh) => {
+      // dirty + a named-ref head (main): exercises both the status and the ref-resolution defaults
+      fresh.runGsdTestCleanTreeGate(input('gsd-test -base next -head main'), realGitDeps(dir));
+      fresh.runGsdTestCleanTreeGate(input('gsd-test'), realGitDeps(dir));
+    });
+    const gitCallsSeen = seen.filter((c) => path.basename(String(c.file)) === 'git');
+    assert.ok(gitCallsSeen.length >= 2, 'the spy must have observed real git calls: ' + JSON.stringify(seen));
+    assert.strictEqual(seen.filter((c) => c.via === 'execSync').length, 0, 'no shell string is ever run');
+    for (const c of gitCallsSeen) {
+      const sub = c.args.find((a) => !a.startsWith('-'));
+      assert.ok(['status', 'rev-parse'].includes(sub), 'only read-only subcommands: ' + JSON.stringify(c.args));
+      if (sub === 'status') {
+        assert.ok(c.args.includes('--no-optional-locks'), 'status must not take the optional index lock: ' + JSON.stringify(c.args));
+        assert.ok(c.args.indexOf('--no-optional-locks') < c.args.indexOf('status'), '--no-optional-locks is a global option, before the subcommand');
+      }
+    }
+    assert.ok(gitCallsSeen.some((c) => c.args.includes('status')), 'a status call was made');
+    assert.ok(gitCallsSeen.some((c) => c.args.includes('rev-parse')), 'a rev-parse call was made');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** Byte snapshot of the repo's index, HEAD, packed-refs and every file under .git/refs. */
+function repoSnapshot(dir) {
+  const gitDir = path.join(dir, '.git');
+  const snap = {};
+  const take = (rel) => {
+    const f = path.join(gitDir, rel);
+    snap[rel] = fs.existsSync(f) ? fs.readFileSync(f).toString('hex') : null;
+  };
+  for (const rel of ['index', 'HEAD', 'packed-refs']) take(rel);
+  const walk = (rel) => {
+    for (const e of fs.readdirSync(path.join(gitDir, rel), { withFileTypes: true })) {
+      const r = path.join(rel, e.name);
+      if (e.isDirectory()) walk(r);
+      else take(r);
+    }
+  };
+  walk('refs');
+  return snap;
+}
+
+test('ENF-23 36-03a lock e2e: .git/index and refs are byte-unchanged after a dirty-tree DENY and a clean ALLOW', () => {
+  const { dir } = makeGitRepo();
+  try {
+    // Make the index STAT-STALE but content-clean (same bytes, newer mtime): a plain `git status`
+    // would then refresh and REWRITE .git/index, while `--no-optional-locks` must not.
+    const stale = path.join(dir, 'tracked.txt');
+    const future = new Date(Date.now() + 60000);
+    fs.utimesSync(stale, future, future);
+    // clean ALLOW
+    const before = repoSnapshot(dir);
+    assert.ok(before.index, 'fixture has an index');
+    assert.strictEqual(spawnIn(dir, 'gsd-test -base next -head HEAD').decision, 'allow');
+    assert.deepStrictEqual(repoSnapshot(dir), before, 'a clean allow must not touch index or refs');
+    // dirty DENY
+    const other = path.join(dir, 'scripts', 'issue-dedupe.cjs');
+    fs.utimesSync(other, future, future); // a second stat-stale clean entry
+    fs.writeFileSync(path.join(dir, 'tracked.txt'), 'two\n');
+    const before2 = repoSnapshot(dir);
+    const r = spawnIn(dir, 'gsd-test -base next -head HEAD');
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.deepStrictEqual(repoSnapshot(dir), before2, 'a dirty deny must not touch index or refs');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -555,6 +555,13 @@ test('ENF-24 GTEST-06: probe timeout -> ASK naming ENF-24 and the dangerously-sk
   assert.doesNotMatch(reason, /^Blocked/, 'the ask is not described as blocking');
 });
 
+test('36-04c lock: the docker-timeout ask reason is never described as BLOCKED and states the skip-permissions degrade', () => {
+  const { d, reason } = run('gsd-test', { probe: { state: 'timeout', detail: '' } });
+  assert.strictEqual(d.permissionDecision, 'ask');
+  assert.doesNotMatch(reason, /blocked/i, 'an ask is not a block: the word BLOCKED must not appear anywhere in the reason');
+  assert.match(reason, /dangerously-skip-permissions/);
+});
+
 test('ENF-24 GTEST-06: probe error -> DENY (thrown)', () => {
   const { d, reason } = run('gsd-test', { probe: { state: 'error', detail: 'EACCES' } });
   assert.strictEqual(d.permissionDecision, 'deny');

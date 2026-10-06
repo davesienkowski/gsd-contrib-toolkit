@@ -1638,3 +1638,34 @@ test('GTEST-01 ENF-22 displacement: a lone gsd-test dispatch classifies as other
 test('GTEST-01 ENF-22 displacement: hasGovernedSegment still finds pr-merge after gsd-test', () => {
   assert.strictEqual(hasGovernedSegment(parseCommand('gsd-test x && gh pr merge 1'), ['pr-merge']), true);
 });
+
+// ---------------------------------------------------------------------------
+// 36-02a prohibition lock: WRAPPER_BUILTINS is not widened (Phase 36 added no wrapper)
+//
+// WRAPPER_BUILTINS is not exported, so the exact set is locked by BEHAVIOUR through the shared
+// resolveProgram: each of the eight current members resolves THROUGH to the wrapped program, and
+// the names a widening would plausibly add (setsid, nohup, time, xargs, chroot) do NOT. Widening
+// the set is a security-relevant change to every gate that resolves programs; a deliberate change
+// must update this test.
+// ---------------------------------------------------------------------------
+
+test('36-02a lock: the eight current wrapper builtins resolve through to the wrapped program', () => {
+  for (const w of ['command', 'env', 'exec', 'sudo', 'nice', 'timeout 5', 'stdbuf -o0', 'ionice']) {
+    for (const wrapped of ['git push', 'gsd-test x']) {
+      const r = resolveProgram(parseCommand(`${w} ${wrapped}`).segments[0]);
+      assert.strictEqual(r.wrapped, true, `${w} must be a wrapper builtin`);
+      assert.strictEqual(r.prog, wrapped.split(' ')[0], `${w} ${wrapped}`);
+    }
+  }
+});
+
+test('36-02a lock: setsid / nohup / time / xargs / chroot are NOT wrapper builtins (no resolve-through)', () => {
+  for (const w of ['setsid', 'nohup', 'time', 'xargs', 'chroot /']) {
+    for (const wrapped of ['git push', 'gsd-test x']) {
+      const r = resolveProgram(parseCommand(`${w} ${wrapped}`).segments[0]);
+      assert.strictEqual(r.wrapped, false, `${w} must not be a wrapper builtin`);
+      assert.strictEqual(r.prog, w.split(' ')[0], `${w} ${wrapped} resolves to the wrapper itself`);
+    }
+  }
+  assert.deepStrictEqual(cls('setsid git push'), { action: 'other' });
+});

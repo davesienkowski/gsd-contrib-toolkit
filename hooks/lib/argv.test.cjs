@@ -3,7 +3,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const { tokenize, parseCommand } = require('./argv.cjs');
+const { tokenize, parseCommand, splitSegments } = require('./argv.cjs');
 
 // ---------------------------------------------------------------------------
 // tokenize: POSIX-aware shell tokenizer
@@ -357,4 +357,20 @@ test('GTEST-03 nextOp: a dropped empty trailing piece keeps the previous op (`a 
   assert.strictEqual(p.ok, true, p.reason);
   assert.strictEqual(p.segments.length, 1);
   assert.strictEqual(p.segments[0].nextOp, '|');
+});
+
+// ---------------------------------------------------------------------------
+// 36-01 prohibition lock: argv splitting rules are NOT widened (newline half)
+// ---------------------------------------------------------------------------
+
+// DOCUMENTED RESIDUAL (SEED-argv-newline-separator-gap): an unquoted newline is NOT a segment
+// separator today, so `echo a\ngsd-test x` is ONE segment. This test locks that current behaviour
+// so Phase 36 cannot change it by accident. A FUTURE fix that makes newline a separator MUST
+// update this test deliberately (and re-grade every gate that consumes segments).
+test('36-01 lock: splitSegments keeps an unquoted newline inside ONE segment (SEED-argv-newline-separator-gap)', () => {
+  assert.strictEqual(splitSegments('a\nb').length, 1);
+});
+
+test('36-01 lock: parseCommand("echo a\\ngsd-test x") has exactly one segment (documented newline residual)', () => {
+  assert.strictEqual(parseCommand('echo a\ngsd-test x').segments.length, 1);
 });
