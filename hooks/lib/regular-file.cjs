@@ -18,6 +18,11 @@
  * It THROWS a plain Error (the raw fs error, NOT_REGULAR_FILE, or the read-cap message); each
  * caller maps that onto its own failure posture.
  *
+ * The writer (writeRegularFile, W5) is the write-side twin: open O_WRONLY|O_CREAT|O_NONBLOCK
+ * (+O_APPEND), fstat the fd, refuse anything that is not a regular file, and only then truncate
+ * (truncate mode) and write. A FIFO with no reader fails the open at once (ENXIO); a FIFO with a
+ * reader, a device or a directory is refused by type, so nothing is written to it.
+ *
  * @module hooks/lib/regular-file
  */
 
@@ -81,9 +86,59 @@ function readRegularFileBounded(abs, max = MAX_LIVE_READ_BYTES) {
   }
 }
 
+/** Write-only, create, non-blocking: an open of a FIFO with no reader fails at once (ENXIO). */
+const LIVE_WRITE_FLAGS = fs.constants.O_WRONLY | fs.constants.O_CREAT | (fs.constants.O_NONBLOCK || 0);
+
+const NOT_REGULAR_WRITE_TARGET =
+  'not a regular file (a FIFO, socket, device or directory, or a symlink to one); the gate writes ' +
+  'regular files only';
+
+/**
+ * Write UTF-8 `data` to a REGULAR file without ever blocking on a special file (W5). The order is
+ * load-bearing:
+ *
+ *   1. open O_WRONLY|O_CREAT|O_NONBLOCK (+O_APPEND in append mode), mode 0o666 before the umask,
+ *      the same default writeFileSync/appendFileSync use, so permissions do not change;
+ *   2. fstat the opened fd and refuse anything that is not a regular file;
+ *   3. only then, in truncate mode, ftruncate(fd, 0). Never O_TRUNC at open and never a truncate
+ *      before the type check: ftruncate on a /dev/zero fd throws EINVAL, which a best-effort
+ *      caller would swallow before the type check ever ran;
+ *   4. write the whole buffer at the current offset (no position, so O_APPEND appends) in a loop.
+ *
+ * A symlink to a regular file is followed, matching the reader. O_CREAT through a dangling
+ * symlink still creates the target, as writeFileSync/appendFileSync did before. Raw fs errors
+ * (ENXIO for a FIFO with no reader, EISDIR for a directory) propagate; a non-regular target that
+ * opens throws NOT_REGULAR_WRITE_TARGET. The caller maps a throw onto its own posture.
+ *
+ * @param {string} abs
+ * @param {string} data
+ * @param {{append?: boolean}} [opts]
+ */
+function writeRegularFile(abs, data, { append = false } = {}) {
+  const fd = fs.openSync(abs, LIVE_WRITE_FLAGS | (append ? fs.constants.O_APPEND : 0), 0o666);
+  try {
+    if (!fs.fstatSync(fd).isFile()) throw new Error(NOT_REGULAR_WRITE_TARGET);
+    if (!append) fs.ftruncateSync(fd, 0);
+    const buf = Buffer.from(String(data), 'utf8');
+    let off = 0;
+    while (off < buf.length) {
+      off += fs.writeSync(fd, buf, off, buf.length - off);
+    }
+  } finally {
+    try {
+      fs.closeSync(fd);
+    } catch (_) {
+      /* a close failure must not mask the primary error */
+    }
+  }
+}
+
 module.exports = {
   MAX_LIVE_READ_BYTES,
   LIVE_OPEN_FLAGS,
   NOT_REGULAR_FILE,
   readRegularFileBounded,
+  LIVE_WRITE_FLAGS,
+  NOT_REGULAR_WRITE_TARGET,
+  writeRegularFile,
 };

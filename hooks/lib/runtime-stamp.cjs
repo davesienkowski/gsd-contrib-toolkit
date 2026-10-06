@@ -59,7 +59,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { FailClosed } = require('./failclosed.cjs');
-const { readRegularFileBounded } = require('./regular-file.cjs');
+const { readRegularFileBounded, writeRegularFile } = require('./regular-file.cjs');
 const { GSD_CORE_OWNER, GSD_CORE_REPO } = require('./resolve.cjs');
 
 // ───────────────────────────── constants ─────────────────────────────
@@ -555,12 +555,15 @@ function readCacheLive(deps = {}) {
 /**
  * Write the upstream-tip cache. BEST-EFFORT: an unwritable state dir must never break a gate
  * run — it only costs one extra `ls-remote` next time.
+ * The default writer is the shared non-blocking, regular-file-only writer (W5): a cache path that
+ * is a FIFO, socket, device or directory (or a symlink to one) is refused at once, and that refusal
+ * is swallowed like any other unwritable cache, instead of blocking the hook past its timeout.
  *
  * @param {Object} entry
  * @param {{writeFileSync?:Function, mkdirSync?:Function, cachePath?:string, env?:Object}} [deps]
  */
 function writeCacheLive(entry, deps = {}) {
-  const writeFileSync = deps.writeFileSync || nodeFs.writeFileSync;
+  const writeFileSync = deps.writeFileSync || ((p, data) => writeRegularFile(p, data));
   const mkdirSync = deps.mkdirSync || nodeFs.mkdirSync;
   const file = deps.cachePath || cachePath(deps.env);
   try {
