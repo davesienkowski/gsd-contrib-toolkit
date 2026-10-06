@@ -416,3 +416,41 @@ test('the spawned hook honours the kill switch end to end', () => {
 test('the hook file parses under node --check (it ships as a wired hook)', () => {
   assert.doesNotThrow(() => execFileSync(process.execPath, ['--check', HOOK_PATH], { stdio: 'ignore' }));
 });
+
+// ── 38-02: the kill switch has ONE definition (isRecorderOff) ───────────────
+//
+// hooks/lib/tool-log-reader.cjs imports this helper so the gate that READS the log and the hook
+// that WRITES it can never disagree about whether recording is off.
+
+const recorderModule = require('./tool-recorder.cjs');
+
+/** The exported helper, asserted to exist (a missing export is a test failure, not a crash). */
+function isRecorderOffFn() {
+  assert.strictEqual(typeof recorderModule.isRecorderOff, 'function', 'tool-recorder exports isRecorderOff');
+  return recorderModule.isRecorderOff;
+}
+
+for (const [label, env, expected] of [
+  ["'off'", { GSD_CONTRIB_RECORD: 'off' }, true],
+  ["' OFF '", { GSD_CONTRIB_RECORD: ' OFF ' }, true],
+  ["'Off'", { GSD_CONTRIB_RECORD: 'Off' }, true],
+  ["''", { GSD_CONTRIB_RECORD: '' }, false],
+  ['key absent', {}, false],
+  ["'on'", { GSD_CONTRIB_RECORD: 'on' }, false],
+  ["'offf'", { GSD_CONTRIB_RECORD: 'offf' }, false],
+  ["'0'", { GSD_CONTRIB_RECORD: '0' }, false],
+]) {
+  test('38-02 recorder isRecorderOff: GSD_CONTRIB_RECORD ' + label + ' -> ' + expected, () => {
+    assert.strictEqual(isRecorderOffFn()(env), expected);
+  });
+}
+
+test("38-02 recorder: recordToolCall returns null with GSD_CONTRIB_RECORD ' OFF ' (helper in use)", () => {
+  isRecorderOffFn();
+  assert.strictEqual(recordToolCall(post(), deps({ env: { GSD_CONTRIB_RECORD: ' OFF ' } })), null);
+  assert.match(
+    recordToolCall.toString(),
+    /isRecorderOff\(env\)/,
+    'recordToolCall checks the kill switch through the one exported helper'
+  );
+});
