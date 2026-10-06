@@ -19,7 +19,9 @@
  *   1. read the harness payload (malformed JSON throws -> fail-closed deny); command =
  *      `tool_input.command` or '' (EnterWorktree arrives in 37-05);
  *   2. the detector (hooks/lib/worktree-add-detect.cjs): no entry -> allow, BEFORE any resolve,
- *      fs, git or network work (RES-01). An `uncertain` entry throws FailClosed (HARD-01);
+ *      fs, git or network work (RES-01). An `uncertain` entry throws FailClosed (HARD-01). So does
+ *      a trunk-naming cut while the HOOK's own environment carries GIT_DIR / GIT_WORK_TREE /
+ *      GIT_COMMON_DIR (37-04): the real cut would run in a repository the gate cannot see;
  *   3. per cut, in command order: a base that does not name the trunk ('other', 'none') is
  *      skipped with no I/O (no fetch on non-trunk cuts); the target dir = the cut's start dir
  *      (gsd-test-detect `startDirFor`: `cd`, `env -C`, `sudo -D`) with each git `-C` statically
@@ -34,11 +36,22 @@
  *      an ancestor of local next; flagged planner refinement, CTK-ADR-0009) -> allow, nothing
  *      moved; diverged (neither is an ancestor) -> POLICY deny naming the divergence; a refused
  *      CAS (next moved between read and write) -> POLICY deny with the fix, ONE attempt only;
- *   5. first deny wins; otherwise allow.
+ *   5. first deny wins; an `ask` is held until every cut is checked (a later deny or throw still
+ *      wins); otherwise allow.
  *
- * KNOWN STUBS (unregistered hook): a missing origin/next is thrown (37-04 refines it); an
- * unreachable origin throws FetchUnavailable, which denies until 37-04 maps it to `ask`
- * (CTK-ADR-0007).
+ * UNOBTAINABLE ORIGIN -> ASK (37-04, CTK-ADR-0007): the fetch seam throws FetchUnavailable (not a
+ * FailClosed) when origin cannot be fetched: timeout, unreachable remote, auth failure, a held ref
+ * lock, no `origin` remote. A try/catch around the fetch call ALONE maps exactly that class to
+ * `ask`; origin/next missing after a good fetch asks too. Every other throw denies through
+ * runGate. An ask degrades to an allow under --dangerously-skip-permissions (ASK_LIMIT_NOTE, stated
+ * in the reason). A failed fetch is not retried for a second cut of the same root in one call.
+ *
+ * TIME BOUND (37-04, the 36-REVIEW m-06 per-call deadline mirrored from gsd-test-clean-tree): one
+ * GATE_BUDGET_MS deadline per gate call is shared by every subprocess. A non-fetch git call gets
+ * min(GIT_TIMEOUT_MS, remaining), the fetch belt min(FETCH_BELT_MS, remaining); with less than
+ * MIN_CALL_MS left the gate throws FailClosed (deny, override-escapable). One trunk cut spawns at
+ * most MAX_GIT_CALLS_PER_ROOT non-fetch git processes, so FETCH_BELT_MS + MAX * GIT_TIMEOUT_MS fits
+ * the budget, and the budget plus 3 s fits the 45 s hook timeout (asserted by tests).
  *
  * The gate's own git argv is limited to: fetch (via coreutils timeout), rev-parse, symbolic-ref,
  * merge-base --is-ancestor, worktree list --porcelain and update-ref. The fix commands it names
@@ -57,8 +70,8 @@
 
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
-const { runGate, readHookInput, allow, deny, emit, safeCommand, FailClosed } = require('./lib/failclosed.cjs');
+const childProcess = require('node:child_process');
+const { runGate, readHookInput, allow, ask, deny, emit, safeCommand, FailClosed } = require('./lib/failclosed.cjs');
 const { resolveGsdCoreRoot, ScriptResolveError } = require('./lib/resolve.cjs');
 const { startDirFor, expandStatic } = require('./lib/gsd-test-detect.cjs');
 const { findWorktreeAdds } = require('./lib/worktree-add-detect.cjs');
@@ -72,6 +85,17 @@ const FETCH_KILL_AFTER_S = 2;
 const FETCH_BELT_MS = 20000;
 /** Per local git call (rev-parse, merge-base, worktree list, update-ref). */
 const GIT_TIMEOUT_MS = 3000;
+/** One deadline per gate call shared by every subprocess (36-REVIEW m-06 pattern). */
+const GATE_BUDGET_MS = 42000;
+/** Below this many ms left before a call, the gate fails closed instead of starting it. */
+const MIN_CALL_MS = 100;
+/**
+ * Worst case non-fetch git processes for ONE trunk cut in one root: symbolic-ref (HEAD base),
+ * remote get-url (inside the fetch seam), rev-parse x2, merge-base, worktree list, update-ref.
+ */
+const MAX_GIT_CALLS_PER_ROOT = 7;
+/** The fetch detail that reaches a reason is cut to this many characters. */
+const DETAIL_MAX = 200;
 
 const NEXT_REF = 'refs/heads/next';
 const ORIGIN_NEXT_REF = 'refs/remotes/origin/next';
@@ -89,16 +113,144 @@ const UNCERTAIN_REASON =
 const GIT_REDIRECT_VARS = Object.freeze(['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']);
 
 /**
- * The upstream could not be fetched (spawn error, timeout, non-zero exit). Deliberately NOT a
- * FailClosed: 37-04 catches exactly this class and maps it to `ask` (CTK-ADR-0007 — an
- * unobtainable upstream is a network limit, not a policy decision). In the tracer it propagates
- * and runGate denies.
+ * Hook-process variables that make the REAL cut run in a repository other than the one the gate
+ * derives from cwd / cd / -C (37-02 deferred item 1, environment half). GIT_INDEX_FILE only swaps
+ * the index, not the refs a cut is based on, so it is not here.
+ */
+const HOOK_REDIRECT_VARS = Object.freeze(['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR']);
+
+/** Base kinds that name (or may name) the trunk; only these do I/O. */
+const TRUNK_KINDS = new Set(['local', 'remote', 'head']);
+
+/**
+ * The honesty clause that ends every `ask` reason. The SAME sentence as runtime-drift's
+ * (asserted equal by a test; no runtime require of another hook module).
+ */
+const ASK_LIMIT_NOTE =
+  'Note: an `ask` degrades to an ALLOW under `--dangerously-skip-permissions` — the same ' +
+  'accepted limit ENF-11\'s advisory carries.';
+
+/**
+ * The upstream could not be fetched (timeout, unreachable remote, auth failure, a held ref lock, no
+ * `origin` remote). Deliberately NOT a FailClosed: the gate catches exactly this class around the
+ * fetch call and maps it to `ask` (CTK-ADR-0007 — an unobtainable upstream is a network limit, not
+ * a policy decision). A fetch that cannot be BOUNDED (no coreutils `timeout`) is a FailClosed.
  */
 class FetchUnavailable extends Error {
   constructor(message) {
     super(message);
     this.name = 'FetchUnavailable';
   }
+}
+
+/**
+ * The m-06 per-call deadline: `budget(capMs)` returns min(capMs, remaining) for the next
+ * subprocess, or throws FailClosed once less than MIN_CALL_MS remains. One per gate call.
+ *
+ * @param {()=>number} now clock in ms
+ * @returns {(capMs:number)=>number}
+ */
+function makeBudget(now) {
+  const clock = typeof now === 'function' ? now : Date.now;
+  const deadline = clock() + GATE_BUDGET_MS;
+  return (capMs) => {
+    const remaining = deadline - clock();
+    if (remaining < MIN_CALL_MS) {
+      throw new FailClosed(
+        'ENF-25 worktree fresh-base gate spent its ' + GATE_BUDGET_MS / 1000 + ' s time budget for this ' +
+          'command before finishing its git checks — failing closed. Run each `git worktree add` as its ' +
+          'own command, or re-run it.'
+      );
+    }
+    return Math.min(capMs, remaining);
+  };
+}
+
+/** `scheme://user:secret@host` -> `scheme://***@host`, everywhere in `s`. */
+function redactUrlCredentials(s) {
+  return String(s).replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^\/@\s]+@/g, '$1***@');
+}
+
+/** Redacted, control-character-free, capped text for a reason (credentials removed BEFORE the cap). */
+function cleanDetail(s, max) {
+  return redactUrlCredentials(s)
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .trim()
+    .slice(0, max || DETAIL_MAX);
+}
+
+/** The first non-empty stderr line, redacted and capped at DETAIL_MAX, or ''. */
+function firstStderrLine(stderr) {
+  for (const line of String(stderr || '').split(/\r?\n/)) {
+    if (line.trim() !== '') return cleanDetail(line, DETAIL_MAX);
+  }
+  return '';
+}
+
+/**
+ * Pure grading of the bounded fetch's spawnSync result.
+ *
+ *   ok          exit 0
+ *   unavailable exit 124 / 137 (coreutils timed out / killed after the grace), a spawnSync
+ *               ETIMEDOUT (the belt), a signal with no status, any other non-zero git exit
+ *               (unreachable remote, auth failure, a concurrent fetch holding the ref lock) -> ask
+ *   error       spawn ENOENT (no coreutils `timeout`: the fetch cannot be bounded), any other
+ *               spawn error, exit 125 / 126 / 127 (timeout could not run git) -> FailClosed
+ *
+ * @param {{status?:(number|null), signal?:(string|null), error?:{code?:string}, stderr?:string}} res
+ * @returns {{state:('ok'|'unavailable'|'error'), detail:string}}
+ */
+function classifyFetchResult(res) {
+  const r = res || {};
+  if (r.error) {
+    const code = String(r.error.code || r.error.message || 'unknown error');
+    if (code === 'ETIMEDOUT') {
+      return { state: 'unavailable', detail: 'timed out (stopped by the gate\'s time limit)' };
+    }
+    if (code === 'ENOENT') {
+      return { state: 'error', detail: 'coreutils `timeout` was not found (ENOENT), so the fetch cannot be bounded' };
+    }
+    return { state: 'error', detail: 'the bounded fetch could not be started (' + cleanDetail(code, 40) + ')' };
+  }
+  if (r.status === 0) return { state: 'ok', detail: '' };
+  if (r.status === 125 || r.status === 126 || r.status === 127) {
+    return { state: 'error', detail: 'coreutils `timeout` could not run git (exit ' + r.status + ')' };
+  }
+  if (r.status === 124 || r.status === 137) {
+    return { state: 'unavailable', detail: 'timed out after ' + FETCH_TIMEOUT_S + ' s' };
+  }
+  if (r.status === null || r.status === undefined) {
+    if (r.signal) return { state: 'unavailable', detail: 'was stopped by ' + cleanDetail(r.signal, 20) };
+    return { state: 'error', detail: 'ended with no exit status' };
+  }
+  const line = firstStderrLine(r.stderr);
+  return { state: 'unavailable', detail: line || 'exit ' + r.status };
+}
+
+/**
+ * The `ask` for an unobtainable origin. Names ENF-25, the (redacted) failure, that this is a
+ * network limit and not a policy decision, the manual fetch, and ends with ASK_LIMIT_NOTE.
+ */
+function fetchUnavailableReason(root, message) {
+  return (
+    'ENF-25 worktree fresh-base gate could not refresh origin/next before this worktree cut: ' +
+    (cleanDetail(message, 300) || 'origin is unobtainable') + '. ' +
+    'This is a NETWORK limit, not a policy decision: the gate cannot tell whether local `next` is current, ' +
+    'so a worktree cut now may start from a stale trunk. To check it deterministically once origin is ' +
+    'reachable, run\n\n  git -C ' + shellWord(root) + ' fetch origin next\n\nthen re-issue your command.\n\n' +
+    ASK_LIMIT_NOTE
+  );
+}
+
+/** The `ask` for a fetch that succeeded but left no origin/next (no `next` mapped by the refspec). */
+function originNextMissingReason(root) {
+  return (
+    'ENF-25 worktree fresh-base gate: origin/next does not resolve after the fetch of `origin next` ' +
+    'succeeded (the `origin` fetch refspec maps no refs/remotes/origin/next), so the gate cannot tell ' +
+    'whether local `next` is current. This is a remote-configuration and network limit, not a policy ' +
+    'decision. Check the `origin` remote, run\n\n  git -C ' + shellWord(root) + ' fetch origin next\n\n' +
+    'then re-issue your command.\n\n' + ASK_LIMIT_NOTE
+  );
 }
 
 /**
@@ -116,6 +268,10 @@ class FetchUnavailable extends Error {
  * @param {(root:string, a:string, b:string)=>boolean} deps.isAncestor
  * @param {(root:string, ref:string)=>string[]} deps.worktreesHolding worktree paths holding ref
  * @param {(root:string, ref:string, newSha:string, oldSha:string)=>boolean} deps.casUpdateRef
+ *   Every seam also receives its time slice in ms as a trailing argument (the fetch: its belt).
+ * @param {Object} [deps.hookEnv] the hook process's own environment (default process.env)
+ * @param {()=>number} [deps.now] clock for the per-call deadline (default Date.now)
+ * @param {(capMs:number)=>number} [deps.budget] a shared deadline (default: a new one from `now`)
  * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
  */
 function gate(stdinString, deps) {
@@ -132,24 +288,48 @@ function gate(stdinString, deps) {
   // a receipt). The reason is a constant: the detector's detail can carry command text or paths.
   if (entries.some((e) => e.kind === 'uncertain')) throw new FailClosed(UNCERTAIN_REASON);
 
-  // (5) Verdict cache per root (and base kind) within this gate call; first deny wins.
+  // 37-02 deferred item 1 (environment half): a redirect inherited by the HOOK process means the
+  // real cut runs in a repository the gate cannot see (its own git calls scrub these variables).
+  // Only a trunk-naming cut matters; nothing else here does I/O either.
+  const hookEnv = deps.hookEnv || process.env;
+  if (
+    HOOK_REDIRECT_VARS.some((k) => typeof hookEnv[k] === 'string') &&
+    entries.some((e) => e.kind === 'cut' && TRUNK_KINDS.has(e.baseKind))
+  ) {
+    throw new FailClosed(UNCERTAIN_REASON);
+  }
+
+  const ctx = {
+    deps,
+    budget: typeof deps.budget === 'function' ? deps.budget : makeBudget(deps.now),
+    // root -> null (fetched) or the ask decision (origin unobtainable): one fetch per root per call.
+    fetchState: new Map(),
+  };
+
+  // (5) Verdict cache per root (and base kind) within this gate call; first deny wins, an ask is
+  // held so a later deny (or throw) still wins.
   const verdicts = new Map();
-  const fetched = new Set();
+  let pendingAsk = null;
   for (const e of entries) {
     if (e.kind !== 'cut') continue;
     // (3) No fetch, resolve or git work for a base that does not name the trunk.
-    if (e.baseKind === 'other' || e.baseKind === 'none') continue;
+    if (!TRUNK_KINDS.has(e.baseKind)) continue;
 
     const dir = targetDir(e, deps);
     const root = deps.resolveTreeRoot(dir);
     if (root === null || root === undefined) continue;
 
     const key = root + '\u0000' + e.baseKind;
-    if (!verdicts.has(key)) verdicts.set(key, checkCut(e, root, deps, fetched));
+    if (!verdicts.has(key)) verdicts.set(key, checkCut(e, root, ctx));
     const decision = verdicts.get(key);
-    if (decision) return decision;
+    if (!decision) continue;
+    if (decision.permissionDecision === 'ask') {
+      if (!pendingAsk) pendingAsk = decision;
+      continue;
+    }
+    return decision;
   }
-  return allow();
+  return pendingAsk || allow();
 }
 
 /**
@@ -257,39 +437,47 @@ function casLostReason(local, remote) {
  *             an ancestor of local (AHEAD, flagged planner refinement, CTK-ADR-0009): null, nothing
  *             moved. Neither: deny(diverged).
  */
-function checkCut(e, root, deps, fetched) {
+function checkCut(e, root, ctx) {
+  const { deps, budget, fetchState } = ctx;
+  const git = () => budget(GIT_TIMEOUT_MS);
   let kind = e.baseKind;
   if (kind === 'head') {
-    if (deps.currentBranch(root) !== 'next') return null;
+    if (deps.currentBranch(root, git()) !== 'next') return null;
     kind = 'local';
   }
 
-  if (!fetched.has(root)) {
-    deps.fetchOrigin(root);
-    fetched.add(root);
+  if (!fetchState.has(root)) {
+    const belt = budget(FETCH_BELT_MS);
+    // NARROW catch (Addendum 5): it wraps the fetch call alone, and only the FetchUnavailable
+    // class becomes `ask`. A FailClosed (the fetch cannot be bounded), a plain Error, or any
+    // throw from another seam reaches runGate and denies.
+    try {
+      deps.fetchOrigin(root, belt);
+      fetchState.set(root, null);
+    } catch (err) {
+      if (!(err instanceof FetchUnavailable)) throw err;
+      fetchState.set(root, ask(fetchUnavailableReason(root, err.message)));
+    }
   }
-  const remote = deps.revParse(root, ORIGIN_NEXT_REF);
-  if (remote === null || remote === undefined) {
-    // 37-04 turns this into ask.
-    throw new FailClosed(
-      'ENF-25 worktree fresh-base gate: origin/next does not resolve after the fetch — failing closed. ' +
-        'Check the `origin` remote, then run `git fetch origin next`.'
-    );
-  }
+  const unobtainable = fetchState.get(root);
+  if (unobtainable) return unobtainable; // nothing below runs: no rev-parse, merge-base or CAS
+
+  const remote = deps.revParse(root, ORIGIN_NEXT_REF, git());
+  if (remote === null || remote === undefined) return ask(originNextMissingReason(root));
   if (kind === 'remote') return null; // the fetch made it current
 
-  const local = deps.revParse(root, NEXT_REF);
+  const local = deps.revParse(root, NEXT_REF, git());
   if (local === null || local === undefined || local === remote) return null;
 
-  if (deps.isAncestor(root, local, remote)) {
-    const holders = deps.worktreesHolding(root, NEXT_REF);
+  if (deps.isAncestor(root, local, remote, git())) {
+    const holders = deps.worktreesHolding(root, NEXT_REF, git());
     if (holders.length > 0) return deny(heldReason(holders, local, remote));
     // ONE compare-and-swap attempt. Refused = next moved since it was read: a POLICY deny, never a
     // retry (a retry would act on a value this call did not prove is an ancestor).
-    if (deps.casUpdateRef(root, NEXT_REF, remote, local)) return null;
+    if (deps.casUpdateRef(root, NEXT_REF, remote, local, git())) return null;
     return deny(casLostReason(local, remote));
   }
-  if (deps.isAncestor(root, remote, local)) return null; // ahead: not stale, nothing to move
+  if (deps.isAncestor(root, remote, local, git())) return null; // ahead: not stale, nothing to move
   return deny(divergedReason(local, remote));
 }
 
@@ -316,23 +504,35 @@ function requireSha(op, sha) {
 /**
  * The real git seams, built on a scrubbed copy of `env` (default process.env): GIT_DIR,
  * GIT_WORK_TREE, GIT_INDEX_FILE and GIT_COMMON_DIR removed, argv only (never a shell), every local
- * call bounded by GIT_TIMEOUT_MS, the fetch bounded by coreutils `timeout` plus a SIGKILL belt, and
- * SHA_RE checked before merge-base and update-ref. Nothing is spawned until a seam is called.
+ * call bounded by min(GIT_TIMEOUT_MS, the slice the gate passed, the shared `budget`), the fetch
+ * bounded by coreutils `timeout` plus a SIGKILL belt drawn from the same deadline, and SHA_RE
+ * checked before merge-base and update-ref. Nothing is spawned until a seam is called.
  *
- * @param {{env?: Object}} [opts]
+ * @param {{env?: Object, spawnSync?: Function, budget?: (capMs:number)=>number}} [opts]
+ *   `spawnSync` defaults to child_process.spawnSync; `budget` is the gate call's shared deadline
+ *   (absent: each call gets its full cap).
  * @returns {{fetchOrigin: Function, revParse: Function, currentBranch: Function, isAncestor: Function,
  *   worktreesHolding: Function, casUpdateRef: Function}}
  */
-function createDefaultSeams({ env } = {}) {
+function createDefaultSeams({ env, spawnSync, budget } = {}) {
   const base = env || process.env;
+  const spawn = typeof spawnSync === 'function' ? spawnSync : childProcess.spawnSync;
+
+  /** min(cap, the slice the gate passed, the shared deadline); the deadline throws when spent. */
+  function slice(cap, given) {
+    let ms = cap;
+    if (Number.isFinite(given)) ms = Math.min(ms, given);
+    if (typeof budget === 'function') ms = Math.min(ms, budget(cap));
+    return ms;
+  }
 
   /** One bounded local git call; a spawn error or timeout fails closed naming the operation. */
-  function runGit(dir, args, op) {
-    const r = spawnSync('git', args, {
+  function runGit(dir, args, op, given) {
+    const r = spawn('git', args, {
       cwd: dir,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: GIT_TIMEOUT_MS,
+      timeout: slice(GIT_TIMEOUT_MS, given),
       env: gitEnv(base),
     });
     if (r.error) {
@@ -345,8 +545,8 @@ function createDefaultSeams({ env } = {}) {
   }
 
   /** status 0 + a full sha -> the sha; status 1 -> null; anything else -> FailClosed. */
-  function revParse(dir, ref) {
-    const r = runGit(dir, ['rev-parse', '--verify', '--quiet', '--end-of-options', ref + '^{commit}'], 'rev-parse');
+  function revParse(dir, ref, ms) {
+    const r = runGit(dir, ['rev-parse', '--verify', '--quiet', '--end-of-options', ref + '^{commit}'], 'rev-parse', ms);
     if (r.status === 0) {
       const sha = String(r.stdout || '').trim();
       if (SHA_RE.test(sha)) return sha;
@@ -363,8 +563,8 @@ function createDefaultSeams({ env } = {}) {
    * HEAD-on-next check would silently allow. exit 0 -> name (a non-branch symref is returned
    * whole), 1 -> null, else FailClosed.
    */
-  function currentBranch(dir) {
-    const r = runGit(dir, ['symbolic-ref', '--quiet', 'HEAD'], 'symbolic-ref');
+  function currentBranch(dir, ms) {
+    const r = runGit(dir, ['symbolic-ref', '--quiet', 'HEAD'], 'symbolic-ref', ms);
     if (r.status === 0) {
       const ref = String(r.stdout || '').trim();
       return ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref;
@@ -374,18 +574,18 @@ function createDefaultSeams({ env } = {}) {
   }
 
   /** exit 0 -> true, 1 -> false, else FailClosed. */
-  function isAncestor(dir, a, b) {
+  function isAncestor(dir, a, b, ms) {
     requireSha('merge-base', a);
     requireSha('merge-base', b);
-    const r = runGit(dir, ['merge-base', '--is-ancestor', a, b], 'merge-base');
+    const r = runGit(dir, ['merge-base', '--is-ancestor', a, b], 'merge-base', ms);
     if (r.status === 0) return true;
     if (r.status === 1) return false;
     throw unexpected('merge-base', r);
   }
 
   /** The `worktree <path>` of every porcelain block carrying the exact line `branch <ref>`. */
-  function worktreesHolding(dir, ref) {
-    const r = runGit(dir, ['worktree', 'list', '--porcelain'], 'worktree list');
+  function worktreesHolding(dir, ref, ms) {
+    const r = runGit(dir, ['worktree', 'list', '--porcelain'], 'worktree list', ms);
     if (r.status !== 0) throw unexpected('worktree list', r);
     const holders = [];
     for (const block of String(r.stdout || '').split(/\r?\n\s*\r?\n/)) {
@@ -401,10 +601,10 @@ function createDefaultSeams({ env } = {}) {
    * Compare-and-swap ref move: exit 0 -> true, any other exit -> false (the ref did not hold
    * `oldSha`, so git's ref transaction left it untouched); spawn error -> FailClosed.
    */
-  function casUpdateRef(dir, ref, newSha, oldSha) {
+  function casUpdateRef(dir, ref, newSha, oldSha, ms) {
     requireSha('update-ref', newSha);
     requireSha('update-ref', oldSha);
-    const r = runGit(dir, ['update-ref', '-m', REFLOG_MESSAGE, ref, newSha, oldSha], 'update-ref');
+    const r = runGit(dir, ['update-ref', '-m', REFLOG_MESSAGE, ref, newSha, oldSha], 'update-ref', ms);
     return r.status === 0;
   }
 
@@ -413,17 +613,17 @@ function createDefaultSeams({ env } = {}) {
    * Success returns; anything else throws FetchUnavailable with a short reason (never the remote's
    * raw stderr).
    */
-  function fetchOrigin(dir) {
+  function fetchOrigin(dir, beltMs) {
     if (typeof dir !== 'string' || !path.isAbsolute(dir)) {
       throw new FailClosed('ENF-25 worktree fresh-base gate: fetch target is not an absolute path — failing closed.');
     }
-    const r = spawnSync(
+    const r = spawn(
       'timeout',
       ['-k', String(FETCH_KILL_AFTER_S), String(FETCH_TIMEOUT_S), 'git', '-C', dir, ...FETCH_ARGV],
       {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: FETCH_BELT_MS,
+        timeout: slice(FETCH_BELT_MS, beltMs),
         killSignal: 'SIGKILL',
         env: gitEnv(base, { GIT_TERMINAL_PROMPT: '0' }),
       }
@@ -480,9 +680,13 @@ function runWorktreeFreshBaseGate(stdinString, deps = {}) {
         }
       };
     }
+    // The hook's own environment, read for an inherited repository redirect (HOOK_REDIRECT_VARS).
+    if (!resolved.hookEnv) resolved.hookEnv = process.env;
+    // ONE deadline for this gate call, shared by the gate's slices and the default seams.
+    if (typeof resolved.budget !== 'function') resolved.budget = makeBudget(resolved.now);
     // The real seams spawn git with the HOOK's environment (scrubbed), not `deps.env`, which only
     // feeds static `cd` / `-C` expansion. Injected seams win.
-    const defaults = createDefaultSeams({ env: process.env });
+    const defaults = createDefaultSeams({ env: process.env, budget: resolved.budget });
     for (const k of Object.keys(defaults)) {
       if (!resolved[k]) resolved[k] = defaults[k];
     }
@@ -509,10 +713,15 @@ module.exports = {
   runWorktreeFreshBaseGate,
   gate,
   createDefaultSeams,
+  classifyFetchResult,
   FetchUnavailable,
+  ASK_LIMIT_NOTE,
   FETCH_ARGV,
   FETCH_TIMEOUT_S,
   FETCH_KILL_AFTER_S,
   FETCH_BELT_MS,
   GIT_TIMEOUT_MS,
+  GATE_BUDGET_MS,
+  MIN_CALL_MS,
+  MAX_GIT_CALLS_PER_ROOT,
 };

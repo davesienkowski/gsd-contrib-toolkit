@@ -210,7 +210,8 @@ test('ENF-25 tracer: a trunk cut of a stale, unheld local next fetches once and 
   assert.strictEqual(d.permissionDecision, 'allow');
   assert.strictEqual(calls.fetchOrigin, 1);
   assert.strictEqual(calls.casUpdateRef, 1);
-  assert.deepStrictEqual(calls.casArgs[0], [FAKE_CWD, 'refs/heads/next', SHA_REMOTE, SHA_LOCAL]);
+  // 37-04: every seam also receives its time slice as a trailing argument; the CAS operands are the first four.
+  assert.deepStrictEqual(calls.casArgs[0].slice(0, 4), [FAKE_CWD, 'refs/heads/next', SHA_REMOTE, SHA_LOCAL]);
 });
 
 test('ENF-25 tracer: RES-01 `git status` allows with ZERO resolve, fetch and git calls', () => {
@@ -1181,7 +1182,12 @@ test('ENF-25 WTREE-04: an ask from cut 1 and a THROW from cut 2 (another root) -
 });
 
 test('ENF-25 WTREE-04: asks only -> ask, and a failed fetch is NOT retried for a second cut of the same root', () => {
-  const { deps, calls } = scenario({ fetchOrigin: unavailable('timed out') });
+  const { deps, calls } = scenario({
+    fetchOrigin: () => {
+      calls.fetchOrigin += 1;
+      throw new gateModule.FetchUnavailable('timed out');
+    },
+  });
   const d = runWorktreeFreshBaseGate(input('git worktree add -b a p next && git worktree add -b b q origin/next'), deps);
   assert.strictEqual(d.permissionDecision, 'ask');
   assert.strictEqual(calls.fetchOrigin, 1, 'one fetch attempt per root per gate call');
