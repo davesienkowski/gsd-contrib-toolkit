@@ -53,9 +53,9 @@
  * most MAX_GIT_CALLS_PER_ROOT non-fetch git processes, so FETCH_BELT_MS + MAX * GIT_TIMEOUT_MS fits
  * the budget, and the budget plus 3 s fits the 45 s hook timeout (asserted by tests).
  *
- * The gate's own git argv is limited to: fetch (via coreutils timeout), rev-parse, symbolic-ref,
- * merge-base --is-ancestor, worktree list --porcelain and update-ref. The fix commands it names
- * in deny reasons are text for the operator; the gate never runs them.
+ * The gate's own git argv is limited to: remote get-url origin, fetch (via coreutils timeout),
+ * rev-parse, symbolic-ref, merge-base --is-ancestor, worktree list --porcelain and update-ref. The
+ * fix commands it names in deny and ask reasons are text for the operator; the gate never runs them.
  *
  * A returned deny is a POLICY deny: GSD_CONTRIB_OVERRIDE rescues THROWN errors only and never
  * flips it. Every git call is a spawnSync argv array (never a shell) with a bounded timeout and an
@@ -609,38 +609,45 @@ function createDefaultSeams({ env, spawnSync, budget } = {}) {
   }
 
   /**
-   * `timeout -k 2 15 git -C <dir> fetch --quiet --no-auto-maintenance origin next`, argv only.
-   * Success returns; anything else throws FetchUnavailable with a short reason (never the remote's
-   * raw stderr).
+   * The bounded fetch, hardened (37-04). Absolute dir only (else FailClosed, nothing spawned). Then:
+   *   1. `git remote get-url origin` (one GIT_TIMEOUT_MS slice): exit 0 continues; exit 2 (no such
+   *      remote) throws FetchUnavailable; anything else throws FailClosed;
+   *   2. `timeout -k 2 <s> git -C <dir> fetch --quiet --no-auto-maintenance origin next`, argv only,
+   *      with a SIGKILL belt of min(FETCH_BELT_MS, the gate's slice, the shared deadline), the
+   *      scrubbed env plus GIT_TERMINAL_PROMPT=0, stdin ignored. <s> is FETCH_TIMEOUT_S, shortened
+   *      when the belt is reduced so coreutils kills git before the belt kills `timeout` (a belt
+   *      kill reaps only `timeout` and would orphan a git holding the ref lock);
+   *   3. classifyFetchResult: ok returns, unavailable throws FetchUnavailable (redacted detail),
+   *      error throws FailClosed (no coreutils `timeout` means the fetch cannot be bounded).
    */
   function fetchOrigin(dir, beltMs) {
     if (typeof dir !== 'string' || !path.isAbsolute(dir)) {
       throw new FailClosed('ENF-25 worktree fresh-base gate: fetch target is not an absolute path — failing closed.');
     }
+    const u = runGit(dir, ['remote', 'get-url', 'origin'], 'remote get-url');
+    if (u.status === 2) throw new FetchUnavailable('this repository has no `origin` remote');
+    if (u.status !== 0) throw unexpected('remote get-url', u);
+
+    const belt = slice(FETCH_BELT_MS, beltMs);
+    const seconds = Math.max(1, Math.min(FETCH_TIMEOUT_S, Math.floor(belt / 1000) - FETCH_KILL_AFTER_S - 1));
     const r = spawn(
       'timeout',
-      ['-k', String(FETCH_KILL_AFTER_S), String(FETCH_TIMEOUT_S), 'git', '-C', dir, ...FETCH_ARGV],
+      ['-k', String(FETCH_KILL_AFTER_S), String(seconds), 'git', '-C', dir, ...FETCH_ARGV],
       {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: slice(FETCH_BELT_MS, beltMs),
+        timeout: belt,
         killSignal: 'SIGKILL',
         env: gitEnv(base, { GIT_TERMINAL_PROMPT: '0' }),
       }
     );
-    if (r.error) {
-      const code = r.error.code || r.error.message;
-      throw new FetchUnavailable(
-        code === 'ETIMEDOUT'
-          ? '`git fetch origin next` did not finish within ' + FETCH_BELT_MS / 1000 + ' s'
-          : '`git fetch origin next` could not run (' + code + ')'
-      );
+    const graded = classifyFetchResult(r);
+    if (graded.state === 'ok') return;
+    if (graded.state === 'unavailable') {
+      const what = r.status === 124 || r.status === 137 ? 'timed out after ' + seconds + ' s' : graded.detail;
+      throw new FetchUnavailable('`git fetch origin next` failed: ' + what);
     }
-    if (r.status === 0) return;
-    if (r.status === 124 || r.status === 137 || r.signal) {
-      throw new FetchUnavailable('`git fetch origin next` timed out after ' + FETCH_TIMEOUT_S + ' s');
-    }
-    throw new FetchUnavailable('`git fetch origin next` failed (exit ' + r.status + ')');
+    throw new FailClosed('ENF-25 worktree fresh-base gate: ' + graded.detail + ' — failing closed.');
   }
 
   return { fetchOrigin, revParse, currentBranch, isAncestor, worktreesHolding, casUpdateRef };
