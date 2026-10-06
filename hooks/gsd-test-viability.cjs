@@ -17,7 +17,9 @@
  *   1. read the harness payload (malformed JSON throws -> fail-closed deny);
  *   2. the shared detector: no entry -> allow, BEFORE any resolve, fs or spawn work (RES-01;
  *      36-CONTEXT Addendum 2 — `isNonGovernedCommand` is deliberately NOT used);
- *   3. any `uncertain` entry -> throw FailClosed (HARD-01), still before any I/O;
+ *   3. an `uncertain` entry (HARD-01) is HELD: every attributable dispatch is still checked and
+ *      a policy deny it earns is returned first (36-REVIEW m-01). With no attributable dispatch
+ *      the held error is thrown before any I/O;
  *   4. informational dispatches (`--version`, `-h`, `--help`) and subcommands that need no
  *      viable environment (`wait`, `status`, `install-agent-hooks`, `submit` without
  *      `--execute`) are dropped; none left -> allow;
@@ -33,7 +35,8 @@
  *           Docker (at most ONCE per gate call): ok -> allow; missing CLI / daemon down -> deny;
  *           timeout -> ask; any other result or a throw -> deny. A bench with any other or no
  *           host skips the probe (remote ssh probing is deferred, CONTEXT §Deferred).
- *   6. precedence across dispatches: the first deny returns at once; else the first ask; else
+ *   6. precedence across dispatches: the first policy deny returns at once; else the first held
+ *      throw (an uncertain entry or a dispatch whose check threw); else the first ask; else
  *      allow.
  *
  * ── SEVERITY ────────────────────────────────────────────────────────────────────────────
@@ -276,10 +279,13 @@ function gate(stdinString, deps) {
   const entries = findGsdTestDispatches(command);
   if (entries.length === 0) return allow();
 
-  // (3) HARD-01: an unattributable gsd-test mention fails closed before any I/O.
+  // (3) HARD-01: an unattributable gsd-test mention fails closed — after every attributable
+  // dispatch's policy checks (36-REVIEW m-01), so the override valve can never lift a policy deny
+  // earned elsewhere in the same command. With no attributable dispatch: thrown with zero I/O.
+  let pending = null;
   const uncertain = entries.find((e) => e.kind === 'uncertain');
   if (uncertain) {
-    throw new FailClosed(
+    pending = new FailClosed(
       'ENF-24 gsd-test viability gate cannot attribute this gsd-test command (' +
         uncertain.reason +
         ') — failing closed. Re-run it as a plain `gsd-test` invocation with literal flag values.'
@@ -289,69 +295,84 @@ function gate(stdinString, deps) {
   // (4) Informational invocations only print; they need no config, bench or Docker. Nor do the
   // subcommands ENF-24 does not govern (see `governs`).
   const dispatches = entries.filter((e) => e.kind === 'dispatch' && !e.informational && governs(e));
-  if (dispatches.length === 0) return allow();
 
-  const ctx = { env: deps.env, homedir: deps.homedir };
-  let firstAsk = null;
-  // GTEST-06: probed at most once per gate call (never cached across calls).
-  let docker = null;
+  const state = { firstAsk: null, docker: null };
   for (const d of dispatches) {
-    // (5a) Which tree, and the start dir a relative `--config` resolves against.
-    const startDir = startDirFor(d, deps.cwd, ctx);
-    const treeDir = startDir === null ? null : treeDirFor(d, deps.cwd, ctx);
-    if (startDir === null || treeDir === null) {
-      throw new FailClosed(
-        'ENF-24 gsd-test viability gate cannot resolve this dispatch\'s directory statically (a ' +
-          '`-source` value or an earlier `cd` target is a shell expansion, `~user` or `-`, or that ' +
-          '`cd` carries an option other than -L/-P/-e/-@/--) — failing closed. Pass a literal path.'
-      );
-    }
-
-    // (5b) Out-of-tree passthrough.
-    if (deps.resolveTreeRoot(treeDir) === null) continue;
-
-    // (5c) GTEST-04: the config file exists.
-    const cfg = configPathFor(d, startDir, deps);
-    if (cfg.ask) {
-      if (!firstAsk) firstAsk = cfg.ask;
+    let decision = null;
+    try {
+      decision = checkDispatch(d, deps, state);
+    } catch (err) {
+      if (!pending) pending = err; // held: a later policy deny still wins (m-01)
       continue;
     }
-    const text = deps.readConfig(cfg.path);
-    if (text === null || text === undefined) return deny(missingConfigReason(cfg.path));
+    if (decision) return decision;
+  }
 
-    // (5d) GTEST-05: the named bench is configured. An empty `--bench=` names no bench.
-    const benchFlag = d.flags ? d.flags.bench : undefined;
-    let named = null;
-    if (typeof benchFlag === 'string' && benchFlag !== '') {
-      const bench = expandStatic(benchFlag, ctx);
-      if (bench === null) {
-        if (!firstAsk) firstAsk = askUnexpandable('bench', benchFlag);
-        continue;
-      }
-      const benches = parseBenches(text);
-      named = benches.find((b) => b.name === bench);
-      if (!named) return deny(missingBenchReason(bench, cfg.path, benches));
-    }
+  if (pending) throw pending;
+  return state.firstAsk || allow();
+}
 
-    // (5e) GTEST-06: the local Docker probe, only for a local (or unnamed) bench.
-    if (named !== null && named.host !== 'local') continue;
-    if (docker === null) docker = deps.dockerProbe();
-    const state = docker && docker.state;
-    if (state === 'ok') continue;
-    if (state === 'missing') return deny(DOCKER_MISSING_REASON);
-    if (state === 'down') return deny(dockerDownReason(String(docker.detail || 'non-zero exit').slice(0, MAX_DOCKER_DETAIL)));
-    if (state === 'timeout') {
-      if (!firstAsk) firstAsk = ask(DOCKER_TIMEOUT_ASK);
-      continue;
-    }
+/**
+ * The checks for one dispatch: a `deny()` decision, or null. An `ask` is recorded in
+ * `state.firstAsk` (deny > thrown > ask > allow across dispatches). Throws FailClosed on an
+ * unresolvable directory or a probe failure.
+ */
+function checkDispatch(d, deps, state) {
+  const ctx = { env: deps.env, homedir: deps.homedir };
+  // (5a) Which tree, and the start dir a relative `--config` resolves against.
+  const startDir = startDirFor(d, deps.cwd, ctx);
+  const treeDir = startDir === null ? null : treeDirFor(d, deps.cwd, ctx);
+  if (startDir === null || treeDir === null) {
     throw new FailClosed(
-      'ENF-24 gsd-test viability gate could not run the docker probe (' +
-        (state === 'error' ? String(docker.detail || 'spawn error') : 'unexpected probe result') +
-        ') — failing closed.'
+      'ENF-24 gsd-test viability gate cannot resolve this dispatch\'s directory statically (a ' +
+        '`-source` value or an earlier `cd` target is a shell expansion, `~user` or `-`, or that ' +
+        '`cd` carries an option other than -L/-P/-e/-@/--) — failing closed. Pass a literal path.'
     );
   }
 
-  return firstAsk || allow();
+  // (5b) Out-of-tree passthrough.
+  if (deps.resolveTreeRoot(treeDir) === null) return null;
+
+  // (5c) GTEST-04: the config file exists.
+  const cfg = configPathFor(d, startDir, deps);
+  if (cfg.ask) {
+    if (!state.firstAsk) state.firstAsk = cfg.ask;
+    return null;
+  }
+  const text = deps.readConfig(cfg.path);
+  if (text === null || text === undefined) return deny(missingConfigReason(cfg.path));
+
+  // (5d) GTEST-05: the named bench is configured. An empty `--bench=` names no bench.
+  const benchFlag = d.flags ? d.flags.bench : undefined;
+  let named = null;
+  if (typeof benchFlag === 'string' && benchFlag !== '') {
+    const bench = expandStatic(benchFlag, ctx);
+    if (bench === null) {
+      if (!state.firstAsk) state.firstAsk = askUnexpandable('bench', benchFlag);
+      return null;
+    }
+    const benches = parseBenches(text);
+    named = benches.find((b) => b.name === bench);
+    if (!named) return deny(missingBenchReason(bench, cfg.path, benches));
+  }
+
+  // (5e) GTEST-06: the local Docker probe, only for a local (or unnamed) bench.
+  if (named !== null && named.host !== 'local') return null;
+  if (state.docker === null) state.docker = deps.dockerProbe();
+  const docker = state.docker;
+  const st = docker && docker.state;
+  if (st === 'ok') return null;
+  if (st === 'missing') return deny(DOCKER_MISSING_REASON);
+  if (st === 'down') return deny(dockerDownReason(String(docker.detail || 'non-zero exit').slice(0, MAX_DOCKER_DETAIL)));
+  if (st === 'timeout') {
+    if (!state.firstAsk) state.firstAsk = ask(DOCKER_TIMEOUT_ASK);
+    return null;
+  }
+  throw new FailClosed(
+    'ENF-24 gsd-test viability gate could not run the docker probe (' +
+      (st === 'error' ? String(docker.detail || 'spawn error') : 'unexpected probe result') +
+      ') — failing closed.'
+  );
 }
 
 /**
