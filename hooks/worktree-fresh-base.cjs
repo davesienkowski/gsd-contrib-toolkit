@@ -361,6 +361,8 @@ function readBaseRef(root, homedir, readSettings) {
  * @param {(root:string, a:string, b:string)=>boolean} deps.isAncestor
  * @param {(root:string, ref:string)=>string[]} deps.worktreesHolding worktree paths holding ref
  * @param {(root:string, ref:string)=>boolean} deps.isSymbolicRef true when `ref` is a symbolic ref
+ * @param {(root:string, ref:string)=>{path:string, op:string}[]} deps.nextInProgress worktrees
+ *   mid-rebase / mid-bisect of `ref` (op 'rebase' | 'bisect')
  * @param {(root:string, ref:string, newSha:string, oldSha:string)=>boolean} deps.casUpdateRef
  *   Every seam also receives its time slice in ms as a trailing argument (the fetch: its belt).
  * @param {(root:string, homedir:string)=>string} deps.readBaseRef the effective worktree.baseRef
@@ -537,6 +539,30 @@ function heldReason(holders, local, remote) {
   );
 }
 
+/**
+ * POLICY deny (37-REVIEW BL-02): local next is behind origin/next and no worktree has it checked out,
+ * but a worktree is in the middle of a rebase or bisect that started from it (HEAD is detached there,
+ * so `worktree list` shows no `branch` line). git's own `branch -f next` refuses the same move
+ * (find_shared_symref reads the rebase head-name files and BISECT_START), so the gate does too.
+ */
+function inProgressReason(entries, local, remote) {
+  const listed = entries.slice(0, 3).map((x) => (x.path === '' ? '<unknown worktree>' : x.path) + ' (' +
+    (x.op === 'bisect' ? 'bisecting' : 'rebasing') + ')');
+  const more = entries.length > 3 ? ' (and ' + (entries.length - 3) + ' more)' : '';
+  const first = entries[0] && entries[0].path ? shellWord(entries[0].path) : '<the worktree>';
+  const fix = entries[0] && entries[0].op === 'bisect'
+    ? '  git -C ' + first + ' bisect reset\n'
+    : '  git -C ' + first + ' rebase --continue    (or: rebase --abort)\n';
+  return (
+    'ENF-25 worktree fresh-base gate: local `next` (' + short(local) + ') is behind origin/next (' +
+    short(remote) + ', just fetched by this gate), but a rebase or bisect of `next` is in progress in ' +
+    listed.join(', ') + more + ', so the gate will not move it (git itself refuses to move a branch in ' +
+    'that state). Finish or abort that operation first, then re-issue your command:\n' + fix +
+    'Or base the worktree on the remote ref, which is already current:\n' +
+    ORIGIN_ALTERNATIVE
+  );
+}
+
 /** POLICY deny: neither sha contains the other. Names the divergence; suggests nothing that rewrites. */
 function divergedReason(local, remote) {
   return (
@@ -609,6 +635,9 @@ function checkCut(e, root, ctx) {
   if (deps.isAncestor(root, local, remote, git())) {
     const holders = deps.worktreesHolding(root, NEXT_REF, git());
     if (holders.length > 0) return deny(heldReason(holders, local, remote));
+    // BL-02: a rebase or bisect of next in any worktree holds it too (git's branch -f rule).
+    const busy = deps.nextInProgress(root, NEXT_REF, git());
+    if (busy.length > 0) return deny(inProgressReason(busy, local, remote));
     // ONE compare-and-swap attempt. Refused = next moved since it was read: a POLICY deny, never a
     // retry (a retry would act on a value this call did not prove is an ancestor).
     if (deps.casUpdateRef(root, NEXT_REF, remote, local, git())) return null;
@@ -616,6 +645,45 @@ function checkCut(e, root, ctx) {
   }
   if (deps.isAncestor(root, remote, local, git())) return null; // ahead: not stale, nothing to move
   return deny(divergedReason(local, remote));
+}
+
+/** fs errors that mean "this state file / dir is absent". */
+const ABSENT_CODES = new Set(['ENOENT', 'ENOTDIR']);
+
+function stateReadFailed(p, err) {
+  return new FailClosed(
+    'ENF-25 worktree fresh-base gate: could not read git state file ' + path.basename(p) + ' (' +
+      String((err && err.code) || 'error') + ') — failing closed rather than moving next.'
+  );
+}
+
+/** A small git state file's text, or null when it is absent; any other error fails closed. */
+function readOrNull(p) {
+  try {
+    return fs.readFileSync(p, 'utf8');
+  } catch (err) {
+    if (err && ABSENT_CODES.has(err.code)) return null;
+    throw stateReadFailed(p, err);
+  }
+}
+
+/** A directory's entry names (sorted), or [] when it is absent; any other error fails closed. */
+function readDirOrEmpty(p) {
+  try {
+    return fs.readdirSync(p).sort();
+  } catch (err) {
+    if (err && ABSENT_CODES.has(err.code)) return [];
+    throw stateReadFailed(p, err);
+  }
+}
+
+/** realpath of p, or p itself when it cannot be resolved (a label only). */
+function realOr(p) {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return p;
+  }
 }
 
 /** A copy of `base` (plus `extra`) without the variables that would redirect git to another repo. */
@@ -649,7 +717,7 @@ function requireSha(op, sha) {
  *   `spawnSync` defaults to child_process.spawnSync; `budget` is the gate call's shared deadline
  *   (absent: each call gets its full cap).
  * @returns {{fetchOrigin: Function, revParse: Function, currentBranch: Function, isSymbolicRef: Function,
- *   isAncestor: Function, worktreesHolding: Function, casUpdateRef: Function}}
+ *   isAncestor: Function, worktreesHolding: Function, nextInProgress: Function, casUpdateRef: Function}}
  */
 function createDefaultSeams({ env, spawnSync, budget } = {}) {
   const base = env || process.env;
@@ -747,6 +815,46 @@ function createDefaultSeams({ env, spawnSync, budget } = {}) {
   }
 
   /**
+   * BL-02: every worktree whose git dir records a rebase or bisect of `ref` — the states in which
+   * git's own find_shared_symref treats the branch as checked out although HEAD is detached (so the
+   * porcelain has no `branch` line). One git call (`rev-parse --git-common-dir`); the state files are
+   * plain reads in the common dir (the main worktree) and in each `worktrees/<id>/` admin dir:
+   *   rebase-merge/head-name, rebase-apply/head-name  == ref                      -> rebase
+   *   rebase-merge/update-refs                         a line == ref (--update-refs) -> rebase
+   *   BISECT_START                                     == ref or its short name     -> bisect
+   * A missing file is "not in progress"; any other read error fails closed (when unsure, do not move).
+   *
+   * @returns {{path:string, op:'rebase'|'bisect'}[]}
+   */
+  function nextInProgress(dir, ref, ms) {
+    const r = runGit(dir, ['rev-parse', '--git-common-dir'], 'rev-parse --git-common-dir', ms);
+    const out = String(r.stdout || '').trim();
+    if (r.status !== 0 || out === '') throw unexpected('rev-parse --git-common-dir', r);
+    const common = path.resolve(dir, out);
+    const shortName = ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref;
+
+    const admins = [{ gitdir: common, wt: path.basename(common) === '.git' ? path.dirname(common) : common }];
+    for (const id of readDirOrEmpty(path.join(common, 'worktrees'))) {
+      const admin = path.join(common, 'worktrees', id);
+      const link = readOrNull(path.join(admin, 'gitdir'));
+      admins.push({ gitdir: admin, wt: link ? path.dirname(path.resolve(admin, link.trim())) : '' });
+    }
+
+    const found = [];
+    for (const a of admins) {
+      const headNames = ['rebase-merge/head-name', 'rebase-apply/head-name'].map((f) => readOrNull(path.join(a.gitdir, f)));
+      const updateRefs = readOrNull(path.join(a.gitdir, 'rebase-merge', 'update-refs'));
+      const rebasing = headNames.some((t) => t !== null && t.trim() === ref) ||
+        (updateRefs !== null && updateRefs.split(/\r?\n/).some((l) => l.trim() === ref));
+      const bisectStart = readOrNull(path.join(a.gitdir, 'BISECT_START'));
+      const bisecting = bisectStart !== null && (bisectStart.trim() === ref || bisectStart.trim() === shortName);
+      if (!rebasing && !bisecting) continue;
+      found.push({ path: a.wt === '' ? '' : realOr(a.wt), op: rebasing ? 'rebase' : 'bisect' });
+    }
+    return found;
+  }
+
+  /**
    * Compare-and-swap ref move: exit 0 -> true, any other exit -> false (the ref did not hold
    * `oldSha`, so git's ref transaction left it untouched); spawn error -> FailClosed.
    * `--no-deref` (BL-01): never write through a symbolic ref. `--create-reflog` (NI-03): the move
@@ -806,7 +914,7 @@ function createDefaultSeams({ env, spawnSync, budget } = {}) {
     throw new FailClosed('ENF-25 worktree fresh-base gate: ' + graded.detail + ' — failing closed.');
   }
 
-  return { fetchOrigin, revParse, currentBranch, isSymbolicRef, isAncestor, worktreesHolding, casUpdateRef };
+  return { fetchOrigin, revParse, currentBranch, isSymbolicRef, isAncestor, worktreesHolding, nextInProgress, casUpdateRef };
 }
 
 /**
