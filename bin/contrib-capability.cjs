@@ -105,6 +105,7 @@ const {
 // GSD_CONTRIB_OVERRIDE escape valve uses. off/remove leave a deliberate, recorded receipt; we do NOT
 // fork a parallel receipt mechanism (the override.cjs record already carries an `action` field).
 const { writeReceipt, receiptPathFor } = require('../hooks/lib/override.cjs');
+const { writeRegularFile } = require('../hooks/lib/regular-file.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const BUNDLE_CAP_DIR = path.join(REPO_ROOT, 'capabilities', 'contribution-toolkit');
@@ -1342,10 +1343,12 @@ function requireReason(opts, action) {
  * Probe that the per-project-root accountability receipt is APPEND-WRITABLE before any state mutation
  * (CR-01 / T-12-02-SKIPRECEIPT). The accountability honesty ethos requires that a disable which cannot
  * be LOGGED must FAIL before — not after — the gates are stripped or the enforcement flag is flipped.
- * The check is a real append-mode open (O_CREAT|O_APPEND) of the receipt file (mkdir the dir first):
- * this exercises the SAME write path writeReceipt uses (fs.appendFileSync O_APPEND), so an ENOSPC /
- * EACCES / EROFS that would later sink writeReceipt is caught HERE, with zero state mutated. Opening
- * for append (then immediately closing) writes no bytes — the real record is appended later by
+ * The check is a real append of zero bytes through writeRegularFile (mkdir the dir first): the SAME
+ * non-blocking, regular-file-only write path writeReceipt uses (O_WRONLY|O_CREAT|O_APPEND|O_NONBLOCK,
+ * then an fstat that refuses anything not a regular file; W5), so an ENOSPC / EACCES / EROFS, a FIFO,
+ * a device or a directory that would later sink writeReceipt is caught HERE, with zero state mutated
+ * (W5 review WR-01: a plain open would accept a /dev/zero link that writeReceipt refuses). Appending
+ * zero bytes writes nothing — the real record is appended later by
  * writeAccountabilityReceipt. On any failure, throws a DriverError and the caller aborts before
  * touching settings.json / config.json / the ledger.
  *
@@ -1365,9 +1368,8 @@ function probeReceiptWritable(args) {
   const receiptFile = receiptPathFor(projectRoot);
   try {
     fs.mkdirSync(path.dirname(receiptFile), { recursive: true });
-    // Append-mode open (O_CREAT|O_APPEND), write nothing, close — proves writeReceipt can append.
-    const fd = fs.openSync(receiptFile, 'a');
-    fs.closeSync(fd);
+    // Append zero bytes through writeReceipt's own writer: proves writeReceipt can append (W5 WR-01).
+    writeRegularFile(receiptFile, '', { append: true });
   } catch (probeErr) {
     throw new DriverError(
       'cannot write the ' + action + ' accountability receipt at ' + receiptFile + ' (' +
@@ -1381,8 +1383,8 @@ function probeReceiptWritable(args) {
 
 /**
  * Append a per-project-root, append-only accountability receipt for an off/remove, REUSING the
- * hooks/lib/override.cjs writeReceipt pattern (fs.appendFileSync O_APPEND — never read-modify-write,
- * never a shared global receipt; T-12-02-RACE). The receipt is keyed to realpath(gsd-core) so two
+ * hooks/lib/override.cjs writeReceipt pattern (an O_APPEND append through writeRegularFile, never
+ * read-modify-write, never a shared global receipt; T-12-02-RACE). The receipt is keyed to realpath(gsd-core) so two
  * sessions sharing one checkout each append without clobbering. An un-writable receipt FAILS the
  * operation (DriverError) rather than letting the disable proceed un-logged (T-12-02-SKIPRECEIPT/EP-5).
  *
