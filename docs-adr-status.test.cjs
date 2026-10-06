@@ -208,3 +208,105 @@ test('38 verifier: the live-slot FIFO residual says it hangs every gate and poin
   assert.match(b, /every gate/);
   assert.ok(b.includes('SEED-live-tool-log-fifo-hangs-all-gates'), b);
 });
+
+// ── quick 261006-jsm (CONTEXT D10, coordinator, orchestrator B1): CTK-ADR-0010 marks the fixed ENF-20
+// verdict routes and records the new residuals. Every lock anchors on its own bullet's bold lead
+// (adr10Bullet asserts exactly one match); no Status line and no Decision text changes. ──
+
+test('261006-jsm: the classify-`other` residual marks the routes this branch fixed and keeps the open ones listed', () => {
+  const b = adr10Bullet(/classif(y|ies) `other`/);
+  assert.ok(b.includes('Fixed by quick 261006-jsm:'), b);
+  for (const form of [
+    'gh pr -R o/r review 42 -a',
+    '-Fevent=APPROVE',
+    'setsid',
+    '`-lc`',
+    'submitPullRequestReview',
+    'addPullRequestReview',
+    'denies on R8a',
+  ]) {
+    assert.ok(b.includes(form), 'the fixed marker names ' + form + ': ' + b);
+  }
+  assert.match(b, /bare `--input`[\s\S]*MJ-02 UNRESOLVED/);
+  assert.match(b, /`\$\(echo gh\) pr review 42 -a` is an uncertain route that asks/);
+});
+
+test('261006-jsm: the CLEAR-comment residual is marked fixed (R8a governs both comment actions)', () => {
+  const b = adr10Bullet(/CLEAR-verdict PR comment/);
+  assert.ok(b.includes('Fixed by quick 261006-jsm:'), b);
+  for (const s of ['`pr-comment`', '`issue-comment`', '`--comment`', 'step-8a verdict']) {
+    assert.ok(b.includes(s), 'the fixed marker names ' + s + ': ' + b);
+  }
+});
+
+test('261006-jsm: the opaque-ask residual carries the measured noise, the constants and the grade basis', () => {
+  const b = adr10Bullet(/^- \*\*An opaque verdict route asks/);
+  for (const s of [
+    '17 / 47,642', '0.04%', '1,509 / 47,642', '3.2%', '2026-10-06',
+    'eval "$(ssh-agent -s)"', 'eval "$CMD"', 'OPAQUE_SHELL_PAYLOAD_NEEDS_HINT',
+    'RECOVERY_MAX_DEPTH', 'MAX_PREFIX_PEELS', 'CTK-ADR-0005 Decision 2', 'CTK-ADR-0007 Decision 2', 'MJ-02',
+  ]) {
+    assert.ok(b.includes(s), 'the opaque-ask residual names ' + s + ': ' + b);
+  }
+  assert.match(b, /outside one/);
+});
+
+test('261006-jsm (coordinator): the uncertain and unresolved asks degrade to allow under bypass mode', () => {
+  const b = adr10Bullet(/^- \*\*The uncertain and unresolved asks are a prompt only in default mode/);
+  assert.ok(b.includes('--dangerously-skip-permissions'), b);
+  assert.match(b, /degrade to allow/);
+  assert.match(b, /statically recovered forms still deny/);
+});
+
+test('261006-jsm (B1): the file-sourced GraphQL residual carries its measurement and the no-lookup ask', () => {
+  const b = adr10Bullet(/^- \*\*A file-sourced GraphQL query asks/);
+  for (const s of ['0 genuine', '48,055', '31 `gh api graphql` calls', 'no PR lookup', 'MJ-02', '-F query=@']) {
+    assert.ok(b.includes(s), 'the file-sourced GraphQL residual names ' + s + ': ' + b);
+  }
+});
+
+test('261006-jsm (D5): a CLEAR comment is a step-8a verdict, recorded as a consequence, not a Decision edit', () => {
+  const b = adr10Bullet(/^- \*\*A `CLEAR` comment is a step-8a verdict/);
+  assert.match(b, /`--comment` exemption/);
+  assert.match(b, /without editing the Decision/);
+});
+
+test('261006-jsm: the still-open verdict routes are listed', () => {
+  const b = adr10Bullet(/^- \*\*Verdict routes still open after quick 261006-jsm/);
+  for (const s of [
+    'gh -R o/r pr merge', 'x=$(gh pr review 42 -a)', '$X 42 -a', 'dismissPullRequestReview', 'bash review.sh',
+    'bash -s', 'heredoc', '16 multi-line sh -c calls in 48,055', '-ftitle=x', 'zsh', 'never failed closed',
+  ]) {
+    assert.ok(b.includes(s), 'the still-open residual names ' + s + ': ' + b);
+  }
+});
+
+test('261006-jsm: the keying and observability consequences are recorded', () => {
+  const k = adr10Bullet(/^- \*\*Some recovered verdicts are keyed to the current branch's PR/);
+  assert.match(k, /node id/);
+  assert.match(k, /xargs/);
+  assert.match(k, /R8a is session-scoped/);
+  const o = adr10Bullet(/^- \*\*tool-recorder logs the recovered forms as `pr-review`/);
+  assert.match(o, /governed stays false/);
+});
+
+const { execFileSync: jsmExecFileSync } = require('node:child_process');
+const JSM_ADR10_REL = 'docs/adr/CTK-ADR-0010-memtrace-review-evidence.md';
+const JSM_BASE = 'e2690ca';
+
+test('261006-jsm: every line this branch added to the CTK-ADR-0010 residual list is plain ASCII', () => {
+  const before = new Set(
+    jsmExecFileSync('git', ['show', JSM_BASE + ':' + JSM_ADR10_REL], { cwd: REPO, encoding: 'utf8' }).split('\n')
+  );
+  const added = adr10Residuals().split('\n').filter((l) => !before.has(l));
+  assert.ok(added.length > 0, 'the residual list gained lines');
+  for (const l of added) assert.match(l, /^[\x20-\x7e]*$/, 'non-ASCII in an added line: ' + l);
+});
+
+test('261006-jsm: CTK-ADR-0010 is byte-identical to ' + JSM_BASE + ' up to `## Consequences` (no Status or Decision edit)', () => {
+  const cut = (t) => t.slice(0, t.indexOf('## Consequences'));
+  const base = jsmExecFileSync('git', ['show', JSM_BASE + ':' + JSM_ADR10_REL], { cwd: REPO, encoding: 'utf8' });
+  const now = fs.readFileSync(adrFile(10), 'utf8');
+  assert.ok(base.indexOf('## Consequences') > 0 && now.indexOf('## Consequences') > 0);
+  assert.strictEqual(cut(now), cut(base));
+});
