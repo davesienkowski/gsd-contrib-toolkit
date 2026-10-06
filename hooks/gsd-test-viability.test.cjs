@@ -796,3 +796,11 @@ test('ENF-24 M-04: `eval gsd-test` with Docker down DENIES', () => {
   assert.strictEqual(d.permissionDecision, 'deny');
   assert.strictEqual(calls.dockerProbe, 1);
 });
+
+// ─────────────── M-05 (36-REVIEW): lookups ───────────────
+
+test('ENF-24 M-05: `command -v gsd-test && gsd-test --version` with Docker down ALLOWS with ZERO probes', () => {
+  const { d, calls } = run('command -v gsd-test && gsd-test --version', { probe: { state: 'down', detail: 'x' } });
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.resolveTreeRoot + calls.readConfig + calls.dockerProbe, 0);
+});

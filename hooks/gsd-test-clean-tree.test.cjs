@@ -794,3 +794,14 @@ test('ENF-23 M-04: dirty tree + `eval gsd-test --head HEAD` DENIES with the dirt
   assert.strictEqual(d.permissionDecision, 'deny');
   assert.match(d.permissionDecisionReason, /ref-based/);
 });
+
+// ─────────────── M-05 (36-REVIEW): lookups ───────────────
+
+for (const cmd of ['command -v gsd-test && gsd-test --version', 'command -V gsd-test', 'type gsd-test']) {
+  test(`ENF-23 M-05: dirty tree + \`${cmd}\` ALLOWS with ZERO resolve/git calls`, () => {
+    const { deps, calls } = scenario({ porcelain: DIRTY_ONE });
+    const d = runGsdTestCleanTreeGate(input(cmd), deps);
+    assert.strictEqual(d.permissionDecision, 'allow');
+    assert.strictEqual(calls.resolveTreeRoot + gitCalls(calls), 0);
+  });
+}

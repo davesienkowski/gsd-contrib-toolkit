@@ -876,3 +876,31 @@ test('GTEST-01 M-04: eval counts toward the -c depth bound', () => {
 test('GTEST-01 M-04: `eval echo gsd-test` yields no entry', () => {
   assert.deepStrictEqual(entries('eval echo gsd-test'), []);
 });
+
+// ─────────────── M-05 (36-REVIEW): lookups are not dispatches ───────────────
+
+for (const cmd of [
+  'command -v gsd-test',
+  'command -V gsd-test',
+  'command -pv gsd-test',
+  'command -p -v gsd-test',
+  'type gsd-test',
+  'type -a gsd-test',
+  'hash gsd-test',
+  'hash -t gsd-test',
+  'which gsd-test',
+  'which -a gsd-test',
+]) {
+  test(`GTEST-01 M-05: lookup \`${cmd}\` yields no entry`, () => {
+    assert.deepStrictEqual(entries(cmd), []);
+  });
+}
+
+test('GTEST-01 M-05: `command -v gsd-test && gsd-test --version` yields only the informational dispatch', () => {
+  const d = oneDispatch('command -v gsd-test && gsd-test --version');
+  assert.strictEqual(d.informational, true);
+});
+
+test('GTEST-01 M-05: `command -p gsd-test` is still a dispatch (no -v / -V)', () => {
+  oneDispatch('command -p gsd-test');
+});
