@@ -146,7 +146,7 @@ function refOf(dir, ref) {
  * (the "upstream moved" writer). A's refs/remotes/origin/next is set by A's own push; setup never
  * fetches in A afterwards.
  */
-function makeFixture({ sentinel = true } = {}) {
+function makeFixture({ sentinel = true, park = true } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wtfb-fx-'));
   const origin = path.join(root, 'origin.git');
   const A = path.join(root, 'A');
@@ -163,7 +163,7 @@ function makeFixture({ sentinel = true } = {}) {
   fs.writeFileSync(path.join(A, 'tracked.txt'), 'one\n');
   const initial = commitAll(A, 'init');
   git(A, 'push', '-q', 'origin', 'next');
-  git(A, 'switch', '-q', '-c', 'work');
+  if (park) git(A, 'switch', '-q', '-c', 'work');
   git(root, 'clone', '-q', origin, B);
 
   let n = 0;
@@ -368,6 +368,21 @@ test('ENF-25 tracer e2e: an inherited GIT_DIR cannot aim the fetch or the CAS at
     assert.strictEqual(r.decision, 'allow', r.reason);
     assert.strictEqual(refOf(fx.A, 'refs/heads/next'), tip, 'the gate acted on A, the target repo');
     assert.strictEqual(refOf(fx.B, 'refs/heads/next'), bNextBefore, 'B was not touched');
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 tracer e2e: a stale next CHECKED OUT in A is never moved (real worktree-list parse)', () => {
+  const fx = makeFixture({ park: false });
+  try {
+    const tip = fx.advanceOrigin();
+    assert.strictEqual(git(fx.A, 'symbolic-ref', 'HEAD').trim(), 'refs/heads/next', 'precondition: A holds next');
+    // The decision is 37-03's (held deny); this row locks only that the held check reads real
+    // `worktree list --porcelain` output and blocks the CAS.
+    spawnIn(fx.A, 'git worktree add -b feat ' + path.join(fx.root, 'wt') + ' next');
+    assert.strictEqual(refOf(fx.A, 'refs/remotes/origin/next'), tip, 'the fetch ran');
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), fx.initial, 'a checked-out next must not move');
   } finally {
     fx.dispose();
   }
