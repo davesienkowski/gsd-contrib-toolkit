@@ -566,3 +566,16 @@ test("38-02 recorder: recordToolCall returns null with GSD_CONTRIB_RECORD ' OFF 
     'recordToolCall checks the kill switch through the one exported helper'
   );
 });
+
+// -- 261006-jsm: observability for a recovered verdict route -------------------------------------
+//
+// A `gh pr review` inside a `bash -c` command string now classifies pr-review (recovered), so the
+// recorder logs that action instead of `other`. Observability only: pr-review is not one of the
+// recorder's governed actions, so `governed` stays false.
+
+test('261006-jsm recorder: a Bash `bash -c "gh pr review 42 -a"` records action pr-review, governed false', () => {
+  const rec = recordToolCall(post({ tool_name: 'Bash', tool_input: { command: 'bash -c "gh pr review 42 -a"' } }), deps());
+  assert.strictEqual(rec.action, 'pr-review');
+  assert.strictEqual(rec.governed, false);
+  assert.ok(!serializeRecord(rec).includes('gh pr review'), 'the raw command must be ABSENT from the record');
+});

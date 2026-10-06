@@ -1692,3 +1692,936 @@ test('WTREE-01 ENF-22 displacement: a lone worktree add classifies as other', ()
 test('WTREE-01 ENF-22 displacement: hasGovernedSegment still finds pr-merge after a worktree add', () => {
   assert.strictEqual(hasGovernedSegment(parseCommand('git worktree add p next && gh pr merge 1'), ['pr-merge']), true);
 });
+
+// ---------------------------------------------------------------------------
+// 261006-jsm ENF-20 verdict routes
+//
+// A `gh pr review` verdict issued through a wrapper (here: a `bash -c` / `sh -c` command string)
+// used to classify `other`, so ENF-20's R8a memtrace check never saw it. The recovery step in
+// classifySegment re-parses the -c payload with argv.parseCommand and returns ONLY a recovered
+// `pr-review` (D1); classifyAction's fourth pass keeps every existing chain classification
+// unchanged (D2). Rows marked "lock" pass before the fix too; the per-form rows are red before it.
+// ---------------------------------------------------------------------------
+
+// The review-artifact gate's governed set (hooks/review-artifact.cjs GOVERNED_ACTIONS), restated
+// here so this pure-module suite does not require the gate.
+const REVIEW_ARTIFACT_GOVERNED = ['pr-review', 'pr-merge', 'pr-comment', 'issue-comment'];
+
+const JSM_REVIEW_TOKENS = ['gh', 'pr', 'review', '42', '-a'];
+
+/** Assert `cmd` is a recovered pr-review whose verdict segments carry exactly `want` tokens. */
+function assertRecoveredReview(cmd, want = [JSM_REVIEW_TOKENS]) {
+  const r = cls(cmd);
+  assert.strictEqual(r.action, 'pr-review', cmd + ' -> ' + JSON.stringify(r));
+  assert.strictEqual(r.recovered, true, cmd + ' is a recovered route');
+  assert.ok(!('uncertain' in r), cmd + ' is statically readable, not uncertain');
+  assert.ok(Array.isArray(r.verdictSegments), cmd + ' carries verdictSegments');
+  assert.deepStrictEqual(r.verdictSegments.map((s) => s.tokens), want, cmd);
+}
+
+for (const cmd of [
+  'bash -c "gh pr review 42 -a"',
+  "sh -c 'gh pr review 42 -a'",
+  "dash -c 'gh pr review 42 -a'",
+  'bash -lc "gh pr review 42 -a"',
+  'bash -ec "gh pr review 42 -a"',
+  "bash -c -x 'gh pr review 42 -a'",
+  "bash -c -- 'gh pr review 42 -a'",
+  "bash -o errexit -c 'gh pr review 42 -a'",
+  "bash +c 'gh pr review 42 -a'",
+]) {
+  test('261006-jsm shell -c: `' + cmd + '` -> recovered pr-review with one verdict segment', () => {
+    assertRecoveredReview(cmd);
+  });
+}
+
+test('261006-jsm shell -c: an inner chain returns EVERY inner pr-review segment, in order (D3)', () => {
+  assertRecoveredReview("bash -c 'gh pr review 1 --comment; gh pr review 1 -a'", [
+    ['gh', 'pr', 'review', '1', '--comment'],
+    ['gh', 'pr', 'review', '1', '-a'],
+  ]);
+});
+
+test('261006-jsm shell -c: the recovered result names the shell-c form', () => {
+  const r = cls('bash -c "gh pr review 42 -a"');
+  assert.strictEqual(r.via, 'shell-c');
+  assert.strictEqual(r.route, 'recovered');
+});
+
+for (const cmd of [
+  'bash -c "git push"',
+  'bash -c "npm test"',
+  "sh -c 'ls | wc -l'",
+  'bash script.sh',
+  "bash -- -c 'x'",
+  'bash -c',
+  "bash -c ''",
+  "echo 'bash -c gh pr review 42 -a'",
+  'bash -c "cd x\nmake\necho ok"',
+  'bash <<EOF\nmake\nEOF',
+]) {
+  test('261006-jsm shell -c lock: `' + JSON.stringify(cmd) + '` stays other', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+  });
+}
+
+test('261006-jsm shell -c lock (D1): a wrapped push is discarded, so no push gate starts firing', () => {
+  const parsed = parseCommand('bash -c "git push"');
+  assert.strictEqual(hasGovernedSegment(parsed, ['push']), false);
+  assert.strictEqual(isNonGovernedCommand(parsed, ['push']), true);
+  assert.strictEqual(hasFailClosedSegment(parsed), false);
+});
+
+// D2 four rows + corpus for F = `bash -c "gh pr review 42 -a"`.
+const JSM_SHELL_F = 'bash -c "gh pr review 42 -a"';
+
+test('261006-jsm D2 shell -c lock: `F && gh pr merge 1` is pr-merge (a recovered form never displaces it)', () => {
+  assert.strictEqual(cls(JSM_SHELL_F + ' && gh pr merge 1').action, 'pr-merge');
+});
+
+test('261006-jsm D2 shell -c lock: `gh pr merge 1 && F` is pr-merge', () => {
+  assert.strictEqual(cls('gh pr merge 1 && ' + JSM_SHELL_F).action, 'pr-merge');
+});
+
+test('261006-jsm D2 shell -c lock: `gh pr review 1 -a; F` is the NATIVE pr-review, no recovered key', () => {
+  assert.deepStrictEqual(cls('gh pr review 1 -a; ' + JSM_SHELL_F), { action: 'pr-review', route: 'native' });
+});
+
+test('261006-jsm D2 shell -c lock: `F && git push` is push and `git commit -m x && F` is commit', () => {
+  assert.deepStrictEqual(cls(JSM_SHELL_F + ' && git push'), { action: 'push' });
+  assert.deepStrictEqual(cls('git commit -m x && ' + JSM_SHELL_F), { action: 'commit' });
+});
+
+test('261006-jsm D2 shell -c lock: hasGovernedSegment still finds pr-merge after F', () => {
+  assert.strictEqual(hasGovernedSegment(parseCommand(JSM_SHELL_F + ' && gh pr merge 1'), ['pr-merge']), true);
+});
+
+test('261006-jsm D2 shell -c: lone F is a recovered pr-review', () => {
+  assertRecoveredReview(JSM_SHELL_F);
+});
+
+test('261006-jsm D2 shell -c corpus lock: F is non-governed for every existing gate set and never fails closed', () => {
+  const parsed = parseCommand(JSM_SHELL_F);
+  assert.strictEqual(hasFailClosedSegment(parsed), false);
+  for (const [gate, actions] of Object.entries(EXISTING_GATE_SETS)) {
+    assert.strictEqual(hasGovernedSegment(parsed, actions), false, gate + ' must NOT be governed by F');
+    assert.strictEqual(isNonGovernedCommand(parsed, actions), true, gate + ' must short-circuit for F');
+  }
+});
+
+test('261006-jsm D2 shell -c corpus: F IS governed by the review-artifact set', () => {
+  assert.strictEqual(hasGovernedSegment(parseCommand(JSM_SHELL_F), REVIEW_ARTIFACT_GOVERNED), true);
+});
+
+// ---------------------------------------------------------------------------
+// 261006-jsm Task 2a: transparent prefix verdict routes (subshell, brace group, negation, nohup,
+// setsid, time). Each strip removes one prefix from the SAME visible argv and re-classifies the
+// rest; only an inner pr-review is kept (D1). The D8 false-deny corpus below is a lock set: it
+// passes before and after every Task 2 fix.
+// ---------------------------------------------------------------------------
+
+/** Assert `cmd` recovers as a pr-review named by `via` with one verdict segment `tokens`. */
+function assertPrefixReview(cmd, via, tokens = JSM_REVIEW_TOKENS) {
+  assertRecoveredReview(cmd, [tokens]);
+  assert.strictEqual(cls(cmd).via, via, cmd + ' via');
+}
+
+for (const [cmd, via] of [
+  ['( gh pr review 42 -a )', 'subshell'],
+  ['(gh pr review 42 -a)', 'subshell'],
+  ['{ gh pr review 42 -a; }', 'brace-group'],
+  ['! gh pr review 42 -a', 'negation'],
+  ['nohup gh pr review 42 -a', 'nohup'],
+  ['nohup -- gh pr review 42 -a', 'nohup'],
+  ['setsid -f gh pr review 42 -a', 'setsid'],
+  ['time gh pr review 42 -a', 'time'],
+  ['time -p gh pr review 42 -a', 'time'],
+  ['/usr/bin/time -f %e -o /dev/null gh pr review 42 -a', 'time'],
+  ['sudo nohup gh pr review 42 -a', 'nohup'],
+  ['( time nohup gh pr review 42 -a )', 'subshell'],
+]) {
+  test('261006-jsm prefix: `' + cmd + '` -> recovered pr-review, via ' + via + ', one verdict segment', () => {
+    assertPrefixReview(cmd, via);
+  });
+}
+
+test('261006-jsm prefix: `nohup sudo gh pr review 42 -a` keeps the WRAPPER_BUILTINS sudo the direct classifier resolves', () => {
+  // Stripping nohup leaves `sudo gh pr review 42 -a`, which the unchanged direct classifier reads
+  // as a native pr-review through resolveProgram; that inner segment is the verdict segment.
+  assertPrefixReview('nohup sudo gh pr review 42 -a', 'nohup', ['sudo', 'gh', 'pr', 'review', '42', '-a']);
+});
+
+test('261006-jsm prefix: GNU time value spellings (`-f` attached, `--format=`, `--output`) are skipped', () => {
+  assertPrefixReview('/usr/bin/time -f%e gh pr review 42 -a', 'time');
+  assertPrefixReview('/usr/bin/time --format=%e gh pr review 42 -a', 'time');
+  assertPrefixReview('/usr/bin/time --output /dev/null gh pr review 42 -a', 'time');
+  assertPrefixReview('/usr/bin/time -pf %e gh pr review 42 -a', 'time');
+});
+
+for (const cmd of ['nohup', 'setsid', 'time', '( )', '()', 'nohup --', '!', '{']) {
+  test('261006-jsm prefix lock: bare wrapper `' + cmd + '` stays other and never throws', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+  });
+}
+
+for (const cmd of ['nohup git push', 'setsid git push', 'time git push', '( git push )', '! git push']) {
+  test('261006-jsm prefix lock (D1, 36-02a): `' + cmd + '` stays other and no push gate starts firing', () => {
+    const parsed = parseCommand(cmd);
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasGovernedSegment(parsed, ['push']), false);
+    assert.strictEqual(hasFailClosedSegment(parsed), false);
+  });
+}
+
+/**
+ * The D2 four rows + the governed-set corpus for a recovered form F (CONTEXT D2, orchestrator B2).
+ * `merge` overrides the `F && gh pr merge 1` chain (xargs reads its command to the chain end).
+ */
+function jsmD2Rows(label, F, { merge = F + ' && gh pr merge 1', lone = null } = {}) {
+  test('261006-jsm D2 ' + label + ' lock: `F && gh pr merge 1` is pr-merge', () => {
+    assert.strictEqual(cls(merge).action, 'pr-merge', merge);
+  });
+  test('261006-jsm D2 ' + label + ' lock: `gh pr review 1 -a; F` is the NATIVE pr-review, no recovered key', () => {
+    assert.deepStrictEqual(cls('gh pr review 1 -a; ' + F), { action: 'pr-review', route: 'native' });
+  });
+  test('261006-jsm D2 ' + label + ': lone F classifies as the task specifies', () => {
+    const r = cls(F);
+    assert.strictEqual(r.action, 'pr-review', F + ' -> ' + JSON.stringify(r));
+    assert.strictEqual(r.recovered, true, F);
+    if (lone) lone(r);
+  });
+  test('261006-jsm D2 ' + label + ' lock: hasGovernedSegment still finds pr-merge after F', () => {
+    assert.strictEqual(hasGovernedSegment(parseCommand(merge), ['pr-merge']), true, merge);
+  });
+  test('261006-jsm D2 ' + label + ' corpus lock: F is non-governed for every existing gate set and never fails closed', () => {
+    const parsed = parseCommand(F);
+    assert.strictEqual(hasFailClosedSegment(parsed), false);
+    for (const [gate, actions] of Object.entries(EXISTING_GATE_SETS)) {
+      assert.strictEqual(hasGovernedSegment(parsed, actions), false, gate + ' must NOT be governed by ' + F);
+      assert.strictEqual(isNonGovernedCommand(parsed, actions), true, gate + ' must short-circuit for ' + F);
+    }
+  });
+  test('261006-jsm D2 ' + label + ' corpus: F IS governed by the review-artifact set', () => {
+    assert.strictEqual(hasGovernedSegment(parseCommand(F), REVIEW_ARTIFACT_GOVERNED), true, F);
+  });
+}
+
+jsmD2Rows('subshell', '( gh pr review 42 -a )');
+jsmD2Rows('brace-group', '{ gh pr review 42 -a; }');
+jsmD2Rows('nohup', 'nohup gh pr review 42 -a');
+
+// D8 false-deny corpus (CONTEXT D8, must_haves): each classifies other, never fails closed, and is
+// non-governed for every existing gate set AND the review-artifact set. Locks: green pre-fix.
+const JSM_D8_CORPUS = [
+  'eval "echo hi"',
+  "eval 'echo hi'",
+  'bash -c "npm test"',
+  "sh -c 'ls | wc -l'",
+  'ls | xargs grep foo',
+  'find . -name x | xargs rm -f',
+  "xargs -I{} sh -c 'echo {}'",
+  'nohup npm start',
+  '( cd x && make )',
+  '{ echo a; echo b; }',
+  '"$CHROME" --headless',
+  '$CHROME --headless',
+  '$G query commit x',
+  'time make',
+  'bash script.sh',
+  "gh api graphql -f query='query { viewer { login } }'",
+  'gh api repos/o/r/pulls/42/reviews',
+  'gh api -X GET repos/o/r/pulls/42/reviews --input f',
+];
+
+for (const cmd of JSM_D8_CORPUS) {
+  test('261006-jsm D8 false-deny lock: `' + cmd + '` is other and non-governed for every gate', () => {
+    const parsed = parseCommand(cmd);
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasFailClosedSegment(parsed), false, cmd);
+    for (const [gate, actions] of Object.entries(EXISTING_GATE_SETS)) {
+      assert.strictEqual(isNonGovernedCommand(parsed, actions), true, gate + ': ' + cmd);
+    }
+    assert.strictEqual(isNonGovernedCommand(parsed, REVIEW_ARTIFACT_GOVERNED), true, 'review-artifact: ' + cmd);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 261006-jsm Task 2b: eval verdict route. The payload is eval's arguments joined with one space
+// (argv already removed one quoting layer, as eval's own parse sees it), re-parsed with
+// argv.parseCommand at depth + 1.
+// ---------------------------------------------------------------------------
+
+for (const cmd of [
+  'eval "gh pr review 42 -a"',
+  'eval gh pr review 42 -a',
+  "eval 'gh pr review 42 -a; echo done'",
+  'eval eval eval eval gh pr review 42 -a',
+]) {
+  test('261006-jsm eval: `' + cmd + '` -> recovered pr-review, via eval, one verdict segment', () => {
+    assertPrefixReview(cmd, 'eval');
+  });
+}
+
+test('261006-jsm eval: four nested evals sit at payload depth 4, inside RECOVERY_MAX_DEPTH', () => {
+  const { RECOVERY_MAX_DEPTH } = require('./classify.cjs');
+  assert.strictEqual(RECOVERY_MAX_DEPTH, 4);
+  assertPrefixReview('eval eval eval eval gh pr review 42 -a', 'eval');
+});
+
+for (const cmd of ['eval "echo hi"', "eval ''", 'eval ""', 'eval', 'eval "git push"']) {
+  test('261006-jsm eval lock: `' + cmd + '` stays other (an empty payload runs nothing)', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasFailClosedSegment(parseCommand(cmd)), false, cmd);
+  });
+}
+
+jsmD2Rows('eval', 'eval "gh pr review 42 -a"');
+
+// ---------------------------------------------------------------------------
+// 261006-jsm Task 2c: gh -R / --repo before the review verb. gh accepts `-R <o/r>` before the
+// `pr` area and between `pr` and the verb (RESEARCH section 2); the shared walk reads `-R`'s value
+// as the area or verb. The outer segment itself is the verdict segment (D3).
+// ---------------------------------------------------------------------------
+
+for (const cmd of ['gh -R o/r pr review 42 -a', 'gh pr -R o/r review 42 -a']) {
+  test('261006-jsm gh -R: `' + cmd + '` -> recovered pr-review, via gh-repo-flag, the outer segment', () => {
+    assertPrefixReview(cmd, 'gh-repo-flag', cmd.split(' '));
+  });
+}
+
+for (const cmd of ['gh -Ro/r pr review 42 -a', 'gh --repo o/r pr review 42 -a', 'gh --repo=o/r pr review 42 -a']) {
+  test('261006-jsm gh -R regression (green before the fix): `' + cmd + '` stays the native pr-review', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'pr-review', route: 'native' }, cmd);
+  });
+}
+
+for (const [cmd, action] of [
+  ['gh -R o/r pr merge 42', 'pr-merge'],
+  ['gh -R o/r pr create --title x', 'pr-create'],
+]) {
+  test('261006-jsm gh -R lock (D1 residual): `' + cmd + '` stays other and ' + action + ' gates do not start firing', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasGovernedSegment(parseCommand(cmd), [action]), false, cmd);
+  });
+}
+
+jsmD2Rows('gh -R', 'gh -R o/r pr review 42 -a');
+
+// ---------------------------------------------------------------------------
+// 261006-jsm Task 2d: opaque verdict routes are UNCERTAIN (CONTEXT D3, D6, D7; orchestrator W3).
+// An uncertain route is a pr-review the gate grades `ask` without a PR lookup:
+//   (B) a program built by expansion, only with a visible review hint (1,509 / 47,642 noise);
+//   (A) an expansion-named program inside an eval or shell -c payload, no hint needed while
+//       OPAQUE_SHELL_PAYLOAD_NEEDS_HINT is false (17 / 47,642), and a payload argv cannot parse;
+//   a payload nested past RECOVERY_MAX_DEPTH (no hint, D3 literal); a prefix stack past
+//   MAX_PREFIX_PEELS (hint required, W3).
+// ---------------------------------------------------------------------------
+
+const JSM_NOHUP9 = 'nohup '.repeat(9);
+
+/** Assert `cmd` is an uncertain recovered pr-review with no verdict segment, named by `via`. */
+function assertUncertainRoute(cmd, via) {
+  assert.deepStrictEqual(
+    cls(cmd),
+    { action: 'pr-review', route: 'recovered', recovered: true, uncertain: true, via, verdictSegments: [] },
+    cmd
+  );
+}
+
+for (const [cmd, via] of [
+  ['$(echo gh) pr review 42 -a', 'expansion-program'],
+  ['$GH pr review 42 -a', 'expansion-program'],
+  ['`echo gh` pr review 42 --approve', 'expansion-program'],
+  ['eval "$CMD"', 'opaque-payload'],
+  ['eval "$(ssh-agent -s)"', 'opaque-payload'],
+  ['bash -c "$CMD"', 'opaque-payload'],
+  ["bash -c \"echo 'x\"", 'unparseable-payload'],
+  ['eval eval eval eval eval gh pr review 42 -a', 'depth-bound'],
+  ['eval eval eval eval eval echo hi', 'depth-bound'],
+  [JSM_NOHUP9 + 'gh pr review 42 -a', 'prefix-bound'],
+]) {
+  test('261006-jsm opaque: `' + cmd + '` -> UNCERTAIN pr-review, via ' + via, () => {
+    assertUncertainRoute(cmd, via);
+  });
+}
+
+for (const cmd of ['"$CHROME" --headless', '$G query commit x', JSM_NOHUP9 + 'ls', '$X 42 -a']) {
+  test('261006-jsm opaque lock: `' + cmd + '` stays other (no review hint, D7 B / W3)', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+  });
+}
+
+test('261006-jsm opaque: eight stacked nohup are inside MAX_PREFIX_PEELS and recover statically', () => {
+  const { MAX_PREFIX_PEELS } = require('./classify.cjs');
+  assert.strictEqual(MAX_PREFIX_PEELS, 8);
+  assertPrefixReview('nohup '.repeat(8) + 'gh pr review 42 -a', 'nohup');
+});
+
+test('261006-jsm opaque: OPAQUE_SHELL_PAYLOAD_NEEDS_HINT is exported and false (CONTEXT D7 A, coordinator)', () => {
+  assert.strictEqual(require('./classify.cjs').OPAQUE_SHELL_PAYLOAD_NEEDS_HINT, false);
+});
+
+test('261006-jsm opaque: hasReviewHint reads only the listed hint tokens', () => {
+  const { hasReviewHint } = require('./classify.cjs');
+  assert.strictEqual(typeof hasReviewHint, 'function');
+  for (const t of [['x', 'review'], ['--approve'], ['--request-changes'], ['repos/o/r/pulls/42/reviews'],
+    ['query=mutation { submitPullRequestReview(input: {}) }'], ['addPullRequestReview']]) {
+    assert.strictEqual(hasReviewHint(t), true, JSON.stringify(t));
+  }
+  for (const t of [['42', '-a'], ['reviews'], ['submitpullrequestreview'], ['query', 'commit'], []]) {
+    assert.strictEqual(hasReviewHint(t), false, JSON.stringify(t));
+  }
+});
+
+test('261006-jsm opaque: a mixed inner chain keeps its verdict segment and adds uncertain', () => {
+  const r = cls("bash -c 'gh pr review 1 -a; $CMD'");
+  assert.strictEqual(r.action, 'pr-review');
+  assert.strictEqual(r.recovered, true);
+  assert.strictEqual(r.uncertain, true);
+  assert.strictEqual(r.via, 'shell-c');
+  assert.strictEqual(r.uncertainVia, 'opaque-payload');
+  assert.deepStrictEqual(r.verdictSegments.map((s) => s.tokens), [['gh', 'pr', 'review', '1', '-a']]);
+});
+
+test('261006-jsm opaque: a prefix around an opaque route passes the uncertain route through', () => {
+  assertUncertainRoute('nohup $GH pr review 42 -a', 'expansion-program');
+  assertUncertainRoute('( eval "$CMD" )', 'opaque-payload');
+});
+
+test('261006-jsm opaque: classification is pure, a repeated call yields the same result', () => {
+  const cmd = 'eval "$CMD"';
+  assert.deepStrictEqual(cls(cmd), cls(cmd));
+});
+
+jsmD2Rows('expansion-program', '$(echo gh) pr review 42 -a', {
+  lone: (r) => {
+    assert.strictEqual(r.uncertain, true);
+    assert.deepStrictEqual(r.verdictSegments, []);
+  },
+});
+
+// Every via code the recovery emits names a FIXED ASCII description (the gate never builds one
+// from command text, and a missing key would surface as `undefined` in an ask reason).
+test('261006-jsm forms: every emitted via code is a VERDICT_ROUTE_FORMS key with an ASCII description', () => {
+  const { VERDICT_ROUTE_FORMS } = require('./classify.cjs');
+  for (const desc of Object.values(VERDICT_ROUTE_FORMS)) {
+    assert.ok(typeof desc === 'string' && /^[\x20-\x7e]+$/.test(desc), JSON.stringify(desc));
+  }
+  for (const cmd of [
+    'bash -c "gh pr review 42 -a"', '( gh pr review 42 -a )', '{ gh pr review 42 -a; }', '! gh pr review 42 -a',
+    'nohup gh pr review 42 -a', 'setsid gh pr review 42 -a', 'time gh pr review 42 -a', 'eval "gh pr review 42 -a"',
+    'gh -R o/r pr review 42 -a', '$GH pr review 42 -a', 'eval "$CMD"', "bash -c \"echo 'x\"",
+    'eval eval eval eval eval echo hi', JSM_NOHUP9 + 'gh pr review 42 -a', "bash -c 'gh pr review 1 -a; $CMD'",
+  ]) {
+    const r = cls(cmd);
+    assert.ok(Object.prototype.hasOwnProperty.call(VERDICT_ROUTE_FORMS, r.via), cmd + ' via ' + r.via);
+    if (r.uncertainVia !== undefined) {
+      assert.ok(Object.prototype.hasOwnProperty.call(VERDICT_ROUTE_FORMS, r.uncertainVia), cmd + ' uncertainVia');
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 261006-jsm Task 2e: xargs verdict route (RESEARCH section 4). xargs runs its command argv
+// directly (a prefix strip at peels + 1, not a payload re-parse). The option table has three
+// classes: no value, required value (attached or next token) and optional-attached-only (a
+// separate token is the command); long options resolve by unique prefix; `--` ends options.
+// ---------------------------------------------------------------------------
+
+const JSM_XARGS_TOKENS = ['gh', 'pr', 'review', '-a'];
+const JSM_XARGS_BRACE_TOKENS = ['gh', 'pr', 'review', '{}', '-a'];
+
+for (const [cmd, tokens] of [
+  ['echo 42 | xargs gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs -n1 gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs -rn1 gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs -I{} gh pr review {} -a', JSM_XARGS_BRACE_TOKENS],
+  ['xargs -I {} gh pr review {} -a', JSM_XARGS_BRACE_TOKENS],
+  ['xargs -0 -P 4 gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs --max-args 1 gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs --max-a 1 gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs --max-args=1 gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs -- gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs -i gh pr review {} -a', JSM_XARGS_BRACE_TOKENS],
+  ['xargs -iX gh pr review X -a', ['gh', 'pr', 'review', 'X', '-a']],
+  ['xargs --replace gh pr review {} -a', JSM_XARGS_BRACE_TOKENS],
+  ["xargs -I{} sh -c 'gh pr review {} -a'", JSM_XARGS_BRACE_TOKENS],
+]) {
+  test('261006-jsm xargs: `' + cmd + '` -> recovered pr-review, via xargs, one verdict segment', () => {
+    assertPrefixReview(cmd, 'xargs', tokens);
+  });
+}
+
+for (const cmd of [
+  'xargs -l 1 gh pr review -a',
+  'xargs --bogus ls',
+  'ls | xargs grep foo',
+  'find . -name x | xargs rm -f',
+  "xargs -I{} sh -c 'echo {}'",
+  'xargs',
+  'xargs -n1',
+  'xargs git push',
+]) {
+  test('261006-jsm xargs lock: `' + cmd + '` stays other', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasFailClosedSegment(parseCommand(cmd)), false, cmd);
+  });
+}
+
+for (const cmd of ['xargs --bogus gh pr review -a', 'xargs --max gh pr review -a', 'xargs -z gh pr review -a']) {
+  test('261006-jsm xargs: unknown or ambiguous option `' + cmd + '` with a review hint -> UNCERTAIN', () => {
+    assertUncertainRoute(cmd, 'xargs-unknown-option');
+  });
+}
+
+jsmD2Rows('xargs', 'xargs gh pr review -a', { merge: 'xargs gh pr review -a && gh pr merge 1' });
+
+// ---------------------------------------------------------------------------
+// 261006-jsm Task 3a: REST review posts carried by an attached field or a bare --input (CONTEXT
+// D4, RESEARCH section 1). gh api defaults to POST when a field or --input is present; argv records
+// `-fevent=APPROVE` as shortFlags{fevent} and --input as flags.input, which the frozen hasWriteBody
+// does not read, so the direct classifier returned null. The recovery reads the tokens instead and
+// requires a `/pulls/<n>/reviews` target with no explicit method.
+// ---------------------------------------------------------------------------
+
+const JSM_REST_REVIEWS = 'repos/o/r/pulls/42/reviews';
+
+/** `cmd` is a recovered REST pr-review (route gh-api) whose one verdict segment is the outer one. */
+function assertRestReview(cmd, via) {
+  const r = cls(cmd);
+  assert.strictEqual(r.action, 'pr-review', cmd + ' -> ' + JSON.stringify(r));
+  assert.strictEqual(r.recovered, true, cmd);
+  assert.strictEqual(r.route, 'gh-api', cmd);
+  assert.strictEqual(r.via, via, cmd);
+  assert.ok(!('uncertain' in r) && !('unresolved' in r), cmd + ' is statically readable');
+  assert.deepStrictEqual(r.verdictSegments.map((s) => s.tokens), [parseCommand(cmd).segments[0].tokens], cmd);
+}
+
+for (const [cmd, via] of [
+  ['gh api ' + JSM_REST_REVIEWS + ' -fevent=APPROVE', 'gh-api-attached-field'],
+  ['gh api ' + JSM_REST_REVIEWS + ' -Fevent=APPROVE', 'gh-api-attached-field'],
+  ['gh api ' + JSM_REST_REVIEWS + ' -fevent=REQUEST_CHANGES -fbody=x', 'gh-api-attached-field'],
+  ['gh api ' + JSM_REST_REVIEWS + ' --input f.json', 'gh-api-input'],
+  ['gh api ' + JSM_REST_REVIEWS + ' --input=f.json', 'gh-api-input'],
+  ['gh api ' + JSM_REST_REVIEWS + ' --input -', 'gh-api-input'],
+]) {
+  test('261006-jsm REST: `' + cmd + '` -> recovered pr-review, via ' + via + ', the outer segment', () => {
+    assertRestReview(cmd, via);
+  });
+}
+
+test('261006-jsm REST regression (green before the fix): `-f=event=APPROVE` stays the direct gh-api pr-review', () => {
+  assert.deepStrictEqual(cls('gh api ' + JSM_REST_REVIEWS + ' -f=event=APPROVE'), { action: 'pr-review', route: 'gh-api' });
+});
+
+for (const cmd of [
+  'gh api ' + JSM_REST_REVIEWS,
+  'gh api -X GET ' + JSM_REST_REVIEWS + ' --input f',
+  'gh api -X GET ' + JSM_REST_REVIEWS + ' -fevent=APPROVE',
+  'gh api --method GET ' + JSM_REST_REVIEWS + ' --input f',
+  'gh api repos/o/r/pulls/42/comments --input f.json',
+  'gh api repos/o/r/issues/42/labels -flabels=x',
+]) {
+  test('261006-jsm REST lock: `' + cmd + '` stays other', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasFailClosedSegment(parseCommand(cmd)), false, cmd);
+  });
+}
+
+test('261006-jsm REST lock (D1 residual): `gh api repos/o/r/issues -ftitle=x` stays other, no issue-create gate starts firing', () => {
+  const cmd = 'gh api repos/o/r/issues -ftitle=x';
+  assert.deepStrictEqual(cls(cmd), { action: 'other' });
+  assert.strictEqual(hasGovernedSegment(parseCommand(cmd), ['issue-create']), false);
+});
+
+jsmD2Rows('REST attached field', 'gh api ' + JSM_REST_REVIEWS + ' -fevent=APPROVE', {
+  lone: (r) => assert.strictEqual(r.via, 'gh-api-attached-field'),
+});
+jsmD2Rows('REST bare --input', 'gh api ' + JSM_REST_REVIEWS + ' --input f.json', {
+  lone: (r) => assert.strictEqual(r.via, 'gh-api-input'),
+});
+
+// ---------------------------------------------------------------------------
+// 261006-jsm Task 3b: GraphQL review mutations (CONTEXT D4) and a file-sourced GraphQL query
+// (orchestrator B1). A `gh api graphql` / `/graphql` / curl POST to api.github.com/graphql whose
+// query text names `submitPullRequestReview` or `addPullRequestReview` (case-sensitive, whole
+// identifier) is a recovered pr-review, route graphql, the outer segment its verdict segment. A
+// query read from a file or stdin (`-F query=@...`, `--input`, curl `-d @...`) is an UNRESOLVED
+// route with no verdict segment and no hint test (0 genuine such calls in 48,055 Bash calls, 31
+// `gh api graphql` calls in total, 2026-10-06).
+// ---------------------------------------------------------------------------
+
+const JSM_GQL_SUBMIT =
+  'mutation { submitPullRequestReview(input: {pullRequestId: "x", event: APPROVE}) { clientMutationId } }';
+const JSM_GQL_ADD_JSON =
+  '{"query":"mutation { addPullRequestReview(input: {pullRequestId: \\"x\\", event: REQUEST_CHANGES}) { clientMutationId } }"}';
+const JSM_GQL_VAR =
+  'mutation($e: PullRequestReviewEvent!) { submitPullRequestReview(input: {pullRequestReviewId: "r", event: $e}) { clientMutationId } }';
+
+/** `cmd` is a recovered GraphQL pr-review whose one verdict segment is the outer segment. */
+function assertGraphqlReview(cmd) {
+  const r = cls(cmd);
+  assert.strictEqual(r.action, 'pr-review', cmd + ' -> ' + JSON.stringify(r));
+  assert.strictEqual(r.recovered, true, cmd);
+  assert.strictEqual(r.route, 'graphql', cmd);
+  assert.strictEqual(r.via, 'graphql', cmd);
+  assert.ok(!('uncertain' in r) && !('unresolved' in r), cmd + ' is statically readable');
+  assert.deepStrictEqual(r.verdictSegments.map((s) => s.tokens), [parseCommand(cmd).segments[0].tokens], cmd);
+}
+
+/** `cmd` is the UNRESOLVED file-sourced GraphQL route: no verdict segment, no PR to key. */
+function assertGraphqlFileQuery(cmd) {
+  assert.deepStrictEqual(
+    cls(cmd),
+    { action: 'pr-review', route: 'graphql', recovered: true, unresolved: true, via: 'graphql-file-query', verdictSegments: [] },
+    cmd
+  );
+}
+
+for (const cmd of [
+  "gh api graphql -f query='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql --raw-field query='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql -F query='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql --field query='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql -fquery='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql --raw-field='query=" + JSM_GQL_SUBMIT + "'",
+  "gh api /graphql -f query='" + JSM_GQL_SUBMIT + "'",
+  "gh api -f query='" + JSM_GQL_SUBMIT + "' graphql",
+  "gh api -X POST graphql -f query='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql -f query='" + JSM_GQL_VAR + "' -f e=APPROVE",
+  "gh api graphql -f query='mutation { addPullRequestReview(input: {pullRequestId: \"x\"}) { clientMutationId } }'",
+  "curl -X POST https://api.github.com/graphql -d '" + JSM_GQL_ADD_JSON + "'",
+  "curl https://api.github.com/graphql --data-raw '" + JSM_GQL_ADD_JSON + "'",
+  "curl -H 'Authorization: bearer t' https://api.github.com/graphql --json '" + JSM_GQL_ADD_JSON + "'",
+]) {
+  test('261006-jsm GraphQL: `' + cmd.slice(0, 70) + '...` -> recovered pr-review, route graphql', () => {
+    assertGraphqlReview(cmd);
+  });
+}
+
+for (const cmd of [
+  'gh api graphql -F query=@q.graphql',
+  'gh api graphql -F query=@-',
+  'gh api graphql --field query=@q.graphql',
+  'gh api graphql -Fquery=@q.graphql',
+  'gh api graphql --input body.json',
+  'gh api graphql --input -',
+  'gh api graphql --input=body.json',
+  'gh api /graphql --input body.json',
+  'curl -X POST https://api.github.com/graphql -d @q.json',
+  'curl https://api.github.com/graphql --data-binary @q.json',
+  'curl https://api.github.com/graphql -d@q.json',
+]) {
+  test('261006-jsm GraphQL file query: `' + cmd + '` -> UNRESOLVED pr-review, via graphql-file-query, no hint needed', () => {
+    assertGraphqlFileQuery(cmd);
+  });
+}
+
+for (const cmd of [
+  "gh api graphql -f query='query { viewer { login } }'",
+  "gh api graphql -f query='mutation { submitpullrequestreview(input: {}) { x } }'",
+  "gh api graphql -f query='mutation { mySubmitPullRequestReviewX(input: {}) { x } }'",
+  'gh api graphql -f query=@x',
+  'gh api graphql --raw-field query=@x',
+  'gh api graphql',
+  "gh api -X GET graphql -f query='" + JSM_GQL_SUBMIT + "'",
+  "curl https://example.com/graphql -d '" + JSM_GQL_ADD_JSON + "'",
+  "curl -X GET https://api.github.com/graphql -d '" + JSM_GQL_ADD_JSON + "'",
+  'curl https://api.github.com/graphql --data-raw @q.json',
+  "gh api repos/o/r/issues/1/comments -f body='submitPullRequestReview' -X GET",
+]) {
+  test('261006-jsm GraphQL lock: `' + cmd.slice(0, 80) + '` stays other', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasFailClosedSegment(parseCommand(cmd)), false, cmd);
+  });
+}
+
+test('261006-jsm GraphQL: graphqlReviewMutation reads the mutation, the query text and the file source', () => {
+  const { graphqlReviewMutation } = require('./classify.cjs');
+  assert.strictEqual(typeof graphqlReviewMutation, 'function', 'graphqlReviewMutation is exported');
+  const seg = (cmd) => parseCommand(cmd).segments[0];
+  const visible = graphqlReviewMutation(seg("gh api graphql -f query='" + JSM_GQL_SUBMIT + "'"));
+  assert.strictEqual(visible.mutation, 'submitPullRequestReview');
+  assert.strictEqual(visible.queryText, JSM_GQL_SUBMIT);
+  assert.strictEqual(visible.fileSourced, false);
+  const json = graphqlReviewMutation(seg("curl https://api.github.com/graphql -d '" + JSM_GQL_ADD_JSON + "'"));
+  assert.strictEqual(json.mutation, 'addPullRequestReview');
+  assert.strictEqual(json.fileSourced, false);
+  const file = graphqlReviewMutation(seg('gh api graphql -F query=@q.graphql'));
+  assert.strictEqual(file.mutation, null);
+  assert.strictEqual(file.fileSourced, true);
+  assert.strictEqual(graphqlReviewMutation(seg('gh api repos/o/r/pulls/42/reviews -f event=APPROVE')), null);
+  assert.strictEqual(graphqlReviewMutation(seg('git status')), null);
+});
+
+jsmD2Rows('GraphQL mutation', "gh api graphql -f query='" + JSM_GQL_SUBMIT + "'", {
+  lone: (r) => assert.strictEqual(r.route, 'graphql'),
+});
+jsmD2Rows('GraphQL file query', 'gh api graphql -F query=@q.graphql', {
+  lone: (r) => {
+    assert.strictEqual(r.unresolved, true);
+    assert.deepStrictEqual(r.verdictSegments, []);
+  },
+});
+
+test('261006-jsm GraphQL: a wrapped file-sourced query passes the unresolved route through', () => {
+  assertGraphqlFileQuery("bash -c 'gh api graphql --input b.json'");
+});
+
+test('261006-jsm GraphQL: a mixed inner chain keeps its verdict segment and adds unresolved with its code', () => {
+  const r = cls("bash -c 'gh pr review 42 -a; gh api graphql --input b.json'");
+  assert.strictEqual(r.action, 'pr-review');
+  assert.strictEqual(r.unresolved, true);
+  assert.strictEqual(r.unresolvedVia, 'graphql-file-query');
+  assert.deepStrictEqual(r.verdictSegments.map((s) => s.tokens), [JSM_REVIEW_TOKENS]);
+});
+
+test('261006-jsm forms (Task 3): every Task 3 via code is a VERDICT_ROUTE_FORMS key with an ASCII description', () => {
+  const { VERDICT_ROUTE_FORMS } = require('./classify.cjs');
+  for (const [cmd, via] of [
+    ['gh api ' + JSM_REST_REVIEWS + ' -fevent=APPROVE', 'gh-api-attached-field'],
+    ['gh api ' + JSM_REST_REVIEWS + ' --input f.json', 'gh-api-input'],
+    ["gh api graphql -f query='" + JSM_GQL_SUBMIT + "'", 'graphql'],
+    ['gh api graphql --input b.json', 'graphql-file-query'],
+  ]) {
+    const r = cls(cmd);
+    assert.strictEqual(r.via, via, cmd);
+    assert.ok(typeof VERDICT_ROUTE_FORMS[via] === 'string' && /^[\x20-\x7e]+$/.test(VERDICT_ROUTE_FORMS[via]), via);
+  }
+});
+
+// -- 261006-jsm review fix round CR-01: every `query` field counts (gh sends the last one) --------
+test('261006-jsm CR-01: a review mutation in a LATER repeated `-f query=` field is a recovered GraphQL pr-review', () => {
+  assertGraphqlReview("gh api graphql -f query='query { viewer { login } }' -f query='" + JSM_GQL_SUBMIT + "'");
+});
+
+// -- 261006-jsm review fix round CR-02 + WR-04: bundled short flags in the recovery path --------
+//
+// gh api's only boolean short flag is -i (`gh api --help`, gh 2.95: -p takes a value), so `-if`,
+// `-iF` and `-iFevent=...` carry a field; curl's boolean shorts bundle in front of -d (`-sd`,
+// `-sSd`) and -X (`-sX POST`). argv records the bundle under the first letter, so the frozen
+// hasWriteBody / explicitMethod see no body and no method; only the recovery reads it. A REST
+// comment POST whose body is an attached or bundled field recovers as issue-comment / pr-comment
+// (the review-artifact gate governs comments; no other gate does), tier 4, never failClosed.
+
+const JSM_CR02_CURL = 'https://api.github.com/repos/o/r/';
+
+/** `cmd` is a recovered REST result (`action`, `route`, `via`) whose one verdict segment is the outer one. */
+function assertRestRecovered(cmd, action, route, via) {
+  const r = cls(cmd);
+  assert.strictEqual(r.action, action, cmd + ' -> ' + JSON.stringify(r));
+  assert.strictEqual(r.recovered, true, cmd);
+  assert.strictEqual(r.route, route, cmd);
+  assert.strictEqual(r.via, via, cmd);
+  assert.ok(!('uncertain' in r) && !('unresolved' in r), cmd + ' is statically readable');
+  assert.deepStrictEqual(r.verdictSegments.map((s) => s.tokens), [parseCommand(cmd).segments[0].tokens], cmd);
+}
+
+for (const [cmd, action, route, via] of [
+  ['gh api ' + JSM_REST_REVIEWS + ' -if event=APPROVE', 'pr-review', 'gh-api', 'gh-api-bundled-field'],
+  ['gh api ' + JSM_REST_REVIEWS + ' -iFevent=APPROVE', 'pr-review', 'gh-api', 'gh-api-bundled-field'],
+  ['gh api ' + JSM_REST_REVIEWS + ' -iif=event=APPROVE', 'pr-review', 'gh-api', 'gh-api-bundled-field'],
+  ["curl -sd '{\"event\":\"APPROVE\"}' " + JSM_CR02_CURL + 'pulls/42/reviews', 'pr-review', 'curl', 'curl-bundled-flag'],
+  ["curl -sSd '{\"event\":\"APPROVE\"}' " + JSM_CR02_CURL + 'pulls/42/reviews', 'pr-review', 'curl', 'curl-bundled-flag'],
+  ["curl -sSLd'{\"event\":\"APPROVE\"}' " + JSM_CR02_CURL + 'pulls/42/reviews', 'pr-review', 'curl', 'curl-bundled-flag'],
+  ['curl -sX POST ' + JSM_CR02_CURL + 'pulls/42/reviews', 'pr-review', 'curl', 'curl-bundled-flag'],
+  ['curl -sXPOST ' + JSM_CR02_CURL + 'pulls/42/reviews', 'pr-review', 'curl', 'curl-bundled-flag'],
+  ['gh api repos/o/r/issues/42/comments -fbody=CLEAR', 'issue-comment', 'gh-api', 'gh-api-attached-field'],
+  ['gh api repos/o/r/issues/42/comments -ifbody=CLEAR', 'issue-comment', 'gh-api', 'gh-api-bundled-field'],
+  ['gh api repos/o/r/issues/42/comments -if body=CLEAR', 'issue-comment', 'gh-api', 'gh-api-bundled-field'],
+  ['gh api repos/o/r/pulls/42/comments -fbody=CLEAR', 'pr-comment', 'gh-api', 'gh-api-attached-field'],
+  ["curl -sd '{\"body\":\"CLEAR\"}' " + JSM_CR02_CURL + 'issues/42/comments', 'issue-comment', 'curl', 'curl-bundled-flag'],
+]) {
+  test('261006-jsm CR-02: `' + cmd + '` -> recovered ' + action + ', via ' + via + ', the outer segment', () => {
+    assertRestRecovered(cmd, action, route, via);
+  });
+}
+
+for (const cmd of [
+  "gh api graphql -if query='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql -iFquery='" + JSM_GQL_SUBMIT + "'",
+  "curl -sd '" + JSM_GQL_ADD_JSON + "' https://api.github.com/graphql",
+  "curl -sSd '" + JSM_GQL_ADD_JSON + "' https://api.github.com/graphql",
+]) {
+  test('261006-jsm CR-02 GraphQL: `' + cmd.slice(0, 60) + '...` -> recovered pr-review, route graphql', () => {
+    assertGraphqlReview(cmd);
+  });
+}
+
+for (const cmd of [
+  'gh api graphql -iF query=@q.graphql',
+  'gh api graphql -iFquery=@q.graphql',
+  'curl -sd @q.json https://api.github.com/graphql',
+  'curl -sSd@q.json https://api.github.com/graphql',
+]) {
+  test('261006-jsm CR-02 GraphQL file query: `' + cmd + '` -> UNRESOLVED pr-review, via graphql-file-query', () => {
+    assertGraphqlFileQuery(cmd);
+  });
+}
+
+for (const cmd of [
+  'gh api -X GET ' + JSM_REST_REVIEWS + ' -if event=APPROVE',
+  'gh api ' + JSM_REST_REVIEWS + ' -pf event=APPROVE',
+  'curl -s ' + JSM_CR02_CURL + 'pulls/42/reviews',
+  'curl -sX GET ' + JSM_CR02_CURL + 'pulls/42/reviews',
+  'curl -sGd x ' + JSM_CR02_CURL + 'pulls/42/reviews',
+  'curl -sId x ' + JSM_CR02_CURL + 'pulls/42/reviews',
+  'curl -sd x ' + JSM_CR02_CURL + 'issues/42/labels',
+  'curl -sd x https://example.com/repos/o/r/pulls/42/reviews',
+  'gh api repos/o/r/issues/42/comments --input f.json',
+  'gh api -X GET repos/o/r/issues/42/comments -fbody=CLEAR',
+  'gh api repos/o/r/issues/42/labels -iflabels=x',
+  'gh api repos/o/r/issues -iftitle=x',
+]) {
+  test('261006-jsm CR-02 lock: `' + cmd + '` stays other', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasFailClosedSegment(parseCommand(cmd)), false, cmd);
+  });
+}
+
+jsmD2Rows('REST bundled gh field', 'gh api ' + JSM_REST_REVIEWS + ' -if event=APPROVE', {
+  lone: (r) => assert.strictEqual(r.via, 'gh-api-bundled-field'),
+});
+jsmD2Rows('REST bundled curl data', "curl -sd '{\"event\":\"APPROVE\"}' " + JSM_CR02_CURL + 'pulls/42/reviews', {
+  lone: (r) => assert.strictEqual(r.via, 'curl-bundled-flag'),
+});
+
+/** The D2 rows for a recovered COMMENT form F: tier 4 only, governed by the review-artifact gate alone. */
+function jsmD2CommentRows(label, F, action) {
+  test('261006-jsm D2 ' + label + ' lock: `F && gh pr merge 1` is pr-merge', () => {
+    assert.strictEqual(cls(F + ' && gh pr merge 1').action, 'pr-merge');
+  });
+  test('261006-jsm D2 ' + label + ' lock: `gh pr review 1 -a; F` is the NATIVE pr-review, no recovered key', () => {
+    assert.deepStrictEqual(cls('gh pr review 1 -a; ' + F), { action: 'pr-review', route: 'native' });
+  });
+  test('261006-jsm D2 ' + label + ' lock: `F && git push` is push and `git commit -m x && F` is commit', () => {
+    assert.strictEqual(cls(F + ' && git push').action, 'push');
+    assert.strictEqual(cls('git commit -m x && ' + F).action, 'commit');
+  });
+  test('261006-jsm D2 ' + label + ': lone F is a recovered ' + action, () => {
+    const r = cls(F);
+    assert.strictEqual(r.action, action, F + ' -> ' + JSON.stringify(r));
+    assert.strictEqual(r.recovered, true, F);
+  });
+  test('261006-jsm D2 ' + label + ' corpus lock: F is non-governed for every OTHER gate set and never fails closed', () => {
+    const parsed = parseCommand(F);
+    assert.strictEqual(hasFailClosedSegment(parsed), false);
+    for (const [gate, actions] of Object.entries(EXISTING_GATE_SETS)) {
+      assert.strictEqual(hasGovernedSegment(parsed, actions), false, gate + ' must NOT be governed by ' + F);
+      assert.strictEqual(isNonGovernedCommand(parsed, actions), true, gate + ' must short-circuit for ' + F);
+    }
+  });
+  test('261006-jsm D2 ' + label + ' corpus: F IS governed by the review-artifact set', () => {
+    assert.strictEqual(hasGovernedSegment(parseCommand(F), REVIEW_ARTIFACT_GOVERNED), true, F);
+  });
+}
+
+jsmD2CommentRows('REST attached comment field', 'gh api repos/o/r/issues/42/comments -fbody=CLEAR', 'issue-comment');
+jsmD2CommentRows('REST bundled comment field', 'gh api repos/o/r/pulls/42/comments -ifbody=CLEAR', 'pr-comment');
+jsmD2CommentRows('curl bundled comment body', "curl -sd '{\"body\":\"CLEAR\"}' " + JSM_CR02_CURL + 'issues/42/comments', 'issue-comment');
+
+test('261006-jsm CR-02 regression (green before the fix): `-f=body=CLEAR` on a comments path is the DIRECT issue-comment', () => {
+  assert.deepStrictEqual(cls('gh api repos/o/r/issues/42/comments -f=body=CLEAR'), { action: 'issue-comment', route: 'gh-api' });
+});
+
+test('261006-jsm CR-02: a WRAPPED recovered comment is discarded (D1 residual: wrapped comments stay other)', () => {
+  assert.deepStrictEqual(cls('bash -c "gh api repos/o/r/issues/42/comments -fbody=CLEAR"'), { action: 'other' });
+});
+
+test('261006-jsm CR-02 forms: the new via codes are VERDICT_ROUTE_FORMS keys with ASCII descriptions', () => {
+  const { VERDICT_ROUTE_FORMS } = require('./classify.cjs');
+  for (const via of ['gh-api-bundled-field', 'curl-bundled-flag']) {
+    assert.ok(typeof VERDICT_ROUTE_FORMS[via] === 'string' && /^[\x20-\x7e]+$/.test(VERDICT_ROUTE_FORMS[via]), via);
+  }
+});
+
+// -- 261006-jsm review fix round CR-03: gh api takes the GraphQL endpoint as a full URL too -------
+for (const cmd of [
+  "gh api https://api.github.com/graphql -f query='" + JSM_GQL_SUBMIT + "'",
+  "gh api https://api.github.com/graphql/ -f query='" + JSM_GQL_SUBMIT + "'",
+  "gh api 'graphql?x=1' -f query='" + JSM_GQL_SUBMIT + "'",
+  "gh api '/graphql?x=1' -f query='" + JSM_GQL_SUBMIT + "'",
+]) {
+  test('261006-jsm CR-03: `' + cmd.slice(0, 60) + '...` -> recovered pr-review, route graphql', () => {
+    assertGraphqlReview(cmd);
+  });
+}
+
+test('261006-jsm CR-03: a full-URL GraphQL query read from a file -> UNRESOLVED pr-review', () => {
+  assertGraphqlFileQuery('gh api https://api.github.com/graphql -F query=@q.graphql');
+});
+
+for (const cmd of [
+  "gh api https://example.com/graphql -f query='" + JSM_GQL_SUBMIT + "'",
+  "gh api https://api.github.com/repos/o/r/graphql -f query='" + JSM_GQL_SUBMIT + "'",
+  "gh api https://api.github.com/graphqlx -f query='" + JSM_GQL_SUBMIT + "'",
+]) {
+  test('261006-jsm CR-03 lock: `' + cmd.slice(0, 70) + '` stays other', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasFailClosedSegment(parseCommand(cmd)), false, cmd);
+  });
+}
+
+// -- 261006-jsm review fix round CR-04: `eval --` and `builtin` (a recovery-only transparent prefix)
+for (const [cmd, via] of [
+  ['eval -- "gh pr review 42 -a"', 'eval'],
+  ['command eval -- "gh pr review 42 -a"', 'eval'],
+  ['builtin eval "gh pr review 42 -a"', 'builtin'],
+  ['builtin -- eval "gh pr review 42 -a"', 'builtin'],
+  ['builtin eval -- "gh pr review 42 -a"', 'builtin'],
+  ['builtin command eval "gh pr review 42 -a"', 'builtin'],
+  ['command builtin eval "gh pr review 42 -a"', 'builtin'],
+]) {
+  test('261006-jsm CR-04: `' + cmd + '` -> recovered pr-review, via ' + via + ', one verdict segment', () => {
+    assertPrefixReview(cmd, via);
+  });
+}
+
+for (const cmd of ['builtin echo hi', 'builtin', 'builtin --', 'eval --', 'eval -- echo hi', 'builtin eval -- "echo hi"']) {
+  test('261006-jsm CR-04 lock: `' + cmd + '` stays other and never throws', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasFailClosedSegment(parseCommand(cmd)), false, cmd);
+  });
+}
+
+jsmD2Rows('builtin eval', 'builtin eval "gh pr review 42 -a"', {
+  lone: (r) => assert.strictEqual(r.via, 'builtin'),
+});
+
+test('261006-jsm CR-04 forms: `builtin` is a VERDICT_ROUTE_FORMS key with an ASCII description', () => {
+  const { VERDICT_ROUTE_FORMS } = require('./classify.cjs');
+  assert.ok(typeof VERDICT_ROUTE_FORMS.builtin === 'string' && /^[\x20-\x7e]+$/.test(VERDICT_ROUTE_FORMS.builtin));
+});
+
+// -- 261006-jsm review fix round WR-01: the recovery's program-index lookup is linear ------------
+// A wrapper whose value flags repeat the program name (`sudo -u bash -u bash ... bash -c "..."`)
+// made programTokenIndex re-resolve every growing prefix: O(N^2), 11 s per classify at N=36,000.
+const JSM_WR01_BASH = 'sudo ' + '-u bash '.repeat(36000) + 'bash -c "gh pr review 42 -a"';
+const JSM_WR01_NOHUP = 'sudo ' + '-u nohup '.repeat(20000) + 'nohup ls';
+
+for (const [label, cmd, action] of [
+  ['the 36,000-pair `-u bash` shell -c input', JSM_WR01_BASH, 'pr-review'],
+  ['the 20,000-pair `-u nohup` input', JSM_WR01_NOHUP, 'other'],
+]) {
+  test('261006-jsm WR-01: ' + label + ' classifies in under 1000 ms, with the same result', () => {
+    const parsed = parseCommand(cmd);
+    const t0 = Date.now();
+    const r = classifyAction(parsed);
+    const ms = Date.now() - t0;
+    assert.strictEqual(r.action, action, label);
+    assert.ok(ms < 1000, label + ' took ' + ms + ' ms');
+  });
+}
+
+// -- 261006-jsm review fix round CR-02 follow-up: a bundled field BEFORE the graphql endpoint ------
+// `gh api -if query=... graphql` leaves the field body as a positional ahead of the endpoint, so the
+// endpoint is not the first candidate after `api`.
+test('261006-jsm CR-02 follow-up: `gh api -if query=<mutation> graphql` -> recovered pr-review, route graphql', () => {
+  assertGraphqlReview("gh api -if query='" + JSM_GQL_SUBMIT + "' graphql");
+});
+test('261006-jsm CR-02 follow-up: `gh api -iF query=@q.graphql graphql` -> UNRESOLVED pr-review, via graphql-file-query', () => {
+  assertGraphqlFileQuery('gh api -iF query=@q.graphql graphql');
+});
+test('261006-jsm CR-02 follow-up lock: `gh api -if x=graphql repos/o/r/issues/42/labels` stays other', () => {
+  assert.deepStrictEqual(cls('gh api -if x=graphql repos/o/r/issues/42/labels'), { action: 'other' });
+});

@@ -2231,3 +2231,761 @@ for (const [label, plant, skip] of [
     }
   });
 }
+
+// -- 261006-jsm ENF-20 verdict routes: a `bash -c` / `sh -c` verdict reaches R8a ---------------
+//
+// The classifier now recovers a `gh pr review` inside a shell -c command string as a pr-review
+// with `verdictSegments`; gate() runs each verdict segment (never the outer `bash -c` segment,
+// whose tokens hide `-a` from isNativeGhSegment) through gateSegment.
+
+test('261006-jsm gate: `bash -c "gh pr review 42 -a"` with only Bash rows -> DENY R8a-memtrace, log read once', () => {
+  const dp = depsWithLog(toolLog(ONLY_BASH.slice()));
+  const d = runReviewArtifactGate(input('bash -c "gh pr review 42 -a"'), dp);
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /R8a-memtrace/);
+  assert.deepStrictEqual(dp._calls.readToolLog, [SESSION]);
+});
+
+test("261006-jsm gate: `sh -c 'gh pr review 42 -a'` with only Bash rows -> DENY R8a-memtrace", () => {
+  const d = runReviewArtifactGate(input("sh -c 'gh pr review 42 -a'"), depsWithLog(toolLog(ONLY_BASH.slice())));
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /R8a-memtrace/);
+});
+
+test('261006-jsm gate: a comment-then-approve inner chain -> DENY R8a-memtrace on the later approve', () => {
+  const d = runReviewArtifactGate(
+    input("bash -c 'gh pr review 42 --comment -b x; gh pr review 42 -a'"),
+    depsWithLog(toolLog(ONLY_BASH.slice()))
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /R8a-memtrace/);
+});
+
+test('261006-jsm gate lock: `bash -c "gh pr review 42 --comment -b x"` with only Bash rows -> allow, log never read', () => {
+  const dp = depsWithLog(toolLog(ONLY_BASH.slice()));
+  const d = runReviewArtifactGate(input('bash -c "gh pr review 42 --comment -b x"'), dp);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.deepStrictEqual(dp._calls.readToolLog, []);
+});
+
+// W2 false-ask locks: a multi-line -c payload and a heredoc-fed shell stay ungoverned.
+for (const cmd of ['bash -c "cd x\nmake\necho ok"', 'bash <<EOF\nmake\nEOF']) {
+  test('261006-jsm gate W2 lock: `' + JSON.stringify(cmd) + '` -> allow with no PR lookup and no scaffold', () => {
+    const dp = deps();
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+    assert.strictEqual(dp._calls.resolvePr, 0);
+    assert.deepStrictEqual(dp._calls.scaffolded, []);
+    assert.deepStrictEqual(dp._calls.readToolLog, []);
+  });
+}
+
+// The real entrypoint, end to end: the VF-2 harness layout with NO planted FIFO, a fake gh first on
+// PATH answering `pr view`, and a temp log whose only row is this session's Bash call.
+test('261006-jsm e2e (spawned hook): `bash -c "gh pr review 42 -a"` with only a Bash row -> deny naming R8a-memtrace', () => {
+  const { root } = vf2Root();
+  const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rev-art-jsm-e2e-log-'));
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rev-art-jsm-e2e-bin-'));
+  try {
+    fs.mkdirSync(path.join(root, 'scripts'));
+    fs.writeFileSync(path.join(root, 'scripts', 'issue-dedupe.cjs'), '');
+    fs.mkdirSync(path.join(root, 'gsd-core', 'bin', 'lib'), { recursive: true });
+    fs.writeFileSync(
+      path.join(binDir, 'gh'),
+      '#!/bin/sh\nif [ "$1" = "pr" ]; then printf \'%s\' \'{"number":42,"headRefOid":"' + HEAD + '"}\'; fi\nexit 0\n',
+      { mode: 0o755 }
+    );
+    const sid = 'sess-jsm-e2e';
+    fs.writeFileSync(
+      path.join(logDir, LOG_FILENAME),
+      serializeRecord(
+        recordToolCall(
+          JSON.stringify({
+            hook_event_name: 'PostToolUse',
+            session_id: sid,
+            tool_use_id: 'toolu_jsm',
+            tool_name: 'Bash',
+            tool_input: { command: 'ls' },
+            tool_response: {},
+            cwd: '/tmp/wt',
+          }),
+          { env: {} }
+        )
+      )
+    );
+    const env = Object.assign({}, process.env, {
+      PATH: binDir + path.delimiter + (process.env.PATH || ''),
+      GSD_CONTRIB_LOG_DIR: logDir,
+    });
+    delete env.GSD_CONTRIB_RECORD;
+    delete env.GSD_CONTRIB_OVERRIDE;
+    const res = spawnSync(process.execPath, [RA_PATH], {
+      input: input('bash -c "gh pr review 42 -a"', sid),
+      encoding: 'utf8',
+      cwd: root,
+      env,
+      timeout: 6000,
+    });
+    assert.strictEqual(res.signal, null, 'the hook was killed without a decision');
+    assert.strictEqual(res.status, 0, res.stderr);
+    const out = res.stdout.trim();
+    assert.ok(out.length > 0, 'the hook emitted a decision (empty stdout is an allow)');
+    const hso = JSON.parse(out.split('\n').pop()).hookSpecificOutput;
+    assert.strictEqual(hso.permissionDecision, 'deny', hso.permissionDecisionReason);
+    assert.match(hso.permissionDecisionReason, /R8a-memtrace/);
+  } finally {
+    for (const d of [root, logDir, binDir]) fs.rmSync(d, { recursive: true, force: true });
+  }
+});
+
+// -- 261006-jsm Task 2a: transparent prefix verdict routes reach R8a ----------------------------
+
+/** With only Bash rows in the session log, `cmd` must DENY naming R8a-memtrace. */
+function assertJsmR8aDeny(cmd) {
+  const dp = depsWithLog(toolLog(ONLY_BASH.slice()));
+  const d = runReviewArtifactGate(input(cmd), dp);
+  assert.strictEqual(d.permissionDecision, 'deny', cmd + ': ' + d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /R8a-memtrace/, cmd);
+  assert.deepStrictEqual(dp._calls.readToolLog, [SESSION], cmd + ' reads the log once');
+}
+
+for (const cmd of [
+  '( gh pr review 42 -a )',
+  '(gh pr review 42 -a)',
+  '{ gh pr review 42 -a; }',
+  '! gh pr review 42 -a',
+  'nohup gh pr review 42 -a',
+  'nohup -- gh pr review 42 -a',
+  'setsid -f gh pr review 42 -a',
+  'time gh pr review 42 -a',
+  'time -p gh pr review 42 -a',
+  '/usr/bin/time -f %e -o /dev/null gh pr review 42 -a',
+  'sudo nohup gh pr review 42 -a',
+  'nohup sudo gh pr review 42 -a',
+  '( time nohup gh pr review 42 -a )',
+]) {
+  test('261006-jsm gate prefix: `' + cmd + '` with only Bash rows -> DENY R8a-memtrace', () => {
+    assertJsmR8aDeny(cmd);
+  });
+}
+
+// D8 false-deny corpus at the gate: allow, no PR lookup, no scaffold, no log read. Locks.
+for (const cmd of [
+  'eval "echo hi"',
+  "eval 'echo hi'",
+  'bash -c "npm test"',
+  "sh -c 'ls | wc -l'",
+  'ls | xargs grep foo',
+  'find . -name x | xargs rm -f',
+  "xargs -I{} sh -c 'echo {}'",
+  'nohup npm start',
+  '( cd x && make )',
+  '{ echo a; echo b; }',
+  '"$CHROME" --headless',
+  '$CHROME --headless',
+  '$G query commit x',
+  'time make',
+  'bash script.sh',
+  "gh api graphql -f query='query { viewer { login } }'",
+  'gh api repos/o/r/pulls/42/reviews',
+  'gh api -X GET repos/o/r/pulls/42/reviews --input f',
+]) {
+  test('261006-jsm gate D8 false-deny lock: `' + cmd + '` -> allow with no PR lookup, scaffold or log read', () => {
+    const dp = deps();
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assert.strictEqual(d.permissionDecision, 'allow', cmd + ': ' + d.permissionDecisionReason);
+    assert.strictEqual(dp._calls.resolvePr, 0, cmd);
+    assert.deepStrictEqual(dp._calls.scaffolded, [], cmd);
+    assert.deepStrictEqual(dp._calls.readToolLog, [], cmd);
+  });
+}
+
+// -- 261006-jsm Task 2b: an eval payload verdict reaches R8a -------------------------------------
+
+for (const cmd of [
+  'eval "gh pr review 42 -a"',
+  'eval gh pr review 42 -a',
+  "eval 'gh pr review 42 -a; echo done'",
+  'eval eval eval eval gh pr review 42 -a',
+]) {
+  test('261006-jsm gate eval: `' + cmd + '` with only Bash rows -> DENY R8a-memtrace', () => {
+    assertJsmR8aDeny(cmd);
+  });
+}
+
+// -- 261006-jsm Task 2c: gh -R before the review verb reaches R8a; prSelector reads across -R ------
+
+for (const cmd of ['gh -R o/r pr review 42 -a', 'gh pr -R o/r review 42 -a']) {
+  test('261006-jsm gate gh -R: `' + cmd + '` with only Bash rows -> DENY R8a-memtrace', () => {
+    assertJsmR8aDeny(cmd);
+  });
+}
+
+for (const cmd of [
+  'gh pr -R o/r review 42 -a',
+  'gh pr --repo o/r review 42 -a',
+  'gh pr -Ro/r review 42 -a',
+  'gh pr --repo=o/r review 42 -a',
+]) {
+  test('261006-jsm prSelector: `' + cmd + '` -> selector 42 and repo o/r', () => {
+    const seg = parseCommand(cmd).segments[0];
+    assert.strictEqual(prSelector(seg), '42', cmd);
+    assert.strictEqual(reviewArtifact.repoSpecOf(seg), 'o/r', cmd);
+  });
+}
+
+test('261006-jsm gate gh -R: `gh pr -R o/r review 42 -a` keys the PR lookup to 42 in o/r', () => {
+  const seen = [];
+  const dp = deps();
+  const base = dp.resolvePr;
+  dp.resolvePr = (sel, repo) => {
+    seen.push([sel, repo]);
+    return base(sel, repo);
+  };
+  const d = runReviewArtifactGate(input('gh pr -R o/r review 42 -a'), dp);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.deepStrictEqual(seen, [['42', 'o/r']]);
+});
+
+// -- 261006-jsm Task 2d: an opaque verdict route asks (UNCERTAIN), with no PR lookup -------------
+
+const { VERDICT_ROUTE_FORMS: JSM_FORMS } = require('./lib/classify.cjs');
+
+/**
+ * `cmd` with ALL artifacts and COMPLETE evidence present must ASK on the uncertain route named
+ * `via`, with no PR lookup, no scaffold and no log read (so the ask is not a missing-artifact side
+ * effect). Returns the reason.
+ */
+function assertJsmUncertainAsk(cmd, via) {
+  const dp = deps();
+  const d = runReviewArtifactGate(input(cmd), dp);
+  assert.strictEqual(d.permissionDecision, 'ask', cmd + ': ' + d.permissionDecisionReason);
+  const why = d.permissionDecisionReason;
+  assert.ok(why.startsWith('ENF-20 '), why);
+  assert.ok(why.includes('UNCERTAIN verdict route'), why);
+  assert.strictEqual(typeof JSM_FORMS[via], 'string', 'via ' + via + ' has a fixed description');
+  assert.ok(why.includes(JSM_FORMS[via]), why);
+  assert.ok(why.includes('does not answer this prompt'), why);
+  assert.ok(/^[\x09\x0a\x20-\x7e]+$/.test(why), 'the ask reason is plain ASCII');
+  assert.strictEqual(dp._calls.resolvePr, 0, cmd);
+  assert.deepStrictEqual(dp._calls.scaffolded, [], cmd);
+  assert.deepStrictEqual(dp._calls.readToolLog, [], cmd);
+  return why;
+}
+
+for (const [cmd, via] of [
+  ['$(echo gh) pr review 42 -a', 'expansion-program'],
+  ['$GH pr review 42 -a', 'expansion-program'],
+  ['`echo gh` pr review 42 --approve', 'expansion-program'],
+  ['eval "$CMD"', 'opaque-payload'],
+  ['eval "$(ssh-agent -s)"', 'opaque-payload'],
+  ['bash -c "$CMD"', 'opaque-payload'],
+  ["bash -c \"echo 'x\"", 'unparseable-payload'],
+  ['eval eval eval eval eval gh pr review 42 -a', 'depth-bound'],
+  ['eval eval eval eval eval echo hi', 'depth-bound'],
+  ['nohup '.repeat(9) + 'gh pr review 42 -a', 'prefix-bound'],
+]) {
+  test('261006-jsm gate opaque: `' + cmd + '` -> ASK (UNCERTAIN verdict route) with no lookup, scaffold or log read', () => {
+    assertJsmUncertainAsk(cmd, via);
+  });
+}
+
+test('261006-jsm gate opaque privacy: the ask never echoes the payload', () => {
+  const why = assertJsmUncertainAsk('eval "$ZZMARKER_42"', 'opaque-payload');
+  assert.ok(!why.includes('ZZMARKER'), why);
+});
+
+test('261006-jsm gate opaque: a repeated call yields the same ask and no side effect', () => {
+  const a = assertJsmUncertainAsk('eval "$CMD"', 'opaque-payload');
+  const b = assertJsmUncertainAsk('eval "$CMD"', 'opaque-payload');
+  assert.strictEqual(a, b);
+});
+
+test('261006-jsm gate opaque precedence: `eval "$CMD" && gh pr merge 42 --squash` with R13 absent -> DENY R13', () => {
+  const d = runReviewArtifactGate(input('eval "$CMD" && gh pr merge 42 --squash'), deps({ files: absent(R13) }));
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-20 R13/);
+});
+
+test('261006-jsm gate opaque: a mixed inner chain with only Bash rows -> DENY R8a (deny beats the held ask)', () => {
+  assertJsmR8aDeny("bash -c 'gh pr review 42 -a; $CMD'");
+});
+
+test('261006-jsm gate opaque: a mixed inner chain with complete evidence -> the held UNCERTAIN ask', () => {
+  const d = runReviewArtifactGate(input("bash -c 'gh pr review 42 -a; $CMD'"), deps());
+  assert.strictEqual(d.permissionDecision, 'ask', d.permissionDecisionReason);
+  assert.ok(d.permissionDecisionReason.includes('UNCERTAIN verdict route'), d.permissionDecisionReason);
+});
+
+for (const cmd of ['nohup '.repeat(9) + 'ls', '$X 42 -a']) {
+  test('261006-jsm gate opaque lock: `' + cmd + '` -> allow with no PR lookup (no review hint)', () => {
+    const dp = deps();
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+    assert.strictEqual(dp._calls.resolvePr, 0);
+    assert.deepStrictEqual(dp._calls.readToolLog, []);
+  });
+}
+
+// -- 261006-jsm Task 2e: an xargs-run verdict reaches R8a ----------------------------------------
+
+for (const cmd of [
+  'echo 42 | xargs gh pr review -a',
+  'xargs -n1 gh pr review -a',
+  'xargs -rn1 gh pr review -a',
+  'xargs -I{} gh pr review {} -a',
+  'xargs -I {} gh pr review {} -a',
+  'xargs -0 -P 4 gh pr review -a',
+  'xargs --max-args 1 gh pr review -a',
+  'xargs --max-a 1 gh pr review -a',
+  'xargs -- gh pr review -a',
+  'xargs -i gh pr review {} -a',
+]) {
+  test('261006-jsm gate xargs: `' + cmd + '` with only Bash rows -> DENY R8a-memtrace', () => {
+    assertJsmR8aDeny(cmd);
+  });
+}
+
+test('261006-jsm gate xargs: an unknown xargs option with a review hint -> ASK (UNCERTAIN) with no lookup', () => {
+  assertJsmUncertainAsk('xargs --bogus gh pr review -a', 'xargs-unknown-option');
+});
+
+for (const cmd of ['xargs -l 1 gh pr review -a', 'xargs --bogus ls', 'xargs']) {
+  test('261006-jsm gate xargs lock: `' + cmd + '` -> allow with no PR lookup or log read', () => {
+    const dp = deps();
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+    assert.strictEqual(dp._calls.resolvePr, 0);
+    assert.deepStrictEqual(dp._calls.readToolLog, []);
+  });
+}
+
+// -- 261006-jsm Task 3a: REST review posts via an attached field or a bare --input reach R8a -------
+
+const JSM_REVIEWS = 'repos/open-gsd/gsd-core/pulls/42/reviews';
+
+for (const cmd of [
+  'gh api ' + JSM_REVIEWS + ' -fevent=APPROVE',
+  'gh api ' + JSM_REVIEWS + ' -Fevent=APPROVE',
+  'gh api ' + JSM_REVIEWS + ' -fevent=REQUEST_CHANGES -fbody=x',
+]) {
+  test('261006-jsm gate REST: `' + cmd + '` with only Bash rows -> DENY R8a-memtrace', () => {
+    assertJsmR8aDeny(cmd);
+  });
+}
+
+test('261006-jsm gate REST regression (green before the fix): `-f=event=APPROVE` with only Bash rows -> DENY R8a-memtrace', () => {
+  assertJsmR8aDeny('gh api ' + JSM_REVIEWS + ' -f=event=APPROVE');
+});
+
+for (const cmd of [
+  'gh api ' + JSM_REVIEWS + ' --input f.json',
+  'gh api ' + JSM_REVIEWS + ' --input=f.json',
+  'gh api ' + JSM_REVIEWS + ' --input -',
+]) {
+  test('261006-jsm gate REST: `' + cmd + '` (no -X) -> the MJ-02 UNRESOLVED ask naming --input', () => {
+    assertUnresolvedAsk(runReviewArtifactGate(input(cmd), deps()), /`--input`/);
+  });
+}
+
+for (const cmd of [
+  'gh api ' + JSM_REVIEWS,
+  'gh api -X GET ' + JSM_REVIEWS + ' -fevent=APPROVE',
+  'gh api repos/open-gsd/gsd-core/issues -ftitle=x',
+]) {
+  test('261006-jsm gate REST lock: `' + cmd + '` -> allow with no PR lookup, scaffold or log read', () => {
+    const dp = deps();
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assert.strictEqual(d.permissionDecision, 'allow', cmd + ': ' + d.permissionDecisionReason);
+    assert.strictEqual(dp._calls.resolvePr, 0, cmd);
+    assert.deepStrictEqual(dp._calls.scaffolded, [], cmd);
+    assert.deepStrictEqual(dp._calls.readToolLog, [], cmd);
+  });
+}
+
+// -- 261006-jsm Task 3b: GraphQL review mutations reach R8a; a file-sourced query asks -----------
+
+const JSM_GQL_SUBMIT =
+  'mutation { submitPullRequestReview(input: {pullRequestId: "x", event: APPROVE}) { clientMutationId } }';
+const JSM_GQL_VAR =
+  'mutation($e: PullRequestReviewEvent!) { submitPullRequestReview(input: {pullRequestReviewId: "r", event: $e}) { clientMutationId } }';
+const JSM_GQL_ADD_RC_JSON =
+  '{"query":"mutation { addPullRequestReview(input: {pullRequestId: \\"x\\", event: REQUEST_CHANGES}) { clientMutationId } }"}';
+const JSM_GQL_VAR_JSON =
+  '{"query":"mutation($e: PullRequestReviewEvent!) { submitPullRequestReview(input: {pullRequestReviewId: \\"r\\", event: $e}) { clientMutationId } }","variables":{"e":"APPROVE"}}';
+
+for (const cmd of [
+  "gh api graphql -f query='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql --raw-field query='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql -F query='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql -fquery='" + JSM_GQL_SUBMIT + "'",
+  "gh api /graphql -f query='" + JSM_GQL_SUBMIT + "'",
+  "curl -X POST https://api.github.com/graphql -d '" + JSM_GQL_ADD_RC_JSON + "'",
+  "gh api graphql -f query='" + JSM_GQL_VAR + "' -f e=APPROVE",
+  "gh api graphql -f query='" + JSM_GQL_VAR + "' -F e=REQUEST_CHANGES",
+  "curl https://api.github.com/graphql -d '" + JSM_GQL_VAR_JSON + "'",
+  "bash -c \"gh api graphql -f query='" + JSM_GQL_SUBMIT + "'\"",
+]) {
+  test('261006-jsm gate GraphQL: `' + cmd.slice(0, 70) + '...` with only Bash rows -> DENY R8a-memtrace', () => {
+    assertJsmR8aDeny(cmd);
+  });
+}
+
+test('261006-jsm gate GraphQL: a variable APPROVE event is an approve -> DENY R10 when R10 is absent', () => {
+  const cmd = "gh api graphql -f query='" + JSM_GQL_VAR + "' -f e=APPROVE";
+  assert.strictEqual(isApproveEvent(seg0(cmd)), true);
+  const d = runReviewArtifactGate(input(cmd), deps({ files: absent(R10) }));
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-20 R10/);
+});
+
+test('261006-jsm gate GraphQL: an inline APPROVE enum is an approve and REQUEST_CHANGES a request-changes', () => {
+  assert.strictEqual(isApproveEvent(seg0("gh api graphql -f query='" + JSM_GQL_SUBMIT + "'")), true);
+  assert.strictEqual(requestChanges("curl https://api.github.com/graphql -d '" + JSM_GQL_ADD_RC_JSON + "'"), true);
+  assert.strictEqual(isApproveEvent(seg0("curl https://api.github.com/graphql -d '" + JSM_GQL_ADD_RC_JSON + "'")), false);
+});
+
+for (const [label, cmd] of [
+  ['an @-sourced event variable', "gh api graphql -f query='" + JSM_GQL_VAR + "' -F e=@ev.txt"],
+  ['an event variable built by expansion', "gh api graphql -f query='" + JSM_GQL_VAR + "' -f e=$EV"],
+  ['an absent event variable', "gh api graphql -f query='" + JSM_GQL_VAR + "'"],
+  ['submitPullRequestReview with no event', "gh api graphql -f query='mutation { submitPullRequestReview(input: {pullRequestReviewId: \"r\"}) { clientMutationId } }'"],
+]) {
+  test('261006-jsm gate GraphQL: ' + label + ' -> the MJ-02 UNRESOLVED ask', () => {
+    const d = runReviewArtifactGate(input(cmd), deps());
+    const why = assertUnresolvedAsk(d, /GraphQL review mutation/);
+    assert.ok(!why.includes('$EV') && !why.includes('ev.txt'), 'the ask never echoes the value: ' + why);
+  });
+}
+
+for (const [label, cmd] of [
+  ['addPullRequestReview with no event (a pending review)', "gh api graphql -f query='mutation { addPullRequestReview(input: {pullRequestId: \"x\"}) { clientMutationId } }'"],
+  ['an inline COMMENT event', "gh api graphql -f query='mutation { submitPullRequestReview(input: {pullRequestReviewId: \"r\", event: COMMENT}) { clientMutationId } }'"],
+]) {
+  test('261006-jsm gate GraphQL: ' + label + ' with only Bash rows -> allow; the log is never read', () => {
+    const dp = depsWithLog(toolLog(ONLY_BASH.slice()));
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+    assert.deepStrictEqual(dp._calls.readToolLog, []);
+  });
+}
+
+/** A file-sourced GraphQL query: the MJ-02 ask with no PR lookup, scaffold or log read. */
+function assertJsmFileQueryAsk(cmd) {
+  const dp = deps();
+  const d = runReviewArtifactGate(input(cmd), dp);
+  const why = assertUnresolvedAsk(d, /GraphQL query read from a file or stdin/);
+  assert.strictEqual(dp._calls.resolvePr, 0, cmd);
+  assert.deepStrictEqual(dp._calls.scaffolded, [], cmd);
+  assert.deepStrictEqual(dp._calls.readToolLog, [], cmd);
+  return why;
+}
+
+for (const cmd of [
+  'gh api graphql -F query=@q.graphql',
+  'gh api graphql -F query=@-',
+  'gh api graphql --input body.json',
+  'gh api graphql --input -',
+  'gh api /graphql --input body.json',
+  'curl -X POST https://api.github.com/graphql -d @q.json',
+]) {
+  test('261006-jsm gate GraphQL file query: `' + cmd + '` -> UNRESOLVED ask with no PR lookup, scaffold or log read', () => {
+    assertJsmFileQueryAsk(cmd);
+  });
+}
+
+test('261006-jsm gate GraphQL file query privacy: the ask never echoes the file name', () => {
+  const why = assertJsmFileQueryAsk('gh api graphql -F query=@zzmarker.graphql');
+  assert.ok(!why.includes('zzmarker'), why);
+});
+
+test('261006-jsm gate GraphQL file query precedence: `gh api graphql --input b.json && gh pr merge 42 --squash` with R13 absent -> DENY R13', () => {
+  const d = runReviewArtifactGate(input('gh api graphql --input b.json && gh pr merge 42 --squash'), deps({ files: absent(R13) }));
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-20 R13/);
+});
+
+test('261006-jsm gate GraphQL file query: a mixed inner chain with only Bash rows -> DENY R8a (deny beats the held ask)', () => {
+  assertJsmR8aDeny("bash -c 'gh pr review 42 -a; gh api graphql --input b.json'");
+});
+
+test('261006-jsm gate GraphQL file query: a mixed inner chain with complete evidence -> the held UNRESOLVED ask', () => {
+  const d = runReviewArtifactGate(input("bash -c 'gh pr review 42 --comment -b x; gh api graphql --input b.json'"), deps());
+  assertUnresolvedAsk(d, /GraphQL query read from a file or stdin/);
+});
+
+for (const cmd of [
+  "gh api graphql -f query='mutation { submitpullrequestreview(input: {}) { x } }'",
+  'gh api graphql -f query=@x',
+  "gh api -X GET graphql -f query='" + JSM_GQL_SUBMIT + "'",
+]) {
+  test('261006-jsm gate GraphQL lock: `' + cmd.slice(0, 70) + '` -> allow with no PR lookup or log read', () => {
+    const dp = deps();
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+    assert.strictEqual(dp._calls.resolvePr, 0);
+    assert.deepStrictEqual(dp._calls.readToolLog, []);
+  });
+}
+
+// -- 261006-jsm Task 3c: a CLEAR verdict in a comment arms R8a (CONTEXT D5) -----------------------
+
+test('261006-jsm CLEAR: the R8a-memtrace entry governs pr-review and both comment actions', () => {
+  const e = GATES.find((x) => x.id === 'R8a-memtrace');
+  assert.deepStrictEqual([...e.on].sort(), ['issue-comment', 'pr-comment', 'pr-review']);
+});
+
+for (const cmd of [
+  'gh pr comment 42 -b "CLEAR"',
+  'gh pr comment 42 --body "## Re-Review - PR #42 - **CLEAR**"',
+  'gh api -X POST repos/open-gsd/gsd-core/issues/42/comments -f body="## Re-Review - PR #42 - **CLEAR**"',
+  'gh issue comment 42 -b "CLEAR"',
+  'gh pr review 42 --comment -b "CLEAR"',
+]) {
+  test('261006-jsm gate CLEAR: `' + cmd + '` with only Bash rows -> DENY R8a-memtrace', () => {
+    assertJsmR8aDeny(cmd);
+  });
+}
+
+for (const cmd of [
+  'gh pr comment 42 -b "thanks, rebased"',
+  'gh pr comment 42 -b "that makes the intent clear"',
+  'gh pr comment 42 -b "the failure is unclear"',
+  'gh pr comment 42 -b "## Re-Review - PR #42"',
+  'gh pr review 42 --comment -b x',
+  'gh pr review 42 --comment -b "unclear"',
+]) {
+  test('261006-jsm gate CLEAR lock: `' + cmd + '` with only Bash rows -> allow; the log is never read', () => {
+    const dp = depsWithLog(toolLog(ONLY_BASH.slice()));
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assert.strictEqual(d.permissionDecision, 'allow', cmd + ': ' + d.permissionDecisionReason);
+    assert.deepStrictEqual(dp._calls.readToolLog, [], cmd);
+  });
+}
+
+test('261006-jsm gate CLEAR lock: a CLEAR comment on a real ISSUE with only Bash rows -> allow; no PR lookup, no log read', () => {
+  const dp = depsWithLog(toolLog(ONLY_BASH.slice()), { resolveIsPullRequest: () => false });
+  const d = runReviewArtifactGate(input('gh issue comment 42 -b "CLEAR"'), dp);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.strictEqual(dp._calls.resolvePr, 0);
+  assert.deepStrictEqual(dp._calls.readToolLog, []);
+});
+
+test('261006-jsm gate CLEAR: a CLEAR comment with complete evidence -> allow (the obligation is met)', () => {
+  const dp = deps();
+  const d = runReviewArtifactGate(input('gh pr comment 42 -b "CLEAR"'), dp);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.deepStrictEqual(dp._calls.readToolLog, [SESSION]);
+});
+
+test('261006-jsm parity: the re-review.md `8a.` line says a CLEAR body ends the --comment exemption and binds a PR comment', () => {
+  const line = reReview8aLine();
+  assert.ok(line.includes('a `--comment` review is exempt unless its body carries `CLEAR`'), line);
+  assert.ok(line.includes('a PR comment whose body carries `CLEAR` needs the same evidence'), line);
+});
+
+// -- 261006-jsm review fix round CR-01: the GraphQL event reader never trusts the first `event:` --
+//
+// String literals ("..." and """...""") and `#` comments are stripped before the scan, EVERY
+// `event:` is read, an `input: $v` mutation is read through gh's bracket fields (`v[event]=...`), a
+// JSON `v=` field value or the curl `variables` object, repeated fields count every value (gh sends
+// the last), and an input or event variable that cannot be read statically asks (MJ-02); a pending
+// review is graded only when there is provably no event and no variable-sourced input.
+
+const JSM_CR01_SUBMIT = (inner) => "gh api graphql -f query='mutation { " + inner + " }'";
+const JSM_CR01_INPUT_Q =
+  "gh api graphql -f query='mutation($input: AddPullRequestReviewInput!) { addPullRequestReview(input: $input) { clientMutationId } }'";
+
+for (const cmd of [
+  JSM_CR01_SUBMIT('submitPullRequestReview(input:{body:"event: COMMENT", pullRequestReviewId:"X", event: APPROVE}) { clientMutationId }'),
+  JSM_CR01_SUBMIT('# event: COMMENT\n submitPullRequestReview(input:{pullRequestReviewId:"X", event: APPROVE}) { clientMutationId }'),
+  JSM_CR01_SUBMIT('a: addPullRequestReview(input:{pullRequestId:"P", event: COMMENT}) { clientMutationId } b: submitPullRequestReview(input:{pullRequestReviewId:"X", event: APPROVE}) { clientMutationId }'),
+  JSM_CR01_SUBMIT('event: addReaction(input:{subjectId:"S", content:HOORAY}) { clientMutationId } submitPullRequestReview(input:{pullRequestReviewId:"X", event: APPROVE}) { clientMutationId }'),
+  JSM_CR01_SUBMIT('submitPullRequestReview(input:{body:"""event: COMMENT""", pullRequestReviewId:"X", event: APPROVE}) { clientMutationId }'),
+  JSM_CR01_INPUT_Q + " -f 'input[pullRequestId]=P' -f 'input[event]=APPROVE'",
+  JSM_CR01_INPUT_Q + " -F 'input[event]=REQUEST_CHANGES'",
+  JSM_CR01_INPUT_Q + ' -f input=\'{"pullRequestId":"P","event":"APPROVE"}\'',
+  JSM_CR01_INPUT_Q + ' -F input=\'{"pullRequestId":"P","event":"REQUEST_CHANGES"}\'',
+  "gh api graphql -f query='" + JSM_GQL_VAR + "' -f e=COMMENT -f e=APPROVE",
+  "gh api graphql -f query='query { viewer { login } }' -f query='" + JSM_GQL_SUBMIT + "'",
+  "curl https://api.github.com/graphql -d '" +
+    '{"query":"mutation($input: AddPullRequestReviewInput!) { addPullRequestReview(input: $input) { clientMutationId } }","variables":{"input":{"pullRequestId":"P","event":"APPROVE"}}}' +
+    "'",
+]) {
+  test('261006-jsm CR-01 gate: `' + cmd.slice(0, 40) + ' ... ' + cmd.slice(-60) + '` with only Bash rows -> DENY R8a-memtrace', () => {
+    assertJsmR8aDeny(cmd);
+  });
+}
+
+for (const [label, cmd] of [
+  ['an `input: $input` with no source', JSM_CR01_INPUT_Q],
+  ['an `input: $input` read from a file', JSM_CR01_INPUT_Q + ' -F input=@in.json'],
+  ['an `input: $input` whose bracket fields carry no event', JSM_CR01_INPUT_Q + " -f 'input[pullRequestId]=P'"],
+  ['an `input[event]` built by expansion', JSM_CR01_INPUT_Q + " -f 'input[event]=$EV'"],
+  ['an `input=` JSON value that does not parse', JSM_CR01_INPUT_Q + " -f 'input={oops'"],
+]) {
+  test('261006-jsm CR-01 gate: ' + label + ' -> the MJ-02 UNRESOLVED ask, never a pending review', () => {
+    const d = runReviewArtifactGate(input(cmd), deps());
+    const why = assertUnresolvedAsk(d, /GraphQL review mutation whose input or event variable/);
+    assert.ok(!why.includes('$EV') && !why.includes('in.json'), 'the ask never echoes the value: ' + why);
+  });
+}
+
+for (const [label, cmd] of [
+  ['an `event: APPROVE` only inside a string', JSM_CR01_SUBMIT('addPullRequestReview(input:{pullRequestId:"P", body:"event: APPROVE"}) { clientMutationId }')],
+  ['an `event: APPROVE` only inside a block string', JSM_CR01_SUBMIT('addPullRequestReview(input:{pullRequestId:"P", body:"""\nevent: APPROVE\n"""}) { clientMutationId }')],
+  ['an `event: APPROVE` only inside a comment', JSM_CR01_SUBMIT('# event: APPROVE\n addPullRequestReview(input:{pullRequestId:"P"}) { clientMutationId }')],
+]) {
+  test('261006-jsm CR-01 gate: ' + label + ' is a pending review -> allow; the log is never read', () => {
+    const dp = depsWithLog(toolLog(ONLY_BASH.slice()));
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+    assert.deepStrictEqual(dp._calls.readToolLog, []);
+  });
+}
+
+// -- 261006-jsm review fix round CR-02 + WR-04: bundled short flags and attached comment bodies ---
+
+const JSM_CR02_URL = 'https://api.github.com/repos/open-gsd/gsd-core/';
+const JSM_CR02_GQL_JSON =
+  '{"query":"mutation { submitPullRequestReview(input:{pullRequestReviewId:\\"X\\", event: APPROVE}) { clientMutationId } }"}';
+
+for (const cmd of [
+  'gh api ' + JSM_REVIEWS + ' -if event=APPROVE',
+  'gh api ' + JSM_REVIEWS + ' -iFevent=APPROVE',
+  'gh api -X POST ' + JSM_REVIEWS + ' -iFevent=APPROVE',
+  "gh api graphql -if query='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql -iFquery='" + JSM_GQL_SUBMIT + "'",
+  "curl -sd '" + JSM_CR02_GQL_JSON + "' https://api.github.com/graphql",
+  "curl -sd '{\"event\":\"APPROVE\"}' " + JSM_CR02_URL + 'pulls/42/reviews',
+  "curl -sSd '{\"event\":\"REQUEST_CHANGES\"}' " + JSM_CR02_URL + 'pulls/42/reviews',
+  'gh api repos/open-gsd/gsd-core/issues/42/comments -fbody=CLEAR',
+  'gh api repos/open-gsd/gsd-core/issues/42/comments -ifbody=CLEAR',
+  'gh api repos/open-gsd/gsd-core/issues/42/comments -if body=CLEAR',
+  'gh api repos/open-gsd/gsd-core/pulls/42/comments -fbody=CLEAR',
+  "curl -sd '{\"body\":\"CLEAR\"}' " + JSM_CR02_URL + 'issues/42/comments',
+]) {
+  test('261006-jsm CR-02 gate: `' + cmd.slice(0, 100) + '` with only Bash rows -> DENY R8a-memtrace', () => {
+    assertJsmR8aDeny(cmd);
+  });
+}
+
+test('261006-jsm CR-02 gate: a bundled curl body read from a file on a reviews POST -> the MJ-02 UNRESOLVED ask', () => {
+  assertUnresolvedAsk(runReviewArtifactGate(input('curl -sd @rev.json ' + JSM_CR02_URL + 'pulls/42/reviews'), deps()), /curl reads the request body/);
+});
+
+for (const cmd of [
+  'gh api repos/open-gsd/gsd-core/issues/42/comments -fbody=thanks',
+  'gh api repos/open-gsd/gsd-core/issues/42/comments -ifbody=rebased',
+  "curl -sd '{\"body\":\"thanks\"}' " + JSM_CR02_URL + 'issues/42/comments',
+]) {
+  test('261006-jsm CR-02 gate lock: `' + cmd + '` (no CLEAR) with only Bash rows -> allow; the log is never read', () => {
+    const dp = depsWithLog(toolLog(ONLY_BASH.slice()));
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assert.strictEqual(d.permissionDecision, 'allow', cmd + ': ' + d.permissionDecisionReason);
+    assert.deepStrictEqual(dp._calls.readToolLog, [], cmd);
+  });
+}
+
+test('261006-jsm CR-02 gate lock: an attached CLEAR comment on a real ISSUE with only Bash rows -> allow; no PR lookup', () => {
+  const dp = depsWithLog(toolLog(ONLY_BASH.slice()), { resolveIsPullRequest: () => false });
+  const d = runReviewArtifactGate(input('gh api repos/open-gsd/gsd-core/issues/42/comments -fbody=CLEAR'), dp);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.strictEqual(dp._calls.resolvePr, 0);
+  assert.deepStrictEqual(dp._calls.readToolLog, []);
+});
+
+test('261006-jsm CR-02 fieldCandidates: a bundled gh field and a bundled curl body yield the bare value', () => {
+  const { fieldCandidates } = reviewArtifact;
+  const c1 = fieldCandidates(seg0('gh api ' + JSM_REVIEWS + ' -iFevent=APPROVE'));
+  assert.ok(c1.includes('event=APPROVE'), JSON.stringify(c1));
+  const c2 = fieldCandidates(seg0("curl -sSd'{\"event\":\"APPROVE\"}' " + JSM_CR02_URL + 'pulls/42/reviews'));
+  assert.ok(c2.includes('{"event":"APPROVE"}'), JSON.stringify(c2));
+});
+
+// -- 261006-jsm review fix round CR-03: a full-URL `gh api https://api.github.com/graphql` -------
+test('261006-jsm CR-03 gate: `gh api https://api.github.com/graphql -f query=<approve>` with only Bash rows -> DENY R8a-memtrace', () => {
+  assertJsmR8aDeny("gh api https://api.github.com/graphql -f query='" + JSM_GQL_SUBMIT + "'");
+});
+
+// -- 261006-jsm review fix round CR-04: `eval --` and `builtin eval` reach R8a ------------------
+for (const cmd of ['eval -- "gh pr review 42 -a"', 'builtin eval "gh pr review 42 -a"', 'builtin command eval -- "gh pr review 42 -a"']) {
+  test('261006-jsm CR-04 gate: `' + cmd + '` with only Bash rows -> DENY R8a-memtrace', () => {
+    assertJsmR8aDeny(cmd);
+  });
+}
+
+// -- 261006-jsm review fix round WR-01: a hostile wrapper stack cannot push the gate past its timeout
+// The manifest sets no per-hook timeout, so Claude Code's 60 s default applies; the review measured
+// 64 s at 288 KB. The bound asserted here (5 s) leaves an order of magnitude below that default.
+for (const [label, cmd, want] of [
+  ['`sudo` + 36,000 `-u bash` pairs + `bash -c "gh pr review 42 -a"`', 'sudo ' + '-u bash '.repeat(36000) + 'bash -c "gh pr review 42 -a"', 'deny'],
+  ['`sudo` + 20,000 `-u nohup` pairs + `nohup ls`', 'sudo ' + '-u nohup '.repeat(20000) + 'nohup ls', 'allow'],
+]) {
+  test('261006-jsm WR-01 gate: ' + label + ' with only Bash rows decides ' + want + ' in under 5000 ms', () => {
+    const dp = depsWithLog(toolLog(ONLY_BASH.slice()));
+    const t0 = Date.now();
+    const d = runReviewArtifactGate(input(cmd), dp);
+    const ms = Date.now() - t0;
+    assert.strictEqual(d.permissionDecision, want, d.permissionDecisionReason);
+    assert.ok(ms < 5000, label + ' took ' + ms + ' ms');
+  });
+}
+
+// -- 261006-jsm review fix round WR-02: a recovered verdict whose PR number is not on the command line
+//
+// xargs feeds the number from stdin and a GraphQL mutation names a node id, so prSelector is null
+// and the PR lookup falls back to the current branch's PR. Keying R8, R10 and R1 to that PR can
+// allow an approve of a DIFFERENT PR on the wrong PR's artifacts, so the gate holds a fixed ask
+// naming the form (it echoes nothing) and still gates the segment, so any deny wins.
+
+const JSM_WR02_GQL =
+  "gh api graphql -f query='mutation { submitPullRequestReview(input:{pullRequestReviewId:\"PRR_zzmarker\", event: APPROVE}) { clientMutationId } }'";
+
+/** The WR-02 held ask: fixed text, names the form, says the artifacts were keyed to the branch's PR. */
+function assertUnkeyedAsk(d, formRe) {
+  assert.strictEqual(d.permissionDecision, 'ask', d.permissionDecisionReason);
+  const why = d.permissionDecisionReason;
+  assert.match(why, /^ENF-20 /);
+  assert.match(why, /cannot be read from the command/);
+  assert.match(why, /current branch's PR/);
+  assert.match(why, formRe);
+  assert.match(why, /does not answer this prompt/);
+  assert.ok(!why.includes('99') && !why.includes('zzmarker'), 'the ask never echoes the command: ' + why);
+  return why;
+}
+
+for (const [label, cmd, formRe] of [
+  ['`echo 99 | xargs gh pr review -a`', 'echo 99 | xargs gh pr review -a', /run through xargs/],
+  ['a GraphQL approve keyed by node id', JSM_WR02_GQL, /GraphQL review mutation/],
+  ['`bash -c "gh pr review -a"` (no number on the command line)', 'bash -c "gh pr review -a"', /bash or sh -c/],
+]) {
+  test('261006-jsm WR-02 gate: ' + label + ' with complete evidence and artifacts -> the held UNKEYED ask (was allow)', () => {
+    const dp = deps();
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assertUnkeyedAsk(d, formRe);
+    assert.strictEqual(dp._calls.resolvePr, 1, 'the segment is still gated against the current branch PR');
+  });
+}
+
+test('261006-jsm WR-02 gate: the xargs approve with only Bash rows still DENIES R8a (deny beats the held ask)', () => {
+  assertJsmR8aDeny('echo 99 | xargs gh pr review -a');
+});
+
+test('261006-jsm WR-02 gate: the xargs approve with R10 absent still DENIES R10', () => {
+  const d = runReviewArtifactGate(input('echo 99 | xargs gh pr review -a'), deps({ files: absent(R10) }));
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-20 R10/);
+});
+
+for (const cmd of ['bash -c "gh pr review 42 -a"', 'echo x | xargs gh pr review 42 -a', 'gh pr review -a', 'gh pr review 42 -a']) {
+  test('261006-jsm WR-02 gate lock: `' + cmd + '` with complete evidence -> allow (the number is readable, or the form is native)', () => {
+    const d = runReviewArtifactGate(input(cmd), deps());
+    assert.strictEqual(d.permissionDecision, 'allow', cmd + ': ' + d.permissionDecisionReason);
+  });
+}
+
+// -- 261006-jsm review fix round CR-02 follow-up: a bundled field before the graphql endpoint ------
+test('261006-jsm CR-02 follow-up gate: `gh api -if query=<approve> graphql` with only Bash rows -> DENY R8a-memtrace', () => {
+  assertJsmR8aDeny("gh api -if query='" + JSM_GQL_SUBMIT + "' graphql");
+});

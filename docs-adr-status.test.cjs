@@ -456,4 +456,162 @@ test('W5: CTK-ADR-0010 has exactly one W5 residual bullet naming every same-clas
   // W5 review WR-01: the CLI receipt preflight was aligned with writeReceipt, so the residual must not
   // still describe it as a blocking open.
   assert.ok(!/preflight opens\s+first/.test(b), 'the W5 residual must not call the aligned CLI preflight unguarded: ' + b);
+// -- quick 261006-jsm (CONTEXT D10, coordinator, orchestrator B1): CTK-ADR-0010 marks the fixed ENF-20
+// verdict routes and records the new residuals. Every lock anchors on its own bullet's bold lead
+// (adr10Bullet asserts exactly one match); no Status line and no Decision text changes. --
+
+test('261006-jsm: the classify-`other` residual marks the routes this branch fixed and keeps the open ones listed', () => {
+  const b = adr10Bullet(/classif(y|ies) `other`/);
+  assert.ok(b.includes('Fixed by quick 261006-jsm:'), b);
+  for (const form of [
+    'gh pr -R o/r review 42 -a',
+    '-Fevent=APPROVE',
+    'setsid',
+    '`-lc`',
+    'submitPullRequestReview',
+    'addPullRequestReview',
+    'denies on R8a',
+  ]) {
+    assert.ok(b.includes(form), 'the fixed marker names ' + form + ': ' + b);
+  }
+  assert.match(b, /bare `--input`[\s\S]*MJ-02 UNRESOLVED/);
+  assert.match(b, /`\$\(echo gh\) pr review 42 -a` is an uncertain route that asks/);
+});
+
+test('261006-jsm: the CLEAR-comment residual is marked fixed (R8a governs both comment actions)', () => {
+  const b = adr10Bullet(/CLEAR-verdict PR comment/);
+  assert.ok(b.includes('Fixed by quick 261006-jsm:'), b);
+  for (const s of ['`pr-comment`', '`issue-comment`', '`--comment`', 'step-8a verdict']) {
+    assert.ok(b.includes(s), 'the fixed marker names ' + s + ': ' + b);
+  }
+});
+
+test('261006-jsm: the opaque-ask residual carries the measured noise, the constants and the grade basis', () => {
+  const b = adr10Bullet(/^- \*\*An opaque verdict route asks/);
+  for (const s of [
+    '17 / 47,642', '0.04%', '1,509 / 47,642', '3.2%', '2026-10-06',
+    'eval "$(ssh-agent -s)"', 'eval "$CMD"', 'OPAQUE_SHELL_PAYLOAD_NEEDS_HINT',
+    'RECOVERY_MAX_DEPTH', 'MAX_PREFIX_PEELS', 'CTK-ADR-0005 Decision 2', 'CTK-ADR-0007 Decision 2', 'MJ-02',
+  ]) {
+    assert.ok(b.includes(s), 'the opaque-ask residual names ' + s + ': ' + b);
+  }
+  assert.match(b, /outside one/);
+});
+
+test('261006-jsm (coordinator): the uncertain and unresolved asks degrade to allow under bypass mode', () => {
+  const b = adr10Bullet(/^- \*\*The uncertain and unresolved asks are a prompt only in default mode/);
+  assert.ok(b.includes('--dangerously-skip-permissions'), b);
+  assert.match(b, /degrade to allow/);
+  assert.match(b, /statically recovered forms still deny/);
+});
+
+test('261006-jsm (B1): the file-sourced GraphQL residual carries its measurement and the no-lookup ask', () => {
+  const b = adr10Bullet(/^- \*\*A file-sourced GraphQL query asks/);
+  for (const s of ['0 genuine', '48,055', '31 `gh api graphql` calls', 'no PR lookup', 'MJ-02', '-F query=@']) {
+    assert.ok(b.includes(s), 'the file-sourced GraphQL residual names ' + s + ': ' + b);
+  }
+});
+
+test('261006-jsm (D5): a CLEAR comment is a step-8a verdict, recorded as a consequence, not a Decision edit', () => {
+  const b = adr10Bullet(/^- \*\*A `CLEAR` comment is a step-8a verdict/);
+  assert.match(b, /`--comment` exemption/);
+  assert.match(b, /without editing the Decision/);
+});
+
+test('261006-jsm: the still-open verdict routes are listed', () => {
+  const b = adr10Bullet(/^- \*\*Verdict routes still open after quick 261006-jsm/);
+  for (const s of [
+    'gh -R o/r pr merge', 'x=$(gh pr review 42 -a)', '$X 42 -a', 'dismissPullRequestReview', 'bash review.sh',
+    'bash -s', 'heredoc', '16 multi-line sh -c calls in 48,055', '-ftitle=x', 'zsh', 'never failed closed',
+  ]) {
+    assert.ok(b.includes(s), 'the still-open residual names ' + s + ': ' + b);
+  }
+});
+
+test('261006-jsm: the keying and observability consequences are recorded', () => {
+  const k = adr10Bullet(/^- \*\*Some recovered verdicts are keyed to the current branch's PR/);
+  assert.match(k, /node id/);
+  assert.match(k, /xargs/);
+  assert.match(k, /R8a is session-scoped/);
+  const o = adr10Bullet(/^- \*\*tool-recorder logs the recovered forms as `pr-review`/);
+  assert.match(o, /governed stays false/);
+});
+
+// Review fix round WR-03: the pre-branch state of CTK-ADR-0010 is pinned by sha256 digests computed
+// from commit e2690ca's text (2026-10-06), so these rows never read a git object: e2690ca is on no
+// published branch, and a squash merge, a rebase or a fresh clone would lose it.
+const { createHash: jsmCreateHash } = require('node:crypto');
+const jsmSha256 = (t) => jsmCreateHash('sha256').update(t, 'utf8').digest('hex');
+// sha256 of e2690ca's CTK-ADR-0010 text before `## Consequences` (17,042 characters).
+const JSM_BASE_PREFIX_SHA256 = 'f3403f98e0114b4bacd8100b76dadc4744ac296f794d652f507eed0d003614c6';
+// sha256 of each non-ASCII line in e2690ca's residual list (one line, the `gh api .../reviews
+// -fevent=APPROVE` line of the classify-`other` bullet, written with an ellipsis character).
+const JSM_BASE_NON_ASCII_RESIDUAL_SHA256 = new Set([
+  '9a0a2d51f02a2dbbec2b9dc71fb33b2390d995734af50de23559a8170a7cff53',
+]);
+
+test('261006-jsm: every line this branch added to the CTK-ADR-0010 residual list is plain ASCII', () => {
+  const lines = adr10Residuals().split('\n');
+  assert.ok(lines.some((l) => l.includes('261006-jsm')), 'the residual list carries the 261006-jsm lines');
+  for (const l of lines) {
+    if (/^[\x20-\x7e]*$/.test(l)) continue;
+    assert.ok(JSM_BASE_NON_ASCII_RESIDUAL_SHA256.has(jsmSha256(l)), 'non-ASCII in a line not present at e2690ca: ' + l);
+  }
+});
+
+test('261006-jsm: CTK-ADR-0010 is byte-identical to e2690ca up to `## Consequences` (no Status or Decision edit)', () => {
+  const now = fs.readFileSync(adrFile(10), 'utf8');
+  assert.ok(now.indexOf('## Consequences') > 0);
+  assert.strictEqual(jsmSha256(now.slice(0, now.indexOf('## Consequences'))), JSM_BASE_PREFIX_SHA256);
+});
+
+// -- quick 261006-jsm review fix round WR-02: the keying bullet no longer says a wrong key cannot allow
+test('261006-jsm WR-02: the keying bullet says a wrong key can allow and that the gate now asks', () => {
+  const k = adr10Bullet(/^- \*\*Some recovered verdicts are keyed to the current branch's PR/);
+  assert.ok(!k.includes('denies, never allows'), k);
+  assert.match(k, /can be allowed/);
+  assert.match(k, /asks/);
+  assert.match(k, /any deny still wins/);
+});
+
+// -- quick 261006-jsm review fix round WR-03: these rows must not read a git object -------------
+// e2690ca is on no published branch; after a squash merge, a rebase or in a fresh clone of the public
+// repo `git show e2690ca:...` throws. The base text is pinned by digest instead.
+test('261006-jsm WR-03: this suite reads no git object (hermetic in any clone)', () => {
+  const src = fs.readFileSync(__filename, 'utf8');
+  const gitShow = "['sh" + "ow', ";
+  assert.ok(!src.includes(gitShow), 'docs-adr-status.test.cjs must not call git show');
+});
+
+// -- quick 261006-jsm review fix round (CR-01..04, WR-04, IN-01..03): the residual list matches what
+// the review round fixed and what it found still open. Consequences bullets only.
+test('261006-jsm review round: the still-open bullet lists the other shells, compound statements and multi-line eval', () => {
+  const b = adr10Bullet(/^- \*\*Verdict routes still open after quick 261006-jsm/);
+  for (const s of [
+    "echo 'gh pr review 42 -a' | bash", "bash <<< 'gh pr review 42 -a'", '`ash -c`', '`mksh -c`', '`busybox sh -c`',
+    '`su <user> -c`', '`script -c`', '`if true; then gh pr review 42 -a; fi`', '`for` / `while` ... `do`',
+    'a multi-line eval or `-c` payload', '16 multi-line sh -c calls in 48,055',
+    'curl -sX PUT', 'gh api -iX PUT', '`--input`', 'wrapped REST comment',
+  ]) {
+    assert.ok(b.includes(s), 'the still-open residual names ' + s + ': ' + b);
+  }
+});
+
+test('261006-jsm review round: the fixed markers name the review-round spellings', () => {
+  const other = adr10Bullet(/classif(y|ies) `other`/);
+  for (const s of ['eval --', 'builtin eval', '-iFevent=APPROVE', 'curl -sd', 'gh api https://api.github.com/graphql', '`input: $var`']) {
+    assert.ok(other.includes(s), 'the classify-other fixed marker names ' + s + ': ' + other);
+  }
+  const clear = adr10Bullet(/CLEAR-verdict PR comment/);
+  for (const s of ['-fbody=CLEAR', 'curl -sd', 'a wrapped comment']) {
+    assert.ok(clear.includes(s), 'the CLEAR fixed marker names ' + s + ': ' + clear);
+  }
+});
+
+test('261006-jsm review round (IN-03): observability names verdict-log.cjs; bypass mode names the readable-event scope', () => {
+  const o = adr10Bullet(/^- \*\*tool-recorder logs the recovered forms as `pr-review`/);
+  assert.ok(o.includes('verdict-log.cjs'), o);
+  const b = adr10Bullet(/^- \*\*The uncertain and unresolved asks are a prompt only in default mode/);
+  assert.match(b, /statically recovered forms still deny/);
+  assert.match(b, /readable event/);
 });
