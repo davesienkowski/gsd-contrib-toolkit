@@ -1475,7 +1475,9 @@ test('ENF-25 WTREE-04 seam: the default fetch runs ONLY the bounded fetch (MA-01
   assert.strictEqual(rec.calls.length, 1, JSON.stringify(rec.calls.map((c) => [c.cmd, c.args])));
   const [f] = rec.calls;
   assert.strictEqual(f.cmd, 'timeout');
-  assert.deepStrictEqual(f.args, ['-k', '2', '15', 'git', '-C', '/abs/dir', 'fetch', '--quiet', '--no-auto-maintenance', 'origin', 'next']);
+  // MA-02: --no-tags and a fully qualified, forced refspec, so origin/next is always the remote BRANCH.
+  assert.deepStrictEqual(f.args, ['-k', '2', '15', 'git', '-C', '/abs/dir', 'fetch', '--quiet', '--no-auto-maintenance',
+    '--no-tags', 'origin', '+refs/heads/next:refs/remotes/origin/next']);
   assert.strictEqual(f.opts.timeout, 20000);
   assert.strictEqual(f.opts.killSignal, 'SIGKILL');
   assert.strictEqual(f.opts.env.GIT_DIR, undefined);
@@ -2455,5 +2457,47 @@ test('ENF-25 MA-01 e2e (fx4): a sentinel vendored inside a NON-gsd-core repo -> 
     assert.strictEqual(refOf(other, 'refs/remotes/origin/next'), before, 'a non-gsd-core origin must not be fetched');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ── MA-02: an explicit refspec, so a narrowed remote.origin.fetch or a tag named next cannot leave origin/next stale ──
+
+test('ENF-25 MA-02: FETCH_ARGV is the frozen explicit-refspec argv', () => {
+  assert.deepStrictEqual([...exp('FETCH_ARGV')],
+    ['fetch', '--quiet', '--no-auto-maintenance', '--no-tags', 'origin', '+refs/heads/next:refs/remotes/origin/next']);
+  assert.ok(Object.isFrozen(exp('FETCH_ARGV')));
+});
+
+test('ENF-25 MA-02 e2e (fx7): a narrowed remote.origin.fetch still refreshes origin/next; the remote base and next both end current', () => {
+  const fx = makeFixture();
+  try {
+    git(fx.A, 'config', 'remote.origin.fetch', '+refs/heads/main:refs/remotes/origin/main');
+    const tip = fx.advanceOrigin();
+    const r1 = spawnIn(fx.A, 'git worktree add -b f ' + path.join(fx.root, 'x') + ' origin/next');
+    assert.strictEqual(r1.decision, 'allow', r1.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/remotes/origin/next'), tip, 'origin/next must be the remote tip, not the stale value');
+    const r2 = spawnIn(fx.A, 'git worktree add -b g ' + path.join(fx.root, 'y') + ' next');
+    assert.strictEqual(r2.decision, 'allow', r2.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), tip);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 MA-02 e2e (fx7b): a TAG named next on origin does not shadow the branch; origin/next becomes the branch tip', () => {
+  const fx = makeFixture();
+  try {
+    git(fx.B, 'tag', 'next');
+    git(fx.B, 'push', '-q', 'origin', 'refs/tags/next');
+    // advanceOrigin's `push origin next` is ambiguous once the tag exists: push the branch by full name.
+    fs.writeFileSync(path.join(fx.B, 'tracked.txt'), 'upstream past the tag\n');
+    const tip = commitAll(fx.B, 'upstream past the tag');
+    git(fx.B, 'push', '-q', 'origin', 'refs/heads/next:refs/heads/next');
+    const r = spawnIn(fx.A, 'git worktree add -b f ' + path.join(fx.root, 'x') + ' origin/next');
+    assert.strictEqual(r.decision, 'allow', r.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/remotes/origin/next'), tip);
+    assert.strictEqual(git(fx.A, 'tag', '--list', 'next').trim(), '', '--no-tags: the gate fetches no tag');
+  } finally {
+    fx.dispose();
   }
 });
