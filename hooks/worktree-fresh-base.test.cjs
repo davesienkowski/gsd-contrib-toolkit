@@ -69,7 +69,6 @@ function scenario(over = {}) {
     worktreesHolding: 0,
     casUpdateRef: 0,
     casArgs: [],
-    isSymbolicRef: 0,
     nextInProgress: 0,
     originUrl: 0,
     trunkRefHazards: 0,
@@ -130,11 +129,6 @@ function scenario(over = {}) {
       calls.trunkRefHazards += 1;
       if (Array.isArray(over.hazards)) return over.hazards;
       return over.symbolic === true ? ['refs/heads/next is a symbolic ref (-> refs/heads/work)'] : [];
-    },
-    // 37-REVIEW BL-01: is refs/heads/next a symbolic ref (`over.symbolic`, default false)?
-    isSymbolicRef: () => {
-      calls.isSymbolicRef += 1;
-      return over.symbolic === true;
     },
     casUpdateRef: (...args) => {
       calls.casUpdateRef += 1;
@@ -1359,7 +1353,7 @@ test('ENF-25 bound: FETCH_BELT_MS + MAX_GIT_CALLS_PER_ROOT * GIT_TIMEOUT_MS <= G
 /** Every non-fetch git process the default seams would spawn (MA-01: `remote get-url` is the originUrl seam). */
 function gitProcesses(calls) {
   return calls.currentBranch + calls.revParse + calls.isAncestor + calls.worktreesHolding + calls.casUpdateRef + calls.originUrl +
-    calls.isSymbolicRef + calls.nextInProgress + calls.trunkRefHazards;
+    calls.nextInProgress + calls.trunkRefHazards;
 }
 
 const WORST = [
@@ -2198,7 +2192,7 @@ test('ENF-25 BL-01: a symbolic refs/heads/next denies (thrown, constant reason) 
   assert.strictEqual(d.permissionDecision, 'deny');
   assert.match(d.permissionDecisionReason, /ENF-25/);
   assert.match(d.permissionDecisionReason, /symbolic ref/);
-  assert.strictEqual(calls.isSymbolicRef, 1);
+  assert.strictEqual(calls.trunkRefHazards, 1);
   assert.strictEqual(calls.fetchOrigin, 0);
   assert.strictEqual(calls.casUpdateRef, 0);
 });
@@ -2221,18 +2215,7 @@ test('ENF-25 BL-01 / VG-01: a HEAD base on `next` and a REMOTE base both refuse 
   assert.strictEqual(remote.calls.fetchOrigin, 0);
 });
 
-test('ENF-25 BL-01 seam: default isSymbolicRef is false for a plain next and true for next -> work', () => {
-  const fx = makeFixture();
-  try {
-    const seams = defaultSeams();
-    assert.strictEqual(seams.isSymbolicRef(fx.A, 'refs/heads/next'), false);
-    git(fx.A, 'update-ref', '-d', 'refs/heads/next');
-    git(fx.A, 'symbolic-ref', 'refs/heads/next', 'refs/heads/work');
-    assert.strictEqual(seams.isSymbolicRef(fx.A, 'refs/heads/next'), true);
-  } finally {
-    fx.dispose();
-  }
-});
+// (The BL-01 default-seam row moved to the VG-01 HAZARD_SHAPES table: `refs/heads/next symbolic -> work`.)
 
 test('ENF-25 BL-01 / NI-03 seam: default casUpdateRef passes --no-deref and --create-reflog before the ref', () => {
   const rec = recSpawn();
@@ -2434,7 +2417,7 @@ for (const url of ['https://github.com/davesienkowski/gsd-core-experiments.git',
     assert.strictEqual(d.permissionDecision, 'allow');
     assert.strictEqual(calls.originUrl, 1);
     assert.strictEqual(calls.fetchOrigin, 0);
-    assert.strictEqual(calls.isSymbolicRef, 0);
+    assert.strictEqual(calls.trunkRefHazards, 0);
     assert.strictEqual(calls.revParse, 0);
     assert.strictEqual(calls.casUpdateRef, 0);
   });
