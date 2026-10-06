@@ -846,13 +846,19 @@ function graphqlTarget(seg) {
     if (args[0] !== 'api') return null;
     const candidates = [...(seg.subcommands || []), ...(seg.positionals || [])];
     const at = candidates.indexOf('api');
-    const endpoint = at === -1 ? undefined : candidates[at + 1];
-    if (typeof endpoint !== 'string') return null;
+    if (at === -1) return null;
     // Review fix round CR-03: gh also takes a full URL (it sends the same POST to its path) and a
     // query string or a trailing slash on the endpoint; the curl branch's host + path rule applies.
-    if (endpoint.indexOf('://') !== -1) return graphqlUrlPath(endpoint) === '/graphql' ? 'gh' : null;
-    const bare = endpoint.split('?')[0].split('#')[0].replace(/\/+$/, '');
-    return bare === 'graphql' || bare === '/graphql' ? 'gh' : null;
+    const isGraphqlEndpoint = (endpoint) => {
+      if (typeof endpoint !== 'string') return false;
+      if (endpoint.indexOf('://') !== -1) return graphqlUrlPath(endpoint) === '/graphql';
+      const bare = endpoint.split('?')[0].split('#')[0].replace(/\/+$/, '');
+      return bare === 'graphql' || bare === '/graphql';
+    };
+    // Review fix round CR-02 follow-up: every candidate after `api` is tested, not only the first,
+    // because a field bundled behind -i (`-if query=... graphql`) leaves its body as a positional
+    // ahead of the endpoint. A `name=value` body never normalizes to a graphql endpoint.
+    return candidates.slice(at + 1).some(isGraphqlEndpoint) ? 'gh' : null;
   }
   if (prog === 'curl') {
     const target = curlUrl(seg);
