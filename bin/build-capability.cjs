@@ -13,7 +13,7 @@
  *   node bin/build-capability.cjs --check   # CHECK: exit 1 if the bundle is stale vs source, 0 if fresh
  *
  * THE WIRED SET IS DATA-DRIVEN (never a hardcoded list): the canonical script basenames are read
- * from `settings.snippet.json` (currently 17 wired scripts / 18 registrations — 14 PreToolUse Bash
+ * from `settings.snippet.json` (currently 19 wired scripts / 20 registrations — 16 PreToolUse Bash
  * gates + the binlib-edit Write|Edit gate + the protocol-reminder advisory + the tool-recorder
  * observability hook, which is wired on both PostToolUse and PostToolUseFailure; the numbers here
  * are descriptive — the code reads the snippet, and `docs-hook-counts.test.cjs` guards the prose
