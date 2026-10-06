@@ -72,6 +72,7 @@ function scenario(over = {}) {
     isSymbolicRef: 0,
     nextInProgress: 0,
     originUrl: 0,
+    trunkRefHazards: 0,
     currentBranch: 0,
     readBaseRef: 0,
     readBaseRefArgs: [],
@@ -124,6 +125,12 @@ function scenario(over = {}) {
       calls.nextInProgress += 1;
       return over.inProgress || [];
     },
+    // Verifier gap VG-01: hazards on the two trunk refs (`over.hazards`; `over.symbolic` = next symref).
+    trunkRefHazards: () => {
+      calls.trunkRefHazards += 1;
+      if (Array.isArray(over.hazards)) return over.hazards;
+      return over.symbolic === true ? ['refs/heads/next is a symbolic ref (-> refs/heads/work)'] : [];
+    },
     // 37-REVIEW BL-01: is refs/heads/next a symbolic ref (`over.symbolic`, default false)?
     isSymbolicRef: () => {
       calls.isSymbolicRef += 1;
@@ -147,7 +154,7 @@ function scenario(over = {}) {
     },
   };
   const rest = Object.assign({}, over);
-  for (const k of ['refs', 'ancestor', 'held', 'casOk', 'branch', 'baseRef', 'symbolic', 'inProgress', 'originUrl']) delete rest[k];
+  for (const k of ['refs', 'ancestor', 'held', 'casOk', 'branch', 'baseRef', 'symbolic', 'inProgress', 'originUrl', 'hazards']) delete rest[k];
   return { deps: Object.assign(base, rest), calls };
 }
 
@@ -1352,7 +1359,7 @@ test('ENF-25 bound: FETCH_BELT_MS + MAX_GIT_CALLS_PER_ROOT * GIT_TIMEOUT_MS <= G
 /** Every non-fetch git process the default seams would spawn (MA-01: `remote get-url` is the originUrl seam). */
 function gitProcesses(calls) {
   return calls.currentBranch + calls.revParse + calls.isAncestor + calls.worktreesHolding + calls.casUpdateRef + calls.originUrl +
-    calls.isSymbolicRef + calls.nextInProgress;
+    calls.isSymbolicRef + calls.nextInProgress + calls.trunkRefHazards;
 }
 
 const WORST = [
@@ -1493,8 +1500,9 @@ test('ENF-25 WTREE-04 seam: the default fetch runs ONLY the bounded fetch (MA-01
   const [f] = rec.calls;
   assert.strictEqual(f.cmd, 'timeout');
   // MA-02: --no-tags and a fully qualified, forced refspec, so origin/next is always the remote BRANCH.
+  // VG-01: --no-write-fetch-head, so the fetch writes no FETCH_HEAD file (a symlinked one would be written through).
   assert.deepStrictEqual(f.args, ['-k', '2', '15', 'git', '-C', '/abs/dir', 'fetch', '--quiet', '--no-auto-maintenance',
-    '--no-tags', 'origin', '+refs/heads/next:refs/remotes/origin/next']);
+    '--no-tags', '--no-write-fetch-head', 'origin', '+refs/heads/next:refs/remotes/origin/next']);
   assert.strictEqual(f.opts.timeout, 20000);
   assert.strictEqual(f.opts.killSignal, 'SIGKILL');
   assert.strictEqual(f.opts.env.GIT_DIR, undefined);
@@ -2204,13 +2212,13 @@ test('ENF-25 BL-01: the symbolic-next deny is THROWN (override-escapable, one re
   assert.strictEqual(calls.casUpdateRef, 0);
 });
 
-test('ENF-25 BL-01: a HEAD base on `next` checks the symref too; a remote base never asks for it', () => {
+test('ENF-25 BL-01 / VG-01: a HEAD base on `next` and a REMOTE base both refuse a symbolic trunk ref before the fetch', () => {
   const head = scenario({ symbolic: true, branch: 'next' });
   assert.strictEqual(runWorktreeFreshBaseGate(input('git worktree add -b f p'), head.deps).permissionDecision, 'deny');
   assert.strictEqual(head.calls.casUpdateRef, 0);
   const remote = scenario({ symbolic: true });
-  assert.strictEqual(runWorktreeFreshBaseGate(input('git worktree add -b f p origin/next'), remote.deps).permissionDecision, 'allow');
-  assert.strictEqual(remote.calls.isSymbolicRef, 0);
+  assert.strictEqual(runWorktreeFreshBaseGate(input('git worktree add -b f p origin/next'), remote.deps).permissionDecision, 'deny');
+  assert.strictEqual(remote.calls.fetchOrigin, 0);
 });
 
 test('ENF-25 BL-01 seam: default isSymbolicRef is false for a plain next and true for next -> work', () => {
@@ -2494,7 +2502,7 @@ test('ENF-25 MA-01 e2e (fx4): a sentinel vendored inside a NON-gsd-core repo -> 
 
 test('ENF-25 MA-02: FETCH_ARGV is the frozen explicit-refspec argv', () => {
   assert.deepStrictEqual([...exp('FETCH_ARGV')],
-    ['fetch', '--quiet', '--no-auto-maintenance', '--no-tags', 'origin', '+refs/heads/next:refs/remotes/origin/next']);
+    ['fetch', '--quiet', '--no-auto-maintenance', '--no-tags', '--no-write-fetch-head', 'origin', '+refs/heads/next:refs/remotes/origin/next']);
   assert.ok(Object.isFrozen(exp('FETCH_ARGV')));
 });
 
@@ -2822,4 +2830,256 @@ test('ENF-25 MI-04 default reader: a temp managed-settings.json saying head wins
   } finally {
     d.dispose();
   }
+});
+
+// ───────────────────────── Verifier gap VG-01: a symbolic or symlinked trunk ref is written THROUGH by the fetch ─────────────────────────
+//
+// 37-VERIFICATION P6 / P6d / P6e / P6f: the forced refspec `+refs/heads/next:refs/remotes/origin/next`
+// dereferences a symbolic origin/next, so the fetch moved a checked-out `work`, moved a checked-out
+// `next` outside the CAS, and force-rewound `next`. Before ANY fetch, for every trunk base kind, the
+// gate now refuses when either trunk ref is symbolic (one `for-each-ref` call) or its loose file,
+// reflog or a parent directory is a filesystem symlink (or a loose `ref:` file the listing omits).
+
+const HAZ = ['refs/remotes/origin/next is a symbolic ref (-> refs/heads/work)'];
+
+for (const [name, cmd] of [
+  ['remote base', 'git worktree add -b f p origin/next'],
+  ['local base', 'git worktree add -b f p next'],
+  ['origin/HEAD base', 'git worktree add -b f p origin/HEAD'],
+]) {
+  test('ENF-25 VG-01: a trunk-ref hazard on a ' + name + ' -> thrown constant deny with ZERO fetch, rev-parse and CAS', () => {
+    const { deps, calls } = scenario({ hazards: HAZ });
+    const d = runWorktreeFreshBaseGate(input(cmd), deps);
+    assert.strictEqual(d.permissionDecision, 'deny');
+    assert.match(d.permissionDecisionReason, /ENF-25/);
+    assert.match(d.permissionDecisionReason, /symbolic ref|symlink/);
+    assert.ok(!d.permissionDecisionReason.includes('refs/heads/work'), 'the reason is constant (no ref detail)');
+    assert.strictEqual(calls.fetchOrigin, 0);
+    assert.strictEqual(calls.revParse, 0);
+    assert.strictEqual(calls.casUpdateRef, 0);
+  });
+}
+
+test('ENF-25 VG-01: an EnterWorktree cut under fresh with a trunk-ref hazard -> deny, ZERO fetch', () => {
+  const { deps, calls } = scenario({ hazards: HAZ });
+  const d = runWorktreeFreshBaseGate(ewInput({ name: 'x' }), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(calls.fetchOrigin, 0);
+});
+
+test('ENF-25 VG-01: the hazard check runs once per root, after arming (non-gsd-core origin and HEAD-on-work: ZERO)', () => {
+  const two = scenario();
+  runWorktreeFreshBaseGate(input('git worktree add -b a p next && git worktree add -b b q origin/next'), two.deps);
+  assert.strictEqual(two.calls.trunkRefHazards, 1);
+  const other = scenario({ originUrl: 'https://example.invalid/x/y.git' });
+  runWorktreeFreshBaseGate(input('git worktree add -b f p origin/next'), other.deps);
+  assert.strictEqual(other.calls.trunkRefHazards, 0);
+  const work = scenario({ branch: 'work' });
+  runWorktreeFreshBaseGate(input('git worktree add -b f p'), work.deps);
+  assert.strictEqual(work.calls.trunkRefHazards, 0);
+});
+
+test('ENF-25 VG-01: the hazard deny is THROWN (override-escapable, one receipt) and nothing is fetched', () => {
+  const o = yesOverride();
+  const { deps, calls } = scenario({ hazards: HAZ, overrideImpl: o.overrideImpl });
+  assert.strictEqual(runWorktreeFreshBaseGate(input('git worktree add -b f p origin/next'), deps).permissionDecision, 'allow');
+  assert.strictEqual(o.receipts.length, 1);
+  assert.strictEqual(calls.fetchOrigin, 0);
+});
+
+/** The fixture's common git dir. */
+function commonDirOf(dir) {
+  return path.resolve(dir, git(dir, 'rev-parse', '--git-common-dir').trim());
+}
+
+/** Every file under `dir`, relative path -> content ({} when absent). */
+function treeFiles(dir) {
+  const out = {};
+  const walk = (d, rel) => {
+    let ents;
+    try {
+      ents = fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of ents) {
+      const p = path.join(d, e.name);
+      const r = rel ? rel + '/' + e.name : e.name;
+      if (e.isDirectory()) walk(p, r);
+      else out[r] = fs.readFileSync(p, 'utf8');
+    }
+  };
+  walk(dir, '');
+  return out;
+}
+
+/** Every ref (name, value, symref target), every reflog and packed-refs: byte-comparable. */
+function refState(dir) {
+  const common = commonDirOf(dir);
+  return {
+    refs: git(dir, 'for-each-ref', '--format=%(refname) %(objectname) %(symref)').split('\n').sort(),
+    logs: treeFiles(path.join(common, 'logs')),
+    packed: fs.existsSync(path.join(common, 'packed-refs')) ? fs.readFileSync(path.join(common, 'packed-refs'), 'utf8') : null,
+  };
+}
+
+function symrefOriginNext(dir, target) {
+  git(dir, 'update-ref', '-d', 'refs/remotes/origin/next');
+  git(dir, 'symbolic-ref', 'refs/remotes/origin/next', target);
+}
+
+const VG_CUT = (fx) => 'git worktree add -b f ' + path.join(fx.root, 'x') + ' origin/next';
+
+test('ENF-25 VG-01 e2e (P6): origin/next -> the CHECKED-OUT work, base origin/next -> deny; every ref and reflog unchanged, index clean', () => {
+  const fx = makeFixture();
+  try {
+    fx.advanceOrigin();
+    symrefOriginNext(fx.A, 'refs/heads/work');
+    const before = refState(fx.A);
+    const r = spawnIn(fx.A, VG_CUT(fx));
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.deepStrictEqual(refState(fx.A), before);
+    assert.strictEqual(porcelain(fx.A), '');
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 VG-01 e2e (P6b): same shape, base next -> deny; nothing moves', () => {
+  const fx = makeFixture();
+  try {
+    fx.advanceOrigin();
+    symrefOriginNext(fx.A, 'refs/heads/work');
+    const before = refState(fx.A);
+    const r = spawnIn(fx.A, 'git worktree add -b f ' + path.join(fx.root, 'x') + ' next');
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.deepStrictEqual(refState(fx.A), before);
+    assert.strictEqual(porcelain(fx.A), '');
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 VG-01 e2e (P6d): origin/next -> refs/heads/next, next CHECKED OUT in linked worktree W -> deny; refs, reflogs unchanged; A and W clean', () => {
+  const fx = makeFixture();
+  try {
+    const W = path.join(fx.root, 'W');
+    git(fx.A, 'worktree', 'add', '-q', W, 'next');
+    fx.advanceOrigin();
+    symrefOriginNext(fx.A, 'refs/heads/next');
+    const before = refState(fx.A);
+    const r = spawnIn(fx.A, VG_CUT(fx));
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.deepStrictEqual(refState(fx.A), before);
+    assert.strictEqual(porcelain(fx.A), '');
+    assert.strictEqual(porcelain(W), '');
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 VG-01 e2e (P6e): origin/next -> refs/heads/next and an upstream FORCE-PUSH -> deny; next not rewound', () => {
+  const fx = makeFixture();
+  try {
+    fx.advanceOrigin();
+    const tip = fx.advanceOrigin();
+    git(fx.A, 'fetch', '-q', 'origin', 'next');
+    git(fx.A, 'update-ref', 'refs/heads/next', tip);
+    git(fx.B, 'reset', '-q', '--hard', 'HEAD~1');
+    fs.writeFileSync(path.join(fx.B, 'tracked.txt'), 'rewritten upstream\n');
+    commitAll(fx.B, 'rewritten upstream');
+    git(fx.B, 'push', '-q', '-f', 'origin', 'next');
+    symrefOriginNext(fx.A, 'refs/heads/next');
+    const before = refState(fx.A);
+    const r = spawnIn(fx.A, VG_CUT(fx));
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.deepStrictEqual(refState(fx.A), before);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), tip, 'next must not be force-rewound');
+    assert.strictEqual(porcelain(fx.A), '');
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 VG-01 e2e (P6f): EnterWorktree {name} under baseRef=fresh, origin/next -> checked-out work -> deny; nothing moves', () => {
+  const fx = makeFixture();
+  try {
+    pinBaseRef(fx.A, 'fresh');
+    fx.advanceOrigin();
+    symrefOriginNext(fx.A, 'refs/heads/work');
+    const before = refState(fx.A);
+    const r = spawnEnterWorktree(fx.A, { name: 'x' });
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.deepStrictEqual(refState(fx.A), before);
+    assert.strictEqual(porcelain(fx.A).split('\n').filter((l) => !l.includes('.claude/')).join('\n'), '');
+  } finally {
+    fx.dispose();
+  }
+});
+
+// Seam rows: the default trunkRefHazards on real fixtures, one shape per write-through route.
+const HAZARD_SHAPES = [
+  ['a plain clone', () => {}, false],
+  ['origin/next missing (never fetched)', (fx) => git(fx.A, 'update-ref', '-d', 'refs/remotes/origin/next'), false],
+  ['refs/heads/next symbolic -> work', (fx) => { git(fx.A, 'update-ref', '-d', 'refs/heads/next'); git(fx.A, 'symbolic-ref', 'refs/heads/next', 'refs/heads/work'); }, true],
+  ['origin/next symbolic -> work', (fx) => symrefOriginNext(fx.A, 'refs/heads/work'), true],
+  ['origin/next a DANGLING symref (for-each-ref omits it)', (fx) => symrefOriginNext(fx.A, 'refs/heads/nope'), true],
+  ['origin/next a relative filesystem symlink to ../../heads/work', (fx) => {
+    const p = path.join(fx.A, '.git', 'refs', 'remotes', 'origin', 'next');
+    git(fx.A, 'update-ref', '-d', 'refs/remotes/origin/next');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.symlinkSync('../../heads/work', p);
+  }, true],
+  ['refs/remotes/origin a directory symlink into refs/heads', (fx) => {
+    git(fx.A, 'update-ref', '-d', 'refs/remotes/origin/next');
+    const d = path.join(fx.A, '.git', 'refs', 'remotes', 'origin');
+    fs.rmSync(d, { recursive: true, force: true });
+    fs.symlinkSync('../heads', d);
+  }, true],
+  ['logs/refs/remotes/origin/next a symlink (the fetch would append through it)', (fx) => {
+    const p = path.join(fx.A, '.git', 'logs', 'refs', 'remotes', 'origin', 'next');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.rmSync(p, { force: true });
+    fs.symlinkSync(path.join(fx.root, 'victim.txt'), p);
+  }, true],
+  ['origin/next a garbage loose file (for-each-ref warns and omits it)', (fx) => {
+    git(fx.A, 'update-ref', '-d', 'refs/remotes/origin/next');
+    const p = path.join(fx.A, '.git', 'refs', 'remotes', 'origin', 'next');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, 'garbage\n');
+  }, true],
+];
+for (const [name, setup, hazardous] of HAZARD_SHAPES) {
+  test('ENF-25 VG-01 seam: default trunkRefHazards, ' + name + ' -> ' + (hazardous ? 'hazard' : 'none'), () => {
+    const fx = makeFixture();
+    try {
+      setup(fx);
+      const seams = defaultSeams();
+      assert.strictEqual(typeof seams.trunkRefHazards, 'function', 'createDefaultSeams must provide trunkRefHazards');
+      const h = seams.trunkRefHazards(fx.A);
+      assert.ok(Array.isArray(h));
+      assert.strictEqual(h.length > 0, hazardous, JSON.stringify(h));
+    } finally {
+      fx.dispose();
+    }
+  });
+}
+
+test('ENF-25 VG-01 seam: from a LINKED worktree root, a symbolic origin/next in the common dir is a hazard', () => {
+  const fx = makeFixture();
+  try {
+    const W = path.join(fx.root, 'W');
+    git(fx.A, 'worktree', 'add', '-q', '-b', 'side', W);
+    symrefOriginNext(fx.A, 'refs/heads/work');
+    assert.ok(defaultSeams().trunkRefHazards(W).length > 0);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 VG-01 seam: default trunkRefHazards spawns exactly ONE git process (for-each-ref of the two trunk refs)', () => {
+  const rec = recSpawn(() => ({ stdout: 'refs/heads/next \nrefs/remotes/origin/next \n' }));
+  seamsWith(rec).trunkRefHazards('/nonexistent-wtfb-root');
+  assert.strictEqual(rec.calls.length, 1);
+  assert.deepStrictEqual(rec.calls[0].args, ['for-each-ref', '--format=%(refname) %(symref)', 'refs/heads/next', 'refs/remotes/origin/next']);
 });
