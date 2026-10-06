@@ -48,7 +48,7 @@
 const path = require('node:path'); // CR-03: basename-normalize the program
 // Contract dependency (parseCommand output shape). 261006-jsm: parseCommand also re-parses an
 // eval or shell -c payload in the verdict-route recovery (argv's own primitive, never a raw grep).
-const { parseCommand } = require('./argv.cjs');
+const { parseCommand, classifyTokens } = require('./argv.cjs');
 
 const MUTATING_METHODS = new Set(['POST', 'PATCH', 'PUT']);
 const GITHUB_API_HOSTS = new Set(['api.github.com']);
@@ -558,7 +558,23 @@ const MAX_PREFIX_PEELS = 8;
  */
 const VERDICT_ROUTE_FORMS = Object.freeze({
   'shell-c': 'a review command inside a bash or sh -c command string',
+  subshell: 'a review command inside a ( ... ) subshell',
+  'brace-group': 'a review command inside a { ...; } brace group',
+  negation: 'a review command behind a ! pipeline negation',
+  nohup: 'a review command run through nohup',
+  setsid: 'a review command run through setsid',
+  time: 'a review command run through time',
 });
+
+/**
+ * Lone prefix tokens the recovery strips from the visible argv (Task 2a, D4): the reserved words
+ * that open a subshell, a brace group and a negated pipeline. A `(` attached to the first word
+ * is the subshell too (`(gh pr review 42 -a)`).
+ */
+const RECOVERY_PREFIX_WORDS = Object.freeze({ '(': 'subshell', '{': 'brace-group', '!': 'negation' });
+
+/** GNU time long options that take a value (RESEARCH section 6); matched by unique prefix. */
+const TIME_VALUE_LONG = Object.freeze(['format', 'output']);
 
 /** Shells whose `-c` command string the recovery re-parses (RESEARCH section 5). */
 const RECOVERY_SHELLS = new Set(['bash', 'sh', 'dash', 'zsh', 'ksh']);
@@ -595,7 +611,147 @@ function recoverVerdictRoute(seg, state) {
   if (!seg || typeof seg !== 'object' || !Array.isArray(seg.tokens)) return null;
   const { prog } = resolveProgram(seg);
   if (RECOVERY_SHELLS.has(prog)) return recoverShellCommandString(seg, prog, state);
+
+  const tokens = seg.tokens;
+  const at = programTokenIndex(tokens, prog);
+  if (at === -1) return null;
+  const word = tokens[at];
+  const after = tokens.slice(at + 1);
+
+  // Task 2a transparent prefixes: each strip removes ONE prefix from the same visible argv.
+  if (Object.prototype.hasOwnProperty.call(RECOVERY_PREFIX_WORDS, word)) {
+    const rest = word === '(' ? withoutClosingParen(after) : after;
+    return recoverStripped(rest, RECOVERY_PREFIX_WORDS[word], state);
+  }
+  if (word.length > 1 && word[0] === '(') {
+    return recoverStripped(withoutClosingParen([word.slice(1), ...after]), 'subshell', state);
+  }
+  if (prog === 'nohup') return recoverStripped(after[0] === '--' ? after.slice(1) : after, 'nohup', state);
+  if (prog === 'setsid') return recoverStripped(afterSetsidOptions(after), 'setsid', state);
+  if (prog === 'time') return recoverStripped(afterTimeOptions(after), 'time', state);
   return null;
+}
+
+/**
+ * Remove ONE closing `)` of a subshell: the last token when it is `)`, else a `)` attached to the
+ * end of the last token (`-a)`).
+ *
+ * @param {string[]} tokens
+ * @returns {string[]}
+ */
+function withoutClosingParen(tokens) {
+  if (tokens.length === 0) return tokens;
+  const out = tokens.slice();
+  const last = out[out.length - 1];
+  if (last === ')') out.pop();
+  else if (last.endsWith(')')) out[out.length - 1] = last.slice(0, -1);
+  return out;
+}
+
+/**
+ * The tokens after setsid's options: util-linux setsid options are all boolean (`-c`, `-f`, `-w`,
+ * bundles such as `-fw`, and their long forms); `--` ends them (RESEARCH section 6).
+ *
+ * @param {string[]} after
+ * @returns {string[]}
+ */
+function afterSetsidOptions(after) {
+  let i = 0;
+  while (i < after.length && after[i].length > 1 && after[i][0] === '-') {
+    i += 1;
+    if (after[i - 1] === '--') break;
+  }
+  return after.slice(i);
+}
+
+/**
+ * The tokens after `time`'s options, for both the bash keyword (`-p`, `--`) and GNU time
+ * (RESEARCH section 6): `-f` / `-o` take a value given separately or attached (`-fFMT`, also at
+ * the end of a bundle such as `-pf FMT`); `--format` / `--output` (unique prefixes accepted) take
+ * the next token unless written with `=`; every other option takes no value; `--` ends options.
+ *
+ * @param {string[]} after
+ * @returns {string[]}
+ */
+function afterTimeOptions(after) {
+  let i = 0;
+  while (i < after.length) {
+    const t = after[i];
+    if (t === '--') {
+      i += 1;
+      break;
+    }
+    if (t.startsWith('--') && t.length > 2) {
+      const body = t.slice(2);
+      const eq = body.indexOf('=');
+      const takesNext = eq === -1 && TIME_VALUE_LONG.some((n) => n.startsWith(body));
+      i += takesNext ? 2 : 1;
+      continue;
+    }
+    if (t.length > 1 && t[0] === '-') {
+      let width = 1;
+      for (let k = 1; k < t.length; k += 1) {
+        if (t[k] === 'f' || t[k] === 'o') {
+          if (k === t.length - 1) width = 2; // the value is the next token
+          break; // the rest of the bundle is the value
+        }
+      }
+      i += width;
+      continue;
+    }
+    break;
+  }
+  return after.slice(i);
+}
+
+/**
+ * Re-classify the tokens left after stripping one transparent prefix (`peels + 1`, same depth,
+ * same inShellString). The tokens are rebuilt into a segment with argv's own classifyTokens, so
+ * stacked prefixes and WRAPPER_BUILTINS (`sudo nohup`, `nohup sudo`) resolve through the shared
+ * resolveProgram. Only an inner pr-review is kept (D1). A bare wrapper returns null.
+ *
+ * @param {string[]} rest
+ * @param {string} via a VERDICT_ROUTE_FORMS code
+ * @param {{depth:number, peels:number, inShellString:boolean}} state
+ * @returns {Object|null}
+ */
+function recoverStripped(rest, via, state) {
+  if (rest.length === 0) return null;
+  // Past the prefix bound: null in this tier (a later tier grades it uncertain with a hint).
+  if (state.peels >= MAX_PREFIX_PEELS) return null;
+  const innerSeg = classifyTokens(rest);
+  const inner = classifySegment(innerSeg, {
+    depth: state.depth,
+    peels: state.peels + 1,
+    inShellString: state.inShellString,
+  });
+  return wrapRecovered(inner, innerSeg, via);
+}
+
+/**
+ * Wrap an inner classification as this level's recovered route. Null unless the inner result is
+ * a pr-review (D1). A native inner pr-review makes `innerSeg` the verdict segment; a recovered
+ * inner contributes its own verdict segments, and an inner with no verdict segment at all (an
+ * uncertain or unresolved route) passes through unchanged so it keeps the code that names it.
+ *
+ * @param {Object|null} inner
+ * @param {Object} innerSeg
+ * @param {string} via
+ * @returns {Object|null}
+ */
+function wrapRecovered(inner, innerSeg, via) {
+  if (!inner || inner.action !== 'pr-review') return null;
+  if (inner.recovered !== true) {
+    return { action: 'pr-review', route: 'recovered', recovered: true, via, verdictSegments: [innerSeg] };
+  }
+  if (inner.verdictSegments.length === 0) return { ...inner };
+  const out = { action: 'pr-review', route: 'recovered', recovered: true, via, verdictSegments: inner.verdictSegments.slice() };
+  if (inner.uncertain === true) {
+    out.uncertain = true;
+    out.uncertainVia = inner.uncertainVia || inner.via;
+  }
+  if (inner.unresolved === true) out.unresolved = true;
+  return out;
 }
 
 /**
