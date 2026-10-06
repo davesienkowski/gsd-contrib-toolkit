@@ -1,6 +1,6 @@
 ---
 name: maintainer-review-sweep
-description: Use when sweeping a GitHub repo you maintain (issues + PRs) to decide what to act on and to re-review stalled change-requested pull requests before merge. Triggers — "triage the repo", "what should I pick up / clear", "re-review this PR", "is this ready to merge". Repo-aware: open-gsd/gsd-core conventions baked in but parameterized.
+description: 'Use when sweeping a GitHub repo you maintain (issues + PRs) to decide what to act on and to re-review stalled change-requested pull requests before merge. Triggers — "triage the repo", "what should I pick up / clear", "re-review this PR", "is this ready to merge". Repo-aware: open-gsd/gsd-core conventions baked in but parameterized.'
 ---
 
 # Maintainer Review Sweep
