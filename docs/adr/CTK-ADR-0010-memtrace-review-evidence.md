@@ -246,15 +246,19 @@ is wrong.
   `gh pr review <n> -b "-a"` and `gh pr review <n> --comment -b event=APPROVE` classify as verdicts,
   so R8a and R10 apply though gh submits none. The error only over-gates (an avoidable ask or deny,
   never an allow), so it is recorded, not fixed (38 review NT-05).
-- **A FIFO at the live slot still blocks the verdict writer, and so hangs every gate.** The reader
-  refuses a non-regular file in either slot (38 review BL-01). But every gate's verdict row (OBS-02, `verdict-log.cjs` through
-  tool-recorder's `appendRecord`) and every recorder row is appended to `tool-log.jsonl` with a
-  blocking open for write, so a FIFO planted at the live slot hangs the hook before it emits
-  (measured: still blocked when a 6 s probe killed it), and the toolkit's gap backlog (#2a) records
-  that the harness then allows the call. That writer issue is toolkit-wide, predates this record
-  (OBS-01/OBS-02), sits outside step 8a, and is seeded for a follow-up as
-  `.planning/seeds/SEED-live-tool-log-fifo-hangs-all-gates.md` (local planning corpus). The rotated
-  slot, which no writer opens, is the persistent case the reader fix closes.
+- **A FIFO at the live slot no longer blocks the verdict writer: fixed by commit fa629cc, quick task
+  261006-jox.** The reader refuses a non-regular file in either slot (38 review BL-01). Before the
+  fix, every gate's verdict row (OBS-02, `verdict-log.cjs` through tool-recorder's `appendRecord`)
+  and every recorder row was appended to `tool-log.jsonl` with a blocking open for write, so a FIFO
+  planted at the live slot hung every gate before it emitted (measured: still blocked when a 6 s
+  probe killed it), and the toolkit's gap backlog (#2a) records that the harness then allowed the
+  call. The writer now opens the slot `O_WRONLY|O_APPEND|O_CREAT|O_NONBLOCK`, fstats the fd, refuses
+  anything that is not a regular file and rotates only a regular file, so a FIFO, device or
+  directory at the live slot drops the log record and never changes or delays the verdict
+  (measured: a spawned `gh-issue-create.cjs` with a FIFO at the slot emitted its normal envelope in
+  43 ms). The defect was tracked as `.planning/seeds/SEED-live-tool-log-fifo-hangs-all-gates.md`
+  (local planning corpus). The rotated slot, which no writer opens, is the persistent case the
+  reader fix closes.
 - **A CLEAR-verdict PR comment routes around 8a.** A `gh pr comment` or a POST to
   `/issues/<pr#>/comments` whose body carries `CLEAR` arms R10 (and R1) but not R8a, because R8a is
   scoped to `pr-review` verdicts. It is a route around the memtrace obligation; recorded, not fixed.
