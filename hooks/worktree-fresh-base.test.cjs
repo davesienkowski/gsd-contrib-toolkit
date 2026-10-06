@@ -68,6 +68,8 @@ function scenario(over = {}) {
     worktreesHolding: 0,
     casUpdateRef: 0,
     casArgs: [],
+    currentBranch: 0,
+    order: [],
   };
   const refs = Object.assign(
     { 'refs/remotes/origin/next': SHA_REMOTE, 'refs/heads/next': SHA_LOCAL },
@@ -85,13 +87,21 @@ function scenario(over = {}) {
     fetchOrigin: (dir) => {
       calls.fetchOrigin += 1;
       calls.fetchDirs.push(dir);
+      calls.order.push('fetchOrigin');
+    },
+    currentBranch: () => {
+      calls.currentBranch += 1;
+      calls.order.push('currentBranch');
+      return Object.prototype.hasOwnProperty.call(over, 'branch') ? over.branch : 'work';
     },
     revParse: (dir, ref) => {
       calls.revParse += 1;
       return Object.prototype.hasOwnProperty.call(refs, ref) ? refs[ref] : null;
     },
-    isAncestor: () => {
+    // `ancestor` may be a boolean (direction-blind, the 37-01 rows) or a function (a, b) => bool.
+    isAncestor: (dir, a, b) => {
       calls.isAncestor += 1;
+      if (typeof over.ancestor === 'function') return over.ancestor(a, b);
       return over.ancestor !== false;
     },
     worktreesHolding: () => {
@@ -109,7 +119,7 @@ function scenario(over = {}) {
     },
   };
   const rest = Object.assign({}, over);
-  for (const k of ['refs', 'ancestor', 'held', 'casOk']) delete rest[k];
+  for (const k of ['refs', 'ancestor', 'held', 'casOk', 'branch']) delete rest[k];
   return { deps: Object.assign(base, rest), calls };
 }
 
@@ -562,6 +572,246 @@ test('ENF-25 targeting e2e: a heredoc body mentioning `git worktree add p next` 
     const r = spawnIn(fx.A, "cat <<'EOF' > notes.md\ngit worktree add p next\nEOF");
     assert.strictEqual(r.decision, 'allow', r.reason);
     assert.strictEqual(refOf(fx.A, 'refs/remotes/origin/next'), fx.initial, 'origin/next unchanged');
+  } finally {
+    fx.dispose();
+  }
+});
+
+// ───────────────────────── 37-03 WTREE-03: stale next that cannot be fast-forwarded ─────────────────────────
+//
+// After the gate's fetch: local next equal -> allow; a strict ancestor held by a worktree -> POLICY
+// deny with `git -C <holder> merge --ff-only origin/next`; neither an ancestor of the other
+// (diverged) -> POLICY deny naming the divergence; origin/next an ancestor of local next (AHEAD,
+// flagged planner refinement, CTK-ADR-0009) -> allow, nothing moved. A HEAD base is the trunk only
+// when the target tree's current branch is `next` (read BEFORE any fetch). Policy denies are
+// RETURNED, so GSD_CONTRIB_OVERRIDE cannot flip them and no receipt is written.
+
+/** Text a deny reason must never suggest (T-37-14). */
+const DESTRUCTIVE = /reset|--force|branch -f|update-ref|push -f/;
+const L10 = SHA_LOCAL.slice(0, 10);
+const R10 = SHA_REMOTE.slice(0, 10);
+/** isAncestor answers for the AHEAD world: origin/next is an ancestor of local next, not the reverse. */
+const AHEAD = (a, b) => a === SHA_REMOTE && b === SHA_LOCAL;
+/** Neither is an ancestor of the other. */
+const DIVERGED = () => false;
+
+/** An override seam that says YES, with a counted writeReceipt. */
+function yesOverride() {
+  const receipts = [];
+  return {
+    receipts,
+    overrideImpl: {
+      checkOverride: () => ({ override: true, reason: 'test override' }),
+      writeReceipt: (_root, rec) => receipts.push(rec),
+    },
+  };
+}
+
+test('ENF-25 WTREE-03: a stale next held by /w/main denies with the exact merge --ff-only fix, stash note and origin/next alternative', () => {
+  const { deps, calls } = scenario({ held: ['/w/main'] });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b feat p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  const why = d.permissionDecisionReason;
+  assert.match(why, /ENF-25/);
+  assert.ok(why.includes('git -C /w/main merge --ff-only origin/next'), why);
+  assert.ok(why.includes('git worktree add -b <branch> <path> origin/next'), why);
+  assert.ok(why.includes('git stash push -m'), why);
+  assert.ok(why.includes(L10) && why.includes(R10), 'both short shas: ' + why);
+  assert.ok(!DESTRUCTIVE.test(why), 'no destructive suggestion: ' + why);
+  assert.ok(!/GSD_CONTRIB_OVERRIDE|STALE_OK/.test(why), 'a policy deny names no escape: ' + why);
+  assert.strictEqual(calls.casUpdateRef, 0);
+});
+
+test('ENF-25 WTREE-03: a held next lists up to 3 holder paths and quotes one with a space', () => {
+  const { deps } = scenario({ held: ['/w/my tree', '/w/b', '/w/c', '/w/d'] });
+  const d = runWorktreeFreshBaseGate(input('git worktree add p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  const why = d.permissionDecisionReason;
+  assert.ok(why.includes("git -C '/w/my tree' merge --ff-only origin/next"), why);
+  assert.ok(why.includes('/w/b') && why.includes('/w/c'), why);
+  assert.ok(!why.includes('/w/d'), 'at most 3 holders listed: ' + why);
+});
+
+test('ENF-25 WTREE-03: a diverged next denies naming both short shas and the origin/next alternative, nothing destructive', () => {
+  const { deps, calls } = scenario({ ancestor: DIVERGED });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b feat p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  const why = d.permissionDecisionReason;
+  assert.match(why, /ENF-25/);
+  assert.match(why, /diverged/);
+  assert.ok(why.includes(L10) && why.includes(R10), 'both short shas: ' + why);
+  assert.ok(why.includes('git worktree add -b <branch> <path> origin/next'), why);
+  assert.ok(!DESTRUCTIVE.test(why), 'no destructive suggestion: ' + why);
+  assert.strictEqual(calls.casUpdateRef, 0);
+  assert.strictEqual(calls.isAncestor, 2, 'ancestry is checked in both directions');
+});
+
+test('ENF-25 WTREE-03: a next AHEAD of origin/next (planner refinement) allows and moves nothing', () => {
+  const { deps, calls } = scenario({ ancestor: AHEAD });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b feat p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.casUpdateRef, 0);
+  assert.strictEqual(calls.worktreesHolding, 0, 'ahead needs no holder check');
+});
+
+test('ENF-25 WTREE-03: HEAD base on branch `work` allows with ZERO fetch', () => {
+  const { deps, calls } = scenario({ branch: 'work' });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b f p'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.fetchOrigin, 0);
+  assert.strictEqual(calls.casUpdateRef, 0);
+});
+
+test('ENF-25 WTREE-03: HEAD base on a detached HEAD allows with ZERO fetch', () => {
+  const { deps, calls } = scenario({ branch: null });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b f p HEAD'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.fetchOrigin, 0);
+});
+
+test('ENF-25 WTREE-03: HEAD base on `next`, behind and held by its own tree, denies with `git -C <dir> merge --ff-only origin/next`', () => {
+  const { deps, calls } = scenario({ branch: 'next', held: [FAKE_CWD] });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b f p'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.ok(d.permissionDecisionReason.includes('git -C ' + FAKE_CWD + ' merge --ff-only origin/next'), d.permissionDecisionReason);
+  assert.strictEqual(calls.casUpdateRef, 0);
+  assert.deepStrictEqual(calls.order.slice(0, 2), ['currentBranch', 'fetchOrigin'], 'the branch is read BEFORE the fetch');
+});
+
+test('ENF-25 WTREE-03: HEAD base `@` on `next` equal to origin/next allows with no CAS', () => {
+  const { deps, calls } = scenario({ branch: 'next', held: [FAKE_CWD], refs: { 'refs/heads/next': SHA_REMOTE } });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b f p @'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.fetchOrigin, 1);
+  assert.strictEqual(calls.casUpdateRef, 0);
+});
+
+test('ENF-25 WTREE-03: HEAD base on `next`, diverged, denies naming the divergence', () => {
+  const { deps } = scenario({ branch: 'next', held: [FAKE_CWD], ancestor: DIVERGED });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b f p HEAD'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /diverged/);
+});
+
+test('ENF-25 WTREE-03: the held deny is NOT override-escapable (zero receipts)', () => {
+  const o = yesOverride();
+  const { deps } = scenario({ held: ['/w/main'], overrideImpl: o.overrideImpl });
+  const d = runWorktreeFreshBaseGate(input('git worktree add p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(o.receipts.length, 0);
+});
+
+test('ENF-25 WTREE-03: the diverged deny is NOT override-escapable (zero receipts)', () => {
+  const o = yesOverride();
+  const { deps } = scenario({ ancestor: DIVERGED, overrideImpl: o.overrideImpl });
+  const d = runWorktreeFreshBaseGate(input('git worktree add p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(o.receipts.length, 0);
+});
+
+test('ENF-25 WTREE-03: the HEAD-on-next deny is NOT override-escapable (zero receipts)', () => {
+  const o = yesOverride();
+  const { deps } = scenario({ branch: 'next', held: [FAKE_CWD], overrideImpl: o.overrideImpl });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b f p'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(o.receipts.length, 0);
+});
+
+test('ENF-25 WTREE-03: two cuts, the first allowing and the second held, deny (a deny beats an earlier allow)', () => {
+  const { deps } = scenario({ held: ['/w/main'] });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b a p origin/next && git worktree add -b b q next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.ok(d.permissionDecisionReason.includes('git -C /w/main merge --ff-only origin/next'));
+});
+
+// ───────────────────────── 37-03 WTREE-03 e2e (spawned hook, real fixture) ─────────────────────────
+
+/** Commit on A's local `next` without leaving `work` checked out at the end (diverged / ahead setup). */
+function commitOnLocalNext(fx) {
+  git(fx.A, 'switch', '-q', 'next');
+  fs.writeFileSync(path.join(fx.A, 'local.txt'), 'local work on next\n');
+  const sha = commitAll(fx.A, 'local next');
+  git(fx.A, 'switch', '-q', 'work');
+  assert.strictEqual(git(fx.A, 'symbolic-ref', 'HEAD').trim(), 'refs/heads/work', 'setup: A parked on work');
+  return sha;
+}
+
+test('ENF-25 WTREE-03 e2e: A on next, origin advanced -> deny naming A and merge --ff-only; next unchanged, origin/next fetched', () => {
+  const fx = makeFixture({ park: false });
+  try {
+    const tip = fx.advanceOrigin();
+    const r = spawnIn(fx.A, 'git worktree add -b f ' + path.join(fx.root, 'wt') + ' next');
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.ok(r.reason.includes('git -C ' + fs.realpathSync(fx.A) + ' merge --ff-only origin/next'), r.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), fx.initial, 'a checked-out next is never moved');
+    assert.strictEqual(refOf(fx.A, 'refs/remotes/origin/next'), tip, 'the fetch ran');
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 WTREE-03 e2e: A on work, next held by a linked worktree <tmp>/lt -> deny naming <tmp>/lt; next unchanged', () => {
+  const fx = makeFixture();
+  try {
+    const lt = path.join(fx.root, 'lt');
+    git(fx.A, 'worktree', 'add', '-q', lt, 'next');
+    fx.advanceOrigin();
+    const r = spawnIn(fx.A, 'git worktree add -b f ' + path.join(fx.root, 'wt') + ' next');
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.ok(r.reason.includes('git -C ' + fs.realpathSync(lt) + ' merge --ff-only origin/next'), r.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), fx.initial);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 WTREE-03 e2e: A on work, local next and origin/next diverged -> deny naming the divergence; next unchanged', () => {
+  const fx = makeFixture();
+  try {
+    const localSha = commitOnLocalNext(fx);
+    fx.advanceOrigin();
+    const r = spawnIn(fx.A, 'git worktree add -b f ' + path.join(fx.root, 'wt') + ' next');
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.match(r.reason, /diverged/);
+    assert.ok(!DESTRUCTIVE.test(r.reason), r.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), localSha);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 WTREE-03 e2e: A on work, local next AHEAD of an unmoved origin -> allow; next unchanged', () => {
+  const fx = makeFixture();
+  try {
+    const localSha = commitOnLocalNext(fx);
+    const r = spawnIn(fx.A, 'git worktree add -b f ' + path.join(fx.root, 'wt') + ' next');
+    assert.strictEqual(r.decision, 'allow', r.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), localSha);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 WTREE-03 e2e: A on next, origin advanced, base omitted -> deny with merge --ff-only origin/next', () => {
+  const fx = makeFixture({ park: false });
+  try {
+    fx.advanceOrigin();
+    const r = spawnIn(fx.A, 'git worktree add -b f ' + path.join(fx.root, 'wt'));
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.ok(r.reason.includes('git -C ' + fs.realpathSync(fx.A) + ' merge --ff-only origin/next'), r.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), fx.initial);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 WTREE-03 e2e: A on work, origin advanced, base omitted -> allow and no fetch', () => {
+  const fx = makeFixture();
+  try {
+    fx.advanceOrigin();
+    const r = spawnIn(fx.A, 'git worktree add -b f ' + path.join(fx.root, 'wt'));
+    assert.strictEqual(r.decision, 'allow', r.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/remotes/origin/next'), fx.initial, 'no fetch for a HEAD base off next');
   } finally {
     fx.dispose();
   }
