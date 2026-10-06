@@ -17,22 +17,31 @@
  *   1. read the harness payload (malformed JSON throws -> fail-closed deny);
  *   2. the shared detector: no entry -> allow, BEFORE any resolve, fs or spawn work (RES-01;
  *      36-CONTEXT Addendum 2 — `isNonGovernedCommand` is deliberately NOT used);
- *   3. any `uncertain` entry -> throw FailClosed (HARD-01), still before any I/O;
- *   4. informational dispatches (`--version`, `-h`, `--probe-benches`) are dropped; none left
- *      -> allow;
+ *   3. an `uncertain` entry (HARD-01) is HELD: every attributable dispatch is still checked and
+ *      a policy deny it earns is returned first (36-REVIEW m-01). With no attributable dispatch
+ *      the held error is thrown before any I/O;
+ *   4. informational dispatches (`--version`, `-h`, `--help`) and subcommands that need no
+ *      viable environment (`wait`, `status`, `install-agent-hooks`, `submit` without
+ *      `--execute`) are dropped; none left -> allow;
  *   5. per dispatch, in command order:
  *        a. tree = `treeDirFor` (start dir + `-source`); unresolvable -> throw FailClosed;
  *        b. not a gsd-core checkout -> this dispatch contributes allow (ROB-01 precedent);
- *        c. config path: `--config` (static expansion, relative to the start dir), else
- *           `$XDG_CONFIG_HOME/gsd-test/config.toml` (non-empty absolute), else
- *           `<homedir>/.config/gsd-test/config.toml`. An unexpandable value -> ask;
- *           missing file -> deny;
+ *        c. config path: `--config` (static expansion in the shell env, relative to the start
+ *           dir), else `$XDG_CONFIG_HOME/gsd-test/config.toml` (any non-empty value, relative
+ *           to the start dir — v1.8.0 config.go), else `$HOME/.config/gsd-test/config.toml`,
+ *           where XDG_CONFIG_HOME / HOME are the gsd-test process's (36-REVIEW m-02: `export`,
+ *           `unset`, `NAME=v gsd-test`, `env -u` / `-i` and `sudo` are applied). An unexpandable
+ *           value -> ask; missing file -> deny;
  *        d. a named bench absent from the config -> deny; an unexpandable value -> ask;
- *        e. GTEST-06: when no bench is named or the named bench's host is exactly "local", probe
- *           Docker (at most ONCE per gate call): ok -> allow; missing CLI / daemon down -> deny;
- *           timeout -> ask; any other result or a throw -> deny. A bench with any other or no
- *           host skips the probe (remote ssh probing is deferred, CONTEXT §Deferred).
- *   6. precedence across dispatches: the first deny returns at once; else the first ask; else
+ *        e. GTEST-06: when the bench gsd-test can use may be local (36-REVIEW m-08: the named
+ *           `--bench`, else `defaults.pin`, else any bench left after `--exclude` /
+ *           `defaults.exclude`; `run` / `submit --execute` pick from every bench; a bench whose
+ *           host is absent, empty or "local" is local, as in v1.8.0 config.go), probe Docker
+ *           (at most ONCE per gate call): ok -> allow; missing CLI / daemon down -> deny;
+ *           timeout -> ask; any other result or a throw -> deny. A remote-only choice skips the
+ *           probe (remote ssh probing is deferred, CONTEXT §Deferred).
+ *   6. precedence across dispatches: the first policy deny returns at once; else the first held
+ *      throw (an uncertain entry or a dispatch whose check threw); else the first ask; else
  *      allow.
  *
  * ── SEVERITY ────────────────────────────────────────────────────────────────────────────
@@ -62,7 +71,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { runGate, readHookInput, deny, allow, ask, emit, safeCommand, FailClosed } = require('./lib/failclosed.cjs');
 const { resolveGsdCoreRoot, ScriptResolveError } = require('./lib/resolve.cjs');
-const { findGsdTestDispatches, treeDirFor, startDirFor, expandStatic } = require('./lib/gsd-test-detect.cjs');
+const { findGsdTestDispatches, treeDirFor, startDirFor, expandStatic, dispatchEnv } = require('./lib/gsd-test-detect.cjs');
 
 /** The honesty clause appended to every `ask` reason (same sentence as runtime-drift.cjs). */
 const ASK_LIMIT_NOTE =
@@ -74,6 +83,15 @@ const DOCKER_PROBE_ARGS = Object.freeze(['info', '--format', '{{.ServerVersion}}
 
 /** Probe bound. 36-05 asserts the settings hook timeout (20 s) exceeds it. */
 const DOCKER_PROBE_TIMEOUT_MS = 8000;
+
+/**
+ * 36-REVIEW m-06: ONE deadline shared by every probe in a gate call (m-02 allows one probe per
+ * distinct DOCKER_HOST / DOCKER_CONTEXT selection). Each probe gets min(DOCKER_PROBE_TIMEOUT_MS,
+ * remaining); with less than MIN_PROBE_MS left the gate throws FailClosed rather than let the
+ * harness kill it (a killed hook emits no deny).
+ */
+const GATE_BUDGET_MS = 15000;
+const MIN_PROBE_MS = 100;
 
 /** At most this many chars of docker's first stderr line reach a reason. */
 const MAX_DOCKER_DETAIL = 200;
@@ -132,6 +150,95 @@ function parseBenches(text) {
   return out;
 }
 
+const DEFAULTS_HEADER = /^\[\s*defaults\s*\]\s*(?:#.*)?$/;
+const PIN_LINE = /^pin\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')\s*(?:#.*)?$/;
+const EXCLUDE_LINE = /^exclude\s*=\s*(.*)$/;
+const ONE_LINE_ARRAY = /^\[(.*)\]\s*(?:#.*)?$/;
+const TOML_STRING = /"((?:[^"\\]|\\.)*)"|'([^']*)'/g;
+
+/**
+ * Zero-dependency `[defaults]` reader for the probe scope (36-REVIEW m-08): `pin` (a string) and
+ * `exclude` (a ONE-LINE array of strings). Anything else for `exclude` (a multi-line array, a
+ * bare value) is unknown -> `exclude: null`, which the gate reads as "exclude nothing" — the
+ * conservative direction (more candidate benches, so the local probe is more likely to run).
+ *
+ * @param {string} text the config file text
+ * @returns {{pin:(string|null), exclude:(string[]|null)}}
+ */
+function parseDefaults(text) {
+  let src = typeof text === 'string' ? text : '';
+  if (src.charCodeAt(0) === 0xfeff) src = src.slice(1);
+  const out = { pin: null, exclude: [] };
+  let inDefaults = false;
+  for (const raw of src.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === '' || line.startsWith('#')) continue;
+    if (DEFAULTS_HEADER.test(line)) { inDefaults = true; continue; }
+    if (line.startsWith('[')) {
+      // Any other `[x]` / `[[x]]` header ends the section (a key line never starts with `[`).
+      inDefaults = false;
+      continue;
+    }
+    if (!inDefaults) continue;
+    const pin = PIN_LINE.exec(line);
+    if (pin) {
+      out.pin = pin[1] !== undefined ? pin[1].replace(/\\(.)/g, '$1') : pin[2];
+      continue;
+    }
+    const ex = EXCLUDE_LINE.exec(line);
+    if (ex) {
+      const arr = ONE_LINE_ARRAY.exec(ex[1].trim());
+      if (!arr) { out.exclude = null; continue; }
+      const names = [];
+      const rest = arr[1].replace(TOML_STRING, (m, dq, sq) => {
+        names.push(dq !== undefined ? dq.replace(/\\(.)/g, '$1') : sq);
+        return '';
+      });
+      out.exclude = /^[\s,]*$/.test(rest) ? names : null;
+    }
+  }
+  return out;
+}
+
+/** v1.8.0 internal/config/config.go: `Host: rb.Host, // empty is fine — means local`. */
+function isLocalHost(host) {
+  return host === null || host === undefined || host === '' || host === 'local';
+}
+
+/** The literal `--exclude` list, else `defaults.exclude`; null = unknown (exclude nothing). */
+function excludeList(d, defaults, ctx) {
+  const f = d.flags ? d.flags.exclude : undefined;
+  if (typeof f === 'string' && f !== '') {
+    const v = expandStatic(f, ctx);
+    if (v === null) return null;
+    return v.split(',').map((x) => x.trim()).filter((x) => x.length > 0);
+  }
+  return defaults.exclude;
+}
+
+/**
+ * Whether the bench this dispatch can run on may be LOCAL, so the local Docker probe applies
+ * (36-REVIEW m-08). A named bench decides alone. Otherwise, on the classic path, v1.8.0
+ * runner.ResolveEffective pins `defaults.pin` and excludes `--exclude` (else `defaults.exclude`);
+ * `run` / `submit --execute` (dispatchRun) pick by target with no pin and no exclude. With no
+ * candidate left (or none parsed) the probe still runs — the conservative reading.
+ */
+function mayUseLocalBench(d, text, named, ctx) {
+  if (named !== null) return isLocalHost(named.host);
+  const benches = parseBenches(text);
+  let candidates = benches;
+  if (d.subcommand === null || d.subcommand === undefined) {
+    const defaults = parseDefaults(text);
+    if (defaults.pin) {
+      const pinned = benches.find((b) => b.name === defaults.pin);
+      if (pinned) return isLocalHost(pinned.host);
+    }
+    const exclude = excludeList(d, defaults, ctx);
+    if (Array.isArray(exclude)) candidates = benches.filter((b) => !exclude.includes(b.name));
+  }
+  return candidates.length === 0 || candidates.some((b) => isLocalHost(b.host));
+}
+
 /** The comma list of configured bench names for a deny reason. */
 function benchList(benches) {
   if (benches.length === 0) return '<none>';
@@ -188,7 +295,10 @@ function classifyDockerResult(res) {
   const r = res && typeof res === 'object' ? res : {};
   const code = r.error && r.error.code;
   if (code === 'ENOENT') return { state: 'missing', detail: '' };
-  if (code === 'ETIMEDOUT' || (r.status === null && r.signal)) return { state: 'timeout', detail: '' };
+  // Only OUR bound is a timeout: spawnSync reports it as ETIMEDOUT (36-REVIEW m-05). A probe
+  // killed by any other signal is an unknown state -> error -> thrown deny, never an ask.
+  if (code === 'ETIMEDOUT') return { state: 'timeout', detail: '' };
+  if (r.status === null && r.signal) return { state: 'error', detail: 'docker info was killed by ' + String(r.signal).slice(0, 32) };
   if (r.error) return { state: 'error', detail: String(code || r.error.message || 'spawn error').slice(0, MAX_DOCKER_DETAIL) };
   if (r.status === 0) return { state: 'ok', detail: '' };
   if (typeof r.status === 'number') {
@@ -218,25 +328,67 @@ const DOCKER_TIMEOUT_ASK =
   'you know Docker is starting up. ' + ASK_LIMIT_NOTE;
 
 /**
- * The config path this dispatch reads, or `{ask}` when `--config` cannot be expanded.
+ * Whether ENF-24 governs a dispatch, per gsd-test v1.8.0 subcommand (36-REVIEW M-01;
+ * orchestrator-amended decision recorded in CTK-ADR-0008):
+ *   classic — config + named bench + Docker;
+ *   run     — config + Docker (dispatchRun loads the config and picks a bench by target);
+ *   submit  — only with a truthy `--execute` (without it, runSubmit validates and echoes the
+ *             spec; it loads no config and starts no container);
+ *   wait / status / install-agent-hooks — not governed (they read run state or install files).
+ */
+function governs(d) {
+  const sub = d.subcommand === undefined ? null : d.subcommand;
+  if (sub === null || sub === 'run') return true;
+  if (sub === 'submit') return Boolean(d.flags && d.flags.execute !== undefined && d.flags.execute !== false);
+  return false;
+}
+
+function askEnv(names, what) {
+  return ask(
+    'ENF-24 gsd-test viability gate cannot check this dispatch: the command sets ' +
+      names.map((n) => '`' + n + '`').join(' / ') + ' to a value that cannot be resolved statically ' +
+      '(a shell expansion, `env -i`, `sudo`\'s environment reset or `export -n`), so the gate cannot ' +
+      'tell ' + what + '. Use literal values to have it checked. ' + ASK_LIMIT_NOTE
+  );
+}
+
+/**
+ * The config path this dispatch reads, or `{ask}` when it cannot be known statically.
+ *
+ * `--config` is expanded in the SHELL environment (36-REVIEW m-02: `export HOME=/e;` applies, a
+ * `HOME=/e gsd-test` prefix does not — the shell expands `~` before the prefix takes effect).
+ * Without `--config`, v1.8.0 config.go defaultConfigPath uses the gsd-test PROCESS environment:
+ * any non-empty XDG_CONFIG_HOME (joined as given, so a relative one resolves against the start
+ * dir), else `$HOME/.config/gsd-test/config.toml`.
  *
  * @returns {{path:string}|{ask:Object}}
  */
-function configPathFor(d, startDir, deps) {
-  const ctx = { env: deps.env, homedir: deps.homedir };
+function configPathFor(d, startDir, deps, envs) {
+  // The shell expands `~` from its own $HOME (an `export HOME=...` earlier in the command counts).
+  const sh = envs.shell;
+  const shellHome = sh.unresolved.has('HOME')
+    ? null
+    : typeof sh.env.HOME === 'string' && sh.env.HOME !== '' ? sh.env.HOME : deps.homedir;
   const flag = d.flags ? d.flags.config : undefined;
   if (typeof flag === 'string' && flag !== '') {
-    const expanded = expandStatic(flag, ctx);
+    const expanded = expandStatic(flag, { env: envs.shell.env, homedir: shellHome });
     if (expanded === null) return { ask: askUnexpandable('config', flag) };
     return { path: path.resolve(startDir, expanded) };
   }
   // An empty `--config=` is an empty Go value; gsd-test falls back to its default (the same
   // reading 36-03 gave an empty `--head=`).
-  const xdg = deps.env ? deps.env.XDG_CONFIG_HOME : undefined;
-  if (typeof xdg === 'string' && xdg.length > 0 && path.isAbsolute(xdg)) {
-    return { path: path.join(xdg, 'gsd-test', 'config.toml') };
+  const child = envs.child;
+  if (child.unresolved.has('XDG_CONFIG_HOME')) return { ask: askEnv(['XDG_CONFIG_HOME'], 'which config file gsd-test reads') };
+  const xdg = child.env.XDG_CONFIG_HOME;
+  if (typeof xdg === 'string' && xdg.length > 0) {
+    return { path: path.resolve(startDir, xdg, 'gsd-test', 'config.toml') };
   }
-  return { path: path.join(deps.homedir, '.config', 'gsd-test', 'config.toml') };
+  if (child.unresolved.has('HOME')) return { ask: askEnv(['HOME'], 'which config file gsd-test reads') };
+  const home = child.changed.has('HOME') ? child.env.HOME : deps.homedir;
+  if (typeof home !== 'string' || home.length === 0) {
+    return { ask: askEnv(['HOME'], 'which config file gsd-test reads') };
+  }
+  return { path: path.resolve(startDir, home, '.config', 'gsd-test', 'config.toml') };
 }
 
 /**
@@ -259,81 +411,128 @@ function gate(stdinString, deps) {
   const entries = findGsdTestDispatches(command);
   if (entries.length === 0) return allow();
 
-  // (3) HARD-01: an unattributable gsd-test mention fails closed before any I/O.
+  // (3) HARD-01: an unattributable gsd-test mention fails closed — after every attributable
+  // dispatch's policy checks (36-REVIEW m-01), so the override valve can never lift a policy deny
+  // earned elsewhere in the same command. With no attributable dispatch: thrown with zero I/O.
+  let pending = null;
   const uncertain = entries.find((e) => e.kind === 'uncertain');
   if (uncertain) {
-    throw new FailClosed(
+    pending = new FailClosed(
       'ENF-24 gsd-test viability gate cannot attribute this gsd-test command (' +
         uncertain.reason +
         ') — failing closed. Re-run it as a plain `gsd-test` invocation with literal flag values.'
     );
   }
 
-  // (4) Informational invocations only print; they need no config, bench or Docker.
-  const dispatches = entries.filter((e) => e.kind === 'dispatch' && !e.informational);
-  if (dispatches.length === 0) return allow();
+  // (4) Informational invocations only print; they need no config, bench or Docker. Nor do the
+  // subcommands ENF-24 does not govern (see `governs`).
+  const dispatches = entries.filter((e) => e.kind === 'dispatch' && !e.informational && governs(e));
 
-  const ctx = { env: deps.env, homedir: deps.homedir };
-  let firstAsk = null;
-  // GTEST-06: probed at most once per gate call (never cached across calls).
-  let docker = null;
-  for (const d of dispatches) {
-    // (5a) Which tree, and the start dir a relative `--config` resolves against.
-    const startDir = startDirFor(d, deps.cwd, ctx);
-    const treeDir = startDir === null ? null : treeDirFor(d, deps.cwd, ctx);
-    if (startDir === null || treeDir === null) {
+  const now = typeof deps.now === 'function' ? deps.now : Date.now;
+  const deadline = now() + GATE_BUDGET_MS;
+  const budget = () => {
+    const remaining = deadline - now();
+    if (remaining < MIN_PROBE_MS) {
       throw new FailClosed(
-        'ENF-24 gsd-test viability gate cannot resolve this dispatch\'s directory statically (a ' +
-          '`-source` value or an earlier `cd` target is a shell expansion, `~user` or `-`) — ' +
-          'failing closed. Pass a literal path.'
+        'ENF-24 gsd-test viability gate spent its ' + GATE_BUDGET_MS / 1000 + ' s probe budget for ' +
+          'this command before checking every gsd-test dispatch — failing closed. Split the command ' +
+          'so each gsd-test dispatch runs on its own.'
       );
     }
-
-    // (5b) Out-of-tree passthrough.
-    if (deps.resolveTreeRoot(treeDir) === null) continue;
-
-    // (5c) GTEST-04: the config file exists.
-    const cfg = configPathFor(d, startDir, deps);
-    if (cfg.ask) {
-      if (!firstAsk) firstAsk = cfg.ask;
+    return Math.min(DOCKER_PROBE_TIMEOUT_MS, remaining);
+  };
+  const state = { firstAsk: null, docker: new Map(), budget };
+  for (const d of dispatches) {
+    let decision = null;
+    try {
+      decision = checkDispatch(d, deps, state);
+    } catch (err) {
+      if (!pending) pending = err; // held: a later policy deny still wins (m-01)
       continue;
     }
-    const text = deps.readConfig(cfg.path);
-    if (text === null || text === undefined) return deny(missingConfigReason(cfg.path));
+    if (decision) return decision;
+  }
 
-    // (5d) GTEST-05: the named bench is configured. An empty `--bench=` names no bench.
-    const benchFlag = d.flags ? d.flags.bench : undefined;
-    let named = null;
-    if (typeof benchFlag === 'string' && benchFlag !== '') {
-      const bench = expandStatic(benchFlag, ctx);
-      if (bench === null) {
-        if (!firstAsk) firstAsk = askUnexpandable('bench', benchFlag);
-        continue;
-      }
-      const benches = parseBenches(text);
-      named = benches.find((b) => b.name === bench);
-      if (!named) return deny(missingBenchReason(bench, cfg.path, benches));
-    }
+  if (pending) throw pending;
+  return state.firstAsk || allow();
+}
 
-    // (5e) GTEST-06: the local Docker probe, only for a local (or unnamed) bench.
-    if (named !== null && named.host !== 'local') continue;
-    if (docker === null) docker = deps.dockerProbe();
-    const state = docker && docker.state;
-    if (state === 'ok') continue;
-    if (state === 'missing') return deny(DOCKER_MISSING_REASON);
-    if (state === 'down') return deny(dockerDownReason(String(docker.detail || 'non-zero exit').slice(0, MAX_DOCKER_DETAIL)));
-    if (state === 'timeout') {
-      if (!firstAsk) firstAsk = ask(DOCKER_TIMEOUT_ASK);
-      continue;
-    }
+/**
+ * The checks for one dispatch: a `deny()` decision, or null. An `ask` is recorded in
+ * `state.firstAsk` (deny > thrown > ask > allow across dispatches). Throws FailClosed on an
+ * unresolvable directory or a probe failure.
+ */
+function checkDispatch(d, deps, state) {
+  const ctx = { env: deps.env, homedir: deps.homedir };
+  // (5a) Which tree, and the start dir a relative `--config` resolves against.
+  const startDir = startDirFor(d, deps.cwd, ctx);
+  const treeDir = startDir === null ? null : treeDirFor(d, deps.cwd, ctx);
+  if (startDir === null || treeDir === null) {
     throw new FailClosed(
-      'ENF-24 gsd-test viability gate could not run the docker probe (' +
-        (state === 'error' ? String(docker.detail || 'spawn error') : 'unexpected probe result') +
-        ') — failing closed.'
+      'ENF-24 gsd-test viability gate cannot resolve this dispatch\'s directory statically (a ' +
+        '`-source` value or an earlier `cd` target is a shell expansion, `~user` or `-`, or that ' +
+        '`cd` carries an option other than -L/-P/-e/-@/--) — failing closed. Pass a literal path.'
     );
   }
 
-  return firstAsk || allow();
+  // (5b) Out-of-tree passthrough.
+  if (deps.resolveTreeRoot(treeDir) === null) return null;
+
+  // (5c) GTEST-04: the config file exists. m-02: the per-command environment decides the path.
+  const envs = dispatchEnv(d, deps.env, deps.homedir);
+  const cfg = configPathFor(d, startDir, deps, envs);
+  if (cfg.ask) {
+    if (!state.firstAsk) state.firstAsk = cfg.ask;
+    return null;
+  }
+  const text = deps.readConfig(cfg.path);
+  if (text === null || text === undefined) return deny(missingConfigReason(cfg.path));
+
+  // (5d) GTEST-05: the named bench is configured. An empty `--bench=` names no bench.
+  const benchFlag = d.flags ? d.flags.bench : undefined;
+  let named = null;
+  if (typeof benchFlag === 'string' && benchFlag !== '') {
+    const bench = expandStatic(benchFlag, ctx);
+    if (bench === null) {
+      if (!state.firstAsk) state.firstAsk = askUnexpandable('bench', benchFlag);
+      return null;
+    }
+    const benches = parseBenches(text);
+    named = benches.find((b) => b.name === bench);
+    if (!named) return deny(missingBenchReason(bench, cfg.path, benches));
+  }
+
+  // (5e) GTEST-06: the local Docker probe, only when the bench gsd-test can use may be local
+  // (m-08: --bench, else defaults.pin, else the non-excluded benches; an empty host is local).
+  if (!mayUseLocalBench(d, text, named, ctx)) return null;
+  // m-02: the probe reaches the daemon the command's DOCKER_HOST / DOCKER_CONTEXT name; one
+  // probe per distinct daemon selection per gate call.
+  const dockerVars = ['DOCKER_HOST', 'DOCKER_CONTEXT'];
+  const unknown = dockerVars.filter((n) => envs.child.unresolved.has(n));
+  if (unknown.length > 0) {
+    if (!state.firstAsk) state.firstAsk = askEnv(unknown, 'which Docker daemon the run uses');
+    return null;
+  }
+  const overrides = {};
+  for (const n of dockerVars) {
+    if (envs.child.changed.has(n)) overrides[n] = typeof envs.child.env[n] === 'string' ? envs.child.env[n] : null;
+  }
+  const key = JSON.stringify(overrides);
+  if (!state.docker.has(key)) state.docker.set(key, deps.dockerProbe(overrides, state.budget()));
+  const docker = state.docker.get(key);
+  const st = docker && docker.state;
+  if (st === 'ok') return null;
+  if (st === 'missing') return deny(DOCKER_MISSING_REASON);
+  if (st === 'down') return deny(dockerDownReason(String(docker.detail || 'non-zero exit').slice(0, MAX_DOCKER_DETAIL)));
+  if (st === 'timeout') {
+    if (!state.firstAsk) state.firstAsk = ask(DOCKER_TIMEOUT_ASK);
+    return null;
+  }
+  throw new FailClosed(
+    'ENF-24 gsd-test viability gate could not run the docker probe (' +
+      (st === 'error' ? String(docker.detail || 'spawn error') : 'unexpected probe result') +
+      ') — failing closed.'
+  );
 }
 
 /**
@@ -360,6 +559,20 @@ function defaultReadConfig(p) {
   } catch (err) {
     throw new FailClosed('ENF-24 could not read the gsd-test config `' + p + '` (' + ((err && err.code) || 'error') + ') — failing closed.');
   }
+}
+
+/**
+ * The docker probe's environment: the hook's own, with the command's DOCKER_HOST /
+ * DOCKER_CONTEXT applied (null = unset) — m-02. Only these two names can change.
+ */
+function probeEnv(overrides) {
+  const env = Object.assign({}, process.env);
+  for (const [k, v] of Object.entries(overrides || {})) {
+    if (k !== 'DOCKER_HOST' && k !== 'DOCKER_CONTEXT') continue;
+    if (v === null || v === undefined) delete env[k];
+    else env[k] = String(v);
+  }
+  return env;
 }
 
 /**
@@ -401,14 +614,14 @@ function runGsdTestViabilityGate(stdinString, deps = {}) {
     if (!resolved.dockerProbe) {
       // Built ONLY when no probe is injected; the spawn seam defaults to child_process.spawnSync.
       const spawn = resolved.spawnSync || require('node:child_process').spawnSync;
-      resolved.dockerProbe = () =>
+      resolved.dockerProbe = (overrides, timeoutMs) =>
         classifyDockerResult(
           spawn('docker', [...DOCKER_PROBE_ARGS], {
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'pipe'],
-            timeout: DOCKER_PROBE_TIMEOUT_MS,
+            timeout: Number.isFinite(timeoutMs) ? timeoutMs : DOCKER_PROBE_TIMEOUT_MS,
             killSignal: 'SIGKILL',
-            env: process.env,
+            env: probeEnv(overrides),
           })
         );
     }
@@ -435,8 +648,10 @@ module.exports = {
   runGsdTestViabilityGate,
   gate,
   parseBenches,
+  parseDefaults,
   classifyDockerResult,
   DOCKER_PROBE_TIMEOUT_MS,
+  GATE_BUDGET_MS,
   DOCKER_PROBE_ARGS,
   ASK_LIMIT_NOTE,
 };

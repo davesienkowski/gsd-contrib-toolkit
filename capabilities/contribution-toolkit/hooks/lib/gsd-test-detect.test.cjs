@@ -279,10 +279,76 @@ test('GTEST-01 walker: redirects before a flag are skipped (`> log 2>&1 --head x
   assert.strictEqual(d.flags.head, 'x');
 });
 
-test('GTEST-01 walker: a literal positional stops flag parsing (`run --head x`)', () => {
-  const d = oneDispatch('gsd-test run --head x');
+test('GTEST-01 walker: a literal positional stops flag parsing (`--quiet run --head x` is classic)', () => {
+  // v1.8.0 dispatches a subcommand only on args[0]; after a flag, `run` is a classic positional.
+  const d = oneDispatch('gsd-test --quiet run --head x');
+  assert.strictEqual(d.subcommand, null);
   assert.strictEqual(d.flags.head, undefined);
   assert.deepStrictEqual(d.args, ['run', '--head', 'x']);
+});
+
+// ─────────────── M-01 (36-REVIEW): v1.8.0 subcommands on args[0] ───────────────
+
+test('GTEST-01 M-01: a classic dispatch carries subcommand null', () => {
+  assert.strictEqual(oneDispatch('gsd-test --head HEAD').subcommand, null);
+});
+
+test('GTEST-01 M-01: `gsd-test run --config /x/missing.toml` reads the run flagset (flags after the subcommand)', () => {
+  const d = oneDispatch('gsd-test run --config /x/missing.toml');
+  assert.strictEqual(d.subcommand, 'run');
+  assert.strictEqual(d.flags.config, '/x/missing.toml');
+  assert.deepStrictEqual(d.args, []);
+});
+
+test('GTEST-01 M-01: `gsd-test run --target windows --async tests/a.test.cjs` reads run values, booleans and patterns', () => {
+  const d = oneDispatch('gsd-test run --target windows --async tests/a.test.cjs');
+  assert.strictEqual(d.flags.target, 'windows');
+  assert.strictEqual(d.flags.async, true);
+  assert.deepStrictEqual(d.args, ['tests/a.test.cjs']);
+});
+
+test('GTEST-01 M-01: a redirect before the subcommand is removed by the shell (`gsd-test >log run`)', () => {
+  assert.strictEqual(oneDispatch('gsd-test > log run').subcommand, 'run');
+});
+
+test('GTEST-01 M-01: `gsd-test submit --execute --spec-file s.json --config c.toml`', () => {
+  const d = oneDispatch('gsd-test submit --execute --spec-file s.json --config c.toml');
+  assert.strictEqual(d.subcommand, 'submit');
+  assert.strictEqual(d.flags.execute, true);
+  assert.strictEqual(d.flags['spec-file'], 's.json');
+  assert.strictEqual(d.flags.config, 'c.toml');
+});
+
+for (const sub of ['wait', 'status']) {
+  test(`GTEST-01 M-01: \`gsd-test ${sub} 20261005-abc\` is a ${sub} entry carrying the run id`, () => {
+    const d = oneDispatch(`gsd-test ${sub} 20261005-abc`);
+    assert.strictEqual(d.subcommand, sub);
+    assert.deepStrictEqual(d.args, ['20261005-abc']);
+  });
+  test(`GTEST-01 M-01: \`gsd-test ${sub} "$RUN_ID" | tail\` is a dispatch (an expanded run id is not uncertain)`, () => {
+    const d = oneDispatch(`gsd-test ${sub} "$RUN_ID" | tail`);
+    assert.strictEqual(d.subcommand, sub);
+    assert.strictEqual(d.pipeMasked, true);
+  });
+}
+
+test('GTEST-01 M-01: `gsd-test install-agent-hooks --claude --global` is an install-agent-hooks entry', () => {
+  const d = oneDispatch('gsd-test install-agent-hooks --claude --global');
+  assert.strictEqual(d.subcommand, 'install-agent-hooks');
+});
+
+test('GTEST-01 M-01: `gsd-test run $EXTRA` is uncertain (an expansion may carry run flags)', () => {
+  oneUncertain('gsd-test run $EXTRA');
+});
+
+test('GTEST-01 M-01: `gsd-test run -h` is informational (ErrHelp, no run)', () => {
+  assert.strictEqual(oneDispatch('gsd-test run -h').informational, true);
+});
+
+test('GTEST-01 M-01: `gsd-test run --head x` reads --head as an unknown run flag, never as the classic --head', () => {
+  const d = oneDispatch('gsd-test run --head x');
+  assert.strictEqual(d.subcommand, 'run');
+  assert.notStrictEqual(d.flags.head, 'x');
 });
 
 test('GTEST-01 walker: `--` ends flag parsing (`-- --head x`)', () => {
@@ -313,11 +379,25 @@ test('GTEST-01 walker: -head HEAD is not informational', () => {
   assert.strictEqual(d.flags.head, 'HEAD');
 });
 
-for (const flag of ['--version', '-version', '--help', '-help', '--probe-benches', '-probe-benches']) {
+for (const flag of ['--version', '-version', '--help', '-help']) {
   test(`GTEST-01 walker: ${flag} is informational`, () => {
     assert.strictEqual(oneDispatch(`gsd-test ${flag}`).informational, true);
   });
 }
+
+// B-01 (36-REVIEW): v1.8.0 `--probe-benches` probes reachability DURING config.Load and then runs
+// the full suite (cmd/gsd-test/main.go: only --version returns before runner.Run). It is a run.
+for (const flag of ['--probe-benches', '-probe-benches', '--probe-benches=true']) {
+  test(`GTEST-01 walker (B-01): ${flag} is NOT informational — it runs the suite`, () => {
+    const d = oneDispatch(`gsd-test ${flag} --head HEAD`);
+    assert.strictEqual(d.informational, false);
+    assert.strictEqual(d.flags.head, 'HEAD');
+  });
+}
+
+test('GTEST-01 walker (B-01): INFORMATIONAL_FLAGS no longer carries probe-benches', () => {
+  assert.strictEqual(det.INFORMATIONAL_FLAGS.has('probe-benches'), false);
+});
 
 test('GTEST-01 walker: -bench "$B" records bench as unresolved', () => {
   const d = oneDispatch('gsd-test -bench "$B"');
@@ -681,3 +761,190 @@ test('GTEST-01 cd-expansion: `{ cd "$X"; }; gsd-test` is unresolved (a brace gro
   const d = oneDispatch('{ cd "$X"; }; gsd-test');
   assert.strictEqual(exported('startDirFor')(d, '/r', { env: {}, homedir: '/h' }), null);
 });
+
+// ─────────────── M-02 (36-REVIEW): `cd` options are skipped before the target ───────────────
+
+const CD_OPTION_ROWS = [
+  ['cd -P /g/core && gsd-test', '/g/core'],
+  ['cd -L /g/core && gsd-test', '/g/core'],
+  ['cd -- /g/core && gsd-test', '/g/core'],
+  ['cd -P -- /g/core && gsd-test', '/g/core'],
+  ['cd -Pe /g/core && gsd-test', '/g/core'],
+  ['cd -P -e /g/core && gsd-test', '/g/core'],
+  ['cd -@ /g/core && gsd-test', '/g/core'],
+  ['cd -P sub && gsd-test', '/elsewhere/sub'],
+  ['cd -x /g/core && gsd-test', null],
+  ['cd -- - && gsd-test', null],
+];
+for (const [cmd, want] of CD_OPTION_ROWS) {
+  test(`GTEST-01 M-02: startDirFor(${cmd}) from /elsewhere is ${want}`, () => {
+    const d = oneDispatch(cmd);
+    assert.strictEqual(exported('startDirFor')(d, '/elsewhere', { env: {}, homedir: '/h' }), want);
+  });
+}
+
+// N-05 (36-REVIEW): a bare `cd` goes to $HOME.
+test('GTEST-01 N-05: `cd && gsd-test` starts in the injected homedir', () => {
+  const d = oneDispatch('cd && gsd-test');
+  assert.strictEqual(exported('startDirFor')(d, '/elsewhere', { env: {}, homedir: '/h' }), '/h');
+});
+
+test('GTEST-01 N-05: `cd; gsd-test` prefers the env HOME over the homedir', () => {
+  const d = oneDispatch('cd; gsd-test');
+  assert.strictEqual(exported('startDirFor')(d, '/elsewhere', { env: { HOME: '/e' }, homedir: '/h' }), '/e');
+});
+
+test('GTEST-01 N-05: `cd -P; gsd-test` with no known home is unresolved (null)', () => {
+  const d = oneDispatch('cd -P; gsd-test');
+  assert.strictEqual(exported('startDirFor')(d, '/elsewhere', { env: {} }), null);
+});
+
+// ─────────────── M-03 (36-REVIEW): `env -C` / `env --chdir` and `sudo -D` / `sudo --chdir` ───────────────
+
+const CHDIR_ROWS = [
+  ['env -C /g/core gsd-test | tail', '/g/core'],
+  ['env --chdir=/g/core gsd-test | tail', '/g/core'],
+  ['env --chdir /g/core gsd-test | tail', '/g/core'],
+  ['env -C/g/core gsd-test', '/g/core'],
+  ['env -iC /g/core gsd-test', '/g/core'],
+  ['env -C sub FOO=1 gsd-test', '/elsewhere/sub'],
+  ['cd /a && env -C b gsd-test', '/a/b'],
+  ['sudo -D /g/core gsd-test | tail', '/g/core'],
+  ['sudo --chdir=/g/core gsd-test', '/g/core'],
+  ['sudo --chdir /g/core gsd-test', '/g/core'],
+  ['sudo -u dave -D /g/core gsd-test', '/g/core'],
+  ['nice -n 5 sudo -D /g/core gsd-test', '/g/core'],
+  ['env -C /a sudo -D b gsd-test', '/a/b'],
+  ['sudo -D /g/core bash -c "gsd-test | tail"', '/g/core'],
+  ['env -C "$X" gsd-test', null],
+  ['env -C ~bob gsd-test', null],
+];
+for (const [cmd, want] of CHDIR_ROWS) {
+  test(`GTEST-01 M-03: startDirFor(${cmd}) from /elsewhere is ${want}`, () => {
+    const d = oneDispatch(cmd);
+    assert.strictEqual(exported('startDirFor')(d, '/elsewhere', { env: {}, homedir: '/h' }), want);
+  });
+}
+
+test('GTEST-01 M-03: `sudo -D /g/core gsd-test --head HEAD | tail` is a piped dispatch with its flags read', () => {
+  const d = oneDispatch('sudo -D /g/core gsd-test --head HEAD | tail');
+  assert.strictEqual(d.flags.head, 'HEAD');
+  assert.strictEqual(d.pipeMasked, true);
+});
+
+test('GTEST-01 M-03: the reverse case — `env -C /tmp gsd-test` from /g/core starts in /tmp', () => {
+  const d = oneDispatch('env -C /tmp gsd-test');
+  assert.strictEqual(exported('startDirFor')(d, '/g/core', { env: {}, homedir: '/h' }), '/tmp');
+});
+
+test('GTEST-01 M-03: `echo env -C /x gsd-test` is not a dispatch (env is not in wrapper position)', () => {
+  assert.deepStrictEqual(entries('echo env -C /x gsd-test'), []);
+});
+
+// ─────────────── M-04 (36-REVIEW): `eval` re-parses its joined arguments ───────────────
+
+test("GTEST-01 M-04: `eval 'gsd-test --head HEAD | tail -5'` is a piped dispatch", () => {
+  const d = oneDispatch("eval 'gsd-test --head HEAD | tail -5'");
+  assert.strictEqual(d.flags.head, 'HEAD');
+  assert.strictEqual(d.pipeMasked, true);
+  assert.strictEqual(d.depth, 1);
+});
+
+test('GTEST-01 M-04: `eval gsd-test --head HEAD` is a dispatch with its flags read', () => {
+  const d = oneDispatch('eval gsd-test --head HEAD');
+  assert.strictEqual(d.flags.head, 'HEAD');
+  assert.strictEqual(d.pipeMasked, false);
+});
+
+test('GTEST-01 M-04: `eval gsd-test | tail` is masked by the outer pipe', () => {
+  assert.strictEqual(oneDispatch('eval gsd-test | tail').pipeMasked, true);
+});
+
+test('GTEST-01 M-04: `cd /g/core && eval gsd-test` starts in /g/core', () => {
+  const d = oneDispatch('cd /g/core && eval gsd-test');
+  assert.strictEqual(exported('startDirFor')(d, '/elsewhere', { env: {}, homedir: '/h' }), '/g/core');
+});
+
+test("GTEST-01 M-04: an unparseable eval payload naming gsd-test is uncertain (`eval 'gsd-test --bench \"x'`)", () => {
+  oneUncertain("eval 'gsd-test --bench \"x'");
+});
+
+test('GTEST-01 M-04: eval counts toward the -c depth bound', () => {
+  oneUncertain(`bash -c "bash -c 'eval gsd-test'"`);
+});
+
+test('GTEST-01 M-04: `eval echo gsd-test` yields no entry', () => {
+  assert.deepStrictEqual(entries('eval echo gsd-test'), []);
+});
+
+// ─────────────── M-05 (36-REVIEW): lookups are not dispatches ───────────────
+
+for (const cmd of [
+  'command -v gsd-test',
+  'command -V gsd-test',
+  'command -pv gsd-test',
+  'command -p -v gsd-test',
+  'type gsd-test',
+  'type -a gsd-test',
+  'hash gsd-test',
+  'hash -t gsd-test',
+  'which gsd-test',
+  'which -a gsd-test',
+]) {
+  test(`GTEST-01 M-05: lookup \`${cmd}\` yields no entry`, () => {
+    assert.deepStrictEqual(entries(cmd), []);
+  });
+}
+
+test('GTEST-01 M-05: `command -v gsd-test && gsd-test --version` yields only the informational dispatch', () => {
+  const d = oneDispatch('command -v gsd-test && gsd-test --version');
+  assert.strictEqual(d.informational, true);
+});
+
+test('GTEST-01 M-05: `command -p gsd-test` is still a dispatch (no -v / -V)', () => {
+  oneDispatch('command -p gsd-test');
+});
+
+// ─────────────── m-02 follow-on: an assignment whose value is a spaced substitution ───────────────
+// argv splits `SHA=$(git rev-parse HEAD) gsd-test` into `SHA=$(git`, `rev-parse`, `HEAD)`, ...;
+// program resolution then saw `rev-parse` and the dispatch vanished (found while fixing m-02).
+
+test('GTEST-01 m-02: `SHA=$(git rev-parse HEAD) gsd-test --head HEAD | tail` is a piped dispatch', () => {
+  const d = oneDispatch('SHA=$(git rev-parse HEAD) gsd-test --head HEAD | tail');
+  assert.strictEqual(d.flags.head, 'HEAD');
+  assert.strictEqual(d.pipeMasked, true);
+});
+
+test('GTEST-01 m-02: `env X=$(a b) gsd-test` is a dispatch', () => {
+  oneDispatch('env X=$(a b) gsd-test');
+});
+
+test('GTEST-01 m-02: `HOME=$(mktemp -d) gsd-test` records the HOME assignment as an env op', () => {
+  const d = oneDispatch('HOME=$(mktemp -d) gsd-test');
+  assert.deepStrictEqual(d.envOps, [{ op: 'set', name: 'HOME', value: '$(mktemp -d)' }]);
+});
+
+// ─────────────── Nits (36-REVIEW N-01, N-02, N-03) ───────────────
+
+test('GTEST-03 N-01: the noclobber redirect `>|` is not a pipe (`gsd-test --head origin/next >| out.log`)', () => {
+  const d = oneDispatch('gsd-test --head origin/next >| out.log');
+  assert.strictEqual(d.pipedOut, false);
+  assert.strictEqual(d.pipeMasked, false);
+  assert.strictEqual(d.flags.head, 'origin/next');
+});
+
+test('GTEST-03 N-01: `gsd-test 2>| e.log | tail` is still piped after the noclobber redirect', () => {
+  assert.strictEqual(oneDispatch('gsd-test 2>| e.log | tail').pipeMasked, true);
+});
+
+for (const cmd of ['set -- -o pipefail; gsd-test | tail', 'false && set -o pipefail; gsd-test | tail', 'true || set -o pipefail; gsd-test | tail']) {
+  test(`GTEST-03 N-02: \`${cmd}\` is still masked (not a pipefail that is known to run)`, () => {
+    assert.strictEqual(oneDispatch(cmd).pipeMasked, true);
+  });
+}
+
+for (const flag of ['-h=0', '-help=false', '--h=false']) {
+  test(`GTEST-01 N-03: \`gsd-test ${flag}\` is informational (Go returns ErrHelp for an undefined h/help whatever the value)`, () => {
+    assert.strictEqual(oneDispatch(`gsd-test ${flag}`).informational, true);
+  });
+}

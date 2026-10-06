@@ -23,8 +23,10 @@
  *                                    (unparseable, ambiguous wrapper, over-deep `-c`,
  *                                    unbalanced substitution, shell expansion in flag
  *                                    position). Gates fail closed on it (HARD-01).
- *   { kind: 'dispatch', seg, segIndex, args, flags, unresolved, informational, background,
- *     pipedOut, pipefail, pipeMasked, viaDashC, depth, prefixes }
+ *   { kind: 'dispatch', subcommand, seg, segIndex, args, flags, unresolved, informational,
+ *     background, pipedOut, pipefail, pipeMasked, viaDashC, depth, prefixes }
+ *   `subcommand` is null for the classic path, else one of SUBCOMMANDS (36-REVIEW M-01); each
+ *   gate decides which subcommands it governs.
  *
  * Pure: no fs, no child_process, no env reads (env and homedir are always passed in). Never
  * executes the command it classifies. Never throws on a string input.
@@ -56,8 +58,31 @@ const BOOLEAN_FLAGS = new Set([
   'json-events', 'probe-benches', 'quiet', 'verbose', 'version', 'help', 'h',
 ]);
 
-/** A dispatch carrying any of these (truthy) only prints information; both gates pass it. */
-const INFORMATIONAL_FLAGS = new Set(['version', 'help', 'h', 'probe-benches']);
+/**
+ * A dispatch carrying any of these (truthy) only prints information; both gates pass it.
+ * `probe-benches` is NOT here (36-REVIEW B-01): v1.8.0 probes bench reachability during
+ * config.Load and then runs the full suite — only `--version` returns before runner.Run.
+ */
+const INFORMATIONAL_FLAGS = new Set(['version', 'help', 'h']);
+
+/** The classic (no-subcommand) flagset: `parseFlags` in v1.8.0 cmd/gsd-test/main.go. */
+const CLASSIC_FLAGSET = Object.freeze({ value: VALUE_FLAGS, bool: BOOLEAN_FLAGS });
+
+/**
+ * v1.8.0 subcommands (36-REVIEW M-01). `run()` dispatches on `args[0]` ONLY, before any flag
+ * parsing, so `gsd-test --quiet run` is the classic path with a positional. Each walked
+ * subcommand has its own Go flagset (main.go runRun / runSubmit / runInstallHooks); `wait` and
+ * `status` take a bare run id (no flagset), so their arguments are collected as positionals and an
+ * expanded run id is NOT uncertain. `__run-worker` (internal, spawned by gsd-test itself) is
+ * deliberately absent: it falls to the classic path, which over-governs it (fail-safe).
+ */
+const SUBCOMMANDS = Object.freeze({
+  run: { value: new Set(['target', 'config', 'estimate-ms']), bool: new Set(['async', 'keep', 'help', 'h']) },
+  submit: { value: new Set(['spec-file', 'config']), bool: new Set(['execute', 'help', 'h']) },
+  'install-agent-hooks': { positionalOnly: true },
+  wait: { positionalOnly: true },
+  status: { positionalOnly: true },
+});
 
 /** Go's flag package reads these boolean values as false. */
 const GO_FALSE = new Set(['false', '0', 'f', 'F', 'FALSE', 'False']);
@@ -109,7 +134,8 @@ function substitutionOpen(value) {
  * @returns {{flags:Object, unresolved:Set<string>, positionals:string[], background:boolean,
  *   uncertainReason:(string|null)}}
  */
-function walkGoFlags(tokens) {
+function walkGoFlags(tokens, flagset) {
+  const fset = flagset && flagset.value && flagset.bool ? flagset : CLASSIC_FLAGSET;
   const toks = Array.isArray(tokens) ? tokens.filter((t) => typeof t === 'string') : [];
   const flags = {};
   const unresolved = new Set();
@@ -172,7 +198,7 @@ function walkGoFlags(tokens) {
       break;
     }
 
-    if (VALUE_FLAGS.has(name)) {
+    if (fset.value.has(name)) {
       let value;
       if (eq !== -1) {
         value = body.slice(eq + 1);
@@ -212,12 +238,65 @@ function walkGoFlags(tokens) {
       flags[name] = true;
     } else {
       const v = body.slice(eq + 1);
-      flags[name] = BOOLEAN_FLAGS.has(name) ? !GO_FALSE.has(v) : v;
+      flags[name] = fset.bool.has(name) ? !GO_FALSE.has(v) : v;
     }
     i += 1;
   }
 
   return { flags, unresolved, positionals, background, uncertainReason };
+}
+
+/**
+ * The positional-only walk for `wait` / `status` / `install-agent-hooks` arguments: redirects
+ * dropped, a lone `&` backgrounds, everything else is a positional. Never uncertain — these
+ * entries are governed (if at all) only by the pipe attribution, which does not read arguments.
+ */
+function walkPositionals(tokens) {
+  const toks = Array.isArray(tokens) ? tokens.filter((t) => typeof t === 'string') : [];
+  const positionals = [];
+  let background = false;
+  for (let k = 0; k < toks.length; ) {
+    const m = REDIRECT.exec(toks[k]);
+    if (m) { k += m[2] === '' ? 2 : 1; continue; }
+    if (toks[k] === '&') { background = true; break; }
+    positionals.push(toks[k]);
+    k += 1;
+  }
+  return { flags: {}, unresolved: new Set(), positionals, background, uncertainReason: null };
+}
+
+/**
+ * The v1.8.0 subcommand at `args[0]` (the first token after the program once the shell has
+ * removed redirects), or null for the classic path. Returns the remaining tokens with the
+ * subcommand word removed (redirects kept; the walkers skip them).
+ *
+ * @param {string[]} after tokens after the gsd-test program token
+ * @returns {{name:(string|null), rest:string[]}}
+ */
+function leadingSubcommand(after) {
+  let k = 0;
+  while (k < after.length) {
+    const m = REDIRECT.exec(after[k]);
+    if (!m) break;
+    k += m[2] === '' ? 2 : 1;
+  }
+  const word = after[k];
+  if (typeof word === 'string' && Object.prototype.hasOwnProperty.call(SUBCOMMANDS, word)) {
+    return { name: word, rest: after.slice(0, k).concat(after.slice(k + 1)) };
+  }
+  return { name: null, rest: after };
+}
+
+/** Whether a walked dispatch only prints information (help / version) and runs nothing. */
+function isInformational(flags, subcommand) {
+  for (const f of INFORMATIONAL_FLAGS) {
+    if (subcommand !== null && f === 'version') continue; // not a subcommand flag
+    // N-03: no gsd-test flagset defines h/help, so Go's flag package returns ErrHelp for them
+    // before reading any value: `-h=0` prints usage and runs nothing.
+    if ((f === 'h' || f === 'help') && flags[f] !== undefined) return true;
+    if (flags[f] !== undefined && flags[f] !== false) return true;
+  }
+  return false;
 }
 
 /**
@@ -485,6 +564,307 @@ function resolveSegmentProgram(tokens) {
 }
 
 /**
+ * Rejoin assignment tokens whose value opens a command substitution argv split on whitespace
+ * (`SHA=$(git rev-parse HEAD)` arrives as `SHA=$(git`, `rev-parse`, `HEAD)`), so the program slot
+ * is not mistaken for a word inside the substitution. null when the substitution never closes.
+ */
+function joinAssignmentSubstitutions(tokens) {
+  const out = [];
+  for (let k = 0; k < tokens.length; k++) {
+    let t = tokens[k];
+    const a = /^[A-Za-z_][A-Za-z0-9_]*=/.exec(t);
+    if (a && (t.includes('$(') || t.includes('`'))) {
+      while (substitutionOpen(t)) {
+        if (k + 1 >= tokens.length) return null;
+        k += 1;
+        t += ' ' + tokens[k];
+      }
+    }
+    out.push(t);
+  }
+  return out;
+}
+
+/**
+ * The working-directory options of the `env` and `sudo` wrappers (36-REVIEW M-03): `env -C <dir>`
+ * / `--chdir[=]<dir>` and `sudo -D <dir>` / `--chdir[=]<dir>`. `value` lists each wrapper's OTHER
+ * value-taking options (short letters and long names), so a cluster or a value is never misread
+ * as the chdir. The short letters mirror classify.WRAPPER_VALUE_FLAGS (classify.cjs is unchanged).
+ */
+const CHDIR_WRAPPERS = Object.freeze({
+  env: { chdir: 'C', short: new Set(['u', 'S']), long: new Set(['unset', 'split-string']) },
+  sudo: {
+    chdir: 'D',
+    short: new Set(['u', 'g', 'U', 'C', 'h', 'p', 'r', 't']),
+    long: new Set(['user', 'group', 'other-user', 'close-from', 'host', 'prompt', 'role', 'type', 'command-timeout']),
+  },
+});
+
+/** A program-slot sentinel no real token can equal (a NUL is never in an argv token). */
+const SLOT_PROBE = '\u0000gsd-test-slot';
+
+/**
+ * Strip the chdir options of every `env` / `sudo` wrapper that sits in WRAPPER position (the
+ * token is where resolveSegmentProgram would look for the program), recording each directory in
+ * order. Without this, classify.resolveProgram reads `sudo -D /x gsd-test` as program `x` (its
+ * sudo value set has no `-D`) and `env --chdir /x gsd-test` as program `x`, hiding the dispatch,
+ * and `env -C /x gsd-test` resolves but the directory change was lost (M-03).
+ *
+ * @param {string[]} tokens normalised segment tokens
+ * @returns {{tokens:string[], chdirs:(string|null)[]}} `null` marks a chdir option whose value
+ *   is missing (unresolvable)
+ */
+function stripChdirOptions(tokens) {
+  let toks = tokens.slice();
+  const chdirs = [];
+  for (let i = 0; i < toks.length; i++) {
+    const spec = CHDIR_WRAPPERS[path.basename(toks[i])];
+    if (!spec) continue;
+    const slot = resolveSegmentProgram(toks.slice(0, i).concat([SLOT_PROBE]));
+    if (slot.ambiguous || slot.prog !== SLOT_PROBE || slot.idx !== i) continue;
+
+    let k = i + 1;
+    while (k < toks.length && toks[k].startsWith('-') && toks[k] !== '-') {
+      const t = toks[k];
+      if (t === '--') break;
+      if (t.startsWith('--')) {
+        const eq = t.indexOf('=');
+        const name = eq === -1 ? t.slice(2) : t.slice(2, eq);
+        if (name === 'chdir') {
+          if (eq !== -1) {
+            chdirs.push(t.slice(eq + 1));
+            toks.splice(k, 1);
+          } else {
+            chdirs.push(k + 1 < toks.length ? toks[k + 1] : null);
+            toks.splice(k, 2);
+          }
+          continue;
+        }
+        k += eq === -1 && spec.long.has(name) ? 2 : 1;
+        continue;
+      }
+      // A short cluster: booleans, then at most one value letter (its value is the rest of the
+      // token, or the next token).
+      let consumedNext = false;
+      let stripped = false;
+      for (let c = 1; c < t.length; c++) {
+        const L = t[c];
+        if (L === spec.chdir) {
+          const rest = t.slice(c + 1);
+          const head = t.slice(0, c);
+          if (rest !== '') {
+            chdirs.push(rest);
+          } else {
+            chdirs.push(k + 1 < toks.length ? toks[k + 1] : null);
+            if (k + 1 < toks.length) toks.splice(k + 1, 1);
+          }
+          if (head === '-') toks.splice(k, 1);
+          else { toks[k] = head; k += 1; }
+          stripped = true;
+          break;
+        }
+        if (spec.short.has(L)) {
+          consumedNext = c === t.length - 1;
+          break;
+        }
+      }
+      if (stripped) continue;
+      k += consumedNext ? 2 : 1;
+    }
+  }
+  return { tokens: toks, chdirs };
+}
+
+/** Synthetic `cd` prefixes for wrapper chdirs, folded by startDirFor after the real prefixes. */
+function chdirPrefixes(chdirs) {
+  return chdirs.map((dir) => ({
+    ok: true,
+    segments: [
+      dir === null
+        ? { program: 'cd', tokens: ['cd'], positionals: [], unresolvable: true }
+        : { program: 'cd', tokens: ['cd', '--', dir], positionals: [dir] },
+    ],
+  }));
+}
+
+/**
+ * Whether a resolved gsd-test program is only LOOKED UP (36-REVIEW M-05): a `command` wrapper
+ * before it carries `-v` or `-V` (alone or clustered: `-pv`), which prints where gsd-test is and
+ * runs nothing. classify.resolveProgram skips `-v` as a boolean wrapper flag, so without this the
+ * standard "is it installed?" check drew a non-overridable policy deny. `type`, `hash` and
+ * `which` resolve to themselves and never reach here.
+ */
+function isCommandLookup(toks, idx) {
+  for (let k = 0; k < idx; k++) {
+    if (path.basename(toks[k]) !== 'command') continue;
+    for (let j = k + 1; j < idx && /^-[A-Za-z]+$/.test(toks[j]); j++) {
+      if (/[vV]/.test(toks[j])) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The environment variables whose value changes what ENF-24 checks (36-REVIEW m-02): the config
+ * path (HOME, XDG_CONFIG_HOME — v1.8.0 config.go defaultConfigPath) and the daemon the Docker
+ * probe reaches (DOCKER_HOST, DOCKER_CONTEXT).
+ */
+const WATCHED_ENV = Object.freeze(['HOME', 'XDG_CONFIG_HOME', 'DOCKER_HOST', 'DOCKER_CONTEXT']);
+
+const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/;
+
+/**
+ * Environment operations a dispatch's OWN segment applies to the gsd-test process, read from the
+ * tokens before the program: leading / post-wrapper `NAME=value`, `env -u NAME` / `--unset`,
+ * `env -i` / `-` / `--ignore-environment` (clear), and `sudo` (opaque: its env_reset policy is
+ * not knowable here). Only WATCHED_ENV names are recorded.
+ *
+ * @returns {Object[]} ops: {op:'set', name, value} | {op:'unset', name} | {op:'clear'} | {op:'opaque'}
+ */
+function ownEnvOps(toks, idx) {
+  const ops = [];
+  let inEnv = false;
+  for (let k = 0; k < idx; k++) {
+    const t = toks[k];
+    const a = ASSIGNMENT.exec(t);
+    if (a) {
+      if (WATCHED_ENV.includes(a[1])) ops.push({ op: 'set', name: a[1], value: a[2] });
+      continue;
+    }
+    const base = path.basename(t);
+    if (base === 'env') { inEnv = true; continue; }
+    if (base === 'sudo') { ops.push({ op: 'opaque' }); inEnv = false; continue; }
+    if (inEnv && (t === '-' || t === '-i' || t === '--ignore-environment')) { ops.push({ op: 'clear' }); continue; }
+    if (inEnv && t.startsWith('--unset')) {
+      const name = t.startsWith('--unset=') ? t.slice(8) : toks[k + 1];
+      if (!t.startsWith('--unset=')) k += 1;
+      if (WATCHED_ENV.includes(name)) ops.push({ op: 'unset', name });
+      continue;
+    }
+    if (inEnv && /^-[A-Za-z]+/.test(t) && !t.startsWith('--')) {
+      for (let c = 1; c < t.length; c++) {
+        if (t[c] === 'i') ops.push({ op: 'clear' });
+        if (t[c] === 'u' || t[c] === 'S') {
+          const value = c + 1 < t.length ? t.slice(c + 1) : toks[k + 1];
+          if (c + 1 >= t.length) k += 1;
+          if (t[c] === 'u' && WATCHED_ENV.includes(value)) ops.push({ op: 'unset', name: value });
+          break;
+        }
+      }
+      continue;
+    }
+    inEnv = false;
+  }
+  return ops;
+}
+
+/**
+ * Environment operations a PREFIX segment leaves in the shell for later segments: `export
+ * NAME=v`, `declare -x` / `typeset -x NAME=v` (exported), `unset NAME`, `export -n NAME`
+ * (opaque for that name), and a bare `NAME=v` segment (a shell variable, exported only if it
+ * already was). Only WATCHED_ENV names are recorded.
+ */
+function prefixEnvOps(seg) {
+  const toks = seg && Array.isArray(seg.tokens) ? seg.tokens : [];
+  let k = 0;
+  const ops = [];
+  while (k < toks.length && ASSIGNMENT.test(toks[k])) k += 1;
+  if (k === toks.length) {
+    for (const t of toks) {
+      const a = ASSIGNMENT.exec(t);
+      if (WATCHED_ENV.includes(a[1])) ops.push({ op: 'shellset', name: a[1], value: a[2] });
+    }
+    return ops;
+  }
+  const prog = path.basename(toks[k]);
+  const rest = toks.slice(k + 1);
+  if (prog === 'export' || ((prog === 'declare' || prog === 'typeset') && rest.some((t) => /^-[A-Za-z]*x/.test(t)))) {
+    const unexport = prog === 'export' && rest.some((t) => /^-[A-Za-z]*n/.test(t));
+    for (const t of rest) {
+      if (t.startsWith('-')) continue;
+      const a = ASSIGNMENT.exec(t);
+      const name = a ? a[1] : t;
+      if (!WATCHED_ENV.includes(name)) continue;
+      if (unexport) ops.push({ op: 'opaque-name', name });
+      else if (a) ops.push({ op: 'set', name, value: a[2] });
+    }
+  } else if (prog === 'unset') {
+    if (rest.some((t) => /^-[A-Za-z]*f/.test(t))) return ops; // functions
+    for (const t of rest) if (WATCHED_ENV.includes(t)) ops.push({ op: 'unset', name: t });
+  }
+  return ops;
+}
+
+/**
+ * The environment a dispatch's gsd-test process sees, and the shell environment its flag values
+ * were expanded in (36-REVIEW m-02). Folds the persisting prefix segments (export / unset /
+ * declare -x / bare assignment) over `baseEnv`, then the dispatch's own prefix (`NAME=v
+ * gsd-test`, `env -u`, `env -i`, sudo). A value carrying an expansion expandStatic cannot resolve
+ * makes that name UNRESOLVED (the gate asks rather than guess). Pure.
+ *
+ * @param {Object} d a `kind:'dispatch'` entry
+ * @param {Object} baseEnv the hook's environment
+ * @param {string} [homedir]
+ * @returns {{shell:{env:Object, unresolved:Set<string>}, child:{env:Object, unresolved:Set<string>, changed:Set<string>}}}
+ */
+function dispatchEnv(d, baseEnv, homedir) {
+  const pick = (e) => {
+    const o = {};
+    for (const n of WATCHED_ENV) if (e && typeof e[n] === 'string') o[n] = e[n];
+    return o;
+  };
+  const shell = { env: pick(baseEnv), unresolved: new Set() };
+  const child = { env: pick(baseEnv), unresolved: new Set(), changed: new Set() };
+  const valueOf = (raw) => expandStatic(raw, { env: shell.env, homedir: shell.unresolved.has('HOME') ? undefined : homedir });
+
+  const prefixes = d && Array.isArray(d.prefixes) ? d.prefixes : [];
+  for (const p of prefixes) {
+    const segs = p && Array.isArray(p.segments) ? p.segments : [];
+    for (const seg of segs) {
+      for (const op of prefixEnvOps(seg)) {
+        if (op.op === 'unset') {
+          for (const t of [shell, child]) { delete t.env[op.name]; t.unresolved.delete(op.name); }
+          child.changed.add(op.name);
+        } else if (op.op === 'opaque-name') {
+          child.unresolved.add(op.name);
+          child.changed.add(op.name);
+        } else {
+          const exported = op.op === 'set' || Object.prototype.hasOwnProperty.call(child.env, op.name) || child.unresolved.has(op.name);
+          const v = valueOf(op.value);
+          const targets = exported ? [shell, child] : [shell];
+          for (const t of targets) {
+            if (v === null) { delete t.env[op.name]; t.unresolved.add(op.name); }
+            else { t.env[op.name] = v; t.unresolved.delete(op.name); }
+          }
+          if (exported) child.changed.add(op.name);
+        }
+      }
+    }
+  }
+
+  for (const op of Array.isArray(d && d.envOps) ? d.envOps : []) {
+    if (op.op === 'clear') {
+      child.env = {};
+      child.unresolved.clear();
+      for (const n of WATCHED_ENV) child.changed.add(n);
+    } else if (op.op === 'opaque') {
+      for (const n of WATCHED_ENV) { delete child.env[n]; child.unresolved.add(n); child.changed.add(n); }
+    } else if (op.op === 'unset') {
+      delete child.env[op.name];
+      child.unresolved.delete(op.name);
+      child.changed.add(op.name);
+    } else if (op.op === 'set') {
+      // `NAME=v cmd`: the value is expanded in the SHELL's environment, before the prefix applies.
+      const v = valueOf(op.value);
+      if (v === null) { delete child.env[op.name]; child.unresolved.add(op.name); }
+      else { child.env[op.name] = v; child.unresolved.delete(op.name); }
+      child.changed.add(op.name);
+    }
+  }
+  return { shell, child };
+}
+
+/**
  * Walk a shell's options (`bash -o pipefail -lc '<payload>'`).
  *
  * @param {string[]} after tokens after the shell program token
@@ -528,6 +908,7 @@ function setPipefailChange(tokens, idx) {
   let change = null;
   for (let k = idx + 1; k < tokens.length - 1; k++) {
     const t = tokens[k];
+    if (t === '--') break; // N-02: `set -- -o pipefail` sets positional parameters
     if (!/^[-+][^-+]/.test(t) || !t.slice(1).includes('o')) continue;
     if (tokens[k + 1] === 'pipefail') change = t[0] === '-';
   }
@@ -545,6 +926,10 @@ function attributePipe(segments, profile, index) {
   let inStatement = true;
   for (let k = index; k < segments.length; k++) {
     const after = profile[k].after;
+    const toks = segments[k].tokens || [];
+    // N-01: argv splits the noclobber redirect `>|` on its `|`; a segment ending in a bare `>`
+    // operator before a `|` is that redirect, and the statement continues in the next segment.
+    if (segments[k].nextOp === '|' && /^\d*>$/.test(toks[toks.length - 1] || '')) continue;
     const op = segments[k].nextOp;
     if (after > level) continue;
     if (after === level) {
@@ -612,24 +997,40 @@ function scanParsed(parsed, st) {
     for (const type of n.openers) frames.push({ type, segs: [] });
 
     if (n.tokens.length > 0) {
-      const r = resolveSegmentProgram(n.tokens);
+      // m-02 follow-on: rejoin `NAME=$(a b)` assignment values argv split on spaces.
+      const joined = joinAssignmentSubstitutions(n.tokens);
+      if (joined === null) {
+        if (GSD_TEST_WORD.test(n.tokens.join(' '))) {
+          out.push({ kind: 'uncertain', reason: 'unbalanced command substitution in an assignment before gsd-test' });
+        }
+      }
+      // M-03: `env -C <dir>` / `sudo -D <dir>` change the directory of THIS segment only.
+      const cd = stripChdirOptions(joined === null ? [] : joined);
+      const toks = cd.tokens;
+      const here = () => st.prefixes.concat([prefixNow()], chdirPrefixes(cd.chdirs));
+      const r = resolveSegmentProgram(toks);
       const pipefail = runningPipefail || st.inheritedPipefail;
 
       if (r.ambiguous) {
-        if (GSD_TEST_WORD.test(n.tokens.join(' '))) {
+        if (GSD_TEST_WORD.test(toks.join(' '))) {
           out.push({ kind: 'uncertain', reason: 'ambiguous wrapper around a gsd-test mention' });
         }
+      } else if (r.prog === 'gsd-test' && r.idx !== -1 && isCommandLookup(toks, r.idx)) {
+        // M-05: `command -v gsd-test` — a lookup, not a dispatch.
       } else if (r.prog === 'gsd-test' && r.idx !== -1) {
-        const w = walkGoFlags(n.tokens.slice(r.idx + 1));
+        const sub = leadingSubcommand(toks.slice(r.idx + 1));
+        const spec = sub.name === null ? CLASSIC_FLAGSET : SUBCOMMANDS[sub.name];
+        const w = spec.positionalOnly ? walkPositionals(sub.rest) : walkGoFlags(sub.rest, spec);
         if (w.uncertainReason) {
           out.push({ kind: 'uncertain', reason: w.uncertainReason });
         } else {
           const pipedOut = attributePipe(segments, profile, i);
-          let informational = false;
-          for (const f of INFORMATIONAL_FLAGS) if (w.flags[f] !== undefined && w.flags[f] !== false) informational = true;
+          const informational = isInformational(w.flags, sub.name);
           out.push({
             kind: 'dispatch',
-            seg: toSeg(n.tokens, segments[i].nextOp),
+            subcommand: sub.name,
+            envOps: ownEnvOps(toks, r.idx),
+            seg: toSeg(toks, segments[i].nextOp),
             segIndex: i,
             args: w.positionals,
             flags: w.flags,
@@ -641,11 +1042,11 @@ function scanParsed(parsed, st) {
             pipeMasked: (pipedOut && !pipefail) || st.outerMasked,
             viaDashC: st.depth > 0,
             depth: st.depth,
-            prefixes: st.prefixes.concat([prefixNow()]),
+            prefixes: here(),
           });
         }
       } else if (SHELLS.has(r.prog) && r.idx !== -1) {
-        const opt = readShellOptions(n.tokens.slice(r.idx + 1));
+        const opt = readShellOptions(toks.slice(r.idx + 1));
         if (opt.dashC && typeof opt.payload === 'string') {
           if (st.depth + 1 > MAX_DASH_C_DEPTH) {
             if (GSD_TEST_WORD.test(opt.payload)) {
@@ -657,16 +1058,37 @@ function scanParsed(parsed, st) {
               depth: st.depth + 1,
               inheritedPipefail: opt.shellPipefail,
               outerMasked: (pipedOut && !pipefail) || st.outerMasked,
-              prefixes: st.prefixes.concat([prefixNow()]),
+              prefixes: here(),
             });
             for (const e of inner) out.push(e);
           }
         }
+      } else if (r.prog === 'eval' && r.idx !== -1) {
+        // M-04 (36-REVIEW): `eval` joins its arguments with spaces and runs the result as a
+        // command — the bash -c recursion, sharing its depth bound. argv already removed one
+        // quoting layer, which is exactly what eval's own parse sees.
+        const payload = toks.slice(r.idx + 1).join(' ');
+        if (st.depth + 1 > MAX_DASH_C_DEPTH) {
+          if (GSD_TEST_WORD.test(payload)) {
+            out.push({ kind: 'uncertain', reason: `eval payload nested deeper than ${MAX_DASH_C_DEPTH}` });
+          }
+        } else {
+          const pipedOut = attributePipe(segments, profile, i);
+          const inner = scanCommand(payload, {
+            depth: st.depth + 1,
+            inheritedPipefail: pipefail,
+            outerMasked: (pipedOut && !pipefail) || st.outerMasked,
+            prefixes: here(),
+          }, 'eval');
+          for (const e of inner) out.push(e);
+        }
       } else if (r.prog === 'set' && r.idx !== -1 && profile[i].level <= 0) {
         // Only a top-level `set` persists; one inside `( ... )` does not reach later segments
         // (a `{ ...; }` one does, but ignoring it only ever keeps a pipe masked: fail-safe).
-        const change = setPipefailChange(n.tokens, r.idx);
-        if (change !== null) runningPipefail = change;
+        const change = setPipefailChange(toks, r.idx);
+        // N-02: after `&&` / `||` the `set` may not run; only a pipefail OFF is then assumed.
+        const conditional = i > 0 && (segments[i - 1].nextOp === '&&' || segments[i - 1].nextOp === '||');
+        if (change === false || (change === true && !conditional)) runningPipefail = change;
       }
     }
 
@@ -686,15 +1108,15 @@ function scanParsed(parsed, st) {
 }
 
 /**
- * Parse a payload through the existing parser and scan it (the `bash -c` recursion).
+ * Parse a payload through the existing parser and scan it (the `bash -c` and `eval` recursion).
  * An unparseable payload that names gsd-test is uncertain (HARD-01).
  */
-function scanCommand(payload, st) {
+function scanCommand(payload, st, label) {
   if (typeof payload !== 'string' || payload.trim().length === 0) return [];
   const parsed = parseCommand(payload);
   if (!parsed.ok) {
     return GSD_TEST_WORD.test(payload)
-      ? [{ kind: 'uncertain', reason: `unparseable bash -c payload names gsd-test (${parsed.reason})` }]
+      ? [{ kind: 'uncertain', reason: `unparseable ${label || 'bash -c'} payload names gsd-test (${parsed.reason})` }]
       : [];
   }
   return scanParsed(parsed, st).map((e) => (e.kind === 'dispatch' ? Object.assign(e, { viaDashC: true }) : e));
@@ -782,12 +1204,57 @@ function expandStatic(value, ctx) {
   return hasExpansion(v) ? null : v;
 }
 
+/** bash `cd` options: `-L`, `-P`, `-e`, `-@`, alone or clustered (`-Pe`). */
+const CD_OPTION = /^-[LPe@]+$/;
+
 /**
- * A prefix with every `cd` target statically expanded (36-03 handoff 1). resolve.commandStartDir
- * would resolve `cd "$X"` as the literal path `<cwd>/$X`; here a target carrying `$` or a
- * backtick goes through expandStatic (leading `$HOME`/`${HOME}`/`$XDG_CONFIG_HOME` only), a `~` /
- * `~/x` target uses the injected homedir when one is given, and a `~user` or `cd -` target cannot
- * be resolved at all. null when any persisting `cd` target is unresolvable.
+ * The target of one `cd` segment, read from its RAW tokens (36-REVIEW M-02): leading
+ * assignments and the `cd` word are skipped, then bash's options (`-L`/`-P`/`-e`/`-@`, clustered
+ * or not) and an ending `--`. argv/classify read `cd -P /x` as a short flag consuming `/x` (no
+ * positional), and resolve.commandStartDir then fell back to `<cwd>/-P` — a bypass from a
+ * non-gsd-core session cwd. An unknown option -> unresolvable. A bare `cd` (N-05) goes to the
+ * shell's $HOME: the env HOME, else the injected homedir, else unresolvable.
+ *
+ * @returns {{target:string}|{noop:true}|null} null when the target cannot be known
+ */
+function cdTarget(seg, ctx) {
+  const toks = Array.isArray(seg.tokens) ? seg.tokens : [];
+  let k = 0;
+  while (k < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[k])) k += 1;
+  k += 1; // the `cd` word
+  while (k < toks.length) {
+    const t = toks[k];
+    if (t === '--') { k += 1; break; }
+    if (CD_OPTION.test(t)) { k += 1; continue; }
+    if (t.length > 1 && t.startsWith('-')) return null; // an option bash would reject or we cannot read
+    break;
+  }
+  // Redirects are removed by the shell before `cd` sees its arguments.
+  while (k < toks.length) {
+    const m = REDIRECT.exec(toks[k]);
+    if (!m) break;
+    k += m[2] === '' ? 2 : 1;
+  }
+  const target = toks[k];
+  if (target === undefined) {
+    const env = (ctx && ctx.env) || {};
+    if (typeof env.HOME === 'string' && env.HOME !== '') return { target: env.HOME };
+    if (ctx && typeof ctx.homedir === 'string' && ctx.homedir !== '') return { target: ctx.homedir };
+    return null;
+  }
+  if (target === '') return { noop: true };
+  return { target };
+}
+
+/**
+ * A prefix with every `cd` target read past its options (M-02) and statically expanded (36-03
+ * handoff 1). resolve.commandStartDir would resolve `cd "$X"` as the literal path `<cwd>/$X`;
+ * here a target carrying `$` or a backtick goes through expandStatic (leading
+ * `$HOME`/`${HOME}`/`$XDG_CONFIG_HOME` only), a `~` / `~/x` target uses the injected homedir
+ * when one is given, and a `~user`, `cd -` or unknown-option target cannot be resolved at all.
+ * Each rewritten `cd` segment carries exactly `tokens: ['cd', target]` and `positionals:
+ * [target]`, the two fields commandStartDir reads. null when any persisting `cd` target is
+ * unresolvable.
  */
 function expandCdTargets(prefix, ctx) {
   if (!prefix || prefix.ok !== true || !Array.isArray(prefix.segments)) return prefix;
@@ -797,25 +1264,20 @@ function expandCdTargets(prefix, ctx) {
       segments.push(seg);
       continue;
     }
-    const fromPositional = Array.isArray(seg.positionals) && Boolean(seg.positionals[0]);
-    const target = fromPositional ? seg.positionals[0] : Array.isArray(seg.tokens) ? seg.tokens[1] : undefined;
-    if (typeof target !== 'string' || target === '') {
-      segments.push(seg);
-      continue;
-    }
+    if (seg.unresolvable) return null; // a wrapper chdir option with no value (M-03)
+    const t = cdTarget(seg, ctx);
+    if (t === null) return null;
+    if (t.noop) continue; // `cd ""` stays put
+    let target = t.target;
     if (target === '-') return null; // `cd -` goes to $OLDPWD, which is not knowable here
     if (target.startsWith('~') && target !== '~' && !target.startsWith('~/')) return null; // ~user
     const homeForm = (target === '~' || target.startsWith('~/')) && ctx && typeof ctx.homedir === 'string';
-    if (!hasExpansion(target) && !homeForm) {
-      segments.push(seg);
-      continue;
+    if (hasExpansion(target) || homeForm) {
+      const expanded = expandStatic(target, ctx || {});
+      if (expanded === null) return null;
+      target = expanded;
     }
-    const expanded = expandStatic(target, ctx || {});
-    if (expanded === null) return null;
-    const copy = Object.assign({}, seg);
-    if (fromPositional) copy.positionals = [expanded].concat(seg.positionals.slice(1));
-    else copy.tokens = [seg.tokens[0], expanded].concat(seg.tokens.slice(2));
-    segments.push(copy);
+    segments.push(Object.assign({}, seg, { tokens: ['cd', target], positionals: [target] }));
   }
   return Object.assign({}, prefix, { segments });
 }
@@ -871,7 +1333,10 @@ module.exports = {
   expandStatic,
   startDirFor,
   treeDirFor,
+  dispatchEnv,
+  WATCHED_ENV,
   INFORMATIONAL_FLAGS,
+  SUBCOMMANDS,
   MAX_DASH_C_DEPTH,
   GSD_TEST_WORD,
 };
