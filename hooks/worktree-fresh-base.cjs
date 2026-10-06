@@ -52,9 +52,10 @@
  * `ask`; origin/next missing after a good fetch asks too. Every other throw denies through
  * runGate. An ask degrades to an allow under --dangerously-skip-permissions (ASK_LIMIT_NOTE, stated
  * in the reason). A failed fetch is not retried for a second cut of the same root in one call.
- * 37-REVIEW MI-01: for a local / HEAD-on-next base the gate first judges next against the
- * LAST-FETCHED origin/next; when that already proves next held-and-behind or diverged it returns
- * the POLICY deny (worded as stale evidence) instead of the ask. It never moves next on that data.
+ * The grade is ALWAYS ask (CTK-ADR-0007, locked; 37-REVIEW MI-01's deny was reverted by the
+ * orchestrator). For a local / HEAD-on-next base the gate still reads next against the LAST-FETCHED
+ * origin/next; when that shows next held-and-behind or diverged, the evidence and its exact fix
+ * command are added to the ask reason. It never moves next on that data.
  *
  * TIME BOUND (37-04, the 36-REVIEW m-06 per-call deadline mirrored from gsd-test-clean-tree): one
  * GATE_BUDGET_MS deadline per gate call is shared by every subprocess. A non-fetch git call gets
@@ -290,14 +291,18 @@ function classifyFetchResult(res) {
  * The `ask` for an unobtainable origin. Names ENF-25, the (redacted) failure, that this is a
  * network limit and not a policy decision, the manual fetch, and ends with ASK_LIMIT_NOTE.
  */
-function fetchUnavailableReason(root, message) {
+function fetchUnavailableReason(root, message, evidence) {
+  const local = typeof evidence === 'string' && evidence !== ''
+    ? 'LOCAL EVIDENCE (from the last-fetched origin/next, so not proof of the current trunk, but enough to ' +
+      'act on):\n' + evidence + '\n\n'
+    : '';
   return (
     'ENF-25 worktree fresh-base gate could not refresh origin/next before this worktree cut: ' +
     (cleanDetail(message, 300) || 'origin is unobtainable') + '. ' +
     'This is a NETWORK limit, not a policy decision: the gate cannot tell whether local `next` is current, ' +
     'so a worktree cut now may start from a stale trunk. To check it deterministically once origin is ' +
     'reachable, run\n\n  git -C ' + shellWord(root) + ' fetch origin next\n\nthen re-issue your command.\n\n' +
-    ASK_LIMIT_NOTE
+    local + ASK_LIMIT_NOTE
   );
 }
 
@@ -783,11 +788,13 @@ function checkCut(e, root, ctx) {
   }
   const unobtainable = fetchState.get(root);
   if (unobtainable) {
-    // MI-01: nothing local can prove a remote base current -> ask. For a local base, the
-    // LAST-FETCHED origin/next may already prove next held-and-behind or diverged: deny on that
-    // proof; otherwise ask. Never a CAS on unrefreshed data.
+    // CTK-ADR-0007 (LOCKED): an unobtainable upstream resolves to ASK, always. MI-01 (reverted to a
+    // deny-free form): for a local base the LAST-FETCHED origin/next may already show next
+    // held-and-behind or diverged; that evidence and its fix go INTO the ask reason. A remote base
+    // has nothing local to add. Never a CAS on unrefreshed data.
     if (kind === 'remote') return unobtainable.decision;
-    return judgeLocal(root, ctx, unobtainable.detail) || unobtainable.decision;
+    const evidence = staleEvidence(root, ctx, unobtainable.detail);
+    return evidence === null ? unobtainable.decision : ask(fetchUnavailableReason(root, unobtainable.detail, evidence));
   }
 
   const remote = deps.revParse(root, ORIGIN_NEXT_REF, git());
@@ -813,12 +820,13 @@ function checkCut(e, root, ctx) {
 }
 
 /**
- * MI-01: judge local next against the LAST-FETCHED origin/next after a failed fetch. Returns a
- * POLICY deny only when that evidence already proves next held-and-behind (checked out, or being
- * rebased / bisected) or diverged; null (the caller asks) when it cannot decide: no origin/next, no
- * next, equal, ahead, or behind and unheld (a move on unrefreshed data is never made).
+ * MI-01 (reverted to evidence-only by the orchestrator): judge local next against the LAST-FETCHED
+ * origin/next after a failed fetch. Returns the held / in-progress / diverged reason TEXT (with its
+ * exact fix command) when that evidence already shows next held-and-behind or diverged, for the
+ * caller to put inside its ASK; null when it cannot decide: no origin/next, no next, equal, ahead,
+ * or behind and unheld. It never decides, and a move on unrefreshed data is never made.
  */
-function judgeLocal(root, ctx, stale) {
+function staleEvidence(root, ctx, stale) {
   const { deps, budget } = ctx;
   const git = () => budget(GIT_TIMEOUT_MS);
   const remote = deps.revParse(root, ORIGIN_NEXT_REF, git());
@@ -827,13 +835,13 @@ function judgeLocal(root, ctx, stale) {
   if (local === null || local === undefined || local === remote) return null;
   if (deps.isAncestor(root, local, remote, git())) {
     const holders = deps.worktreesHolding(root, NEXT_REF, git());
-    if (holders.length > 0) return deny(heldReason(holders, local, remote, stale));
+    if (holders.length > 0) return heldReason(holders, local, remote, stale);
     const busy = deps.nextInProgress(root, NEXT_REF, git());
-    if (busy.length > 0) return deny(inProgressReason(busy, local, remote, stale));
+    if (busy.length > 0) return inProgressReason(busy, local, remote, stale);
     return null;
   }
   if (deps.isAncestor(root, remote, local, git())) return null;
-  return deny(divergedReason(local, remote, stale));
+  return divergedReason(local, remote, stale);
 }
 
 /** fs errors that mean "this state file / dir is absent". */

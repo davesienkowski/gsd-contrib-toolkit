@@ -2586,7 +2586,7 @@ test('ENF-25 MI-01 (reverted) e2e (fx10): A on next behind its last-fetched orig
   const { fx, L } = fetchedFixture({ park: false });
   try {
     git(fx.A, 'remote', 'set-url', 'origin', path.join(fx.root, 'nope', 'open-gsd', 'gsd-core.git'));
-    const r = spawnIn(fx.A, 'git worktree add -b f ' + path.join(fx.root, 'x'));
+    const r = spawnRaw(fx.A, 'git worktree add -b f ' + path.join(fx.root, 'x')); // spawnIn parses deny|allow only
     assert.strictEqual(r.decision, 'ask', r.reason);
     assert.match(r.reason, /could not refresh/);
     assert.ok(r.reason.includes('merge --ff-only origin/next'), r.reason);
