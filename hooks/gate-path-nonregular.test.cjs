@@ -413,3 +413,54 @@ for (const kind of ['devzero-link', 'dir']) {
     assertPlanted(kind, fx.cache, target);
   });
 }
+
+// -------------------------------------------------------------------- P4: override receipt append
+
+const P4_UPSTREAM = 'https://github.com/open-gsd/gsd-core.git';
+const P4_REASON = 'w5 receipt test';
+const P4_DENY = /override present but its receipt could not be written/;
+// Both receipt writers: the gate-local origin override, and the shared runGate thrown-path
+// override (the remote URL read of `nosuchremote` throws, so runGateInner's catch honors it; C-1).
+const P4_COMMANDS = [
+  { label: 'origin override', command: 'git push origin fix/x', action: 'containment-upstream-push' },
+  { label: 'runGate thrown-path override', command: 'git push nosuchremote fix/x', action: 'containment' },
+];
+
+/** A sentinel git root on fix/x with origin = upstream gsd-core; REAL git on PATH (no stub). */
+function p4Fixture(t) {
+  const dirs = freshDirs(t);
+  const root = sentinelRoot(tmp(t, 'p4-root'));
+  gitRepo(root, 'fix/x', P4_UPSTREAM, dirs.home);
+  fs.mkdirSync(path.join(root, '.gsd-contrib'), { recursive: true });
+  return {
+    root,
+    receipt: path.join(root, '.gsd-contrib', 'override-receipts.log'),
+    env: baseEnv(Object.assign({ extra: { GSD_CONTRIB_OVERRIDE: P4_REASON } }, dirs)),
+  };
+}
+
+// The hook only decides; no push ever runs.
+const runP4 = (fx, command) => spawnBounded('containment.cjs', { cwd: fx.root, env: fx.env, command });
+
+for (const c of P4_COMMANDS) {
+  for (const p of PLANTINGS) {
+    const guard = p.kind === 'dir';
+    test('W5 P4' + (guard ? ' guard' : '') + ' (' + c.label + '): ' + p.label + ' at override-receipts.log -> the override denies (receipt could not be written) within the bound', { skip: p.skip }, (t) => {
+      const fx = p4Fixture(t);
+      const target = plant(t, p.kind, fx.receipt);
+      assertDecided(t, runP4(fx, c.command), 'deny', P4_DENY);
+      assertPlanted(p.kind, fx.receipt, target);
+    });
+  }
+
+  test('W5 P4 guard (' + c.label + '): no planting -> the override allows and appends exactly one receipt line', (t) => {
+    const fx = p4Fixture(t);
+    assertDecided(t, runP4(fx, c.command), 'allow', null);
+    assert.ok(fs.lstatSync(fx.receipt).isFile());
+    const lines = fs.readFileSync(fx.receipt, 'utf8').split('\n').filter(Boolean);
+    assert.strictEqual(lines.length, 1, 'receipt lines: ' + JSON.stringify(lines));
+    const entry = JSON.parse(lines[0]);
+    assert.strictEqual(entry.action, c.action);
+    assert.strictEqual(entry.reason, P4_REASON);
+  });
+}
