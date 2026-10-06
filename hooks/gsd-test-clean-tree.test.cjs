@@ -714,3 +714,37 @@ test('ENF-23 M-01: dirty tree + `gsd-test --base "$B"` DENIES (an expanded base 
   const { deps } = scenario({ porcelain: DIRTY_ONE });
   assert.strictEqual(runGsdTestCleanTreeGate(input('gsd-test --base "$B"'), deps).permissionDecision, 'deny');
 });
+
+// ─────────────── M-02 (36-REVIEW): `cd` options from a non-gsd-core session cwd ───────────────
+
+/** Only /g/core (and below) is a gsd-core checkout; the session cwd is /elsewhere. */
+function elsewhere(over = {}) {
+  return scenario(Object.assign({
+    cwd: '/elsewhere',
+    resolveTreeRoot: (dir) => (dir === '/g/core' || dir.startsWith('/g/core/') ? '/g/core' : null),
+  }, over));
+}
+
+for (const cmd of ['cd -P /g/core && gsd-test | tail', 'cd -- /g/core && gsd-test | tail', 'cd -P -- /g/core && gsd-test | tail']) {
+  test(`ENF-23 M-02: \`${cmd}\` from /elsewhere DENIES with PIPE_REASON (the cd target is /g/core)`, () => {
+    const { deps } = elsewhere();
+    const d = runGsdTestCleanTreeGate(input(cmd), deps);
+    assert.strictEqual(d.permissionDecision, 'deny');
+    assert.strictEqual(d.permissionDecisionReason, PIPE_REASON);
+  });
+}
+
+test('ENF-23 M-02: `cd -L /g/core && gsd-test` (dirty) from /elsewhere DENIES with the dirty reason', () => {
+  const { deps } = elsewhere({ porcelain: DIRTY_ONE });
+  const d = runGsdTestCleanTreeGate(input('cd -L /g/core && gsd-test'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /ref-based/);
+});
+
+test('ENF-23 M-02: an unknown `cd` option fails closed and the reason names cd options', () => {
+  const { deps, calls } = elsewhere();
+  const d = runGsdTestCleanTreeGate(input('cd -x /g/core && gsd-test'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /option/);
+  assert.strictEqual(calls.resolveTreeRoot, 0);
+});

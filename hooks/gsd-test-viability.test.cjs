@@ -762,3 +762,17 @@ for (const cmd of [
     assert.strictEqual(calls.resolveTreeRoot + calls.readConfig + calls.dockerProbe, 0);
   });
 }
+
+// ─────────────── M-02 (36-REVIEW): `cd` options ───────────────
+
+test('ENF-24 M-02: `cd -P /g/core && gsd-test --config ./c.toml` reads /g/core/c.toml', () => {
+  const { calls } = run('cd -P /g/core && gsd-test --config ./c.toml');
+  assert.deepStrictEqual(calls.paths, [path.resolve('/g/core/c.toml')]);
+});
+
+test('ENF-24 M-02: an unknown `cd` option fails closed and the reason names cd options', () => {
+  const { d, calls, reason } = run('cd -x /g/core && gsd-test');
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(reason, /option/);
+  assert.strictEqual(calls.resolveTreeRoot, 0);
+});

@@ -761,3 +761,40 @@ test('GTEST-01 cd-expansion: `{ cd "$X"; }; gsd-test` is unresolved (a brace gro
   const d = oneDispatch('{ cd "$X"; }; gsd-test');
   assert.strictEqual(exported('startDirFor')(d, '/r', { env: {}, homedir: '/h' }), null);
 });
+
+// ─────────────── M-02 (36-REVIEW): `cd` options are skipped before the target ───────────────
+
+const CD_OPTION_ROWS = [
+  ['cd -P /g/core && gsd-test', '/g/core'],
+  ['cd -L /g/core && gsd-test', '/g/core'],
+  ['cd -- /g/core && gsd-test', '/g/core'],
+  ['cd -P -- /g/core && gsd-test', '/g/core'],
+  ['cd -Pe /g/core && gsd-test', '/g/core'],
+  ['cd -P -e /g/core && gsd-test', '/g/core'],
+  ['cd -@ /g/core && gsd-test', '/g/core'],
+  ['cd -P sub && gsd-test', '/elsewhere/sub'],
+  ['cd -x /g/core && gsd-test', null],
+  ['cd -- - && gsd-test', null],
+];
+for (const [cmd, want] of CD_OPTION_ROWS) {
+  test(`GTEST-01 M-02: startDirFor(${cmd}) from /elsewhere is ${want}`, () => {
+    const d = oneDispatch(cmd);
+    assert.strictEqual(exported('startDirFor')(d, '/elsewhere', { env: {}, homedir: '/h' }), want);
+  });
+}
+
+// N-05 (36-REVIEW): a bare `cd` goes to $HOME.
+test('GTEST-01 N-05: `cd && gsd-test` starts in the injected homedir', () => {
+  const d = oneDispatch('cd && gsd-test');
+  assert.strictEqual(exported('startDirFor')(d, '/elsewhere', { env: {}, homedir: '/h' }), '/h');
+});
+
+test('GTEST-01 N-05: `cd; gsd-test` prefers the env HOME over the homedir', () => {
+  const d = oneDispatch('cd; gsd-test');
+  assert.strictEqual(exported('startDirFor')(d, '/elsewhere', { env: { HOME: '/e' }, homedir: '/h' }), '/e');
+});
+
+test('GTEST-01 N-05: `cd -P; gsd-test` with no known home is unresolved (null)', () => {
+  const d = oneDispatch('cd -P; gsd-test');
+  assert.strictEqual(exported('startDirFor')(d, '/elsewhere', { env: {} }), null);
+});
