@@ -12,15 +12,32 @@
  *   • tracer rows spawn the REAL entrypoint through proof-harness spawnHook from a temp dir that
  *     carries the gsd-core sentinel layout (scripts/issue-dedupe.cjs + gsd-core/bin/lib/), so the
  *     emitted JSON decision is what the harness would actually see. No real gsd-test, no Docker.
+ *
+ * 36-03 (GTEST-02): the dirty-tree deny. Unit rows inject `gitStatus` / `resolveRef` with call
+ * counters; the e2e rows spawn the real entrypoint inside REAL temporary git repositories (temp
+ * dirs only, global/system git config disabled, never ~/repos/gsd-core).
  */
+
+// Real-git hygiene (hard rule): these would redirect both the setup git calls and the spawned
+// hook's git, or let the user's global config (hooks, signing) leak into the temp repos. The
+// override variable is removed too: the spawned hook uses the REAL override module, and a stray
+// GSD_CONTRIB_OVERRIDE would flip the thrown-path e2e row to allow.
+for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_CEILING_DIRECTORIES', 'GSD_CONTRIB_OVERRIDE']) {
+  delete process.env[k];
+}
+process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+process.env.GIT_CONFIG_NOSYSTEM = '1';
 
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
-const { runGsdTestCleanTreeGate, PIPE_REASON } = require('./gsd-test-clean-tree.cjs');
+const cleanTree = require('./gsd-test-clean-tree.cjs');
+const { runGsdTestCleanTreeGate, PIPE_REASON } = cleanTree;
+const { FailClosed } = require('./lib/failclosed.cjs');
 const { findGsdTestDispatch } = require('./lib/gsd-test-detect.cjs');
 const { spawnHook } = require('./lib/proof-harness.cjs');
 
@@ -33,22 +50,90 @@ function input(command) {
   return JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
 }
 
-/** Injected deps + a counter on the one impure seam the tracer slice has. */
+const SHA_HEAD = 'a'.repeat(40);
+const SHA_OTHER = 'b'.repeat(40);
+const DIRTY_ONE = ' M gsd-core/bin/lib/core.cjs\n';
+
+/**
+ * Injected deps + a counter on every impure seam. The DEFAULT world is a CLEAN gsd-core tree
+ * (gitStatus ''), HEAD at SHA_HEAD, and `origin/next` at SHA_OTHER; each test overrides only what
+ * it is about. `refs` maps a ref to its sha (missing -> null, an unknown ref).
+ */
 function scenario(over = {}) {
-  const calls = { resolveTreeRoot: 0, dirs: [] };
-  const deps = Object.assign(
-    {
-      cwd: FAKE_CWD,
-      resolveTreeRoot: (dir) => {
-        calls.resolveTreeRoot += 1;
-        calls.dirs.push(dir);
-        return FAKE_CWD;
-      },
-      overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
+  const calls = { resolveTreeRoot: 0, dirs: [], gitStatus: 0, resolveRef: 0, refs: [], writeReceipt: 0 };
+  const refs = Object.assign({ HEAD: SHA_HEAD, 'origin/next': SHA_OTHER }, over.refs || {});
+  const porcelain = typeof over.porcelain === 'string' ? over.porcelain : '';
+  const override = over.override === true;
+  const base = {
+    cwd: FAKE_CWD,
+    env: {},
+    homedir: path.join(path.sep, 'h'),
+    resolveTreeRoot: (dir) => {
+      calls.resolveTreeRoot += 1;
+      calls.dirs.push(dir);
+      return FAKE_CWD;
     },
-    over
+    gitStatus: () => {
+      calls.gitStatus += 1;
+      return porcelain;
+    },
+    resolveRef: (root, ref) => {
+      calls.resolveRef += 1;
+      calls.refs.push(ref);
+      return Object.prototype.hasOwnProperty.call(refs, ref) ? refs[ref] : null;
+    },
+    overrideImpl: {
+      checkOverride: () => (override ? { override: true, reason: 'test override' } : { override: false }),
+      writeReceipt: () => {
+        calls.writeReceipt += 1;
+      },
+    },
+  };
+  const rest = Object.assign({}, over);
+  delete rest.refs;
+  delete rest.porcelain;
+  delete rest.override;
+  return { deps: Object.assign(base, rest), calls };
+}
+
+/** A REAL temporary git repo with the gsd-core sentinel layout and one commit. */
+function git(dir, ...args) {
+  return execFileSync('git', args, {
+    cwd: dir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: process.env,
+  });
+}
+
+function commitAll(dir, msg) {
+  git(dir, 'add', '-A');
+  git(
+    dir,
+    '-c', 'user.email=t@example.invalid',
+    '-c', 'user.name=t',
+    '-c', 'commit.gpgsign=false',
+    'commit', '-q', '--no-verify', '-m', msg
   );
-  return { deps, calls };
+  return git(dir, 'rev-parse', 'HEAD').trim();
+}
+
+function makeGitRepo() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gtest-ct-'));
+  fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'gsd-core', 'bin', 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'scripts', 'issue-dedupe.cjs'), '');
+  fs.writeFileSync(path.join(dir, 'tracked.txt'), 'one\n');
+  git(dir, '-c', 'init.defaultBranch=main', 'init', '-q');
+  const sha = commitAll(dir, 'init');
+  return { dir, sha };
+}
+
+function spawnIn(dir, command) {
+  const r = spawnHook(HOOK, { stdin: input(command), cwd: dir });
+  assert.strictEqual(r.conclusive, true, r.reason + ' ' + r.rawStderr);
+  const emitted = JSON.parse(r.rawStdout).hookSpecificOutput;
+  return { decision: r.decision, reason: emitted.permissionDecisionReason || '' };
 }
 
 /** A temp dir holding the gsd-core sentinel layout; removed in the caller's finally. */
@@ -141,6 +226,198 @@ test('ENF-23 GTEST-03 tracer: the spawned entrypoint ALLOWS `git status` from a 
     const r = spawnHook(HOOK, { stdin: input('git status'), cwd: dir });
     assert.strictEqual(r.conclusive, true, r.reason + ' ' + r.rawStderr);
     assert.strictEqual(r.decision, 'allow', r.reason);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ───────────────────────── 36-03 Task 1: GTEST-02 dirty-tree deny (injected deps) ─────────────────────────
+
+test('ENF-23 GTEST-02: GIT_TIMEOUT_MS is exported and is 5000', () => {
+  assert.strictEqual(cleanTree.GIT_TIMEOUT_MS, 5000);
+});
+
+test('ENF-23 GTEST-02: dirty tree + --head omitted DENIES with the ref-based reason, the fix and the dirty path', () => {
+  const { deps } = scenario({ porcelain: DIRTY_ONE });
+  const d = runGsdTestCleanTreeGate(input('gsd-test -base next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /ENF-23/);
+  assert.match(d.permissionDecisionReason, /ref-based/);
+  assert.match(d.permissionDecisionReason, /commit/);
+  assert.ok(d.permissionDecisionReason.includes('gsd-core/bin/lib/core.cjs'), 'lists the dirty path');
+  assert.ok(!/GSD_CONTRIB_OVERRIDE|override/i.test(d.permissionDecisionReason), 'policy deny names no override escape');
+});
+
+for (const cmd of ['gsd-test --head HEAD', 'gsd-test -head=HEAD', 'gsd-test --head @', 'gsd-test --head=']) {
+  test(`ENF-23 GTEST-02: dirty tree + \`${cmd}\` (the working HEAD) DENIES without a git ref lookup`, () => {
+    const { deps, calls } = scenario({ porcelain: DIRTY_ONE });
+    const d = runGsdTestCleanTreeGate(input(cmd), deps);
+    assert.strictEqual(d.permissionDecision, 'deny');
+    assert.match(d.permissionDecisionReason, /ENF-23/);
+    assert.strictEqual(calls.resolveRef, 0, 'HEAD / @ / empty need no rev-parse');
+  });
+}
+
+test('ENF-23 GTEST-02: dirty tree + --head <HEAD sha> DENIES (the sha resolves to HEAD)', () => {
+  const { deps } = scenario({ porcelain: DIRTY_ONE, refs: { [SHA_HEAD]: SHA_HEAD } });
+  const d = runGsdTestCleanTreeGate(input('gsd-test --base next --head ' + SHA_HEAD), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /ENF-23/);
+});
+
+test('ENF-23 GTEST-02: dirty tree + --head fix/branch resolving to the HEAD sha DENIES', () => {
+  const { deps } = scenario({ porcelain: DIRTY_ONE, refs: { 'fix/branch': SHA_HEAD } });
+  const d = runGsdTestCleanTreeGate(input('gsd-test -head fix/branch'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+});
+
+test('ENF-23 GTEST-02: dirty tree + --head origin/next (a different commit) ALLOWS — a deliberate ref-vs-ref run', () => {
+  const { deps, calls } = scenario({ porcelain: DIRTY_ONE });
+  const d = runGsdTestCleanTreeGate(input('gsd-test --base next --head origin/next'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.ok(calls.refs.includes('origin/next'), 'the explicit ref is resolved and compared');
+});
+
+test('ENF-23 GTEST-02: dirty tree + --head nosuchref (does not resolve) ALLOWS', () => {
+  const { deps } = scenario({ porcelain: DIRTY_ONE });
+  const d = runGsdTestCleanTreeGate(input('gsd-test --head nosuchref'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+});
+
+test('ENF-23 GTEST-02: clean tree + --head omitted ALLOWS with exactly one gitStatus and zero resolveRef calls', () => {
+  const { deps, calls } = scenario();
+  const d = runGsdTestCleanTreeGate(input('gsd-test -base next'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.gitStatus, 1);
+  assert.strictEqual(calls.resolveRef, 0);
+});
+
+test('ENF-23 GTEST-02: 12 dirty paths -> the reason lists exactly 10 and says (and 2 more)', () => {
+  const lines = [];
+  for (let i = 1; i <= 12; i++) lines.push(' M file-' + String(i).padStart(2, '0') + '.cjs');
+  const { deps } = scenario({ porcelain: lines.join('\n') + '\n' });
+  const d = runGsdTestCleanTreeGate(input('gsd-test'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  const listed = lines.filter((l) => d.permissionDecisionReason.includes(l.trim()));
+  assert.strictEqual(listed.length, 10, 'exactly 10 of the 12 paths are listed');
+  assert.ok(!d.permissionDecisionReason.includes('file-11.cjs'), 'the 11th path is not listed');
+  assert.match(d.permissionDecisionReason, /\(and 2 more\)/);
+});
+
+test('ENF-23 GTEST-02: a git failure (gitStatus throws FailClosed) DENIES carrying the git reason (HARD-01)', () => {
+  const { deps } = scenario({
+    gitStatus: () => {
+      throw new FailClosed('ENF-23 could not read the work-tree status: fatal: not a git repository');
+    },
+  });
+  const d = runGsdTestCleanTreeGate(input('gsd-test'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /not a git repository/);
+});
+
+test('ENF-23 GTEST-02: the THROWN git-failure deny IS override-escapable (allow + one receipt)', () => {
+  const { deps, calls } = scenario({
+    override: true,
+    gitStatus: () => {
+      throw new FailClosed('ENF-23 could not read the work-tree status: timeout');
+    },
+  });
+  const d = runGsdTestCleanTreeGate(input('gsd-test'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.writeReceipt, 1, 'the override writes exactly one receipt');
+});
+
+test('ENF-23 GTEST-02: a dirty-tree POLICY deny is NOT override-escapable (Addendum 4)', () => {
+  const { deps, calls } = scenario({ override: true, porcelain: DIRTY_ONE });
+  const d = runGsdTestCleanTreeGate(input('gsd-test --head HEAD'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /ENF-23/);
+  assert.strictEqual(calls.writeReceipt, 0, 'no receipt: a policy deny is never overridden');
+});
+
+test('ENF-23 GTEST-02: a pipe-masked dispatch with a dirty tree DENIES with PIPE_REASON before any git call', () => {
+  const { deps, calls } = scenario({ porcelain: DIRTY_ONE });
+  const d = runGsdTestCleanTreeGate(input('gsd-test --head HEAD | tail -40'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(d.permissionDecisionReason, PIPE_REASON);
+  assert.strictEqual(calls.gitStatus, 0, 'the pipe deny needs no git');
+});
+
+// ───────────────────────── 36-03 Task 1: GTEST-02 e2e on REAL temporary git repos ─────────────────────────
+
+test('ENF-23 GTEST-02 e2e: a committed clean tree + `gsd-test -base next -head HEAD` ALLOWS', () => {
+  const { dir } = makeGitRepo();
+  try {
+    assert.strictEqual(spawnIn(dir, 'gsd-test -base next -head HEAD').decision, 'allow');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ENF-23 GTEST-02 e2e: a modified tracked file DENIES and the reason lists that file', () => {
+  const { dir } = makeGitRepo();
+  try {
+    fs.writeFileSync(path.join(dir, 'tracked.txt'), 'two\n');
+    const r = spawnIn(dir, 'gsd-test -base next -head HEAD');
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.match(r.reason, /ENF-23/);
+    assert.ok(r.reason.includes('tracked.txt'), r.reason);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ENF-23 GTEST-02 e2e: a staged-but-uncommitted tracked change DENIES', () => {
+  const { dir } = makeGitRepo();
+  try {
+    fs.writeFileSync(path.join(dir, 'tracked.txt'), 'staged\n');
+    git(dir, 'add', 'tracked.txt');
+    const r = spawnIn(dir, 'gsd-test');
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.ok(r.reason.includes('tracked.txt'), r.reason);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ENF-23 GTEST-02 e2e: an untracked-only new file ALLOWS (--untracked-files=no)', () => {
+  const { dir } = makeGitRepo();
+  try {
+    fs.writeFileSync(path.join(dir, 'scratch-notes.txt'), 'untracked\n');
+    assert.strictEqual(spawnIn(dir, 'gsd-test -head HEAD').decision, 'allow');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ENF-23 GTEST-02 e2e: two commits, dirty tree, `--head <first commit sha>` ALLOWS (ref-vs-ref)', () => {
+  const { dir, sha: first } = makeGitRepo();
+  try {
+    fs.writeFileSync(path.join(dir, 'tracked.txt'), 'second\n');
+    commitAll(dir, 'second');
+    fs.writeFileSync(path.join(dir, 'tracked.txt'), 'dirty\n');
+    assert.strictEqual(spawnIn(dir, 'gsd-test --base next --head ' + first).decision, 'allow');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ENF-23 GTEST-02 e2e: dirty tree + `--head <current HEAD sha>` DENIES (the sha is the working HEAD)', () => {
+  const { dir, sha } = makeGitRepo();
+  try {
+    fs.writeFileSync(path.join(dir, 'tracked.txt'), 'dirty\n');
+    assert.strictEqual(spawnIn(dir, 'gsd-test --head ' + sha).decision, 'deny');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ENF-23 GTEST-02 e2e: a sentinel dir WITHOUT `git init` DENIES (git failure fails closed)', () => {
+  const dir = makeSentinelDir();
+  try {
+    const r = spawnIn(dir, 'gsd-test -head HEAD');
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.match(r.reason, /ENF-23/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
