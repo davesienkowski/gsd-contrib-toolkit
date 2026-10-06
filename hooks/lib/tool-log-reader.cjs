@@ -26,8 +26,10 @@
  * A row counts only after the whole line JSON.parses, its `session_id` STRICTLY equals the
  * normalized id (so `sess-AB` / `xsess-A` never match `sess-A`, and a duplicate-key line is
  * judged by the LAST key JSON.parse keeps), it has NO `source` key (gate verdict rows written by
- * hooks/lib/verdict-log.cjs into the same file never count), its `tool_name` is a string, and its
- * `outcome` is `ok` or `fail`. A malformed or torn line is skipped, never thrown.
+ * hooks/lib/verdict-log.cjs into the same file never count), its `tool_name` is a string, its
+ * `outcome` is `ok` or `fail`, and it carries every other field the recorder always writes: a
+ * string `ts`, a string-or-null `tool_use_id` and `cwd`, and a number-or-null `duration_ms` (38
+ * review NT-01). A malformed or torn line is skipped, never thrown.
  *
  * ── WHICH FILES, IN WHICH ORDER ─────────────────────────────────────────────────────────
  * `tool-log.jsonl` FIRST, then the single rotated slot `tool-log.1.jsonl`. appendRecord renames
@@ -125,6 +127,11 @@ function normalizeSessionId(id) {
   return clean(id, LIMITS.session_id);
 }
 
+/** @param {*} v @returns {boolean} a string or null (a recorder field `clean()` may null). */
+function isStringOrNull(v) {
+  return v === null || typeof v === 'string';
+}
+
 /**
  * Parse one candidate line and project it, or return null when it must not count.
  *
@@ -146,6 +153,12 @@ function projectLine(buf, start, end, id) {
   if (rec.source !== undefined) return null; // a gate verdict row, not a recorded tool call
   if (typeof rec.tool_name !== 'string') return null;
   if (rec.outcome !== 'ok' && rec.outcome !== 'fail') return null;
+  // 38 review NT-01: every field recordToolCall always writes must be present with its type, so
+  // a three-field line is not a recorder row. This narrows what a forged line must look like; it
+  // does not prevent forgery (CTK-ADR-0010 residual).
+  if (typeof rec.ts !== 'string') return null;
+  if (!isStringOrNull(rec.tool_use_id) || !isStringOrNull(rec.cwd)) return null;
+  if (!(rec.duration_ms === null || Number.isFinite(rec.duration_ms))) return null;
   return { tool_name: rec.tool_name, outcome: rec.outcome };
 }
 

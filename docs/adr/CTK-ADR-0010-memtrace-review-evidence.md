@@ -85,7 +85,10 @@ is wrong.
 2. **Evidence source and filter.** The gate reads `tool-log.jsonl` first, then `tool-log.1.jsonl`, from
    the directory the recorder resolves. A row counts only when its `session_id` strictly equals the
    PreToolUse payload's `session_id` (normalized with the recorder's own `clean()`), it has no `source`
-   key, and its `outcome` is `ok`. Rows are projected to `{tool_name, outcome}` on read; nothing else
+   key, its `outcome` is `ok`, and it carries every other field the recorder always writes (a string
+   `ts`, a string-or-null `tool_use_id` and `cwd`, a number-or-null `duration_ms`), so a three-field
+   line is not a row; that narrows what a forged line must look like and does not prevent forgery
+   (38 review NT-01). Rows are projected to `{tool_name, outcome}` on read; nothing else
    leaves the reader. Lines are prefiltered by a byte needle for speed only; every kept row is
    `JSON.parse`d and compared exactly. The review body is never read for evidence: a
    `### Memtrace Evidence` section counts for nothing.
