@@ -253,9 +253,16 @@ test('ENF-25: worktree-fresh-base is wired exactly twice, PreToolUse on Bash and
  * (GATE_BUDGET_MS) by at least 3 s (the 36-REVIEW m-06 headroom for node start-up and the verdict
  * write). The deadline must in turn cover the worst case it is meant to bound: one fetch belt plus
  * MAX_GIT_CALLS_PER_ROOT bounded non-fetch git calls. Every bound is read from the hook module, so
- * raising one without the other goes red here. Both comparisons are inclusive (45 s = 42 s + 3 s;
- * 20 s + 7 x 3 s = 41 s <= 42 s).
+ * raising one without the other goes red here. Both comparisons are inclusive (60 s >= 50 s + 3 s;
+ * 20 s + 9 x 3 s = 47 s <= 50 s; 37-REVIEW TIME BUDGET re-derived for the BL-01 symref check and
+ * the BL-02 common-dir read).
+ *
+ * 37-REVIEW NI-07: the capability install (gsd-core capability-lifecycle) writes `{type, command}`
+ * with NO timeout, so an installed registration runs under the harness DEFAULT hook timeout
+ * (60 s per the reviewer's reading of the harness; not re-verified from the binary here). The
+ * budget plus headroom must therefore also fit 60 s, independent of the snippet's own value.
  */
+const HARNESS_DEFAULT_HOOK_TIMEOUT_MS = 60000;
 test('ENF-25: worktree-fresh-base timeout covers its shared budget', () => {
   const wt = require('./hooks/worktree-fresh-base.cjs');
   for (const k of ['GATE_BUDGET_MS', 'FETCH_BELT_MS', 'MAX_GIT_CALLS_PER_ROOT', 'GIT_TIMEOUT_MS']) {
@@ -267,7 +274,11 @@ test('ENF-25: worktree-fresh-base timeout covers its shared budget', () => {
   const hits = allCommands(loadSnippet()).filter((c) => c.command.includes('/hooks/worktree-fresh-base.cjs"'));
   assert.equal(hits.length, TWO_MATCHER_MATCHERS.length,
     `worktree-fresh-base must be wired on ${TWO_MATCHER_MATCHERS.length} matchers (found ${hits.length})`);
+  assert.ok(wt.GATE_BUDGET_MS + 3000 <= HARNESS_DEFAULT_HOOK_TIMEOUT_MS,
+    `GATE_BUDGET_MS ${wt.GATE_BUDGET_MS} + 3000 ms must fit the harness default hook timeout ` +
+    `${HARNESS_DEFAULT_HOOK_TIMEOUT_MS} ms (the capability install writes no timeout: NI-07)`);
   for (const h of hits) {
+    assert.equal(h.timeout, 60, `worktree-fresh-base (${h.matcher}) timeout must be 60 s (got ${h.timeout})`);
     assert.ok(h.timeout * 1000 >= wt.GATE_BUDGET_MS + 3000,
       `worktree-fresh-base (${h.matcher}) timeout ${h.timeout * 1000} ms must exceed ` +
       `GATE_BUDGET_MS ${wt.GATE_BUDGET_MS} by >= 3000 ms`);

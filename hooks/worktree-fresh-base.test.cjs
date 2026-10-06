@@ -1312,15 +1312,19 @@ for (const [name, cmd, over] of ONE_FETCH) {
 // imported. Every subprocess draws on ONE deadline; a non-fetch git call gets
 // min(GIT_TIMEOUT_MS, remaining), the fetch belt min(FETCH_BELT_MS, remaining).
 
-test('ENF-25 bound: FETCH_BELT_MS + MAX_GIT_CALLS_PER_ROOT * GIT_TIMEOUT_MS <= GATE_BUDGET_MS, and GATE_BUDGET_MS + 3 s <= 45 s', () => {
+test('ENF-25 bound: FETCH_BELT_MS + MAX_GIT_CALLS_PER_ROOT * GIT_TIMEOUT_MS <= GATE_BUDGET_MS, and GATE_BUDGET_MS + 3 s <= 60 s', () => {
+  // 37-REVIEW TIME BUDGET: 9 non-fetch calls on the worst path (symbolic-ref HEAD, remote get-url,
+  // symbolic-ref -q refs/heads/next, rev-parse x2, merge-base, worktree list, rev-parse
+  // --git-common-dir, update-ref) -> 20 s + 9 x 3 s = 47 s <= 50 s, and 50 s + 3 s <= 60 s.
   const belt = exp('FETCH_BELT_MS');
   const max = exp('MAX_GIT_CALLS_PER_ROOT');
   const git1 = exp('GIT_TIMEOUT_MS');
   const budget = exp('GATE_BUDGET_MS');
-  assert.strictEqual(max, 7);
-  assert.strictEqual(budget, 42000);
+  assert.strictEqual(max, 9);
+  assert.strictEqual(budget, 50000);
+  assert.strictEqual(exp('HOOK_TIMEOUT_S'), 60);
   assert.ok(belt + max * git1 <= budget, belt + ' + ' + max + ' * ' + git1 + ' > ' + budget);
-  assert.ok(budget + 3000 <= 45000);
+  assert.ok(budget + 3000 <= exp('HOOK_TIMEOUT_S') * 1000);
 });
 
 /** Every non-fetch git process the default seams would spawn; the fetch seam's `remote get-url` counts 1. */
