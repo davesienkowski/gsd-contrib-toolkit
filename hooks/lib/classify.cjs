@@ -154,8 +154,13 @@ const GIT_GLOBAL_VALUE_SHORT = new Set(['C', 'c']);
  * command>'`, `sudo -u` at end), the result carries `ambiguous:true` so callers fail
  * closed (D-07) rather than trust a leftover value token as the program.
  *
+ * `index` (additive, 261006-jsm review fix round WR-01) is the position in `seg.tokens` the walk
+ * stopped at, i.e. the token `prog` was read from (`tokens.length` or more when none remains). It
+ * changes nothing else: every existing field is computed exactly as before, and the verdict-route
+ * recovery reads it to find the program token in one linear walk.
+ *
  * @param {Object} seg structured segment from argv.parseCommand
- * @returns {{prog:string, args:string[], wrapped:boolean, ambiguous:boolean}}
+ * @returns {{prog:string, args:string[], wrapped:boolean, ambiguous:boolean, index:number}}
  */
 function resolveProgram(seg) {
   const tokens = Array.isArray(seg.tokens) ? seg.tokens : [];
@@ -262,7 +267,7 @@ function resolveProgram(seg) {
     args.push(tok);
   }
 
-  return { prog, args, wrapped, ambiguous };
+  return { prog, args, wrapped, ambiguous, index: i };
 }
 
 const FAIL_CLOSED = Object.freeze({ action: 'unknown', failClosed: true });
@@ -1424,22 +1429,28 @@ function combineRecovered(via, items) {
 }
 
 /**
- * Index of the token that IS the resolved program: the first token whose basename equals `prog`
- * and whose prefix resolves to it (the gsd-test-detect.programIndex rule; that module cannot be
- * required here, it requires this one).
+ * Index of the token that IS the resolved program: the token resolveProgram's walk stopped at
+ * (its additive `index`), when the walk over these tokens resolves to `prog` there; else the first
+ * token whose basename equals `prog`; else -1.
+ *
+ * Review fix round WR-01: this used to call resolveProgram on every growing prefix whose last token
+ * was named `prog` (the gsd-test-detect.programIndex rule), which is O(N^2) when a wrapper's value
+ * flags repeat the name (`sudo -u bash -u bash ... bash -c ...`: 11 s per classify at N=36,000). The
+ * result is the same: the walk over a prefix ending before the full walk's stop can only end on a
+ * flag, a flag value, an assignment or a wrapper (never `prog`, which is not a wrapper), so the first
+ * prefix that resolves to `prog` is the one ending at the full walk's stop. One walk, linear.
  *
  * @param {string[]} tokens
  * @param {string} prog
  * @returns {number} -1 when not found
  */
 function programTokenIndex(tokens, prog) {
-  let fallback = -1;
+  const r = resolveProgram({ tokens });
+  if (r.prog === prog && r.index < tokens.length && path.basename(tokens[r.index]) === prog) return r.index;
   for (let i = 0; i < tokens.length; i += 1) {
-    if (path.basename(tokens[i]) !== prog) continue;
-    if (fallback === -1) fallback = i;
-    if (resolveProgram({ tokens: tokens.slice(0, i + 1) }).prog === prog) return i;
+    if (path.basename(tokens[i]) === prog) return i;
   }
-  return fallback;
+  return -1;
 }
 
 /**
