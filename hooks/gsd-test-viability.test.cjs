@@ -1022,3 +1022,28 @@ test('ENF-24 m-02: two dispatches with different DOCKER_HOST -> two probes; the 
   const b = run('DOCKER_HOST=tcp://a gsd-test; DOCKER_HOST=tcp://a gsd-test');
   assert.strictEqual(b.calls.dockerProbe, 1);
 });
+
+// ─────────────── m-06 (36-REVIEW): one shared deadline per gate call ───────────────
+
+test('m-06: probes share the 15 s budget — each gets min(8 s, remaining); past it the gate DENIES (thrown)', () => {
+  let t = 0;
+  const given = [];
+  const { d } = run('DOCKER_HOST=tcp://a gsd-test; DOCKER_HOST=tcp://b gsd-test; DOCKER_HOST=tcp://c gsd-test', {
+    now: () => t,
+    dockerProbe: (env, timeoutMs) => { given.push(timeoutMs); t += timeoutMs; return { state: 'timeout' }; },
+  });
+  assert.strictEqual(viability.GATE_BUDGET_MS, 15000);
+  assert.deepStrictEqual(given, [8000, 7000]);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /budget/);
+  assert.ok(t <= viability.GATE_BUDGET_MS);
+});
+
+test('m-06: the default probe passes the remaining budget as the spawn timeout', () => {
+  const spawn = recordingSpawn({ status: 0, stdout: '27\n' });
+  let t = 10000;
+  const { deps } = scenario({ spawnSync: spawn.fn, now: () => t });
+  delete deps.dockerProbe;
+  runGsdTestViabilityGate(input('gsd-test'), deps);
+  assert.strictEqual(spawn.rec.calls[0].opts.timeout, 8000);
+});

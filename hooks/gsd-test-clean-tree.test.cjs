@@ -838,3 +838,39 @@ test('ENF-23 m-02: `SHA=$(git rev-parse HEAD) gsd-test --head HEAD | tail` DENIE
   const d = runGsdTestCleanTreeGate(input('SHA=$(git rev-parse HEAD) gsd-test --head HEAD | tail'), deps);
   assert.strictEqual(d.permissionDecisionReason, PIPE_REASON);
 });
+
+// ─────────────── m-06 (36-REVIEW): one shared deadline per gate call; refs cached ───────────────
+
+/** A fake clock every git seam advances by `cost` ms; records the timeout each call was given. */
+function clocked(over = {}, cost = 5000) {
+  let t = 0;
+  const timeouts = [];
+  const sc = scenario(Object.assign({}, over, { now: () => t }));
+  const status = sc.deps.gitStatus;
+  const ref = sc.deps.resolveRef;
+  sc.deps.gitStatus = (root, timeoutMs) => { timeouts.push(timeoutMs); t += cost; return status(root); };
+  sc.deps.resolveRef = (root, r, timeoutMs) => { timeouts.push(timeoutMs); t += cost; return ref(root, r); };
+  return Object.assign(sc, { timeouts, elapsed: () => t });
+}
+
+test('m-06: every git call is given at most GIT_TIMEOUT_MS and at most the remaining budget', () => {
+  const c = clocked({ porcelain: DIRTY_ONE }, 4000);
+  runGsdTestCleanTreeGate(input('gsd-test --head origin/next'), c.deps);
+  assert.deepStrictEqual(c.timeouts, [5000, 5000, 5000]);
+  assert.strictEqual(cleanTree.GATE_BUDGET_MS, 15000);
+});
+
+test('m-06: `--head a; --head b; --head c` in ONE dirty tree stops at the budget and DENIES (thrown), never overruns', () => {
+  const c = clocked({ porcelain: DIRTY_ONE, refs: { a: 'c'.repeat(40), b: 'd'.repeat(40), c: 'e'.repeat(40) } });
+  const d = runGsdTestCleanTreeGate(input('gsd-test --head a; gsd-test --head b; gsd-test --head c'), c.deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /budget/);
+  assert.ok(c.elapsed() <= cleanTree.GATE_BUDGET_MS, `spent ${c.elapsed()} ms`);
+  for (const ms of c.timeouts) assert.ok(ms > 0 && ms <= 5000);
+});
+
+test('m-06: the same literal --head twice resolves it once (cached per root and ref)', () => {
+  const { deps, calls } = scenario({ porcelain: DIRTY_ONE });
+  runGsdTestCleanTreeGate(input('gsd-test --head origin/next; gsd-test --head origin/next'), deps);
+  assert.deepStrictEqual(calls.refs, ['HEAD', 'origin/next']);
+});

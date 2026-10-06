@@ -202,6 +202,23 @@ test('GTEST-07: gsd-test gate timeouts exceed their own subprocess bounds', () =
     `gsd-test-clean-tree timeout ${cleanTree} ms must exceed 3 x GIT_TIMEOUT_MS (${3 * GIT_TIMEOUT_MS})`);
 });
 
+/**
+ * 36-REVIEW m-06: the per-call bounds alone do not bound a gate CALL (N dispatches with distinct
+ * literal `--head` values, or N distinct DOCKER_HOST selections, multiply them). Each gate
+ * therefore shares ONE deadline (GATE_BUDGET_MS) across all of its subprocesses, and the settings
+ * timeout must exceed that budget with headroom for node start-up and the verdict write.
+ */
+test('m-06: each gsd-test gate settings timeout exceeds its shared subprocess budget by at least 3 s', () => {
+  const via = require('./hooks/gsd-test-viability.cjs');
+  const ct = require('./hooks/gsd-test-clean-tree.cjs');
+  for (const [name, mod] of [['gsd-test-viability', via], ['gsd-test-clean-tree', ct]]) {
+    assert.equal(typeof mod.GATE_BUDGET_MS, 'number', `${name} exports GATE_BUDGET_MS`);
+    const hit = allCommands(loadSnippet()).find((c) => c.command.includes(`/hooks/${name}.cjs"`));
+    assert.ok(hit.timeout * 1000 >= mod.GATE_BUDGET_MS + 3000,
+      `${name} timeout ${hit.timeout * 1000} ms must exceed GATE_BUDGET_MS ${mod.GATE_BUDGET_MS} by >= 3000 ms`);
+  }
+});
+
 test('binlib-edit is under a Write|Edit matcher', () => {
   const snip = loadSnippet();
   const hit = allCommands(snip).find((c) => c.command.includes('/hooks/binlib-edit.cjs"'));
