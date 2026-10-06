@@ -8,6 +8,7 @@ Consequences).
 > **Status & review:** these records are marked **Accepted** because the decisions are implemented and
 > shipped — but they are **published for maintainer review and open to revision**. A changed decision is
 > recorded by a *superseding or amending* CTK-ADR, never a silent edit to an accepted record.
+> A record marked **Proposed** documents a decision implemented on a branch that awaits Dave's approval; it becomes Accepted, or is superseded, only by that sign-off.
 
 | ADR | Decision | Status | Milestone |
 |---|---|---|---|
@@ -18,5 +19,6 @@ Consequences).
 | [CTK-ADR-0005](CTK-ADR-0005-graded-gate-severity-and-toolkit-owned-signals.md) | Grade gate severity (`ask` beside `allow`/`deny`); permit a strictly-additional toolkit-owned signal at lower severity (**amends 0001 §Decision.2 and §Decision.3**) | Accepted | v2.7+ |
 | [CTK-ADR-0006](CTK-ADR-0006-universal-step-enforcement-and-obligation-scaffolding.md) | Enforce every step; scaffold **obligations, never evidence**; review-side gating (ENF-20) bounded to four mechanizable steps (**amends 0004**) | Accepted | v2.7+ |
 | [CTK-ADR-0007](CTK-ADR-0007-runtime-freshness-and-the-network-unavailable-severity.md) | Gate on installed-runtime freshness via a digest-bound toolkit stamp (ENF-21); an unobtainable upstream tip resolves to `ask`, never `deny` (**amends 0005 §Decision.4**) | Accepted | v2.7+ |
+| [CTK-ADR-0008](CTK-ADR-0008-gsd-test-dispatch-gates.md) | Gate gsd-test dispatches at dispatch time: clean tracked tree + unmasked exit (ENF-23), viable config/bench/Docker (ENF-24); one shared detector, never a classifyAction action | Proposed | v2.8 |
 
 For the narrative design overview, see [../foundations.md](../foundations.md).
