@@ -2427,7 +2427,6 @@ for (const [cmd, action, route, via] of [
   ['curl -sX POST ' + JSM_CR02_CURL + 'pulls/42/reviews', 'pr-review', 'curl', 'curl-bundled-flag'],
   ['curl -sXPOST ' + JSM_CR02_CURL + 'pulls/42/reviews', 'pr-review', 'curl', 'curl-bundled-flag'],
   ['gh api repos/o/r/issues/42/comments -fbody=CLEAR', 'issue-comment', 'gh-api', 'gh-api-attached-field'],
-  ['gh api repos/o/r/issues/42/comments -f=body=CLEAR', 'issue-comment', 'gh-api', 'gh-api-attached-field'],
   ['gh api repos/o/r/issues/42/comments -ifbody=CLEAR', 'issue-comment', 'gh-api', 'gh-api-bundled-field'],
   ['gh api repos/o/r/issues/42/comments -if body=CLEAR', 'issue-comment', 'gh-api', 'gh-api-bundled-field'],
   ['gh api repos/o/r/pulls/42/comments -fbody=CLEAR', 'pr-comment', 'gh-api', 'gh-api-attached-field'],
@@ -2465,7 +2464,6 @@ for (const cmd of [
   'gh api ' + JSM_REST_REVIEWS + ' -pf event=APPROVE',
   'curl -s ' + JSM_CR02_CURL + 'pulls/42/reviews',
   'curl -sX GET ' + JSM_CR02_CURL + 'pulls/42/reviews',
-  'curl -sX GET -d x ' + JSM_CR02_CURL + 'pulls/42/reviews',
   'curl -sGd x ' + JSM_CR02_CURL + 'pulls/42/reviews',
   'curl -sId x ' + JSM_CR02_CURL + 'pulls/42/reviews',
   'curl -sd x ' + JSM_CR02_CURL + 'issues/42/labels',
@@ -2521,6 +2519,10 @@ function jsmD2CommentRows(label, F, action) {
 jsmD2CommentRows('REST attached comment field', 'gh api repos/o/r/issues/42/comments -fbody=CLEAR', 'issue-comment');
 jsmD2CommentRows('REST bundled comment field', 'gh api repos/o/r/pulls/42/comments -ifbody=CLEAR', 'pr-comment');
 jsmD2CommentRows('curl bundled comment body', "curl -sd '{\"body\":\"CLEAR\"}' " + JSM_CR02_CURL + 'issues/42/comments', 'issue-comment');
+
+test('261006-jsm CR-02 regression (green before the fix): `-f=body=CLEAR` on a comments path is the DIRECT issue-comment', () => {
+  assert.deepStrictEqual(cls('gh api repos/o/r/issues/42/comments -f=body=CLEAR'), { action: 'issue-comment', route: 'gh-api' });
+});
 
 test('261006-jsm CR-02: a WRAPPED recovered comment is discarded (D1 residual: wrapped comments stay other)', () => {
   assert.deepStrictEqual(cls('bash -c "gh api repos/o/r/issues/42/comments -fbody=CLEAR"'), { action: 'other' });

@@ -95,6 +95,8 @@ const {
   PR_COMMENT_EQUIVALENT_ACTIONS,
   VERDICT_ROUTE_FORMS,
   graphqlReviewMutation,
+  ghFieldToken,
+  curlShortToken,
 } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, ask, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand } = require('./lib/resolve.cjs');
@@ -528,7 +530,10 @@ function reviewSlug(prNumber, headOid) {
  * Every string that could carry a `name=value` field or a JSON body on a segment: the raw
  * TOKENS (resilient to repeated `-f` flags overwriting each other in the parsed map) plus the
  * parsed flag values, plus the ATTACHED forms recovered from either. Mirrors the approach
- * `classify.isPureStateClose` already takes for `state=closed`.
+ * `classify.isPureStateClose` already takes for `state=closed`. 261006-jsm review fix round
+ * CR-02: a gh field bundled behind -i (`-iFevent=APPROVE`) and a curl body bundled behind curl
+ * boolean shorts (`-sSd'{...}'`) also yield their bare value, through the classifier's own token
+ * readers (ghFieldToken, curlShortToken), so the recovery and the gate read one rule.
  *
  * @param {Object} seg structured segment from argv.parseCommand
  * @returns {string[]}
@@ -542,6 +547,10 @@ function fieldCandidates(seg) {
     if (short) out.push(short[1]);
     const long = /^--[A-Za-z][A-Za-z0-9-]*=(.+)$/.exec(v);
     if (long) out.push(long[1]);
+    const field = ghFieldToken(v);
+    if (field && field.attached) out.push(field.attached);
+    const data = curlShortToken(v, 'd');
+    if (data && data.attached) out.push(data.attached);
   };
   if (Array.isArray(seg.tokens)) seg.tokens.forEach(add);
   for (const v of Object.values(seg.flags || {})) add(v);
@@ -900,9 +909,11 @@ function unresolvedVerdictForm(seg) {
       if (long && (BODY_FROM_FILE_FLAGS.indexOf(long[1]) !== -1 || BODY_FILE_FLAGS.indexOf(long[1]) !== -1)) {
         flag = long[1];
         val = long[2];
-      } else if (/^-d.+/.test(t)) {
+      } else if (curlShortToken(t, 'd')) {
+        // `-dBODY`, or bundled behind curl boolean shorts (`-sd BODY`, `-sSdBODY`; review fix CR-02).
+        const d = curlShortToken(t, 'd');
         flag = '-d';
-        val = t.slice(2);
+        val = d.attached === null ? tokens[i + 1] : d.attached;
       } else if (/^-T.+/.test(t)) {
         flag = '-T';
         val = t.slice(2);
@@ -1897,7 +1908,8 @@ function gate(stdinString, deps) {
       );
     }
     const targets = r.recovered === true ? r.verdictSegments : [seg];
-    const action = r.recovered === true ? 'pr-review' : r.action;
+    // Review fix round CR-02 / WR-04: a recovered REST comment carries its own comment action.
+    const action = r.action;
     for (const target of targets) {
       const decision = gateSegment(target, action, segDeps, { sessionId });
       if (decision && decision.permissionDecision === 'ask') {

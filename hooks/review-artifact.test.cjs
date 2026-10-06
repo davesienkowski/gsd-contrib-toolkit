@@ -2896,6 +2896,7 @@ test('261006-jsm CR-02 gate lock: an attached CLEAR comment on a real ISSUE with
 });
 
 test('261006-jsm CR-02 fieldCandidates: a bundled gh field and a bundled curl body yield the bare value', () => {
+  const { fieldCandidates } = reviewArtifact;
   const c1 = fieldCandidates(seg0('gh api ' + JSM_REVIEWS + ' -iFevent=APPROVE'));
   assert.ok(c1.includes('event=APPROVE'), JSON.stringify(c1));
   const c2 = fieldCandidates(seg0("curl -sSd'{\"event\":\"APPROVE\"}' " + JSM_CR02_URL + 'pulls/42/reviews'));
