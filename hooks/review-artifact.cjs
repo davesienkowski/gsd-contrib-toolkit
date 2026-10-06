@@ -993,6 +993,32 @@ function uncertainVerdictRouteAsk(via) {
 }
 
 /**
+ * The ask for a RECOVERED verdict segment whose PR number cannot be read from the command (261006-jsm
+ * review fix round WR-02): xargs feeds the number from stdin and a GraphQL mutation names a node id,
+ * so prSelector is null and the PR lookup falls back to the current branch's PR. R8, R10 and R1 were
+ * then checked against that PR's artifacts, which may belong to a different PR than the one this
+ * command reviews, so a human decides. Held like every ask: the segment is still gated, so any deny
+ * wins. The reason names the form by its FIXED description only; it never echoes the command.
+ *
+ * @param {string} via a classify VERDICT_ROUTE_FORMS code
+ * @returns {Object}
+ */
+function unkeyedVerdictAsk(via) {
+  const form = Object.prototype.hasOwnProperty.call(VERDICT_ROUTE_FORMS, via)
+    ? VERDICT_ROUTE_FORMS[via]
+    : 'a command form the gate cannot read';
+  return ask(
+    'ENF-20 R8 / R10 / R1 (re-review steps 8, 10 and 1) - UNKEYED verdict: ' + form + '. The PR ' +
+      'number cannot be read from the command (for example it is fed through xargs from stdin, or ' +
+      'a GraphQL mutation names the PR by node id), so the review artifacts were checked against ' +
+      "the current branch's PR, which may not be the PR this command reviews.\n\n" +
+      'Run the review as `gh pr review <n> --approve` (or `--request-changes`) with the PR number ' +
+      'on the command line, or let a human decide here. `GSD_CONTRIB_OVERRIDE` does not answer ' +
+      'this prompt: it rescues thrown gate errors only. (CTK-ADR-0010, ENF-20)'
+  );
+}
+
+/**
  * Is this a help invocation? `gh pr review --help` classifies as `pr-review` (the classifier
  * reads the verb, not the intent), and denying a help request would be a pure false positive —
  * the failure mode that gets a toolkit switched off. Reads only the STRUCTURED flag space, so
@@ -1032,10 +1058,12 @@ function repoSpecOf(seg) {
  * the positionals. The token scan sees it either way.
  *
  * DOCUMENTED LIMIT: a numeric flag VALUE placed before the PR number (`gh pr review --body 12
- * 42`) would be read as the selector. Nobody writes a bare-numeric review body, and the
- * failure direction is safe — a mis-keyed PR resolves to a different artifact directory, so
- * the gate DENIES rather than allowing. A branch-name selector (`gh pr review my-branch`)
- * returns null and the live resolver falls back to the current branch's PR.
+ * 42`) would be read as the selector. Nobody writes a bare-numeric review body. A mis-keyed PR
+ * resolves to a different artifact directory: the gate denies when that PR has no artifacts,
+ * and can allow when it does (261006-jsm review WR-02 corrected the earlier "denies rather than
+ * allowing" claim). A branch-name selector (`gh pr review my-branch`) returns null and the live
+ * resolver falls back to the current branch's PR; for a RECOVERED verdict segment that fallback
+ * also holds unkeyedVerdictAsk.
  *
  * @param {Object} seg
  * @returns {string|null} the PR/issue number as a string, or null.
@@ -1716,7 +1744,9 @@ function gateApplies(g, action, post) {
  * @param {Object} seg
  * @param {string} action
  * @param {Object} deps
- * @param {{sessionId?: (string|null)}} [opts] the PreToolUse payload's session id (step 8a).
+ * @param {{sessionId?: (string|null), recoveredVia?: (string|null)}} [opts] the PreToolUse payload's
+ *   session id (step 8a), and the classifier's `via` when `seg` is a recovered verdict segment
+ *   (261006-jsm review WR-02: a null PR selector then holds unkeyedVerdictAsk).
  * @returns {Object|null}
  */
 function gateSegment(seg, action, deps, opts = {}) {
@@ -1783,6 +1813,13 @@ function gateSegment(seg, action, deps, opts = {}) {
 
   // The FIRST ask; never returned while a later entry could still deny.
   let pendingAsk = unresolved ? unresolvedVerdictAsk(unresolved) : null;
+  // 261006-jsm review fix round WR-02: a recovered VERDICT segment (an approve, a request-changes
+  // or a CLEAR body) with no readable PR number was keyed to the current branch's PR above; hold an
+  // ask so a wrong key can never quietly allow a verdict. A pending or COMMENT review is not one.
+  const verdict = post.approve || post.requestChanges || post.clear;
+  if (!pendingAsk && verdict && opts && typeof opts.recoveredVia === 'string' && selector === null) {
+    pendingAsk = unkeyedVerdictAsk(opts.recoveredVia);
+  }
 
   for (const g of applicable) {
     // Companion artifacts first: the merge record's re-fetch recency is meaningless without
@@ -1911,7 +1948,10 @@ function gate(stdinString, deps) {
     // Review fix round CR-02 / WR-04: a recovered REST comment carries its own comment action.
     const action = r.action;
     for (const target of targets) {
-      const decision = gateSegment(target, action, segDeps, { sessionId });
+      const decision = gateSegment(target, action, segDeps, {
+        sessionId,
+        recoveredVia: r.recovered === true ? r.via : null,
+      });
       if (decision && decision.permissionDecision === 'ask') {
         if (!firstAsk) firstAsk = decision; // held: a later segment may still deny
       } else if (decision) {

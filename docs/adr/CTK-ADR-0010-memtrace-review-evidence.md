@@ -310,8 +310,16 @@ is wrong.
   zsh / ksh option parsing,
   unverified locally (zsh is not installed).
 - **Some recovered verdicts are keyed to the current branch's PR.** A visible GraphQL mutation names
-  its PR by node id, and `echo 42 | xargs gh pr review -a` reads its selector from stdin, so the gate
-  keys R8, R10 and R1 to the current branch's PR (a wrong key denies, never allows).
+  its PR by node id, and `echo 42 | xargs gh pr review -a` reads its selector from stdin, so the PR
+  number cannot be read from the command and the gate keys R8, R10 and R1 to the current branch's
+  PR. An approve of a different PR is then checked against the wrong PR's artifacts,
+  and it can be allowed when those exist. Since the quick 261006-jsm review fix round (WR-02) the
+  gate also holds a fixed ask for every recovered approve, request-changes or `CLEAR` segment with
+  no readable PR number (it names the form and echoes nothing), so with complete evidence such a
+  command asks instead of allowing;
+  any deny still wins, and like every ask it degrades to allow under
+  `--dangerously-skip-permissions`. A wrapped review that names no number
+  (`bash -c "gh pr review -a"`) asks too, although gh itself reviews the current branch's PR there.
   R8a is session-scoped and unaffected.
 - **tool-recorder logs the recovered forms as `pr-review`.** Its action column comes from the same
   classifier, so these forms now log `pr-review` instead of `other`; governed stays false, so this is
