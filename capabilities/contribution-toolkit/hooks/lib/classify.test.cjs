@@ -2175,3 +2175,217 @@ for (const cmd of ['xargs --bogus gh pr review -a', 'xargs --max gh pr review -a
 }
 
 jsmD2Rows('xargs', 'xargs gh pr review -a', { merge: 'xargs gh pr review -a && gh pr merge 1' });
+
+// ---------------------------------------------------------------------------
+// 261006-jsm Task 3a: REST review posts carried by an attached field or a bare --input (CONTEXT
+// D4, RESEARCH section 1). gh api defaults to POST when a field or --input is present; argv records
+// `-fevent=APPROVE` as shortFlags{fevent} and --input as flags.input, which the frozen hasWriteBody
+// does not read, so the direct classifier returned null. The recovery reads the tokens instead and
+// requires a `/pulls/<n>/reviews` target with no explicit method.
+// ---------------------------------------------------------------------------
+
+const JSM_REST_REVIEWS = 'repos/o/r/pulls/42/reviews';
+
+/** `cmd` is a recovered REST pr-review (route gh-api) whose one verdict segment is the outer one. */
+function assertRestReview(cmd, via) {
+  const r = cls(cmd);
+  assert.strictEqual(r.action, 'pr-review', cmd + ' -> ' + JSON.stringify(r));
+  assert.strictEqual(r.recovered, true, cmd);
+  assert.strictEqual(r.route, 'gh-api', cmd);
+  assert.strictEqual(r.via, via, cmd);
+  assert.ok(!('uncertain' in r) && !('unresolved' in r), cmd + ' is statically readable');
+  assert.deepStrictEqual(r.verdictSegments.map((s) => s.tokens), [parseCommand(cmd).segments[0].tokens], cmd);
+}
+
+for (const [cmd, via] of [
+  ['gh api ' + JSM_REST_REVIEWS + ' -fevent=APPROVE', 'gh-api-attached-field'],
+  ['gh api ' + JSM_REST_REVIEWS + ' -Fevent=APPROVE', 'gh-api-attached-field'],
+  ['gh api ' + JSM_REST_REVIEWS + ' -fevent=REQUEST_CHANGES -fbody=x', 'gh-api-attached-field'],
+  ['gh api ' + JSM_REST_REVIEWS + ' --input f.json', 'gh-api-input'],
+  ['gh api ' + JSM_REST_REVIEWS + ' --input=f.json', 'gh-api-input'],
+  ['gh api ' + JSM_REST_REVIEWS + ' --input -', 'gh-api-input'],
+]) {
+  test('261006-jsm REST: `' + cmd + '` -> recovered pr-review, via ' + via + ', the outer segment', () => {
+    assertRestReview(cmd, via);
+  });
+}
+
+test('261006-jsm REST regression (green before the fix): `-f=event=APPROVE` stays the direct gh-api pr-review', () => {
+  assert.deepStrictEqual(cls('gh api ' + JSM_REST_REVIEWS + ' -f=event=APPROVE'), { action: 'pr-review', route: 'gh-api' });
+});
+
+for (const cmd of [
+  'gh api ' + JSM_REST_REVIEWS,
+  'gh api -X GET ' + JSM_REST_REVIEWS + ' --input f',
+  'gh api -X GET ' + JSM_REST_REVIEWS + ' -fevent=APPROVE',
+  'gh api --method GET ' + JSM_REST_REVIEWS + ' --input f',
+  'gh api repos/o/r/pulls/42/comments --input f.json',
+  'gh api repos/o/r/issues/42/labels -flabels=x',
+]) {
+  test('261006-jsm REST lock: `' + cmd + '` stays other', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasFailClosedSegment(parseCommand(cmd)), false, cmd);
+  });
+}
+
+test('261006-jsm REST lock (D1 residual): `gh api repos/o/r/issues -ftitle=x` stays other, no issue-create gate starts firing', () => {
+  const cmd = 'gh api repos/o/r/issues -ftitle=x';
+  assert.deepStrictEqual(cls(cmd), { action: 'other' });
+  assert.strictEqual(hasGovernedSegment(parseCommand(cmd), ['issue-create']), false);
+});
+
+jsmD2Rows('REST attached field', 'gh api ' + JSM_REST_REVIEWS + ' -fevent=APPROVE', {
+  lone: (r) => assert.strictEqual(r.via, 'gh-api-attached-field'),
+});
+jsmD2Rows('REST bare --input', 'gh api ' + JSM_REST_REVIEWS + ' --input f.json', {
+  lone: (r) => assert.strictEqual(r.via, 'gh-api-input'),
+});
+
+// ---------------------------------------------------------------------------
+// 261006-jsm Task 3b: GraphQL review mutations (CONTEXT D4) and a file-sourced GraphQL query
+// (orchestrator B1). A `gh api graphql` / `/graphql` / curl POST to api.github.com/graphql whose
+// query text names `submitPullRequestReview` or `addPullRequestReview` (case-sensitive, whole
+// identifier) is a recovered pr-review, route graphql, the outer segment its verdict segment. A
+// query read from a file or stdin (`-F query=@...`, `--input`, curl `-d @...`) is an UNRESOLVED
+// route with no verdict segment and no hint test (0 genuine such calls in 48,055 Bash calls, 31
+// `gh api graphql` calls in total, 2026-10-06).
+// ---------------------------------------------------------------------------
+
+const JSM_GQL_SUBMIT =
+  'mutation { submitPullRequestReview(input: {pullRequestId: "x", event: APPROVE}) { clientMutationId } }';
+const JSM_GQL_ADD_JSON =
+  '{"query":"mutation { addPullRequestReview(input: {pullRequestId: \\"x\\", event: REQUEST_CHANGES}) { clientMutationId } }"}';
+const JSM_GQL_VAR =
+  'mutation($e: PullRequestReviewEvent!) { submitPullRequestReview(input: {pullRequestReviewId: "r", event: $e}) { clientMutationId } }';
+
+/** `cmd` is a recovered GraphQL pr-review whose one verdict segment is the outer segment. */
+function assertGraphqlReview(cmd) {
+  const r = cls(cmd);
+  assert.strictEqual(r.action, 'pr-review', cmd + ' -> ' + JSON.stringify(r));
+  assert.strictEqual(r.recovered, true, cmd);
+  assert.strictEqual(r.route, 'graphql', cmd);
+  assert.strictEqual(r.via, 'graphql', cmd);
+  assert.ok(!('uncertain' in r) && !('unresolved' in r), cmd + ' is statically readable');
+  assert.deepStrictEqual(r.verdictSegments.map((s) => s.tokens), [parseCommand(cmd).segments[0].tokens], cmd);
+}
+
+/** `cmd` is the UNRESOLVED file-sourced GraphQL route: no verdict segment, no PR to key. */
+function assertGraphqlFileQuery(cmd) {
+  assert.deepStrictEqual(
+    cls(cmd),
+    { action: 'pr-review', route: 'graphql', recovered: true, unresolved: true, via: 'graphql-file-query', verdictSegments: [] },
+    cmd
+  );
+}
+
+for (const cmd of [
+  "gh api graphql -f query='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql --raw-field query='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql -F query='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql --field query='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql -fquery='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql --raw-field='query=" + JSM_GQL_SUBMIT + "'",
+  "gh api /graphql -f query='" + JSM_GQL_SUBMIT + "'",
+  "gh api -f query='" + JSM_GQL_SUBMIT + "' graphql",
+  "gh api -X POST graphql -f query='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql -f query='" + JSM_GQL_VAR + "' -f e=APPROVE",
+  "gh api graphql -f query='mutation { addPullRequestReview(input: {pullRequestId: \"x\"}) { clientMutationId } }'",
+  "curl -X POST https://api.github.com/graphql -d '" + JSM_GQL_ADD_JSON + "'",
+  "curl https://api.github.com/graphql --data-raw '" + JSM_GQL_ADD_JSON + "'",
+  "curl -H 'Authorization: bearer t' https://api.github.com/graphql --json '" + JSM_GQL_ADD_JSON + "'",
+]) {
+  test('261006-jsm GraphQL: `' + cmd.slice(0, 70) + '...` -> recovered pr-review, route graphql', () => {
+    assertGraphqlReview(cmd);
+  });
+}
+
+for (const cmd of [
+  'gh api graphql -F query=@q.graphql',
+  'gh api graphql -F query=@-',
+  'gh api graphql --field query=@q.graphql',
+  'gh api graphql -Fquery=@q.graphql',
+  'gh api graphql --input body.json',
+  'gh api graphql --input -',
+  'gh api graphql --input=body.json',
+  'gh api /graphql --input body.json',
+  'curl -X POST https://api.github.com/graphql -d @q.json',
+  'curl https://api.github.com/graphql --data-binary @q.json',
+  'curl https://api.github.com/graphql -d@q.json',
+]) {
+  test('261006-jsm GraphQL file query: `' + cmd + '` -> UNRESOLVED pr-review, via graphql-file-query, no hint needed', () => {
+    assertGraphqlFileQuery(cmd);
+  });
+}
+
+for (const cmd of [
+  "gh api graphql -f query='query { viewer { login } }'",
+  "gh api graphql -f query='mutation { submitpullrequestreview(input: {}) { x } }'",
+  "gh api graphql -f query='mutation { mySubmitPullRequestReviewX(input: {}) { x } }'",
+  'gh api graphql -f query=@x',
+  'gh api graphql --raw-field query=@x',
+  'gh api graphql',
+  "gh api -X GET graphql -f query='" + JSM_GQL_SUBMIT + "'",
+  "curl https://example.com/graphql -d '" + JSM_GQL_ADD_JSON + "'",
+  "curl -X GET https://api.github.com/graphql -d '" + JSM_GQL_ADD_JSON + "'",
+  'curl https://api.github.com/graphql --data-raw @q.json',
+  "gh api repos/o/r/issues/1/comments -f body='submitPullRequestReview' -X GET",
+]) {
+  test('261006-jsm GraphQL lock: `' + cmd.slice(0, 80) + '` stays other', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasFailClosedSegment(parseCommand(cmd)), false, cmd);
+  });
+}
+
+test('261006-jsm GraphQL: graphqlReviewMutation reads the mutation, the query text and the file source', () => {
+  const { graphqlReviewMutation } = require('./classify.cjs');
+  assert.strictEqual(typeof graphqlReviewMutation, 'function', 'graphqlReviewMutation is exported');
+  const seg = (cmd) => parseCommand(cmd).segments[0];
+  const visible = graphqlReviewMutation(seg("gh api graphql -f query='" + JSM_GQL_SUBMIT + "'"));
+  assert.strictEqual(visible.mutation, 'submitPullRequestReview');
+  assert.strictEqual(visible.queryText, JSM_GQL_SUBMIT);
+  assert.strictEqual(visible.fileSourced, false);
+  const json = graphqlReviewMutation(seg("curl https://api.github.com/graphql -d '" + JSM_GQL_ADD_JSON + "'"));
+  assert.strictEqual(json.mutation, 'addPullRequestReview');
+  assert.strictEqual(json.fileSourced, false);
+  const file = graphqlReviewMutation(seg('gh api graphql -F query=@q.graphql'));
+  assert.strictEqual(file.mutation, null);
+  assert.strictEqual(file.fileSourced, true);
+  assert.strictEqual(graphqlReviewMutation(seg('gh api repos/o/r/pulls/42/reviews -f event=APPROVE')), null);
+  assert.strictEqual(graphqlReviewMutation(seg('git status')), null);
+});
+
+jsmD2Rows('GraphQL mutation', "gh api graphql -f query='" + JSM_GQL_SUBMIT + "'", {
+  lone: (r) => assert.strictEqual(r.route, 'graphql'),
+});
+jsmD2Rows('GraphQL file query', 'gh api graphql -F query=@q.graphql', {
+  lone: (r) => {
+    assert.strictEqual(r.unresolved, true);
+    assert.deepStrictEqual(r.verdictSegments, []);
+  },
+});
+
+test('261006-jsm GraphQL: a wrapped file-sourced query passes the unresolved route through', () => {
+  assertGraphqlFileQuery("bash -c 'gh api graphql --input b.json'");
+});
+
+test('261006-jsm GraphQL: a mixed inner chain keeps its verdict segment and adds unresolved with its code', () => {
+  const r = cls("bash -c 'gh pr review 42 -a; gh api graphql --input b.json'");
+  assert.strictEqual(r.action, 'pr-review');
+  assert.strictEqual(r.unresolved, true);
+  assert.strictEqual(r.unresolvedVia, 'graphql-file-query');
+  assert.deepStrictEqual(r.verdictSegments.map((s) => s.tokens), [JSM_REVIEW_TOKENS]);
+});
+
+test('261006-jsm forms (Task 3): every Task 3 via code is a VERDICT_ROUTE_FORMS key with an ASCII description', () => {
+  const { VERDICT_ROUTE_FORMS } = require('./classify.cjs');
+  for (const [cmd, via] of [
+    ['gh api ' + JSM_REST_REVIEWS + ' -fevent=APPROVE', 'gh-api-attached-field'],
+    ['gh api ' + JSM_REST_REVIEWS + ' --input f.json', 'gh-api-input'],
+    ["gh api graphql -f query='" + JSM_GQL_SUBMIT + "'", 'graphql'],
+    ['gh api graphql --input b.json', 'graphql-file-query'],
+  ]) {
+    const r = cls(cmd);
+    assert.strictEqual(r.via, via, cmd);
+    assert.ok(typeof VERDICT_ROUTE_FORMS[via] === 'string' && /^[\x20-\x7e]+$/.test(VERDICT_ROUTE_FORMS[via]), via);
+  }
+});
