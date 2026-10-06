@@ -154,8 +154,13 @@ const GIT_GLOBAL_VALUE_SHORT = new Set(['C', 'c']);
  * command>'`, `sudo -u` at end), the result carries `ambiguous:true` so callers fail
  * closed (D-07) rather than trust a leftover value token as the program.
  *
+ * `index` (additive, 261006-jsm review fix round WR-01) is the position in `seg.tokens` the walk
+ * stopped at, i.e. the token `prog` was read from (`tokens.length` or more when none remains). It
+ * changes nothing else: every existing field is computed exactly as before, and the verdict-route
+ * recovery reads it to find the program token in one linear walk.
+ *
  * @param {Object} seg structured segment from argv.parseCommand
- * @returns {{prog:string, args:string[], wrapped:boolean, ambiguous:boolean}}
+ * @returns {{prog:string, args:string[], wrapped:boolean, ambiguous:boolean, index:number}}
  */
 function resolveProgram(seg) {
   const tokens = Array.isArray(seg.tokens) ? seg.tokens : [];
@@ -262,7 +267,7 @@ function resolveProgram(seg) {
     args.push(tok);
   }
 
-  return { prog, args, wrapped, ambiguous };
+  return { prog, args, wrapped, ambiguous, index: i };
 }
 
 const FAIL_CLOSED = Object.freeze({ action: 'unknown', failClosed: true });
@@ -535,6 +540,13 @@ function classifySegmentDirect(seg) {
 //
 //   { action: 'pr-review', route: 'recovered', recovered: true, via, verdictSegments: [seg, ...] }
 //
+// One exception, authorized by the review fix round (CR-02 / WR-04): a TOP-LEVEL REST comment
+// POST whose body is an attached or bundled field (`gh api .../issues/42/comments -fbody=CLEAR`,
+// `curl -sd ... .../issues/42/comments`) recovers as `issue-comment` / `pr-comment` with
+// `recovered: true` and its outer segment as the verdict segment. Only the review-artifact gate
+// governs the comment actions, the result sits in PASS 4 like every recovered result, and it never
+// fails closed. A wrapped comment stays discarded below (combineRecovered keeps only pr-review).
+//
 // `verdictSegments` are the inner segments the review-artifact gate must run (re-parsed from the
 // static payload text with argv.parseCommand, never a raw-string grep, EP-2). An opaque form the
 // recovery cannot read is UNCERTAIN (D6) and the gate grades it `ask` with no PR lookup:
@@ -577,6 +589,7 @@ const VERDICT_ROUTE_FORMS = Object.freeze({
   setsid: 'a review command run through setsid',
   time: 'a review command run through time',
   eval: 'a review command inside an eval payload',
+  builtin: 'a review command run through the builtin prefix',
   'gh-repo-flag': 'a gh pr review command with -R or --repo before the review verb',
   'expansion-program': 'a command whose program name is built by shell expansion next to a review hint',
   'opaque-payload': 'an eval or shell -c payload whose command word is a shell expansion',
@@ -587,6 +600,8 @@ const VERDICT_ROUTE_FORMS = Object.freeze({
   'xargs-unknown-option': 'an xargs command with an option the gate cannot read',
   'gh-api-attached-field': 'a gh api review post whose fields are attached to the flag (-fevent=...)',
   'gh-api-input': 'a gh api review post whose body is read with --input',
+  'gh-api-bundled-field': 'a gh api request whose field flag is bundled behind -i (-if, -iFevent=...)',
+  'curl-bundled-flag': 'a curl request whose body or method flag is bundled with other short flags (-sd, -sX POST)',
   graphql: 'a GraphQL review mutation (submitPullRequestReview or addPullRequestReview)',
   'graphql-file-query': 'a GraphQL query read from a file or stdin, which may be a review mutation',
 });
@@ -661,7 +676,8 @@ function classifySegment(seg, state) {
 }
 
 /**
- * The verdict-route recovery: null, or a recovered `pr-review` result. Pure.
+ * The verdict-route recovery: null, or a recovered `pr-review` result (or, for a top-level REST
+ * comment POST with an attached or bundled body field, a recovered comment action). Pure.
  *
  * Prefilter first: the program (resolved past env assignments and WRAPPER_BUILTINS by the shared
  * resolveProgram) must be a recovery trigger, so an ordinary command pays one resolveProgram.
@@ -696,13 +712,19 @@ function recoverVerdictRoute(seg, state) {
   // reads -R's value as the area or verb, so it returned null).
   if (prog === 'gh') return recoverGhRepoFlag(seg, after);
   // Task 2b: eval re-reads its arguments, joined with one space, as a command line (a payload).
-  if (prog === 'eval') return recoverPayload(after.join(' '), 'eval', state);
+  // Review fix round CR-04: a leading `--` ends eval's (empty) option list and is not payload.
+  if (prog === 'eval') return recoverPayload((after[0] === '--' ? after.slice(1) : after).join(' '), 'eval', state);
+  // Review fix round CR-04: `builtin [--] NAME ARGS` runs the shell builtin NAME (`builtin eval`,
+  // `builtin command ...`), so in the recovery only it is a transparent prefix (WRAPPER_BUILTINS is
+  // unchanged, D1). A non-builtin NAME fails in bash, so peeling it can only over-gate.
+  if (prog === 'builtin') return recoverStripped(after[0] === '--' ? after.slice(1) : after, 'builtin', state);
   if (prog === 'nohup') return recoverStripped(after[0] === '--' ? after.slice(1) : after, 'nohup', state);
   if (prog === 'setsid') return recoverStripped(afterSetsidOptions(after), 'setsid', state);
   if (prog === 'time') return recoverStripped(afterTimeOptions(after), 'time', state);
   if (prog === 'xargs') return recoverXargs(after, state);
-  // Task 3b: a curl POST to the GitHub GraphQL endpoint (a REST curl already classified directly).
-  if (prog === 'curl') return recoverGraphql(seg);
+  // Task 3b: a curl POST to the GitHub GraphQL endpoint. Review fix round CR-02: a REST curl whose
+  // body or method flag is bundled (`-sd`, `-sX POST`), which the direct classifier reads as GET.
+  if (prog === 'curl') return recoverGraphql(seg) || recoverCurlRestPost(seg);
   // Task 2d: a program word built by expansion (`$(echo gh)`, `$GH`, a backtick), keyed on the
   // token as argv produced it (argv drops the quotes of `"$CHROME"`).
   if (word.length > 0 && (word[0] === '$' || word[0] === '`')) return recoverExpansionProgram(tokens, state);
@@ -811,8 +833,9 @@ const CURL_BODY_FLAGS = Object.freeze(['-d', '--data', '--data-binary', '--data-
 
 /**
  * Is this segment a request to the GitHub GraphQL endpoint? `gh api graphql` or `gh api /graphql`
- * (the endpoint is the first subcommand or positional after `api`), or curl whose URL host is
- * api.github.com and whose path is `/graphql`. Returns 'gh', 'curl' or null.
+ * (the endpoint is the first subcommand or positional after `api`; a query string or trailing slash
+ * is ignored), `gh api https://api.github.com/graphql` (review fix round CR-03), or curl whose URL
+ * host is api.github.com and whose path is `/graphql`. Returns 'gh', 'curl' or null.
  *
  * @param {Object} seg
  * @returns {'gh'|'curl'|null}
@@ -824,25 +847,105 @@ function graphqlTarget(seg) {
     const candidates = [...(seg.subcommands || []), ...(seg.positionals || [])];
     const at = candidates.indexOf('api');
     const endpoint = at === -1 ? undefined : candidates[at + 1];
-    return endpoint === 'graphql' || endpoint === '/graphql' ? 'gh' : null;
+    if (typeof endpoint !== 'string') return null;
+    // Review fix round CR-03: gh also takes a full URL (it sends the same POST to its path) and a
+    // query string or a trailing slash on the endpoint; the curl branch's host + path rule applies.
+    if (endpoint.indexOf('://') !== -1) return graphqlUrlPath(endpoint) === '/graphql' ? 'gh' : null;
+    const bare = endpoint.split('?')[0].split('#')[0].replace(/\/+$/, '');
+    return bare === 'graphql' || bare === '/graphql' ? 'gh' : null;
   }
   if (prog === 'curl') {
-    const target = extractTarget(seg, true);
-    if (!target || hostOf(target) !== 'api.github.com') return null;
-    const scheme = target.indexOf('://');
-    const rest = scheme === -1 ? target : target.slice(scheme + 3);
-    const slash = rest.indexOf('/');
-    const p = slash === -1 ? '' : rest.slice(slash).split('?')[0].split('#')[0].replace(/\/+$/, '');
-    return p === '/graphql' ? 'curl' : null;
+    const target = curlUrl(seg);
+    return target && graphqlUrlPath(target) === '/graphql' ? 'curl' : null;
   }
   return null;
+}
+
+/**
+ * The path of an api.github.com URL with its query, fragment and trailing slashes dropped, or null
+ * for any other host. Shared by the gh full-URL endpoint (review fix round CR-03) and curl.
+ *
+ * @param {string} url
+ * @returns {string|null}
+ */
+function graphqlUrlPath(url) {
+  if (hostOf(url) !== 'api.github.com') return null;
+  const scheme = url.indexOf('://');
+  const rest = scheme === -1 ? url : url.slice(scheme + 3);
+  const slash = rest.indexOf('/');
+  return slash === -1 ? '' : rest.slice(slash).split('?')[0].split('#')[0].replace(/\/+$/, '');
+}
+
+/**
+ * gh api's boolean short flags (gh 2.95 `gh api --help`): only `-i` (`--include`). `-p`
+ * (`--preview`), `-q`, `-t`, `-H` and `-X` take a value, so a letter after them is that value.
+ */
+const GH_API_FIELD_TOKEN_RE = /^-(i*)([fF])([\s\S]*)$/;
+
+/**
+ * A gh api field-flag token (review fix round CR-02, recovery only; hasWriteBody is frozen, D1):
+ * `-f` / `-F` alone, attached (`-fname=v`, `-f=name=v`) or bundled behind `-i` (`-if`,
+ * `-iFname=v`). Returns `{ typed, bundled, attached }`: `typed` for `F`, `bundled` when `-i`
+ * precedes the letter, `attached` the field body written on the token (one leading `=` dropped,
+ * pflag's `-f=value`) or null when the body is the NEXT token. Null for any other token. Pure.
+ *
+ * @param {string} t
+ * @returns {{typed:boolean, bundled:boolean, attached:(string|null)}|null}
+ */
+function ghFieldToken(t) {
+  if (typeof t !== 'string') return null;
+  const m = GH_API_FIELD_TOKEN_RE.exec(t);
+  if (!m) return null;
+  const rest = m[3].startsWith('=') ? m[3].slice(1) : m[3];
+  return { typed: m[2] === 'F', bundled: m[1].length > 0, attached: m[3].length > 0 ? rest : null };
+}
+
+/**
+ * curl's boolean short flags that may bundle in front of `-d` or `-X` (`-sd`, `-sSLd`, `-sX`). `-G`
+ * (send the data as a GET query) and `-I` (HEAD) are deliberately absent: behind them `-d` is not a
+ * POST body, so such a bundle is not read.
+ */
+const CURL_BUNDLE_SHORTS = 'sSLkvifgN';
+
+/**
+ * A curl short-flag token for `letter` (`d` body, `X` method), alone, attached (`-dBODY`, `-XPOST`)
+ * or bundled behind curl boolean shorts (`-sd`, `-sSdBODY`, `-sX`) (review fix round CR-02, recovery
+ * only; explicitMethod and hasWriteBody are frozen, D1). Returns `{ bundled, attached }`: `attached`
+ * the value written on the token, or null when the value is the NEXT token. Null for any other token,
+ * including a letter after a value-taking short (`-Xd` is method `d`). Pure.
+ *
+ * @param {string} t
+ * @param {'d'|'X'} letter
+ * @returns {{bundled:boolean, attached:(string|null)}|null}
+ */
+function curlShortToken(t, letter) {
+  if (typeof t !== 'string' || t.length < 2 || t[0] !== '-' || t[1] === '-') return null;
+  let k = 1;
+  while (k < t.length && CURL_BUNDLE_SHORTS.indexOf(t[k]) !== -1 && t[k] !== letter) k += 1;
+  if (t[k] !== letter) return null;
+  const rest = t.slice(k + 1);
+  return { bundled: k > 1, attached: rest.length > 0 ? rest : null };
+}
+
+/**
+ * The URL of a curl segment: the first token that starts with an http(s) scheme, else
+ * extractTarget's host scan (a JSON body naming a URL is never taken over a real URL token).
+ *
+ * @param {Object} seg
+ * @returns {string|null}
+ */
+function curlUrl(seg) {
+  const tokens = Array.isArray(seg.tokens) ? seg.tokens : [];
+  const url = tokens.find((t) => typeof t === 'string' && /^https?:\/\//i.test(t));
+  return url || extractTarget(seg, true);
 }
 
 /**
  * The `name=value` fields of a gh api segment, read from the TOKENS (repeated `-f` flags overwrite
  * each other in the parsed flag map): `-f` / `--raw-field` (raw string) and `-F` / `--field`
  * (typed: an `@` value is read from a file or stdin), as a separate value token, attached
- * (`-fquery=...`, `-f=query=...`) or long with `=` (`--field=query=...`).
+ * (`-fquery=...`, `-f=query=...`), bundled behind -i (`-if query=...`, `-iFquery=...`, review fix
+ * round CR-02) or long with `=` (`--field=query=...`).
  *
  * @param {string[]} tokens
  * @returns {Array<{name:string, value:string, typed:boolean}>}
@@ -853,19 +956,25 @@ function ghApiFields(tokens) {
     const t = tokens[i];
     let typed = null;
     let body;
-    if (t === '-f' || t === '--raw-field' || t === '-F' || t === '--field') {
-      typed = t === '-F' || t === '--field';
+    const short = ghFieldToken(t);
+    if (t === '--raw-field' || t === '--field') {
+      typed = t === '--field';
       body = tokens[i + 1];
       i += 1;
+    } else if (short) {
+      // `-f` / `-F`, attached (`-fquery=...`, `-f=query=...`) or bundled behind -i (CR-02).
+      typed = short.typed;
+      if (short.attached === null) {
+        body = tokens[i + 1];
+        i += 1;
+      } else {
+        body = short.attached;
+      }
     } else {
       const long = /^--(raw-field|field)=([\s\S]*)$/.exec(t);
-      const short = /^-([fF])([\s\S]+)$/.exec(t);
       if (long) {
         typed = long[1] === 'field';
         body = long[2];
-      } else if (short) {
-        typed = short[1] === 'F';
-        body = short[2].startsWith('=') ? short[2].slice(1) : short[2];
       }
     }
     if (typed === null || typeof body !== 'string') continue;
@@ -880,8 +989,9 @@ function ghApiFields(tokens) {
  * The GraphQL review mutation a segment sends, if any (Task 3b, CONTEXT D4). Pure.
  *
  * Returns null when the segment is not a request to the GitHub GraphQL endpoint (graphqlTarget).
- * Otherwise `{ mutation, queryText, fileSourced, variables }`:
- *   queryText    the `query` field (gh) or the inline JSON body's `query` (curl), or null
+ * Otherwise `{ mutation, queryText, fileSourced, variables, fields }`:
+ *   queryText    every `query` field value (gh sends the LAST of repeated fields, so none is
+ *                skipped; joined with a newline) or the inline JSON body's `query` (curl), or null
  *   mutation     `submitPullRequestReview` / `addPullRequestReview` when the query text names one
  *                as a case-sensitive whole identifier, else null
  *   fileSourced  true when the query may come from a file or stdin: gh `-F query=@...` /
@@ -890,9 +1000,12 @@ function ghApiFields(tokens) {
  *                file-sourced: gh sends the literal text.
  *   variables    name -> value for every non-query gh field, or the curl JSON body's `variables`
  *                object (values as JSON gives them), for the gate's event-variable read
+ *   fields       every gh field in token order (`{name, value, typed}`, repeats kept), so the gate
+ *                can read every value of a repeated variable and gh's bracket paths
+ *                (`input[event]=...`); [] for curl
  *
  * @param {Object} seg
- * @returns {{mutation:(string|null), queryText:(string|null), fileSourced:boolean, variables:Object}|null}
+ * @returns {{mutation:(string|null), queryText:(string|null), fileSourced:boolean, variables:Object, fields:Array<{name:string, value:string, typed:boolean}>}|null}
  */
 function graphqlReviewMutation(seg) {
   if (!seg || typeof seg !== 'object' || !Array.isArray(seg.tokens)) return null;
@@ -902,15 +1015,19 @@ function graphqlReviewMutation(seg) {
   let queryText = null;
   let fileSourced = false;
   const variables = {};
+  let fields = [];
   if (target === 'gh') {
-    for (const f of ghApiFields(tokens)) {
+    fields = ghApiFields(tokens);
+    const queries = [];
+    for (const f of fields) {
       if (f.name === 'query') {
         if (f.typed && f.value.startsWith('@')) fileSourced = true;
-        else if (queryText === null) queryText = f.value;
+        else queries.push(f.value);
       } else if (!Object.prototype.hasOwnProperty.call(variables, f.name)) {
         variables[f.name] = f.value;
       }
     }
+    if (queries.length > 0) queryText = queries.join('\n');
     if (tokens.some((t) => t === '--input' || t.startsWith('--input='))) fileSourced = true;
   } else {
     for (let i = 0; i < tokens.length; i += 1) {
@@ -925,9 +1042,18 @@ function graphqlReviewMutation(seg) {
       } else if (long && CURL_BODY_FLAGS.indexOf(long[1]) !== -1) {
         flag = long[1];
         val = long[2];
-      } else if (/^-d.+/.test(t)) {
-        flag = '-d';
-        val = t.slice(2);
+      } else {
+        // `-dBODY` attached, or bundled behind curl boolean shorts (`-sd BODY`, `-sSdBODY`, CR-02).
+        const d = curlShortToken(t, 'd');
+        if (d) {
+          flag = '-d';
+          if (d.attached === null) {
+            val = tokens[i + 1];
+            i += 1;
+          } else {
+            val = d.attached;
+          }
+        }
       }
       if (flag === null || typeof val !== 'string') continue;
       if (flag !== '--data-raw' && val.startsWith('@')) {
@@ -948,7 +1074,7 @@ function graphqlReviewMutation(seg) {
     }
   }
   const m = queryText === null ? null : GRAPHQL_REVIEW_MUTATION_RE.exec(queryText);
-  return { mutation: m ? m[1] : null, queryText, fileSourced, variables };
+  return { mutation: m ? m[1] : null, queryText, fileSourced, variables, fields, target };
 }
 
 /**
@@ -965,7 +1091,7 @@ function graphqlReviewMutation(seg) {
 function recoverGraphql(seg) {
   const g = graphqlReviewMutation(seg);
   if (g === null) return null;
-  const method = explicitMethod(seg);
+  const method = explicitMethod(seg) || (g.target === 'curl' ? curlBundledMethod(seg) : null);
   if (method !== null && !MUTATING_METHODS.has(method)) return null;
   if (g.mutation !== null) {
     return { action: 'pr-review', route: 'graphql', recovered: true, via: 'graphql', verdictSegments: [seg] };
@@ -979,29 +1105,108 @@ function recoverGraphql(seg) {
 }
 
 /**
- * A `gh api .../pulls/<n>/reviews[/...]` post with no explicit method whose body is carried by an
- * ATTACHED short field (`-fevent=APPROVE`, `-Fevent=APPROVE`) or by `--input` (RESEARCH section 1:
- * gh api defaults to POST when a field or --input is present). argv records the attached field as
- * shortFlags{fevent} and --input as flags.input, neither of which the frozen hasWriteBody reads,
- * so the direct classifier saw no write and returned null. The outer segment is the verdict
- * segment: the gate's fieldCandidates strips the attached flag letter, and unresolvedVerdictForm
- * already asks on --input. An explicit method returns null: a mutating one already classified
- * directly, a GET is a read. Any other target returns null (D1: an attached-field
- * `gh api .../issues -ftitle=x` create stays other, a recorded residual).
+ * The recovered action of a REST member sub-resource POST (review fix round CR-02): `reviews` ->
+ * pr-review, `issues/<n>/comments` -> issue-comment, `pulls/<n>/comments` -> pr-comment; every
+ * other target (a merge, labels, a collection create) -> null, so it stays other (D1).
+ *
+ * @param {string|null} target
+ * @returns {string|null}
+ */
+function restRecoveredAction(target) {
+  const kind = classifyGithubPath(target || '');
+  if (!kind || kind.sub !== true || !Array.isArray(kind.subPath)) return null;
+  const head = kind.subPath[0];
+  if (kind.resource === 'pulls' && head === 'reviews') return 'pr-review';
+  if (head === 'comments' && kind.subPath.length === 1) return kind.resource === 'pulls' ? 'pr-comment' : 'issue-comment';
+  return null;
+}
+
+/**
+ * A `gh api` POST with no explicit method whose body the frozen hasWriteBody does not read
+ * (RESEARCH section 1: gh api defaults to POST when a field or --input is present): a field
+ * ATTACHED to its flag (`-fevent=APPROVE`, `-Fevent=APPROVE`, via gh-api-attached-field), a field
+ * flag bundled behind -i (`-if event=APPROVE`, `-iFevent=APPROVE`, via gh-api-bundled-field, review
+ * fix round CR-02), or `--input` (via gh-api-input). argv records these as shortFlags{fevent},
+ * shortFlags{i:'f'} or flags.input, so the direct classifier saw no write and returned null. The
+ * outer segment is the verdict segment: the gate's fieldCandidates recovers the bare field, and
+ * unresolvedVerdictForm already asks on --input.
+ *
+ * Targets: `.../pulls/<n>/reviews[/...]` -> pr-review; `.../issues/<n>/comments` and
+ * `.../pulls/<n>/comments` -> issue-comment / pr-comment, for a field-carried body only (review fix
+ * round WR-04: the comment actions are governed by the review-artifact gate alone, and it governs a
+ * comment only when its body carries `CLEAR` or the re-review header). An explicit method returns
+ * null: a mutating one already classified directly, a GET is a read. Any other target returns null
+ * (D1: an attached-field `gh api .../issues -ftitle=x` create stays other, a recorded residual).
  *
  * @param {Object} seg
  * @returns {Object|null}
  */
 function recoverRestReviewPost(seg) {
   if (explicitMethod(seg) !== null) return null;
-  const kind = classifyGithubPath(extractTarget(seg, false) || '');
-  if (!kind || kind.resource !== 'pulls' || kind.sub !== true || kind.subPath[0] !== 'reviews') return null;
+  const action = restRecoveredAction(extractTarget(seg, false));
+  if (action === null) return null;
   const tokens = seg.tokens.filter((t) => typeof t === 'string');
   let via = null;
-  if (tokens.some((t) => /^-[fF][^=]+=/.test(t))) via = 'gh-api-attached-field';
-  else if (tokens.some((t) => t === '--input' || t.startsWith('--input='))) via = 'gh-api-input';
+  const field = tokens.map(ghFieldToken).find((f) => f !== null);
+  if (field) via = field.bundled ? 'gh-api-bundled-field' : 'gh-api-attached-field';
+  else if (action === 'pr-review' && tokens.some((t) => t === '--input' || t.startsWith('--input='))) via = 'gh-api-input';
   if (via === null) return null;
-  return { action: 'pr-review', route: 'gh-api', recovered: true, via, verdictSegments: [seg] };
+  return { action, route: 'gh-api', recovered: true, via, verdictSegments: [seg] };
+}
+
+/**
+ * The HTTP method a curl segment names through a BUNDLED `-X` (`-sX POST`, `-sXPOST`), upper-cased,
+ * or null when it names none that way (review fix round CR-02; explicitMethod reads the unbundled
+ * forms and is frozen, D1).
+ *
+ * @param {Object} seg
+ * @returns {string|null}
+ */
+function curlBundledMethod(seg) {
+  const tokens = Array.isArray(seg.tokens) ? seg.tokens : [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const x = curlShortToken(tokens[i], 'X');
+    if (!x || !x.bundled) continue;
+    const v = x.attached === null ? tokens[i + 1] : x.attached;
+    return typeof v === 'string' && v.length > 0 ? v.toUpperCase() : null;
+  }
+  return null;
+}
+
+/**
+ * A curl REST POST the direct classifier read as GET because its body or method flag is bundled
+ * with curl boolean shorts (`curl -sd '{"event":"APPROVE"}' .../pulls/42/reviews`, `-sSd`,
+ * `-sX POST`) (review fix round CR-02 + WR-04). Recovered only when a bundle is present (an
+ * unbundled curl write already classified directly) and the URL host is api.github.com; the method
+ * is the explicit or bundled `-X`, else POST when a `-d` body is present. Targets as
+ * restRecoveredAction: a review (route curl, via curl-bundled-flag) or a PR/issue comment; anything
+ * else (a merge, labels, a GET) stays other. The outer segment is the verdict segment.
+ *
+ * @param {Object} seg
+ * @returns {Object|null}
+ */
+function recoverCurlRestPost(seg) {
+  const tokens = Array.isArray(seg.tokens) ? seg.tokens.filter((t) => typeof t === 'string') : [];
+  let bundled = false;
+  let body = false;
+  for (const t of tokens) {
+    const d = curlShortToken(t, 'd');
+    if (d) {
+      body = true;
+      if (d.bundled) bundled = true;
+    }
+    const x = curlShortToken(t, 'X');
+    if (x && x.bundled) bundled = true;
+  }
+  if (!bundled) return null;
+  let method = explicitMethod(seg) || curlBundledMethod(seg);
+  if (method === null) method = body ? 'POST' : 'GET';
+  if (!MUTATING_METHODS.has(method)) return null;
+  const url = curlUrl(seg);
+  if (!url || hostOf(url) !== 'api.github.com') return null;
+  const action = restRecoveredAction(url);
+  if (action === null) return null;
+  return { action, route: 'curl', recovered: true, via: 'curl-bundled-flag', verdictSegments: [seg] };
 }
 
 /**
@@ -1224,22 +1429,28 @@ function combineRecovered(via, items) {
 }
 
 /**
- * Index of the token that IS the resolved program: the first token whose basename equals `prog`
- * and whose prefix resolves to it (the gsd-test-detect.programIndex rule; that module cannot be
- * required here, it requires this one).
+ * Index of the token that IS the resolved program: the token resolveProgram's walk stopped at
+ * (its additive `index`), when the walk over these tokens resolves to `prog` there; else the first
+ * token whose basename equals `prog`; else -1.
+ *
+ * Review fix round WR-01: this used to call resolveProgram on every growing prefix whose last token
+ * was named `prog` (the gsd-test-detect.programIndex rule), which is O(N^2) when a wrapper's value
+ * flags repeat the name (`sudo -u bash -u bash ... bash -c ...`: 11 s per classify at N=36,000). The
+ * result is the same: the walk over a prefix ending before the full walk's stop can only end on a
+ * flag, a flag value, an assignment or a wrapper (never `prog`, which is not a wrapper), so the first
+ * prefix that resolves to `prog` is the one ending at the full walk's stop. One walk, linear.
  *
  * @param {string[]} tokens
  * @param {string} prog
  * @returns {number} -1 when not found
  */
 function programTokenIndex(tokens, prog) {
-  let fallback = -1;
+  const r = resolveProgram({ tokens });
+  if (r.prog === prog && r.index < tokens.length && path.basename(tokens[r.index]) === prog) return r.index;
   for (let i = 0; i < tokens.length; i += 1) {
-    if (path.basename(tokens[i]) !== prog) continue;
-    if (fallback === -1) fallback = i;
-    if (resolveProgram({ tokens: tokens.slice(0, i + 1) }).prog === prog) return i;
+    if (path.basename(tokens[i]) === prog) return i;
   }
-  return fallback;
+  return -1;
 }
 
 /**
@@ -1866,4 +2077,8 @@ module.exports = {
   // 261006-jsm Task 3b: the GraphQL review-mutation reader the review-artifact gate uses to read
   // a mutation's event.
   graphqlReviewMutation,
+  // 261006-jsm review fix round CR-02: the bundle-aware gh field and curl short-flag token readers
+  // the review-artifact gate's fieldCandidates and unresolvedVerdictForm share (one rule, no drift).
+  ghFieldToken,
+  curlShortToken,
 };

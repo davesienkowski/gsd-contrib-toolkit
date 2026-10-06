@@ -95,6 +95,8 @@ const {
   PR_COMMENT_EQUIVALENT_ACTIONS,
   VERDICT_ROUTE_FORMS,
   graphqlReviewMutation,
+  ghFieldToken,
+  curlShortToken,
 } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, ask, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand } = require('./lib/resolve.cjs');
@@ -528,7 +530,10 @@ function reviewSlug(prNumber, headOid) {
  * Every string that could carry a `name=value` field or a JSON body on a segment: the raw
  * TOKENS (resilient to repeated `-f` flags overwriting each other in the parsed map) plus the
  * parsed flag values, plus the ATTACHED forms recovered from either. Mirrors the approach
- * `classify.isPureStateClose` already takes for `state=closed`.
+ * `classify.isPureStateClose` already takes for `state=closed`. 261006-jsm review fix round
+ * CR-02: a gh field bundled behind -i (`-iFevent=APPROVE`) and a curl body bundled behind curl
+ * boolean shorts (`-sSd'{...}'`) also yield their bare value, through the classifier's own token
+ * readers (ghFieldToken, curlShortToken), so the recovery and the gate read one rule.
  *
  * @param {Object} seg structured segment from argv.parseCommand
  * @returns {string[]}
@@ -542,6 +547,10 @@ function fieldCandidates(seg) {
     if (short) out.push(short[1]);
     const long = /^--[A-Za-z][A-Za-z0-9-]*=(.+)$/.exec(v);
     if (long) out.push(long[1]);
+    const field = ghFieldToken(v);
+    if (field && field.attached) out.push(field.attached);
+    const data = curlShortToken(v, 'd');
+    if (data && data.attached) out.push(data.attached);
   };
   if (Array.isArray(seg.tokens)) seg.tokens.forEach(add);
   for (const v of Object.values(seg.flags || {})) add(v);
@@ -631,7 +640,7 @@ function isApproveEvent(seg) {
     if (jsonEventOf(c) === 'APPROVE') return true; // decoded: `"APPR\u004fVE"` is an approve (MJ-02)
   }
   const gq = graphqlEvent(seg);
-  return gq !== null && gq.event === 'APPROVE'; // 261006-jsm: a GraphQL review mutation's event
+  return gq !== null && gq.events.indexOf('APPROVE') !== -1; // 261006-jsm: ANY GraphQL review event
 }
 
 /**
@@ -655,43 +664,174 @@ function isRequestChangesEvent(seg) {
     if (jsonEventOf(c) === 'REQUEST_CHANGES') return true; // decoded (MJ-02)
   }
   const gq = graphqlEvent(seg);
-  return gq !== null && gq.event === 'REQUEST_CHANGES'; // 261006-jsm: a GraphQL review mutation's event
+  return gq !== null && gq.events.indexOf('REQUEST_CHANGES') !== -1; // 261006-jsm: ANY GraphQL review event
 }
 
 /** Fixed descriptions of a GraphQL review mutation whose event cannot be read (261006-jsm). */
 const GRAPHQL_NO_EVENT = 'a GraphQL review mutation that names no event the gate can read';
 const GRAPHQL_EVENT_VARIABLE =
-  'a GraphQL review mutation whose event variable is absent, read from a file or stdin, or built by shell expansion';
+  'a GraphQL review mutation whose input or event variable is absent, read from a file or stdin, ' +
+  'built by shell expansion, or not readable JSON';
 
 /**
- * The event of a GraphQL review mutation the segment sends (261006-jsm Task 3b, CONTEXT D4), or
- * null when the segment carries no visible `submitPullRequestReview` / `addPullRequestReview`.
- * Read from an inline enum literal in the query text (`event: APPROVE`), or from a variable
- * (`event: $e`) resolved against a gh field `e=<VALUE>` or the curl JSON body's `variables`.
- * Returns `{ event, unreadable }`: `event` upper-cased, or null; `unreadable` a FIXED description
- * when the event cannot be read (a variable that is absent, `@`-sourced or built by expansion;
- * a `submitPullRequestReview` with no event at all), else null. `addPullRequestReview` with no
- * event anywhere starts a pending review, not a verdict: both are null. A `$` variable named
- * `event` is also caught by isApproveEvent's existing `event=` field match.
+ * The PullRequestReviewEvent enum. Any other identifier after `event:` is a field alias or an
+ * unrelated argument (`event: addReaction(...)`), never a review event (261006-jsm review CR-01).
+ */
+const GRAPHQL_REVIEW_EVENTS = new Set(['APPROVE', 'REQUEST_CHANGES', 'COMMENT', 'DISMISS']);
+
+/**
+ * GraphQL query text with every string literal (`"..."` with backslash escapes, and block strings
+ * `"""..."""` whose only escape is a backslash before `"""`) and every `#` comment (to the end of
+ * the line, outside a string) replaced by one space, scanned left to right as the GraphQL lexer
+ * does, so text inside a string or a comment can never be read as an argument (review CR-01). An
+ * unterminated string runs to the end of the text: the server rejects that query, so it runs
+ * nothing. Pure.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function stripGraphqlNoise(text) {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    if (text.startsWith('"""', i)) {
+      let j = i + 3;
+      while (j < text.length && !text.startsWith('"""', j)) j += text.startsWith('\\"""', j) ? 4 : 1;
+      out += ' ';
+      i = j + 3;
+      continue;
+    }
+    const c = text[i];
+    if (c === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"' && text[j] !== '\n' && text[j] !== '\r') j += text[j] === '\\' ? 2 : 1;
+      out += ' ';
+      i = j + 1;
+      continue;
+    }
+    if (c === '#') {
+      let j = i;
+      while (j < text.length && text[j] !== '\n' && text[j] !== '\r') j += 1;
+      out += ' ';
+      i = j;
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
+}
+
+/** A value the gate can read statically: a string not read from a file or stdin and not built by expansion. */
+function readableGraphqlValue(v) {
+  return typeof v === 'string' && !v.startsWith('@') && !/[$`]/.test(v);
+}
+
+/**
+ * The events of the GraphQL review mutation(s) the segment sends (261006-jsm Task 3b, CONTEXT D4;
+ * review fix round CR-01), or null when the segment carries no visible `submitPullRequestReview` /
+ * `addPullRequestReview`. The query text is read with its strings and comments stripped
+ * (stripGraphqlNoise), and EVERY occurrence counts, never only the first:
+ *   - an inline enum literal `event: APPROVE` (an identifier outside the PullRequestReviewEvent
+ *     enum is an alias or an unrelated argument and is skipped);
+ *   - an event variable `event: $e`, resolved against every gh field `e=<VALUE>` (gh sends the last
+ *     of repeated fields, so every value counts) or the curl JSON body's `variables`;
+ *   - an input variable `input: $v`, read through gh's bracket fields (`v[event]=APPROVE`), a gh
+ *     field `v=<JSON object>`, or the curl `variables[v]` object;
+ *   - any gh field whose name ends `[event]`, and any `event` key in the curl `variables` object.
+ * Returns `{ event, events, unreadable }`: `events` the PullRequestReviewEvent values read
+ * (upper-cased, deduplicated); `event` APPROVE or REQUEST_CHANGES when either was read, else the
+ * first event read, else null; `unreadable` a FIXED description (the MJ-02 ask) when an input or
+ * event variable is absent, `@`-sourced, built by expansion or not readable JSON, when an input
+ * variable yields no event at all, or when a `submitPullRequestReview` names no event; else null.
+ * Only an `addPullRequestReview` with provably no event and no variable-sourced input is a pending
+ * review, not a verdict: `events` empty and `unreadable` null. A `$` variable named `event` is also
+ * caught by isApproveEvent's existing `event=` field match.
  *
  * @param {Object} seg
- * @returns {{event:(string|null), unreadable:(string|null)}|null}
+ * @returns {{event:(string|null), events:string[], unreadable:(string|null)}|null}
  */
 function graphqlEvent(seg) {
   const g = graphqlReviewMutation(seg);
   if (!g || !g.mutation || typeof g.queryText !== 'string') return null;
-  const literal = /(?<![$\w])event\s*:\s*([A-Za-z_]+)\b/.exec(g.queryText);
-  if (literal) return { event: literal[1].toUpperCase(), unreadable: null };
-  const variable = /(?<![$\w])event\s*:\s*\$(\w+)/.exec(g.queryText);
-  if (variable) {
-    const has = Object.prototype.hasOwnProperty.call(g.variables, variable[1]);
-    const value = has ? g.variables[variable[1]] : undefined;
-    if (typeof value !== 'string' || value.startsWith('@') || /[$`]/.test(value)) {
-      return { event: null, unreadable: GRAPHQL_EVENT_VARIABLE };
+  const text = stripGraphqlNoise(g.queryText);
+  const fields = Array.isArray(g.fields) ? g.fields : [];
+  const vars = g.variables && typeof g.variables === 'object' ? g.variables : {};
+  const events = [];
+  let unreadable = false;
+  let variableInput = false;
+  const addEvent = (v) => {
+    const e = String(v).toUpperCase();
+    if (GRAPHQL_REVIEW_EVENTS.has(e) && events.indexOf(e) === -1) events.push(e);
+  };
+  // A string value that must carry an event: readable -> its event, else unreadable.
+  const readEventString = (v) => {
+    if (readableGraphqlValue(v)) addEvent(v);
+    else unreadable = true;
+  };
+  // An input object given as JSON text or as an object: its `event` key, if any.
+  const readInputObject = (v) => {
+    let o = v;
+    if (typeof v === 'string') {
+      if (!readableGraphqlValue(v)) {
+        unreadable = true;
+        return;
+      }
+      try {
+        o = JSON.parse(v);
+      } catch (_) {
+        unreadable = true;
+        return;
+      }
     }
-    return { event: value.toUpperCase(), unreadable: null };
+    if (o && typeof o === 'object' && typeof o.event === 'string') addEvent(o.event);
+  };
+  // Every value a variable `name` takes: all gh fields so named, else the curl `variables` entry.
+  const valuesOf = (name) => {
+    const own = fields.filter((f) => f.name === name).map((f) => f.value);
+    if (own.length > 0) return own;
+    return Object.prototype.hasOwnProperty.call(vars, name) && fields.length === 0 ? [vars[name]] : [];
+  };
+
+  for (const m of text.matchAll(/(?<![$\w])event\s*:\s*([A-Za-z_]\w*)/g)) addEvent(m[1]);
+  for (const m of text.matchAll(/(?<![$\w])event\s*:\s*\$(\w+)/g)) {
+    const values = valuesOf(m[1]);
+    if (values.length === 0) unreadable = true;
+    for (const v of values) {
+      if (typeof v === 'string') readEventString(v);
+    }
   }
-  return { event: null, unreadable: g.mutation === 'submitPullRequestReview' ? GRAPHQL_NO_EVENT : null };
+  for (const m of text.matchAll(/(?<![$\w])input\s*:\s*\$(\w+)/g)) {
+    variableInput = true;
+    const name = m[1];
+    const bracket = fields.filter((f) => f.name.startsWith(name + '['));
+    const values = valuesOf(name);
+    if (bracket.length === 0 && values.length === 0) unreadable = true;
+    for (const v of values) readInputObject(v);
+    for (const f of bracket) {
+      if (!/^[^[\]]+(?:\[[^[\]]*\])+$/.test(f.name)) unreadable = true;
+    }
+  }
+  for (const f of fields) {
+    if (/\[event\]$/.test(f.name)) readEventString(f.value);
+  }
+  if (fields.length === 0) {
+    // curl: any `event` key anywhere in the JSON `variables` object.
+    const walk = (o, depth) => {
+      if (!o || typeof o !== 'object' || depth > 8) return;
+      for (const [k, v] of Object.entries(o)) {
+        if (k === 'event' && typeof v === 'string') addEvent(v);
+        else walk(v, depth + 1);
+      }
+    };
+    walk(vars, 0);
+  }
+
+  const verdict = events.indexOf('APPROVE') !== -1 ? 'APPROVE' : events.indexOf('REQUEST_CHANGES') !== -1 ? 'REQUEST_CHANGES' : null;
+  let why = null;
+  if (unreadable || (variableInput && events.length === 0)) why = GRAPHQL_EVENT_VARIABLE;
+  else if (events.length === 0 && /\bsubmitPullRequestReview\b/.test(text)) why = GRAPHQL_NO_EVENT;
+  return { event: verdict || (events.length > 0 ? events[0] : null), events, unreadable: why };
 }
 
 /**
@@ -769,9 +909,11 @@ function unresolvedVerdictForm(seg) {
       if (long && (BODY_FROM_FILE_FLAGS.indexOf(long[1]) !== -1 || BODY_FILE_FLAGS.indexOf(long[1]) !== -1)) {
         flag = long[1];
         val = long[2];
-      } else if (/^-d.+/.test(t)) {
+      } else if (curlShortToken(t, 'd')) {
+        // `-dBODY`, or bundled behind curl boolean shorts (`-sd BODY`, `-sSdBODY`; review fix CR-02).
+        const d = curlShortToken(t, 'd');
         flag = '-d';
-        val = t.slice(2);
+        val = d.attached === null ? tokens[i + 1] : d.attached;
       } else if (/^-T.+/.test(t)) {
         flag = '-T';
         val = t.slice(2);
@@ -851,6 +993,32 @@ function uncertainVerdictRouteAsk(via) {
 }
 
 /**
+ * The ask for a RECOVERED verdict segment whose PR number cannot be read from the command (261006-jsm
+ * review fix round WR-02): xargs feeds the number from stdin and a GraphQL mutation names a node id,
+ * so prSelector is null and the PR lookup falls back to the current branch's PR. R8, R10 and R1 were
+ * then checked against that PR's artifacts, which may belong to a different PR than the one this
+ * command reviews, so a human decides. Held like every ask: the segment is still gated, so any deny
+ * wins. The reason names the form by its FIXED description only; it never echoes the command.
+ *
+ * @param {string} via a classify VERDICT_ROUTE_FORMS code
+ * @returns {Object}
+ */
+function unkeyedVerdictAsk(via) {
+  const form = Object.prototype.hasOwnProperty.call(VERDICT_ROUTE_FORMS, via)
+    ? VERDICT_ROUTE_FORMS[via]
+    : 'a command form the gate cannot read';
+  return ask(
+    'ENF-20 R8 / R10 / R1 (re-review steps 8, 10 and 1) - UNKEYED verdict: ' + form + '. The PR ' +
+      'number cannot be read from the command (for example it is fed through xargs from stdin, or ' +
+      'a GraphQL mutation names the PR by node id), so the review artifacts were checked against ' +
+      "the current branch's PR, which may not be the PR this command reviews.\n\n" +
+      'Run the review as `gh pr review <n> --approve` (or `--request-changes`) with the PR number ' +
+      'on the command line, or let a human decide here. `GSD_CONTRIB_OVERRIDE` does not answer ' +
+      'this prompt: it rescues thrown gate errors only. (CTK-ADR-0010, ENF-20)'
+  );
+}
+
+/**
  * Is this a help invocation? `gh pr review --help` classifies as `pr-review` (the classifier
  * reads the verb, not the intent), and denying a help request would be a pure false positive —
  * the failure mode that gets a toolkit switched off. Reads only the STRUCTURED flag space, so
@@ -890,10 +1058,12 @@ function repoSpecOf(seg) {
  * the positionals. The token scan sees it either way.
  *
  * DOCUMENTED LIMIT: a numeric flag VALUE placed before the PR number (`gh pr review --body 12
- * 42`) would be read as the selector. Nobody writes a bare-numeric review body, and the
- * failure direction is safe — a mis-keyed PR resolves to a different artifact directory, so
- * the gate DENIES rather than allowing. A branch-name selector (`gh pr review my-branch`)
- * returns null and the live resolver falls back to the current branch's PR.
+ * 42`) would be read as the selector. Nobody writes a bare-numeric review body. A mis-keyed PR
+ * resolves to a different artifact directory: the gate denies when that PR has no artifacts,
+ * and can allow when it does (261006-jsm review WR-02 corrected the earlier "denies rather than
+ * allowing" claim). A branch-name selector (`gh pr review my-branch`) returns null and the live
+ * resolver falls back to the current branch's PR; for a RECOVERED verdict segment that fallback
+ * also holds unkeyedVerdictAsk.
  *
  * @param {Object} seg
  * @returns {string|null} the PR/issue number as a string, or null.
@@ -1574,7 +1744,9 @@ function gateApplies(g, action, post) {
  * @param {Object} seg
  * @param {string} action
  * @param {Object} deps
- * @param {{sessionId?: (string|null)}} [opts] the PreToolUse payload's session id (step 8a).
+ * @param {{sessionId?: (string|null), recoveredVia?: (string|null)}} [opts] the PreToolUse payload's
+ *   session id (step 8a), and the classifier's `via` when `seg` is a recovered verdict segment
+ *   (261006-jsm review WR-02: a null PR selector then holds unkeyedVerdictAsk).
  * @returns {Object|null}
  */
 function gateSegment(seg, action, deps, opts = {}) {
@@ -1641,6 +1813,13 @@ function gateSegment(seg, action, deps, opts = {}) {
 
   // The FIRST ask; never returned while a later entry could still deny.
   let pendingAsk = unresolved ? unresolvedVerdictAsk(unresolved) : null;
+  // 261006-jsm review fix round WR-02: a recovered VERDICT segment (an approve, a request-changes
+  // or a CLEAR body) with no readable PR number was keyed to the current branch's PR above; hold an
+  // ask so a wrong key can never quietly allow a verdict. A pending or COMMENT review is not one.
+  const verdict = post.approve || post.requestChanges || post.clear;
+  if (!pendingAsk && verdict && opts && typeof opts.recoveredVia === 'string' && selector === null) {
+    pendingAsk = unkeyedVerdictAsk(opts.recoveredVia);
+  }
 
   for (const g of applicable) {
     // Companion artifacts first: the merge record's re-fetch recency is meaningless without
@@ -1766,9 +1945,13 @@ function gate(stdinString, deps) {
       );
     }
     const targets = r.recovered === true ? r.verdictSegments : [seg];
-    const action = r.recovered === true ? 'pr-review' : r.action;
+    // Review fix round CR-02 / WR-04: a recovered REST comment carries its own comment action.
+    const action = r.action;
     for (const target of targets) {
-      const decision = gateSegment(target, action, segDeps, { sessionId });
+      const decision = gateSegment(target, action, segDeps, {
+        sessionId,
+        recoveredVia: r.recovered === true ? r.via : null,
+      });
       if (decision && decision.permissionDecision === 'ask') {
         if (!firstAsk) firstAsk = decision; // held: a later segment may still deny
       } else if (decision) {
