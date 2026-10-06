@@ -1458,3 +1458,220 @@ test('38-03 order: R8-code-review.json absent + no memtrace → DENY R8-code; th
   assert.match(d.permissionDecisionReason, /ENF-20 R8-code/);
   assert.deepStrictEqual(dp._calls.readToolLog, []);
 });
+
+// ── 38-03: a filled unavailability attestation asks, never allows ───────────
+
+const ATTESTED = 'memtrace sidecar down; used grep + /code-review';
+
+/** A fully filled R8a-memtrace.json for this push. */
+function filledR8a(over = {}) {
+  return Object.assign(
+    { schema: 1, pass: 'memtrace-unavailable', head_oid: HEAD, status: 'unavailable', unavailable_reason: ATTESTED },
+    over
+  );
+}
+
+/** An approve with only Bash rows (evidence missing) and `fileText` at the R8a path. */
+function approveAttested(fileText, over = {}) {
+  return approveWith(ONLY_BASH.slice(), Object.assign({}, over, { files: Object.assign({ [R8A_PATH]: fileText }, over.files || {}) }));
+}
+
+/** The quoted attestation in an R8a attestation ask, between « and ». */
+function quotedAttestation(why) {
+  const m = /«([\s\S]*?)»/.exec(why);
+  assert.ok(m, 'the ask quotes the attestation between « and »: ' + why);
+  return m[1];
+}
+
+/** Every filled-attestation ask: prefix, quoted reviewer attestation, cannot-verify, tools, note. */
+function assertAttestAsk(d) {
+  assert.strictEqual(d.permissionDecision, 'ask', d.permissionDecisionReason);
+  const why = d.permissionDecisionReason;
+  assert.ok(why.startsWith(R8A_ASK_PREFIX), why);
+  assert.match(why, /unverified attestation/i);
+  assert.match(why, /cannot verify/i);
+  assert.match(why, /does not answer this prompt/);
+  return why;
+}
+
+test('38-03 attest: filled attestation + missing evidence → ASK quoting the attested reason; the gate cannot verify it', () => {
+  const { d } = approveAttested(text(filledR8a()));
+  const why = assertAttestAsk(d);
+  assert.strictEqual(quotedAttestation(why), ATTESTED);
+  for (const t of ALL_FIVE) assert.ok(why.includes(t), 'the ask names ' + t);
+});
+
+for (const [label, oid, want] of [
+  ['HEAD first 7 chars', HEAD.slice(0, 7), 'ask'],
+  ['HEAD first 6 chars', HEAD.slice(0, 6), 'deny'],
+  ['OTHER_HEAD', OTHER_HEAD, 'deny'],
+]) {
+  test('38-03 attest head_oid: ' + label + ' → ' + want, () => {
+    const { d } = approveAttested(text(filledR8a({ head_oid: oid })));
+    if (want === 'ask') {
+      assertAttestAsk(d);
+    } else {
+      assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+      assert.match(d.permissionDecisionReason, /now heads at/);
+    }
+  });
+}
+
+for (const [label, status] of [["'Unavailable'", 'Unavailable'], ["'unavailаble' (U+0430)", 'unavail\u0430ble'], ["'available'", 'available']]) {
+  test('38-03 attest status: ' + label + ' → deny', () => {
+    const { d } = approveAttested(text(filledR8a({ status })));
+    assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+    assert.match(d.permissionDecisionReason, /Set `status` to exactly `unavailable`/);
+  });
+}
+
+for (const [label, reason] of [["''", ''], ["'   '", '   ']]) {
+  test('38-03 attest reason: ' + label + ' → deny', () => {
+    const { d } = approveAttested(text(filledR8a({ unavailable_reason: reason })));
+    assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+    assert.match(d.permissionDecisionReason, /Record why memtrace could not run/);
+  });
+}
+
+test("38-03 attest: pass 'code-review' (a copied R8 file) → deny", () => {
+  const { d } = approveAttested(text(filledR8a({ pass: 'code-review' })));
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /must record `pass: "memtrace-unavailable"`/);
+});
+
+for (const [label, body, re] of [["''", '', /the file is empty/], ["'{}'", '{}', /must record `pass: "memtrace-unavailable"`/]]) {
+  test('38-03 attest file: ' + label + ' → deny', () => {
+    const { d } = approveAttested(body);
+    assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+    assert.match(d.permissionDecisionReason, re);
+  });
+}
+
+test('38-03 attest: malformed JSON → fail-closed deny', () => {
+  const { d } = approveAttested('{"schema": 1, "pass": "memtrace-unavailable",');
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /not valid JSON/);
+});
+
+test('38-03 attest: filled attestation + COMPLETE evidence → allow; R8a-memtrace.json is never read', () => {
+  const reads = [];
+  const dp = deps({ files: { [R8A_PATH]: text(filledR8a()) } });
+  const inner = dp.readArtifactText;
+  dp.readArtifactText = (rel) => {
+    reads.push(rel);
+    return inner(rel);
+  };
+  const d = runReviewArtifactGate(input('gh pr review 42 --approve'), dp);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.ok(!reads.includes(R8A_PATH), 'the attestation is not read when the evidence exists: ' + reads.join(', '));
+});
+
+test('38-03 attest: filled attestation + missing evidence + a prior re-review round at HEAD → DENY R1', () => {
+  const { d } = approveAttested(text(filledR8a()), {
+    readPostedReviews: () => [
+      { commit_id: HEAD, state: 'CHANGES_REQUESTED', body: '## Re-Review — PR #42 · **1 BLOCKER(S) OPEN**' },
+    ],
+  });
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-20 R1/);
+});
+
+test('38-03 sanitiser: a 2,000-char reason with control characters → at most 300 chars quoted, controls replaced, labelled unverified', () => {
+  const reason = 'START\u0007\u001b[31m\nINJECT\u2028' + 'Z'.repeat(2000);
+  const { d } = approveAttested(text(filledR8a({ unavailable_reason: reason })));
+  const why = assertAttestAsk(d);
+  const q = quotedAttestation(why);
+  assert.ok(Array.from(q).length <= 300, 'quoted ' + Array.from(q).length + ' characters');
+  assert.ok(!/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(q), 'no control character survives in the quote');
+  assert.ok(q.startsWith('START  [31m INJECT '), 'controls are replaced with spaces: ' + JSON.stringify(q.slice(0, 24)));
+  assert.ok(!why.includes('\u0007') && !why.includes('\u001b') && !why.includes('\u2028'));
+  assert.ok(!/Z{301}/.test(why), 'no more than 300 characters of the reason reach the prompt');
+});
+
+/**
+ * APPEND recorder rows built by tool-recorder's own recordToolCall + serializeRecord, with a
+ * per-row outcome, cwd, tool_use_id and ts (the privacy markers). Never hand-written.
+ */
+function appendRecorderRowsWith(sessionId, rows) {
+  const file = path.join(process.env.GSD_CONTRIB_LOG_DIR, LOG_FILENAME);
+  for (const r of rows) {
+    const payload = {
+      hook_event_name: r.outcome === 'fail' ? 'PostToolUseFailure' : 'PostToolUse',
+      session_id: sessionId,
+      tool_use_id: r.tool_use_id || 'toolu_38_03',
+      tool_name: r.tool_name,
+      tool_input: r.tool_name === 'Bash' ? { command: 'ls' } : {},
+      cwd: r.cwd || '/tmp/wt',
+    };
+    if (r.outcome === 'fail') payload.error = 'boom';
+    else payload.tool_response = {};
+    const deps0 = { env: {} };
+    if (r.ts) deps0.now = () => r.ts;
+    const line = serializeRecord(recordToolCall(JSON.stringify(payload), deps0));
+    assert.ok(line, 'the recorder produced a line for ' + r.tool_name);
+    fs.appendFileSync(file, line, 'utf8');
+  }
+}
+
+test('38-03 forgery (real file): another session\'s memtrace rows and hand-written gate-verdict-shaped rows never count → DENY naming all memtrace tools', () => {
+  const own = 'sess-38-03-forge';
+  appendRecorderRows('sess-38-03-forge-other', ALL_FIVE);
+  const file = path.join(process.env.GSD_CONTRIB_LOG_DIR, LOG_FILENAME);
+  for (const t of [MT + 'get_impact', MT + 'get_symbol_context', MT + 'recall_decision']) {
+    fs.appendFileSync(
+      file,
+      JSON.stringify({ ts: new Date().toISOString(), source: 'pretooluse-gate', session_id: own, tool_name: t, outcome: 'ok', cwd: '/tmp/wt' }) + '\n',
+      'utf8'
+    );
+  }
+  appendRecorderRows(own, ['Bash']);
+  const dp = deps();
+  delete dp.readToolLog;
+  const d = runReviewArtifactGate(input('gh pr review 42 --approve', own), dp);
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  for (const t of ALL_FIVE) assert.ok(d.permissionDecisionReason.includes(t), 'the deny names ' + t);
+});
+
+const PRIV = Object.freeze({
+  cwd: '/tmp/CWDMARK_38_03_q7',
+  tuid: 'TUIDMARK_38_03_q7',
+  ts: 'TSMARK_38_03_q7',
+  tool: 'mcp__secret__TOOLMARK_38_03_q7',
+  other: 'SESSMARK_38_03_q7',
+});
+
+/** No privacy marker and no session id in a decision reason. */
+function assertNoMarkers(why, ownSession) {
+  for (const m of ['CWDMARK_38_03_q7', 'TUIDMARK_38_03_q7', 'TSMARK_38_03_q7', 'TOOLMARK_38_03_q7', 'SESSMARK_38_03_q7']) {
+    assert.ok(!why.includes(m), 'the reason leaks ' + m + ': ' + why);
+  }
+  assert.ok(!why.includes(ownSession), 'the reason leaks the session id');
+}
+
+test('38-03 privacy (real file, deny): markers in cwd, tool_use_id, ts, a non-required tool and another session id never reach the reason', () => {
+  const own = 'sess-38-03-priv-deny';
+  appendRecorderRowsWith(PRIV.other, ALL_FIVE.map((t) => ({ tool_name: t, cwd: PRIV.cwd })));
+  appendRecorderRowsWith(own, [
+    { tool_name: 'Bash', cwd: PRIV.cwd, tool_use_id: PRIV.tuid, ts: PRIV.ts },
+    { tool_name: PRIV.tool, cwd: PRIV.cwd, tool_use_id: PRIV.tuid + '_2', ts: PRIV.ts },
+  ]);
+  const dp = deps();
+  delete dp.readToolLog;
+  const d = runReviewArtifactGate(input('gh pr review 42 --approve', own), dp);
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assertNoMarkers(d.permissionDecisionReason, own);
+});
+
+test('38-03 privacy (real file, ask): own rows with markers, all outcome fail → the ask reason carries no marker', () => {
+  const own = 'sess-38-03-priv-ask';
+  appendRecorderRowsWith(own, [
+    { tool_name: 'Bash', outcome: 'fail', cwd: PRIV.cwd, tool_use_id: PRIV.tuid, ts: PRIV.ts },
+    { tool_name: MT + 'get_impact', outcome: 'fail', cwd: PRIV.cwd, tool_use_id: PRIV.tuid + '_2', ts: PRIV.ts },
+    { tool_name: PRIV.tool, outcome: 'fail', cwd: PRIV.cwd, tool_use_id: PRIV.tuid + '_3', ts: PRIV.ts },
+  ]);
+  const dp = deps();
+  delete dp.readToolLog;
+  const d = runReviewArtifactGate(input('gh pr review 42 --approve', own), dp);
+  assert.strictEqual(d.permissionDecision, 'ask', d.permissionDecisionReason);
+  assertNoMarkers(d.permissionDecisionReason, own);
+});
