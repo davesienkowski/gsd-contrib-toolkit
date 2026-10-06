@@ -302,8 +302,8 @@ function gate(stdinString, deps) {
     if (startDir === null || treeDir === null) {
       throw new FailClosed(
         'ENF-24 gsd-test viability gate cannot resolve this dispatch\'s directory statically (a ' +
-          '`-source` value or an earlier `cd` target is a shell expansion, `~user` or `-`) — ' +
-          'failing closed. Pass a literal path.'
+          '`-source` value or an earlier `cd` target is a shell expansion, `~user` or `-`, or that ' +
+          '`cd` carries an option other than -L/-P/-e/-@/--) — failing closed. Pass a literal path.'
       );
     }
 

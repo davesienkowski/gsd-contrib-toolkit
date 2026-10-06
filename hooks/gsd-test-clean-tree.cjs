@@ -197,8 +197,8 @@ function gate(stdinString, deps) {
     if (treeDir === null) {
       throw new FailClosed(
         'ENF-23 gsd-test clean-tree gate cannot resolve the tested tree statically (a `-source` ' +
-          'value or an earlier `cd` target is a shell expansion, `~user` or `-`) — failing closed. ' +
-          'Pass a literal path.'
+          'value or an earlier `cd` target is a shell expansion, `~user` or `-`, or that `cd` carries ' +
+          'an option other than -L/-P/-e/-@/--) — failing closed. Pass a literal path.'
       );
     }
 

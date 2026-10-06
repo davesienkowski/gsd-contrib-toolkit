@@ -860,12 +860,57 @@ function expandStatic(value, ctx) {
   return hasExpansion(v) ? null : v;
 }
 
+/** bash `cd` options: `-L`, `-P`, `-e`, `-@`, alone or clustered (`-Pe`). */
+const CD_OPTION = /^-[LPe@]+$/;
+
 /**
- * A prefix with every `cd` target statically expanded (36-03 handoff 1). resolve.commandStartDir
- * would resolve `cd "$X"` as the literal path `<cwd>/$X`; here a target carrying `$` or a
- * backtick goes through expandStatic (leading `$HOME`/`${HOME}`/`$XDG_CONFIG_HOME` only), a `~` /
- * `~/x` target uses the injected homedir when one is given, and a `~user` or `cd -` target cannot
- * be resolved at all. null when any persisting `cd` target is unresolvable.
+ * The target of one `cd` segment, read from its RAW tokens (36-REVIEW M-02): leading
+ * assignments and the `cd` word are skipped, then bash's options (`-L`/`-P`/`-e`/`-@`, clustered
+ * or not) and an ending `--`. argv/classify read `cd -P /x` as a short flag consuming `/x` (no
+ * positional), and resolve.commandStartDir then fell back to `<cwd>/-P` — a bypass from a
+ * non-gsd-core session cwd. An unknown option -> unresolvable. A bare `cd` (N-05) goes to the
+ * shell's $HOME: the env HOME, else the injected homedir, else unresolvable.
+ *
+ * @returns {{target:string}|{noop:true}|null} null when the target cannot be known
+ */
+function cdTarget(seg, ctx) {
+  const toks = Array.isArray(seg.tokens) ? seg.tokens : [];
+  let k = 0;
+  while (k < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[k])) k += 1;
+  k += 1; // the `cd` word
+  while (k < toks.length) {
+    const t = toks[k];
+    if (t === '--') { k += 1; break; }
+    if (CD_OPTION.test(t)) { k += 1; continue; }
+    if (t.length > 1 && t.startsWith('-')) return null; // an option bash would reject or we cannot read
+    break;
+  }
+  // Redirects are removed by the shell before `cd` sees its arguments.
+  while (k < toks.length) {
+    const m = REDIRECT.exec(toks[k]);
+    if (!m) break;
+    k += m[2] === '' ? 2 : 1;
+  }
+  const target = toks[k];
+  if (target === undefined) {
+    const env = (ctx && ctx.env) || {};
+    if (typeof env.HOME === 'string' && env.HOME !== '') return { target: env.HOME };
+    if (ctx && typeof ctx.homedir === 'string' && ctx.homedir !== '') return { target: ctx.homedir };
+    return null;
+  }
+  if (target === '') return { noop: true };
+  return { target };
+}
+
+/**
+ * A prefix with every `cd` target read past its options (M-02) and statically expanded (36-03
+ * handoff 1). resolve.commandStartDir would resolve `cd "$X"` as the literal path `<cwd>/$X`;
+ * here a target carrying `$` or a backtick goes through expandStatic (leading
+ * `$HOME`/`${HOME}`/`$XDG_CONFIG_HOME` only), a `~` / `~/x` target uses the injected homedir
+ * when one is given, and a `~user`, `cd -` or unknown-option target cannot be resolved at all.
+ * Each rewritten `cd` segment carries exactly `tokens: ['cd', target]` and `positionals:
+ * [target]`, the two fields commandStartDir reads. null when any persisting `cd` target is
+ * unresolvable.
  */
 function expandCdTargets(prefix, ctx) {
   if (!prefix || prefix.ok !== true || !Array.isArray(prefix.segments)) return prefix;
@@ -875,25 +920,19 @@ function expandCdTargets(prefix, ctx) {
       segments.push(seg);
       continue;
     }
-    const fromPositional = Array.isArray(seg.positionals) && Boolean(seg.positionals[0]);
-    const target = fromPositional ? seg.positionals[0] : Array.isArray(seg.tokens) ? seg.tokens[1] : undefined;
-    if (typeof target !== 'string' || target === '') {
-      segments.push(seg);
-      continue;
-    }
+    const t = cdTarget(seg, ctx);
+    if (t === null) return null;
+    if (t.noop) continue; // `cd ""` stays put
+    let target = t.target;
     if (target === '-') return null; // `cd -` goes to $OLDPWD, which is not knowable here
     if (target.startsWith('~') && target !== '~' && !target.startsWith('~/')) return null; // ~user
     const homeForm = (target === '~' || target.startsWith('~/')) && ctx && typeof ctx.homedir === 'string';
-    if (!hasExpansion(target) && !homeForm) {
-      segments.push(seg);
-      continue;
+    if (hasExpansion(target) || homeForm) {
+      const expanded = expandStatic(target, ctx || {});
+      if (expanded === null) return null;
+      target = expanded;
     }
-    const expanded = expandStatic(target, ctx || {});
-    if (expanded === null) return null;
-    const copy = Object.assign({}, seg);
-    if (fromPositional) copy.positionals = [expanded].concat(seg.positionals.slice(1));
-    else copy.tokens = [seg.tokens[0], expanded].concat(seg.tokens.slice(2));
-    segments.push(copy);
+    segments.push(Object.assign({}, seg, { tokens: ['cd', target], positionals: [target] }));
   }
   return Object.assign({}, prefix, { segments });
 }
