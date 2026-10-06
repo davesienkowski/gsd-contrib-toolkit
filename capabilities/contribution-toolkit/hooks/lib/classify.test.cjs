@@ -1669,3 +1669,26 @@ test('36-02a lock: setsid / nohup / time / xargs / chroot are NOT wrapper builti
   }
   assert.deepStrictEqual(cls('setsid git push'), { action: 'other' });
 });
+
+// ---------------------------------------------------------------------------
+// 37-02 WTREE-01 ENF-22 displacement locks: `git worktree add` is NOT a classifyAction action
+// (ENF-25 uses its own detector, hooks/lib/worktree-add-detect.cjs). A new action here could
+// displace a merge or review-side action in a chained command and disarm ENF-20 (the ENF-22
+// lesson); these rows lock that a worktree cut leaves the aggregation exactly as it was.
+// ---------------------------------------------------------------------------
+
+test('WTREE-01 ENF-22 displacement: a worktree add segment does not displace a later pr-merge', () => {
+  assert.strictEqual(cls('git worktree add -b x p next && gh pr merge 1').action, 'pr-merge');
+});
+
+test('WTREE-01 ENF-22 displacement: a worktree add segment does not displace an earlier pr-review', () => {
+  assert.strictEqual(cls('gh pr review 1 --approve; git worktree add p next').action, 'pr-review');
+});
+
+test('WTREE-01 ENF-22 displacement: a lone worktree add classifies as other', () => {
+  assert.strictEqual(cls('git worktree add p next').action, 'other');
+});
+
+test('WTREE-01 ENF-22 displacement: hasGovernedSegment still finds pr-merge after a worktree add', () => {
+  assert.strictEqual(hasGovernedSegment(parseCommand('git worktree add p next && gh pr merge 1'), ['pr-merge']), true);
+});
