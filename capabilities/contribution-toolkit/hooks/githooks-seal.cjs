@@ -17,7 +17,7 @@
  *            `git commit -m "never use --no-verify"` is NOT denied for the flag (the
  *            EP-3 false-positive boundary, threat T-03-04-FP — a false deny here gets the
  *            toolkit disabled). --no-verify is distinct from the GSD_CONTRIB_OVERRIDE
- *            valve (HARD-03), which rescues thrown gate errors only and does not lift this deny.
+ *            valve (HARD-03), which this gate honors only for a thrown error; it does not lift this deny.
  *
  *   ENF-13 — a commit/push whose worktree git config `core.hooksPath` !== `.githooks`
  *            → DENY (threat T-03-04-INERT), with the exact fix command. The value is read
@@ -106,10 +106,10 @@ function gate(stdinString, deps) {
     return deny(
       '`--no-verify` / `-n` bypasses the repo\'s `.githooks` gates (pre-commit / pre-push). ' +
         'Remove it and let the local gates run. ' +
-        '`GSD_CONTRIB_OVERRIDE` does not lift this deny: it rescues thrown gate errors only. ' +
-        'The accountable off switch is `node bin/contrib-capability.cjs off --reason "<why>"`, run ' +
-        'from the toolkit checkout: it turns off every toolkit gate, not just this one, and writes a ' +
-        'receipt. (ENF-12)'
+        '`GSD_CONTRIB_OVERRIDE` does not lift this deny: this gate honors it only for a thrown gate ' +
+        'error. Turning the toolkit off is a human operator\'s decision, not a way past this deny: ' +
+        '`node bin/contrib-capability.cjs off --reason "<why>"`, run from the toolkit checkout, strips ' +
+        'the toolkit\'s gates from that gsd-core checkout and writes a receipt. (ENF-12)'
     );
   }
 

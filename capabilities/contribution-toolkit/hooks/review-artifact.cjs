@@ -866,14 +866,15 @@ function unfilledFields(text) {
 // ── denial rendering ────────────────────────────────────────────────────────
 
 /**
- * The truthful override note every non-R8a ENF-20 policy deny ends with: the override rescues
- * thrown gate errors only, so it does not lift a returned deny; the off switch is named instead.
+ * The truthful override note every non-R8a ENF-20 policy deny ends with: this gate honors the
+ * override only for a thrown error (runGate's catch), so it does not lift a returned deny; the off
+ * switch is named as a human operator's decision, never as a way past the deny.
  */
 const OVERRIDE_TAIL =
-  '`GSD_CONTRIB_OVERRIDE` does not lift this deny: it rescues thrown gate errors only. ' +
-  'The accountable off switch is `node bin/contrib-capability.cjs off --reason "<why>"`, run from ' +
-  'the toolkit checkout: it turns off every toolkit gate, not just this one, and writes a receipt. ' +
-  '(CTK-ADR-0004, ENF-20)';
+  '`GSD_CONTRIB_OVERRIDE` does not lift this deny: this gate honors it only for a thrown gate ' +
+  'error. Turning the toolkit off is a human operator\'s decision, not a way past this deny: ' +
+  '`node bin/contrib-capability.cjs off --reason "<why>"`, run from the toolkit checkout, strips ' +
+  'the toolkit\'s gates from that gsd-core checkout and writes a receipt. (CTK-ADR-0004, ENF-20)';
 
 /** The closing note of an artifact-backed ENF-20 denial: write the artifact, then the tail. */
 const OVERRIDE_NOTE = 'Write the artifact and continue; do not stop and ask. ' + OVERRIDE_TAIL;

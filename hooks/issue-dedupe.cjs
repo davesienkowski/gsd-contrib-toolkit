@@ -438,10 +438,10 @@ function gate(stdinString, deps) {
         'Possible duplicates:\n' + list + '\n' +
         'Comment on the existing issue instead of filing a new one. If it is genuinely ' +
         'distinct, give it a title that says what differs (the scorer compares titles only). ' +
-        '`GSD_CONTRIB_OVERRIDE` does not lift this deny: it rescues thrown gate errors only. ' +
-        'The accountable off switch is `node bin/contrib-capability.cjs off --reason "<why>"`, run ' +
-        'from the toolkit checkout: it turns off every toolkit gate, not just this one, and writes a ' +
-        'receipt.'
+        '`GSD_CONTRIB_OVERRIDE` does not lift this deny: this gate honors it only for a thrown gate ' +
+        'error. Turning the toolkit off is a human operator\'s decision, not a way past this deny: ' +
+        '`node bin/contrib-capability.cjs off --reason "<why>"`, run from the toolkit checkout, strips ' +
+        'the toolkit\'s gates from that gsd-core checkout and writes a receipt.'
     );
   }
 
