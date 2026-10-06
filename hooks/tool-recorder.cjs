@@ -245,6 +245,19 @@ function outcomeOf(input) {
 }
 
 /**
+ * The D6 kill switch, defined ONCE: true exactly when `GSD_CONTRIB_RECORD`, trimmed and
+ * lower-cased, equals `off`. Exported so hooks/lib/tool-log-reader.cjs (ENF-20 step 8a) asks the
+ * same question the writer does; a reader that re-implemented it could drift and read an
+ * intentionally disabled recorder as "memtrace did not run".
+ *
+ * @param {Object} [env] environment (default process.env)
+ * @returns {boolean}
+ */
+function isRecorderOff(env = process.env) {
+  return String((env && env.GSD_CONTRIB_RECORD) || '').trim().toLowerCase() === 'off';
+}
+
+/**
  * THE PURE CORE. Turn a raw stdin payload into the record to append — or null when there is
  * nothing to record. Every impure read is injected, so the unit suite is hermetic (no filesystem,
  * no clock, no real environment).
@@ -263,7 +276,7 @@ function recordToolCall(stdinString, deps = {}) {
   const env = deps.env || process.env;
 
   // D6 kill switch — checked FIRST so a disabled recorder does no parsing at all.
-  if (String(env.GSD_CONTRIB_RECORD || '').trim().toLowerCase() === 'off') return null;
+  if (isRecorderOff(env)) return null;
 
   let input;
   try {
@@ -415,6 +428,7 @@ if (require.main === module) {
 
 module.exports = {
   recordToolCall,
+  isRecorderOff,
   serializeRecord,
   appendRecord,
   resolveLogDir,
