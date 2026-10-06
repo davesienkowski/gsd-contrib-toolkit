@@ -267,10 +267,12 @@ is wrong.
   per the Claude Code hooks docs (the `SubagentStop` payload and the `agent_id` field), which was not
   measured with tool-recorder. If it is wrong, a verdict whose graph pass ran in a subagent asks or
   denies; the attestation escape asks in both cases.
-- **The shared ENF-20 override note overstates the valve.** `OVERRIDE_NOTE`, which the other ENF-20
-  denies carry, says a logged `GSD_CONTRIB_OVERRIDE=<reason>` is a deliberate bypass. For a returned
-  policy deny it is not: `failclosed.runGateInner` rescues thrown errors only. The R8a deny and ask
-  notes state this correctly; the shared note is pre-existing and left unchanged here.
+- **The shared ENF-20 override note overstated the valve; corrected.** `OVERRIDE_NOTE`, which the
+  other ENF-20 denies carry, said a logged `GSD_CONTRIB_OVERRIDE=<reason>` could get past the deny. For
+  a returned policy deny it cannot, because `failclosed.runGateInner` rescues thrown errors only. The
+  note now says the override does not lift this deny and names the accountable off switch,
+  `node bin/contrib-capability.cjs off --reason "<why>"`. The same correction covers the
+  ENF-19, ENF-12 and ENF-11 policy denies, and override semantics are unchanged.
 - **Not projected into the bundle.** No skill links this record, so it ships in the repository but not
   in the capability bundle, like CTK-ADR-0008 and 0009.
 - **Honesty constraint (inherited):** CTK-ADR-0001's rule applies unchanged. Any blocking property

@@ -176,11 +176,16 @@ or broken LIVE script throws a typed error, and the `runGate` harness in
 `hooks/lib/failclosed.cjs` turns any such throw into a **fail-closed DENY** rather
 than a silent allow.
 
-**The override valve.** `hooks/lib/override.cjs` reads `GSD_CONTRIB_OVERRIDE` — a
+**The override valve.** `hooks/lib/override.cjs` reads `GSD_CONTRIB_OVERRIDE`, a
 non-empty **reason string** (never a boolean flag, and distinct from the denied
-`--no-verify`). When set it writes a timestamped, append-only, **per-worktree**
-receipt under `.gsd-contrib/override-receipts.log`. It is a deliberate, logged
-escape, never a silent default.
+`--no-verify`). It rescues **thrown gate errors only**: a gate that could not run
+(a LIVE script that will not load, an unparseable command, a failed `gh` or file
+read). When it flips such an error to allow, it writes a timestamped, append-only,
+**per-worktree** receipt under `.gsd-contrib/override-receipts.log`. It does
+**not** lift a returned policy deny (a missing artifact, a duplicate issue,
+`--no-verify`). The accountable way to turn the gates off is
+`node bin/contrib-capability.cjs off --reason "<why>"`, which also writes a
+receipt. It is a deliberate, logged escape, never a silent default.
 
 ## What It Uses
 
@@ -325,8 +330,9 @@ This section is load-bearing — the project's core value is honesty, not overse
   as unbypassable; only the **personal PreToolUse hooks** are the harness-wide
   enforcement layer.
 - **The override is deliberate, not silent.** `GSD_CONTRIB_OVERRIDE` is a logged,
-  per-worktree, reason-carrying escape valve — never a default. Setting it records
-  an append-only receipt.
+  per-worktree, reason-carrying valve for thrown gate errors only, never a default.
+  It does not lift a returned policy deny. Turning the gates off takes
+  `node bin/contrib-capability.cjs off --reason "<why>"`, which is logged too.
 - **Live-proven once; broader battle-testing continues.** The first toolkit-shepherded
   contribution landed upstream (issue #1154 → PR #1738, merged 2026-06-29), so the pipeline has
   cleared a real gsd-core contribution end-to-end. Proving it across the *full* contribution

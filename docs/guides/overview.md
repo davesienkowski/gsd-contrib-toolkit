@@ -80,10 +80,11 @@ Three mechanisms recur across the whole toolkit:
    LIVE scripts still export the shapes the gates expect, so a gsd-core refactor surfaces as a
    diagnosable deny, not a silent miss. This is what keeps the toolkit aligned as gsd-core evolves.
 
-3. **The override valve — deliberate, logged, never silent.** `GSD_CONTRIB_OVERRIDE` takes a non-empty
-   **reason string** (never a boolean) and writes an append-only, per-worktree receipt. It is an
-   accountable escape hatch, not a default — and the recovery offramp never suggests using it to dodge a
-   real failure.
+3. **The override valve: deliberate, logged, never silent.** `GSD_CONTRIB_OVERRIDE` takes a non-empty
+   **reason string** (never a boolean). It rescues thrown gate errors only, and writes an append-only,
+   per-worktree receipt when it does. It does not lift a returned policy deny; the accountable off switch
+   is `node bin/contrib-capability.cjs off --reason "<why>"`. It is not a default, and the recovery
+   offramp never suggests using it to dodge a real failure.
 
 ## What the skills encode (and the drift discipline)
 
