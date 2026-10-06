@@ -2523,34 +2523,39 @@ test('ENF-25 MA-02 e2e (fx7b): a TAG named next on origin does not shadow the br
   }
 });
 
-// ── MI-01: an unobtainable origin still denies when the LAST-FETCHED origin/next proves a held or diverged next ──
+// ── MI-01 (REVERTED by the orchestrator, CTK-ADR-0007 locked): an unobtainable origin ALWAYS asks.
+//    When the last-fetched origin/next already shows next held-and-behind or diverged, that evidence
+//    and the exact fix command go INTO the ask reason; the grade stays ask. ──
 
-test('ENF-25 MI-01: fetch fails, existing origin/next proves next behind and HELD -> POLICY deny (not ask), naming the refresh failure; zero receipts', () => {
+test('ENF-25 MI-01 (reverted): fetch fails, last-fetched origin/next shows next behind and HELD -> ASK carrying the evidence and the fix; zero receipts', () => {
   const o = yesOverride();
   const { deps, calls } = scenario({ fetchOrigin: unavailable('`git fetch origin next` timed out after 15 s'), held: ['/w/main'], overrideImpl: o.overrideImpl });
   const d = runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps);
-  assert.strictEqual(d.permissionDecision, 'deny', JSON.stringify(d));
+  assert.strictEqual(d.permissionDecision, 'ask', JSON.stringify(d));
   const why = d.permissionDecisionReason;
-  assert.ok(why.includes('git -C /w/main merge --ff-only origin/next'), why);
-  assert.match(why, /could not refresh/);
   assert.match(why, /timed out after 15 s/);
-  assert.ok(!/just fetched/.test(why), 'a stale-evidence deny must not claim a fresh fetch: ' + why);
+  assert.match(why, /NETWORK limit/);
+  assert.match(why, /could not refresh/);
+  assert.ok(why.includes('git -C /w/main merge --ff-only origin/next'), why);
+  assert.ok(!/just fetched/.test(why), 'stale evidence must not claim a fresh fetch: ' + why);
+  assert.ok(why.endsWith(exp('ASK_LIMIT_NOTE')), why);
   assert.strictEqual(calls.casUpdateRef, 0);
   assert.strictEqual(o.receipts.length, 0);
 });
 
-test('ENF-25 MI-01: fetch fails, next behind and mid-rebase -> deny', () => {
+test('ENF-25 MI-01 (reverted): fetch fails, next behind and mid-rebase -> ASK naming rebase --continue', () => {
   const { deps, calls } = scenario({ fetchOrigin: unavailable('x'), inProgress: [{ path: '/w/W', op: 'rebase' }] });
   const d = runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps);
-  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(d.permissionDecision, 'ask');
   assert.match(d.permissionDecisionReason, /could not refresh/);
+  assert.match(d.permissionDecisionReason, /rebase --continue/);
   assert.strictEqual(calls.casUpdateRef, 0);
 });
 
-test('ENF-25 MI-01: fetch fails, next diverged from the last-fetched origin/next -> deny naming the divergence', () => {
+test('ENF-25 MI-01 (reverted): fetch fails, next diverged from the last-fetched origin/next -> ASK naming the divergence', () => {
   const { deps } = scenario({ fetchOrigin: unavailable('x'), ancestor: DIVERGED });
   const d = runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps);
-  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(d.permissionDecision, 'ask');
   assert.match(d.permissionDecisionReason, /diverged/);
   assert.match(d.permissionDecisionReason, /could not refresh/);
 });
@@ -2559,11 +2564,13 @@ for (const [name, over] of [
   ['next equal to the last-fetched origin/next', { refs: { 'refs/heads/next': SHA_REMOTE } }],
   ['next AHEAD of the last-fetched origin/next', { ancestor: AHEAD }],
   ['no last-fetched origin/next at all', { refs: { 'refs/remotes/origin/next': null } }],
+  ['next behind but held by no worktree', { held: [] }],
 ]) {
-  test('ENF-25 MI-01: fetch fails and ' + name + ' -> ask (the local evidence cannot decide); no CAS', () => {
+  test('ENF-25 MI-01: fetch fails and ' + name + ' -> plain ask with no evidence section; no CAS', () => {
     const { deps, calls } = scenario(Object.assign({ fetchOrigin: unavailable('x'), held: ['/w/main'] }, over));
     const d = runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps);
     assert.strictEqual(d.permissionDecision, 'ask', JSON.stringify(d));
+    assert.ok(!/merge --ff-only|diverged/.test(d.permissionDecisionReason), d.permissionDecisionReason);
     assert.strictEqual(calls.casUpdateRef, 0);
   });
 }
@@ -2575,14 +2582,15 @@ test('ENF-25 MI-01: fetch fails with a REMOTE base -> ask with ZERO rev-parse (n
   assert.strictEqual(calls.revParse, 0);
 });
 
-test('ENF-25 MI-01 e2e (fx10): A on next behind its last-fetched origin/next, origin now unreachable -> DENY (not ask); next unchanged', () => {
+test('ENF-25 MI-01 (reverted) e2e (fx10): A on next behind its last-fetched origin/next, origin unreachable -> ASK with the evidence and fix; next unchanged', () => {
   const { fx, L } = fetchedFixture({ park: false });
   try {
     git(fx.A, 'remote', 'set-url', 'origin', path.join(fx.root, 'nope', 'open-gsd', 'gsd-core.git'));
     const r = spawnIn(fx.A, 'git worktree add -b f ' + path.join(fx.root, 'x'));
-    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.strictEqual(r.decision, 'ask', r.reason);
     assert.match(r.reason, /could not refresh/);
     assert.ok(r.reason.includes('merge --ff-only origin/next'), r.reason);
+    assert.match(r.reason, /dangerously-skip-permissions/);
     assert.strictEqual(refOf(fx.A, 'refs/heads/next'), L);
   } finally {
     fx.dispose();
