@@ -2984,3 +2984,8 @@ for (const cmd of ['bash -c "gh pr review 42 -a"', 'echo x | xargs gh pr review 
     assert.strictEqual(d.permissionDecision, 'allow', cmd + ': ' + d.permissionDecisionReason);
   });
 }
+
+// -- 261006-jsm review fix round CR-02 follow-up: a bundled field before the graphql endpoint ------
+test('261006-jsm CR-02 follow-up gate: `gh api -if query=<approve> graphql` with only Bash rows -> DENY R8a-memtrace', () => {
+  assertJsmR8aDeny("gh api -if query='" + JSM_GQL_SUBMIT + "' graphql");
+});

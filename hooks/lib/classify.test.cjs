@@ -2612,3 +2612,16 @@ for (const [label, cmd, action] of [
     assert.ok(ms < 1000, label + ' took ' + ms + ' ms');
   });
 }
+
+// -- 261006-jsm review fix round CR-02 follow-up: a bundled field BEFORE the graphql endpoint ------
+// `gh api -if query=... graphql` leaves the field body as a positional ahead of the endpoint, so the
+// endpoint is not the first candidate after `api`.
+test('261006-jsm CR-02 follow-up: `gh api -if query=<mutation> graphql` -> recovered pr-review, route graphql', () => {
+  assertGraphqlReview("gh api -if query='" + JSM_GQL_SUBMIT + "' graphql");
+});
+test('261006-jsm CR-02 follow-up: `gh api -iF query=@q.graphql graphql` -> UNRESOLVED pr-review, via graphql-file-query', () => {
+  assertGraphqlFileQuery('gh api -iF query=@q.graphql graphql');
+});
+test('261006-jsm CR-02 follow-up lock: `gh api -if x=graphql repos/o/r/issues/42/labels` stays other', () => {
+  assert.deepStrictEqual(cls('gh api -if x=graphql repos/o/r/issues/42/labels'), { action: 'other' });
+});
