@@ -42,11 +42,11 @@ deposits nothing is still unenforceable, and the gate asserts an artifact's *sha
 
 | Layer | What | Where |
 |---|---|---|
-| **Enforcement** | **20 harness-run hook registrations across 19 hook scripts** — 17 fail-closed `PreToolUse` gates (16 on `Bash`, 1 on `Write`/`Edit`) + 1 advisory `UserPromptSubmit` reminder + 1 observability recorder wired on both `PostToolUse` and `PostToolUseFailure` (the one hook registered twice). Only the 17 `PreToolUse` gates block. | `hooks/` (+ shared anti-bypass `hooks/lib/`) |
+| **Enforcement** | **22 harness-run hook registrations across 20 hook scripts** — 18 fail-closed `PreToolUse` gates (17 on `Bash`, 1 on `Write`/`Edit`; 1 of the `Bash` gates also on `EnterWorktree`) + 1 advisory `UserPromptSubmit` reminder + 1 observability recorder wired on both `PostToolUse` and `PostToolUseFailure`. Two scripts are registered twice: the recorder (two events) and the `worktree-fresh-base` gate (ENF-25; two `PreToolUse` matchers). Only the 18 `PreToolUse` gates block. | `hooks/` (+ shared anti-bypass `hooks/lib/`) |
 | **Knowledge (skills)** | **`core-contribution`** — the gated P0–P6 contribution pipeline; **`maintainer-review-sweep`** — the triage + re-review sweep (with `re-review.md`, `labels.md`, `triage-assist.md` sub-guides) | `skills/` |
 | **Triggers (commands)** | **5** `gsd-*` slash-commands: `gsd-submit`, `gsd-review-sweep`, `gsd-triage-assist`, `gsd-release-preflight`, `gsd-ruleset-drift` | `commands/` |
 | **Tools** | `contrib-capability` (the install/toggle driver), `lint-ci-stamp`, `triage-assist`, `release-preflight`, `ruleset-drift`, plus `verify-hooks` / `verify-capability` / `self-test` provers | `bin/` |
-| **Share form** | An opt-in, consent + ledger tracked GSD capability bundling the 19 hook scripts + 2 skills + 5 commands | `capabilities/contribution-toolkit/` |
+| **Share form** | An opt-in, consent + ledger tracked GSD capability bundling the 20 hook scripts + 2 skills + 5 commands | `capabilities/contribution-toolkit/` |
 | **Wired-set source** | The canonical hooks settings block `build-capability.cjs` reads to generate the bundle | `settings.snippet.json` |
 
 ### The two pillars
