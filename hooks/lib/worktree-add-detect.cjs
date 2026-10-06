@@ -28,7 +28,8 @@
  *   gitChdirs  the git GLOBAL `-C <dir>` values, in order, unexpanded (the gate expands them)
  *   path       the new worktree's path (first positional after `add`)
  *   base       the commit-ish (second positional), or null when omitted
- *   baseKind   'remote' | 'local' | 'head' | 'other' | 'none' ('none' = `--orphan`)
+ *   baseKind   'remote' | 'local' | 'head' | 'other' | 'none' ('none' = `--orphan`); an 'indirect'
+ *              base (MA-05) never reaches an entry: it is graded uncertain
  *   newBranch  the `-b`/`-B` value, or null
  *
  * `-C` is read from the tokens AFTER the resolved git program index, so `FOO=1 git -C /a`,
@@ -82,22 +83,61 @@ const ADD_SHORT_VALUE = new Set(['b', 'B']);
 const ADD_SHORT_BOOL = Object.freeze({ f: 'force', d: 'detach', q: 'quiet' });
 
 const LOCAL_TRUNK = new Set(['next', 'refs/heads/next', 'heads/next']);
-const REMOTE_TRUNK = new Set(['origin/next', 'refs/remotes/origin/next', 'remotes/origin/next']);
+/**
+ * 37-REVIEW MA-05: `origin` and the origin/HEAD forms resolve through refs/remotes/origin/HEAD,
+ * which on a gsd-core clone points at origin/next. Treating them as the remote trunk costs at
+ * worst one unneeded fetch when origin/HEAD points elsewhere.
+ */
+const REMOTE_TRUNK = new Set([
+  'origin/next', 'refs/remotes/origin/next', 'remotes/origin/next',
+  'origin', 'origin/HEAD', 'remotes/origin/HEAD', 'refs/remotes/origin/HEAD',
+]);
 const HEAD_FORMS = new Set(['HEAD', '@']);
 
 /**
- * Classify a `worktree add` base by exact, case-sensitive string equality (no normalisation:
- * `NEXT`, `next~1`, `upstream/next`, a look-alike and a sha are all 'other').
+ * One trailing ancestry / peel suffix (MA-05): `~N` / `~`, `^N` / `^`, `^{...}` (a peel or a
+ * `^{/text}` search; every form starts from the named ref), and `@{0}` (the ref's current value).
+ * `@{N>0}` is NOT stripped: after a CAS it is the pre-move (stale) value, so it stays indirect.
+ */
+const BASE_SUFFIX = /(?:~\d*|\^\d*|\^\{[^{}]*\}|@\{0\})$/;
+/** Bounded strip (a suffix chain longer than this is left as is -> classified on what remains). */
+const MAX_SUFFIXES = 16;
+/**
+ * A base that resolves through state the gate cannot read statically (MA-05): `-` (@{-1}), any
+ * remaining `@{...}` (@{-N}, @{u}, @{upstream}, @{push}, @{N>0}, @{date}), `rev:path` / `:/text`,
+ * and a `..` range.
+ */
+const INDIRECT_BASE = /@\{|:|\.\./;
+
+/** `base` with a trailing chain of BASE_SUFFIX forms removed (MA-05). */
+function stripBaseSuffixes(base) {
+  let b = base;
+  for (let i = 0; i < MAX_SUFFIXES; i++) {
+    const next = b.replace(BASE_SUFFIX, '');
+    if (next === b) break;
+    b = next;
+  }
+  return b;
+}
+
+/**
+ * Classify a `worktree add` base: a trailing chain of `~N` / `^N` / `^{...}` / `@{0}` suffixes is
+ * stripped first (37-REVIEW MA-05: `next~0` names next), then exact, case-sensitive matching
+ * (`NEXT`, `upstream/next`, a look-alike and a sha are 'other'). `-` and any remaining `@{`, `:` or
+ * `..` form are 'indirect' (the detector grades that uncertain).
  *
  * @param {string|null|undefined} base
- * @returns {'remote'|'local'|'head'|'other'}
+ * @returns {'remote'|'local'|'head'|'other'|'indirect'}
  */
 function classifyBase(base) {
   if (base === null || base === undefined) return 'head';
   if (typeof base !== 'string') return 'other';
-  if (HEAD_FORMS.has(base)) return 'head';
-  if (LOCAL_TRUNK.has(base)) return 'local';
-  if (REMOTE_TRUNK.has(base)) return 'remote';
+  if (base === '-') return 'indirect';
+  const b = stripBaseSuffixes(base);
+  if (b === '' || HEAD_FORMS.has(b)) return 'head';
+  if (LOCAL_TRUNK.has(b)) return 'local';
+  if (REMOTE_TRUNK.has(b)) return 'remote';
+  if (b === '-' || INDIRECT_BASE.test(b)) return 'indirect';
   return 'other';
 }
 
@@ -208,6 +248,9 @@ function parseWorktreeAddArgs(tail) {
   }
   if (!uncertainReason && base !== null && hasExpansion(base)) {
     uncertainReason = 'shell expansion in the worktree add base';
+  }
+  if (!uncertainReason && base !== null && classifyBase(base) === 'indirect') {
+    uncertainReason = 'a worktree add base that resolves indirectly (`-`, `@{...}`, `:` or `..`)';
   }
 
   let baseKind;
