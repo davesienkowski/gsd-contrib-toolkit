@@ -158,7 +158,7 @@ is wrong.
    | Evidence short in a complete read, attestation absent | policy deny naming the tools, plus the scaffold | CONTEXT |
    | Attestation with placeholders (including an empty file) | policy deny naming the unfilled fields | CONTEXT |
    | Attestation filled but `pass`, `status` or the reason fails its assertion, or `head_oid` does not match | policy deny with that assertion's instruction | CONTEXT |
-   | Attestation filled and valid, evidence still short | ask, quoting at most 300 characters of the reason, control characters and U+2028/U+2029 replaced, labelled unverified | CONTEXT; the 300-character cap is a PLANNER ADDITION |
+   | Attestation filled and valid, evidence still short | ask, quoting at most 300 characters of the reason, control characters and U+2028/U+2029 replaced, bidi controls (U+202A-202E, U+2066-2069) and zero-width characters (U+200B-200F, U+FEFF) removed, labelled unverified; a mismatched `head_oid` is echoed through the same guard, capped at 80 | CONTEXT; the 300-character cap is a PLANNER ADDITION; the bidi, zero-width and `head_oid` cleaning is 38 review NT-02/NT-03 |
    | The attested reason contains the quote delimiters U+00AB / U+00BB | each is replaced with `"`, so attested text cannot close its own quote and append words that read as the gate's | executor addition (38-03) |
    | Malformed attestation JSON, unreadable attestation | thrown deny (override-escapable with a receipt) | CONTEXT (HARD-01) |
    | The reader throws, or returns a value without boolean `complete`, boolean `recorderOff` and array `records` | thrown deny | PLANNER ADDITION (contract check) |

@@ -1391,7 +1391,7 @@ function memtraceArtifactBranch(g, ctx, deps, short) {
   const claimed = normalizeOid(readPath(doc, 'head_oid'));
   if (!claimed || !ctx.headOid.startsWith(claimed)) {
     return deny(
-      head + '\n\n`' + rel + '` records `head_oid` `' + String(readPath(doc, 'head_oid')).slice(0, 80) +
+      head + '\n\n`' + rel + '` records `head_oid` `' + quoteAttestation(readPath(doc, 'head_oid'), 80).text +
         '`, but PR #' + ctx.number + ' now heads at `' + ctx.headOid.slice(0, OID_KEY_LENGTH) +
         '`. An attestation for an older push does not cover this one.\n\n' + memtraceRemedy(rel) +
         '\n\n' + R8A_DENY_NOTE
@@ -1416,20 +1416,26 @@ const ATTESTATION_QUOTE_MAX = 300;
 
 /**
  * The attested reason as it may appear in a human prompt (prompt-injection guard, T-38-11):
- * C0/C1 control characters and the Unicode line/paragraph separators become spaces, the quote
- * delimiters `«` `»` become `"` so the text cannot close its own quote, and at most
- * ATTESTATION_QUOTE_MAX code points are kept (replace first, then cut, so a cut never lands
- * inside a surrogate pair).
+ * C0/C1 control characters and the Unicode line/paragraph separators become spaces, bidi
+ * controls (U+202A-202E, U+2066-2069) and zero-width characters (U+200B-200F, U+FEFF) are
+ * removed, the quote delimiters `«` `»` become `"` so the text cannot close its own quote, and at
+ * most `max` code points are kept (replace first, then cut, so a cut never lands inside a
+ * surrogate pair). The recorded `head_oid` of a mismatched attestation goes through the same
+ * guard with `max` 80 (38 review NT-02).
  *
  * @param {*} value
+ * @param {number} [max] code points kept (default ATTESTATION_QUOTE_MAX)
  * @returns {{text:string, truncated:boolean}}
  */
-function quoteAttestation(value) {
+function quoteAttestation(value, max = ATTESTATION_QUOTE_MAX) {
   const clean = String(value === undefined || value === null ? '' : value)
     .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
+    // 38 review NT-03: bidi embeddings/overrides/isolates and zero-width characters are removed,
+    // so attested text cannot reorder itself to appear outside its quotes.
+    .replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, '')
     .replace(/[«»]/g, '"');
   const chars = Array.from(clean);
-  return { text: chars.slice(0, ATTESTATION_QUOTE_MAX).join(''), truncated: chars.length > ATTESTATION_QUOTE_MAX };
+  return { text: chars.slice(0, max).join(''), truncated: chars.length > max };
 }
 
 // ── the gate ────────────────────────────────────────────────────────────────
