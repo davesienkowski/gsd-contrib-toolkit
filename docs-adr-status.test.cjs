@@ -28,6 +28,10 @@
  *       CTK-ADR-0007 Decision 2 rationale for ask-not-deny stays. The code review (WR-01..WR-04) adds
  *       pins for the MCP-call measurement, every unmeasured form, the claim phrase and its scope (with
  *       the inversions banned), and a leak guard over the four published jq4 scopes.
+ *   (j) W5 (quick 261006-jts): CTK-ADR-0010's Decision 7 table carries exactly one W5 row (the
+ *       gate hot-path state files outside ENF-20, read and written as regular files only through
+ *       hooks/lib/regular-file.cjs), and exactly one "W5 residual" bullet names the same-class
+ *       opens W5 left unchanged.
  *
  * Approving ADR-0008 is Dave's call: when he does, update (a) and (b) here deliberately.
  * Approving ADR-0009 is also Dave's call: when he does, update (e) here deliberately.
@@ -417,4 +421,39 @@ test('quick-261006-jq4: no session UUID, agent id, /home/ or /tmp/ path in the f
     assert.doesNotMatch(text, AGENT_ID_RE, 'no agent id in ' + what);
     assert.doesNotMatch(text, LOCAL_PATH_RE, 'no /home/ or /tmp/ path in ' + what);
   }
+});
+// -- W5 (quick 261006-jts): the gate-path hardening row and its out-of-scope residual --
+
+test('W5: CTK-ADR-0010 has exactly one W5 severity-map row naming every hardened gate-path file and the shared lib', () => {
+  const rows = fs
+    .readFileSync(adrFile(10), 'utf8')
+    .split('\n')
+    .filter((l) => l.trimStart().startsWith('|'))
+    .filter((l) => l.includes('W5 (quick 261006-jts)'));
+  assert.strictEqual(rows.length, 1, 'exactly one table row cites W5 (quick 261006-jts): ' + rows.length);
+  for (const name of ['runtime-stamp.json', 'upstream-tip-cache.json', 'override-receipts.log', 'ENF-19', 'hooks/lib/regular-file.cjs', 'failures.json']) {
+    assert.ok(rows[0].includes(name), 'the W5 row names ' + name + ': ' + rows[0]);
+  }
+});
+
+test('W5: CTK-ADR-0010 has exactly one W5 residual bullet naming every same-class open W5 left unchanged', () => {
+  const b = adr10Bullet(/W5 residual/);
+  for (const site of [
+    'gh-edit',
+    'gh-pr-create',
+    'gh-issue-create',
+    'issue-dedupe',
+    'git-commit-convention',
+    'gsd-test-viability',
+    'worktree-fresh-base',
+    'binlib-edit',
+    'runtimeDigest',
+    'writeStamp',
+    'bin/contrib-capability.cjs',
+  ]) {
+    assert.ok(b.includes(site), 'the W5 residual names ' + site + ': ' + b);
+  }
+  // W5 review WR-01: the CLI receipt preflight was aligned with writeReceipt, so the residual must not
+  // still describe it as a blocking open.
+  assert.ok(!/preflight opens\s+first/.test(b), 'the W5 residual must not call the aligned CLI preflight unguarded: ' + b);
 });

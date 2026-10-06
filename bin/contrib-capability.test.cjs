@@ -1376,3 +1376,38 @@ test('a re-run of install REPAIRS a dangling install: broken (bundle-absent) ins
   }
   assertRealStateUnchanged(before);
 });
+
+// -- W5 review WR-01 (quick 261006-jts): the off/remove receipt probe must predict writeReceipt --
+// writeReceipt now refuses a non-regular receipt (hooks/lib/regular-file.cjs writeRegularFile). If the
+// probe still accepts one, off/remove strip the gates and THEN fail to record, the exact
+// strip-then-fail-to-record the probe exists to prevent (CR-01 / T-12-02-SKIPRECEIPT). In-process and
+// filesystem-only (a temp liveRoot), so it needs no gsd-core source and never skips. A FIFO is not
+// planted here: before the fix the probe's blocking open would hang this runner; the /dev/zero link is
+// the case that opens without blocking and still diverges.
+test('W5 WR-01: the receipt probe refuses a /dev/zero receipt link that writeReceipt would refuse', () => {
+  const liveRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'w5-wr01-'));
+  try {
+    const receiptDir = path.join(liveRoot, '.gsd-contrib');
+    fs.mkdirSync(receiptDir);
+    fs.symlinkSync('/dev/zero', path.join(receiptDir, 'override-receipts.log'));
+    assert.throws(
+      () => drv.probeReceiptWritable({ liveRoot, action: 'off' }),
+      (err) => err instanceof drv.DriverError && /accountability receipt/i.test(err.message) &&
+        /not a regular file/i.test(err.message),
+      'the probe must refuse a receipt writeReceipt cannot append to, before any state mutation'
+    );
+  } finally {
+    fs.rmSync(liveRoot, { recursive: true, force: true });
+  }
+});
+
+test('W5 WR-01 guard: the receipt probe still accepts a fresh receipt path and writes no bytes', () => {
+  const liveRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'w5-wr01-'));
+  try {
+    drv.probeReceiptWritable({ liveRoot, action: 'remove' });
+    const receipt = path.join(fs.realpathSync(liveRoot), '.gsd-contrib', 'override-receipts.log');
+    assert.strictEqual(fs.statSync(receipt).size, 0, 'the probe creates the receipt but writes nothing');
+  } finally {
+    fs.rmSync(liveRoot, { recursive: true, force: true });
+  }
+});

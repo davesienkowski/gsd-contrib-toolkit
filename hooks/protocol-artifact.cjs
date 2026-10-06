@@ -66,6 +66,7 @@ const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction, isNonGovernedCommand } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand, isContribBranch } = require('./lib/resolve.cjs');
+const { readRegularFileBounded } = require('./lib/regular-file.cjs');
 const {
   PLACEHOLDER_RE,
   hasUnfilledPlaceholders,
@@ -1036,7 +1037,12 @@ function readHeadCommittedAtLive(root) {
 }
 
 /**
- * Read an artifact's RAW text. THROWS (fail closed) when it cannot be read.
+ * Read an artifact's RAW text. THROWS (fail closed) when it cannot be read, is not a regular file
+ * (a FIFO, socket, device or directory, or a symlink to one), or is over the 1 MiB read cap: the
+ * same thrown deny a malformed artifact gets. The read goes through the shared bounded,
+ * regular-file-only reader (W5; the VF-2 reader ENF-20 uses), so a planted FIFO or /dev/zero link
+ * can no longer block the hook past its harness timeout or grow it without bound.
+ * readJsonLive and readMatrixRunLive read through here and inherit the guard.
  *
  * @param {string} abs absolute path
  * @param {string} rel path to name in the error
@@ -1044,7 +1050,7 @@ function readHeadCommittedAtLive(root) {
  */
 function readTextLive(abs, rel) {
   try {
-    return fs.readFileSync(abs, 'utf8');
+    return readRegularFileBounded(abs);
   } catch (err) {
     throw new FailClosed('could not read `' + rel + '`: ' + ((err && err.message) || 'read failure'));
   }

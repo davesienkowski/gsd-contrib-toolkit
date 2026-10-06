@@ -20,14 +20,21 @@
  * The receipt is written PER-WORKTREE (keyed to the gsd-core worktree root) — this
  * project was BORN from a two-window concurrency bug (EP-5), so a single shared global
  * receipt is forbidden: two worktrees/sessions sharing one gsd-core must each write their
- * OWN receipt and never clobber each other. The write is APPEND-only (fs.appendFileSync,
- * O_APPEND) — never a read-modify-write that races under concurrency.
+ * OWN receipt and never clobber each other. The write is APPEND-only (O_APPEND, the whole
+ * line in one buffer), never a read-modify-write that races under concurrency.
+ *
+ * W5 (quick 261006-jts): the append goes through the shared non-blocking, regular-file-only
+ * writer (hooks/lib/regular-file.cjs writeRegularFile, still O_APPEND, whole buffer). A receipt
+ * path that is a FIFO, socket, device or directory (or a symlink to one) throws instead of
+ * blocking the hook or silently discarding the audit, so the override fails closed.
  *
  * @module hooks/lib/override
  */
 
 const fs = require('node:fs');
 const path = require('node:path');
+
+const { writeRegularFile } = require('./regular-file.cjs');
 
 const OVERRIDE_ENV = 'GSD_CONTRIB_OVERRIDE';
 // Per-worktree receipt path, relative to the worktree root.
@@ -71,9 +78,13 @@ function receiptPathFor(worktreeRoot) {
 /**
  * Append a timestamped receipt record for an honored override.
  *
- * Concurrency: uses fs.appendFileSync (O_APPEND), NOT a read-modify-write — so two
+ * Concurrency: an O_APPEND write of the whole line, NOT a read-modify-write, so two
  * worktrees/sessions appending concurrently never clobber each other (EP-5). The path is
  * per-worktree, so even the file itself is not shared across worktrees.
+ *
+ * The append goes through writeRegularFile (O_WRONLY|O_CREAT|O_APPEND|O_NONBLOCK, then an fstat
+ * type check, W5): a FIFO, device or directory receipt THROWS, and every caller turns that throw
+ * into a deny, so an override whose receipt cannot land in a regular file is never honored.
  *
  * @param {string} worktreeRoot absolute gsd-core worktree root.
  * @param {{reason?: string, command?: string, action?: string, projectRoot?: string}} record
@@ -99,8 +110,9 @@ function writeReceipt(worktreeRoot, record = {}) {
   if (record.projectRoot != null && String(record.projectRoot).length > 0) {
     entry.projectRoot = String(record.projectRoot);
   }
-  // Append-only, newline-delimited JSON (jsonl): O_APPEND, no read-modify-write.
-  fs.appendFileSync(file, JSON.stringify(entry) + '\n', { encoding: 'utf8' });
+  // Append-only, newline-delimited JSON (jsonl): O_APPEND, no read-modify-write, and only to a
+  // regular file (W5).
+  writeRegularFile(file, JSON.stringify(entry) + '\n', { append: true });
   return file;
 }
 
