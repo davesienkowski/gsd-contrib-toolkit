@@ -569,3 +569,115 @@ test('GTEST-01: no classify NEW_ACTION_COMMANDS entry yields a detector entry', 
     assert.deepStrictEqual(entries(cmd), [], cmd);
   }
 });
+
+// ─────────────── 36-03 handoff fixes: quoted parentheses and unresolvable cd targets ───────────────
+//
+// argv removes quotes, so a `(` / `)` inside quoted text used to count as a group character.
+// Only UNQUOTED (and unescaped) parentheses/braces may affect grouping, as argv tokenizes them.
+// A double-quoted `$(...)` whose naive close leaves the substitution open (nested quotes) cannot
+// be attributed exactly and is graded uncertain when the command names gsd-test.
+
+test('GTEST-03 quoted-paren: `gsd-test --bench "a(b" | tail` is pipe-masked (a quoted paren must not hide the pipe)', () => {
+  const d = oneDispatch('gsd-test --bench "a(b" | tail');
+  assert.strictEqual(d.flags.bench, 'a(b');
+  assert.strictEqual(d.pipedOut, true);
+  assert.strictEqual(d.pipeMasked, true);
+});
+
+test("GTEST-03 quoted-paren: `gsd-test --bench 'a(b' | tail` is pipe-masked (single quotes)", () => {
+  assert.strictEqual(oneDispatch("gsd-test --bench 'a(b' | tail").pipeMasked, true);
+});
+
+test('GTEST-03 quoted-paren: `gsd-test --bench \\( | tail` is pipe-masked (an escaped paren is literal)', () => {
+  assert.strictEqual(oneDispatch('gsd-test --bench \\( | tail').pipeMasked, true);
+});
+
+test('GTEST-03 quoted-paren: `gsd-test --head "x)"` keeps the quoted `)` in the head value', () => {
+  assert.strictEqual(oneDispatch('gsd-test --head "x)"').flags.head, 'x)');
+});
+
+test('GTEST-03 quoted-paren: `(gsd-test --bench "a)") | tail` — the real group still closes and the pipe still masks', () => {
+  const d = oneDispatch('(gsd-test --bench "a)") | tail');
+  assert.strictEqual(d.flags.bench, 'a)');
+  assert.strictEqual(d.pipeMasked, true);
+});
+
+test('GTEST-01 quoted-paren: startDirFor(echo "("; cd x; echo ")"; gsd-test) from /r is /r/x', () => {
+  const d = oneDispatch('echo "("; cd x; echo ")"; gsd-test');
+  assert.strictEqual(exported('startDirFor')(d, '/r'), '/r/x');
+});
+
+test("GTEST-01 quoted-paren: startDirFor(echo '{'; cd x; echo ')'; gsd-test) from /r is /r/x", () => {
+  const d = oneDispatch("echo '{'; cd x; echo ')'; gsd-test");
+  assert.strictEqual(exported('startDirFor')(d, '/r'), '/r/x');
+});
+
+test('GTEST-03 quoted-paren: a balanced double-quoted $(...) head stays exact: masked, bench read, head unresolved', () => {
+  const d = oneDispatch('gsd-test --head "$(git rev-parse HEAD)" --bench b | tail');
+  assert.strictEqual(d.flags.bench, 'b');
+  assert.ok(d.unresolved.has('head'));
+  assert.strictEqual(d.pipeMasked, true);
+});
+
+test('GTEST-01 quoted-paren: nested quotes inside a double-quoted $(...) next to a paren are uncertain', () => {
+  oneUncertain('gsd-test --bench "$(echo "(")" | tail');
+});
+
+test('GTEST-01 quoted-paren: a heredoc commit message mentioning gsd-test with an unbalanced paren yields no entry', () => {
+  const cmd = 'git commit -m "$(cat <<\'EOF\'\nfix gsd-test (x\nEOF\n)"';
+  assert.deepStrictEqual(entries(cmd), []);
+});
+
+test('GTEST-01 quoted-paren: nested quotes in a command that never names gsd-test yield no entry', () => {
+  assert.deepStrictEqual(entries('echo "$(echo "(")"; ls'), []);
+});
+
+const UNRESOLVED_CD = [
+  ['cd "$X" && gsd-test', null],
+  ['cd `pwd`/x && gsd-test', null],
+  ['cd ~bob && gsd-test', null],
+  ['cd a && bash -c "cd \\$Y && gsd-test"', null],
+  ['(cd "$X"); gsd-test', '/r'],
+  ['gsd-test; cd "$X"', '/r'],
+];
+for (const [cmd, want] of UNRESOLVED_CD) {
+  test(`GTEST-01 cd-expansion: startDirFor(${cmd}) from /r is ${want}`, () => {
+    const d = oneDispatch(cmd);
+    assert.strictEqual(exported('startDirFor')(d, '/r', { env: {}, homedir: '/h' }), want);
+  });
+}
+
+test('GTEST-01 cd-expansion: `cd $HOME/r && gsd-test` expands statically from the injected env', () => {
+  const d = oneDispatch('cd $HOME/r && gsd-test');
+  assert.strictEqual(exported('startDirFor')(d, '/w', { env: { HOME: '/h' }, homedir: '/h' }), '/h/r');
+});
+
+test('GTEST-01 cd-expansion: `cd "${HOME}/r" && gsd-test -source sub` resolves the tree at /h/r/sub', () => {
+  const d = oneDispatch('cd "${HOME}/r" && gsd-test -source sub');
+  assert.strictEqual(exported('treeDirFor')(d, '/w', { env: { HOME: '/h' }, homedir: '/h' }), '/h/r/sub');
+});
+
+test('GTEST-01 cd-expansion: treeDirFor(cd "$X" && gsd-test) is null (unresolved start dir)', () => {
+  const d = oneDispatch('cd "$X" && gsd-test');
+  assert.strictEqual(exported('treeDirFor')(d, '/r', { env: {}, homedir: '/h' }), null);
+});
+
+// Regression locks added after GREEN (same fix family; they passed on the first run after it).
+test('GTEST-03 quoted-paren: `gsd-test --bench "{" | tail` is pipe-masked (a quoted lone brace is not a group)', () => {
+  assert.strictEqual(oneDispatch('gsd-test --bench "{" | tail').pipeMasked, true);
+});
+
+test('GTEST-01 cd-expansion: `cd - && gsd-test` is an unresolved start dir ($OLDPWD)', () => {
+  const d = oneDispatch('cd - && gsd-test');
+  assert.strictEqual(exported('startDirFor')(d, '/r', { env: {}, homedir: '/h' }), null);
+});
+
+test('GTEST-01 cd-expansion: `cd ~/r && gsd-test` uses the injected homedir', () => {
+  const d = oneDispatch('cd ~/r && gsd-test');
+  assert.strictEqual(exported('startDirFor')(d, '/w', { env: {}, homedir: '/h' }), '/h/r');
+});
+
+test('GTEST-01 cd-expansion: `{ cd "$X"; }; gsd-test` is unresolved (a brace group cd persists)', () => {
+  const d = oneDispatch('{ cd "$X"; }; gsd-test');
+  assert.strictEqual(exported('startDirFor')(d, '/r', { env: {}, homedir: '/h' }), null);
+});

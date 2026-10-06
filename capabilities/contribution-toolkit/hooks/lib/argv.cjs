@@ -521,4 +521,15 @@ function parseCommand(str) {
   }
 }
 
-module.exports = { tokenize, parseCommand, splitSegments, splitSegmentsWithOps, classifyTokens };
+// parseHeredocOperator / findHeredocBodyEnd are exported (36-03, additive) so the gsd-test
+// detector's quote mask skips heredoc bodies exactly as splitSegmentsWithOps does, instead of
+// carrying a second copy of the heredoc rules.
+module.exports = {
+  tokenize,
+  parseCommand,
+  splitSegments,
+  splitSegmentsWithOps,
+  classifyTokens,
+  parseHeredocOperator,
+  findHeredocBodyEnd,
+};

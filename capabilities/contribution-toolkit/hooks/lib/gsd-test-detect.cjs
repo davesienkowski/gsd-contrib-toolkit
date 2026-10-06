@@ -33,7 +33,7 @@
  */
 
 const path = require('node:path');
-const { parseCommand, classifyTokens } = require('./argv.cjs');
+const { parseCommand, classifyTokens, parseHeredocOperator, findHeredocBodyEnd } = require('./argv.cjs');
 const { resolveProgram } = require('./classify.cjs');
 const { commandStartDir } = require('./resolve.cjs');
 
@@ -221,6 +221,144 @@ function walkGoFlags(tokens) {
 }
 
 /**
+ * Quoted / escaped structural characters are replaced 1:1 by these placeholders in the quote
+ * MASK, so a masked token has exactly the length of its real token and index-based slicing
+ * stays aligned. Only the mask is used for grouping decisions; the real tokens are returned.
+ */
+const MASK_CHARS = { '(': '\u0001', ')': '\u0002', '{': '\u0003', '}': '\u0004', '&': '\u0005' };
+
+function maskChar(ch) {
+  return Object.prototype.hasOwnProperty.call(MASK_CHARS, ch) ? MASK_CHARS[ch] : ch;
+}
+
+/**
+ * The quote mask of a raw command (36-03 handoff 2). argv removes quotes, so `echo "("` yields
+ * a bare `(` token that used to count as a group opener. This walk mirrors
+ * argv.splitSegmentsWithOps' quote / escape / heredoc state machine character for character and
+ * replaces every quoted or escaped `( ) { } &` with a placeholder, so parsing the masked string
+ * yields tokens aligned 1:1 with the real ones in which only UNQUOTED structure survives — the
+ * quote view argv itself uses.
+ *
+ * Exactness limit: argv (like this walk) does not model a double quote nested inside a
+ * double-quoted `$(...)` (`"$(echo "(")"`). When a double-quoted region closes while a `$(` or a
+ * backtick opened inside it is still open, the following unquoted span may really be quoted; a
+ * paren or brace in that span makes the grouping unattributable and sets `ambiguous` (the
+ * scanner then grades the command uncertain if it names gsd-test).
+ *
+ * @param {string} str
+ * @returns {{masked:string, ambiguous:boolean}}
+ */
+function maskQuoted(str) {
+  let out = '';
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+  let region = null; // the current double-quoted region: {sub, bal, ticks}
+  let nested = false; // a double-quoted region closed with a substitution still open
+  let ambiguous = false;
+  const pending = [];
+
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (escaped) {
+      out += maskChar(ch);
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\' && !inSingle) {
+      out += ch;
+      escaped = true;
+      continue;
+    }
+    if (inSingle) {
+      if (ch === "'") {
+        inSingle = false;
+        out += ch;
+      } else {
+        out += maskChar(ch);
+      }
+      continue;
+    }
+    if (inDouble) {
+      if (ch === '"') {
+        inDouble = false;
+        out += ch;
+        nested = (region.sub && region.bal > 0) || region.ticks % 2 === 1;
+        continue;
+      }
+      if (ch === '(') {
+        region.bal += 1;
+        if (str[i - 1] === '$') region.sub = true;
+      } else if (ch === ')') {
+        region.bal -= 1;
+      } else if (ch === '`') {
+        region.ticks += 1;
+      }
+      out += maskChar(ch);
+      continue;
+    }
+
+    // Unquoted context — the same check order as splitSegmentsWithOps.
+    const hd = parseHeredocOperator(str, i);
+    if (hd) {
+      out += str.slice(i, hd.end);
+      pending.push({ delim: hd.delim, dash: hd.dash });
+      i = hd.end - 1;
+      continue;
+    }
+    if (ch === "'") {
+      out += ch;
+      inSingle = true;
+      continue;
+    }
+    if (ch === '"') {
+      out += ch;
+      inDouble = true;
+      region = { sub: false, bal: 0, ticks: 0 };
+      nested = false;
+      continue;
+    }
+    if (ch === '\n' && pending.length > 0) {
+      out += ch;
+      let bodyStart = i + 1;
+      for (const h of pending) bodyStart = findHeredocBodyEnd(str, bodyStart, h.delim, h.dash);
+      pending.length = 0;
+      out += str.slice(i + 1, bodyStart); // bodies are opaque (never tokens): copied verbatim
+      i = bodyStart - 1;
+      continue;
+    }
+    if (nested && (ch === '(' || ch === ')' || ch === '{' || ch === '}')) ambiguous = true;
+    out += ch;
+  }
+  return { masked: out, ambiguous };
+}
+
+/**
+ * Per-segment masked tokens for a parsed command, aligned 1:1 (segment count, token count and
+ * token length) with `parsed.segments[i].tokens`.
+ *
+ * @returns {{tokens:(string[][]|null), ambiguous:boolean}} tokens null when the mask cannot be
+ *   aligned (treated as ambiguous by the caller)
+ */
+function maskedSegmentTokens(parsed) {
+  if (!parsed || typeof parsed.raw !== 'string') return { tokens: null, ambiguous: true };
+  const m = maskQuoted(parsed.raw);
+  const mp = parseCommand(m.masked);
+  if (!mp.ok || mp.segments.length !== parsed.segments.length) return { tokens: null, ambiguous: true };
+  const out = [];
+  for (let i = 0; i < parsed.segments.length; i++) {
+    const real = parsed.segments[i].tokens;
+    const mask = mp.segments[i].tokens;
+    if (real.length !== mask.length) return { tokens: null, ambiguous: true };
+    for (let k = 0; k < real.length; k++) {
+      if (real[k].length !== mask[k].length) return { tokens: null, ambiguous: true };
+    }
+    out.push(mask);
+  }
+  return { tokens: out, ambiguous: m.ambiguous };
+}
+
+/**
  * Normalise one segment's raw tokens for program resolution (Addendum 3): drop leading lone
  * noise tokens, strip leading `(`/`{`/`&` characters from the first token, move an attached
  * trailing `&` to its own token, and strip group closers from the LAST token by paren balance
@@ -231,35 +369,46 @@ function walkGoFlags(tokens) {
  *   opened before the program ('sub' | 'brace'); `post` is the net paren/brace depth change of
  *   the rest of the segment (negative when it closes groups).
  */
-function normalizeSegment(raw) {
+function normalizeSegment(raw, rawMask) {
   const tokens = Array.isArray(raw) ? raw.filter((t) => typeof t === 'string') : [];
+  // Every structural DECISION reads the quote mask `m` (36-03 handoff 2: only unquoted ( ) { } &
+  // count); every edit is applied identically to the real tokens `t` and to `m`, which stay
+  // aligned because the mask is a 1:1 character substitution. Without a usable mask the real
+  // tokens are their own mask (the pre-36-03 behaviour).
+  const aligned =
+    Array.isArray(rawMask) &&
+    rawMask.length === tokens.length &&
+    rawMask.every((x, k) => typeof x === 'string' && x.length === tokens[k].length);
   const openers = [];
   let t = tokens.slice();
+  let m = aligned ? rawMask.slice() : tokens.slice();
 
   for (let guard = 0; guard < 64 && t.length > 0; guard++) {
-    const first = t[0];
+    const first = m[0];
     if (LEADING_NOISE.has(first)) {
       if (first === '(') openers.push('sub');
       if (first === '{') openers.push('brace');
       t.shift();
+      m.shift();
       continue;
     }
-    const m = /^[({&]+/.exec(first);
-    if (m) {
-      for (const ch of m[0]) {
+    const lead = /^[({&]+/.exec(first);
+    if (lead) {
+      for (const ch of lead[0]) {
         if (ch === '(') openers.push('sub');
         if (ch === '{') openers.push('brace');
       }
-      const rest = first.slice(m[0].length);
-      if (rest === '') { t.shift(); continue; }
-      t[0] = rest;
+      const n = lead[0].length;
+      if (n === first.length) { t.shift(); m.shift(); continue; }
+      t[0] = t[0].slice(n);
+      m[0] = m[0].slice(n);
     }
     break;
   }
 
   // Depth change of the remaining tokens, counted before any trailing strip.
   let post = 0;
-  for (const tok of t) {
+  for (const tok of m) {
     if (tok === '{') { post += 1; continue; }
     if (tok === '}') { post -= 1; continue; }
     post += countChar(tok, '(') - countChar(tok, ')');
@@ -267,23 +416,26 @@ function normalizeSegment(raw) {
 
   // Attached trailing `&` (`2>&1&`, `HEAD&`) -> background token.
   if (t.length > 0) {
-    const last = t[t.length - 1];
+    const last = m[m.length - 1];
     if (last.length > 1 && last.endsWith('&') && !/[<>]&$/.test(last) && !last.endsWith('&&')) {
-      t[t.length - 1] = last.slice(0, -1);
+      t[t.length - 1] = t[t.length - 1].slice(0, -1);
+      m[m.length - 1] = last.slice(0, -1);
       t.push('&');
+      m.push('&');
     }
   }
 
   // Strip group closers by balance from the last non-`&` token.
   let opens = 0;
   let closes = 0;
-  for (const tok of t) { opens += countChar(tok, '('); closes += countChar(tok, ')'); }
-  const bgTail = t.length > 0 && t[t.length - 1] === '&';
-  let li = bgTail ? t.length - 2 : t.length - 1;
-  while (li >= 0 && closes > opens && t[li].endsWith(')')) {
+  for (const tok of m) { opens += countChar(tok, '('); closes += countChar(tok, ')'); }
+  const bgTail = m.length > 0 && m[m.length - 1] === '&';
+  let li = bgTail ? m.length - 2 : m.length - 1;
+  while (li >= 0 && closes > opens && m[li].endsWith(')')) {
     t[li] = t[li].slice(0, -1);
+    m[li] = m[li].slice(0, -1);
     closes -= 1;
-    if (t[li] === '') { t.splice(li, 1); li -= 1; }
+    if (m[li] === '') { t.splice(li, 1); m.splice(li, 1); li -= 1; }
   }
 
   return { tokens: t, openers, post };
@@ -428,8 +580,18 @@ function scanParsed(parsed, st) {
   const segments = parsed.segments;
   const out = [];
 
+  // Pass 0 (36-03 handoff 2): the quote mask. Nested quotes inside a double-quoted `$(...)`
+  // next to a paren cannot be attributed exactly -> uncertain when the command names gsd-test.
+  const mask = maskedSegmentTokens(parsed);
+  if (mask.ambiguous) {
+    const words = segments.map((s) => s.tokens.join(' ')).join(' ');
+    if (GSD_TEST_WORD.test(String(parsed.raw || '')) || GSD_TEST_WORD.test(words)) {
+      return [{ kind: 'uncertain', reason: 'nested quotes inside a double-quoted substitution make grouping unattributable' }];
+    }
+  }
+
   // Pass 1: normalise and compute the depth profile (relative; may dip below 0 on a stray `)`).
-  const norm = segments.map((s) => normalizeSegment(s.tokens));
+  const norm = segments.map((s, i) => normalizeSegment(s.tokens, mask.tokens ? mask.tokens[i] : null));
   const profile = [];
   let depth = 0;
   for (const n of norm) {
@@ -621,24 +783,71 @@ function expandStatic(value, ctx) {
 }
 
 /**
+ * A prefix with every `cd` target statically expanded (36-03 handoff 1). resolve.commandStartDir
+ * would resolve `cd "$X"` as the literal path `<cwd>/$X`; here a target carrying `$` or a
+ * backtick goes through expandStatic (leading `$HOME`/`${HOME}`/`$XDG_CONFIG_HOME` only), a `~` /
+ * `~/x` target uses the injected homedir when one is given, and a `~user` or `cd -` target cannot
+ * be resolved at all. null when any persisting `cd` target is unresolvable.
+ */
+function expandCdTargets(prefix, ctx) {
+  if (!prefix || prefix.ok !== true || !Array.isArray(prefix.segments)) return prefix;
+  const segments = [];
+  for (const seg of prefix.segments) {
+    if (!seg || seg.program !== 'cd') {
+      segments.push(seg);
+      continue;
+    }
+    const fromPositional = Array.isArray(seg.positionals) && Boolean(seg.positionals[0]);
+    const target = fromPositional ? seg.positionals[0] : Array.isArray(seg.tokens) ? seg.tokens[1] : undefined;
+    if (typeof target !== 'string' || target === '') {
+      segments.push(seg);
+      continue;
+    }
+    if (target === '-') return null; // `cd -` goes to $OLDPWD, which is not knowable here
+    if (target.startsWith('~') && target !== '~' && !target.startsWith('~/')) return null; // ~user
+    const homeForm = (target === '~' || target.startsWith('~/')) && ctx && typeof ctx.homedir === 'string';
+    if (!hasExpansion(target) && !homeForm) {
+      segments.push(seg);
+      continue;
+    }
+    const expanded = expandStatic(target, ctx || {});
+    if (expanded === null) return null;
+    const copy = Object.assign({}, seg);
+    if (fromPositional) copy.positionals = [expanded].concat(seg.positionals.slice(1));
+    else copy.tokens = [seg.tokens[0], expanded].concat(seg.tokens.slice(2));
+    segments.push(copy);
+  }
+  return Object.assign({}, prefix, { segments });
+}
+
+/**
  * The directory a dispatch starts in: fold commandStartDir over its prefixes (outer prefix
  * first, then each `-c` payload prefix). `git -C` never persists ({followGitC:false}); segments
  * after the dispatch are never consulted.
  *
+ * null when a persisting `cd` target is a shell expansion expandStatic cannot resolve (or a
+ * `~user` form): the start dir is then unknown and a gate must fail closed rather than trust
+ * `<cwd>/$X` (36-03 handoff 1).
+ *
  * @param {Object} dispatch a `kind:'dispatch'` entry
  * @param {string} cwd
- * @returns {string}
+ * @param {{env?:Object, homedir?:string}} [ctx] for static `cd` target expansion
+ * @returns {string|null}
  */
-function startDirFor(dispatch, cwd) {
+function startDirFor(dispatch, cwd, ctx) {
   let dir = cwd;
   const prefixes = dispatch && Array.isArray(dispatch.prefixes) ? dispatch.prefixes : [];
-  for (const p of prefixes) dir = commandStartDir(p, dir, { followGitC: false });
+  for (const p of prefixes) {
+    const q = expandCdTargets(p, ctx);
+    if (q === null) return null;
+    dir = commandStartDir(q, dir, { followGitC: false });
+  }
   return dir;
 }
 
 /**
  * The tree a dispatch tests: `-source` (statically expanded, resolved against the start dir) or
- * the start dir. null when `-source` cannot be resolved.
+ * the start dir. null when `-source` or the start dir cannot be resolved.
  *
  * @param {Object} dispatch
  * @param {string} cwd
@@ -646,7 +855,8 @@ function startDirFor(dispatch, cwd) {
  * @returns {string|null}
  */
 function treeDirFor(dispatch, cwd, ctx) {
-  const start = startDirFor(dispatch, cwd);
+  const start = startDirFor(dispatch, cwd, ctx);
+  if (start === null) return null;
   const source = dispatch && dispatch.flags ? dispatch.flags.source : undefined;
   if (typeof source !== 'string') return start;
   const expanded = expandStatic(source, ctx);
