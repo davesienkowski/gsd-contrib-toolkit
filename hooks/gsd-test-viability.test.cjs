@@ -142,9 +142,12 @@ test('ENF-24 GTEST-04: XDG_CONFIG_HOME=/x (absolute) -> reads /x/gsd-test/config
   assert.deepStrictEqual(calls.paths, [path.join('/x', 'gsd-test', 'config.toml')]);
 });
 
-test('ENF-24 GTEST-04: XDG_CONFIG_HOME=rel (not absolute) -> the homedir default', () => {
+// m-02 (36-REVIEW) correction: v1.8.0 internal/config/config.go defaultConfigPath joins ANY
+// non-empty XDG_CONFIG_HOME (no absolute check; it is not os.UserConfigDir), so a relative value
+// resolves against gsd-test's working directory — the dispatch's start dir.
+test('ENF-24 GTEST-04 (m-02): XDG_CONFIG_HOME=rel (relative) -> <start dir>/rel/gsd-test/config.toml', () => {
   const { calls } = run('gsd-test', { env: { XDG_CONFIG_HOME: 'rel' } });
-  assert.deepStrictEqual(calls.paths, [DEFAULT_CONFIG_PATH]);
+  assert.deepStrictEqual(calls.paths, [path.join(ROOT, 'rel', 'gsd-test', 'config.toml')]);
 });
 
 test('ENF-24 GTEST-04: `--config ~/c.toml` -> /h/c.toml', () => {
@@ -475,7 +478,8 @@ function recordingSpawn(result) {
   const rec = { count: 0, calls: [] };
   const fn = (cmd, args, opts) => {
     rec.count += 1;
-    rec.calls.push({ cmd, args, opts });
+    // Snapshot the env at spawn time (a live process.env reference would hide what was passed).
+    rec.calls.push({ cmd, args, opts: Object.assign({}, opts, { env: opts && opts.env ? Object.assign({}, opts.env) : opts && opts.env }) });
     return result;
   };
   return { fn, rec };
@@ -931,4 +935,90 @@ test('ENF-24 m-08: parseDefaults reads pin and a one-line exclude array; a multi
   assert.deepStrictEqual(viability.parseDefaults('[defaults]\nexclude = [\n  "b",\n]\n'), { pin: null, exclude: null });
   assert.deepStrictEqual(viability.parseDefaults('[other]\npin = "x"\n'), { pin: null, exclude: [] });
   assert.deepStrictEqual(viability.parseDefaults('[defaults]\npin = "a"\n[other]\npin = "x"\n'), { pin: 'a', exclude: [] });
+});
+
+// ─────────────── m-02 (36-REVIEW): per-command environment ───────────────
+
+const ENV_PATH_ROWS = [
+  // [command, base env, expected config path]
+  ['XDG_CONFIG_HOME=/tmp/nowhere gsd-test --bench wsl-local', {}, '/tmp/nowhere/gsd-test/config.toml'],
+  ['HOME=/tmp/x gsd-test', {}, '/tmp/x/.config/gsd-test/config.toml'],
+  ['env HOME=/tmp/x gsd-test', {}, '/tmp/x/.config/gsd-test/config.toml'],
+  ['export XDG_CONFIG_HOME=/x; gsd-test', {}, '/x/gsd-test/config.toml'],
+  ['export XDG_CONFIG_HOME=/x && gsd-test', {}, '/x/gsd-test/config.toml'],
+  ['XDG_CONFIG_HOME=rel gsd-test', {}, path.join(ROOT, 'rel', 'gsd-test', 'config.toml')],
+  ['env -u XDG_CONFIG_HOME gsd-test', { XDG_CONFIG_HOME: '/x' }, DEFAULT_CONFIG_PATH],
+  ['unset XDG_CONFIG_HOME; gsd-test', { XDG_CONFIG_HOME: '/x' }, DEFAULT_CONFIG_PATH],
+  ['(export XDG_CONFIG_HOME=/x); gsd-test', {}, DEFAULT_CONFIG_PATH],
+  ['XDG_CONFIG_HOME=/x; gsd-test', {}, DEFAULT_CONFIG_PATH], // a plain shell variable is not exported
+  ['XDG_CONFIG_HOME=/x; gsd-test', { XDG_CONFIG_HOME: '/y' }, '/x/gsd-test/config.toml'], // already exported
+  ['export HOME=/e; gsd-test --config ~/c.toml', {}, '/e/c.toml'],
+  ['HOME=/e gsd-test --config ~/c.toml', {}, path.join(HOME, 'c.toml')], // the shell expands ~ before the prefix applies
+];
+for (const [cmd, env, want] of ENV_PATH_ROWS) {
+  test(`ENF-24 m-02: \`${cmd}\` (base env ${JSON.stringify(env)}) reads ${want}`, () => {
+    const { calls } = run(cmd, { env });
+    assert.deepStrictEqual(calls.paths, [path.resolve(want)]);
+  });
+}
+
+for (const cmd of [
+  'XDG_CONFIG_HOME="$X" gsd-test',
+  'HOME=$(mktemp -d) gsd-test',
+  'env -i gsd-test',
+  'export XDG_CONFIG_HOME=$X; gsd-test',
+  'sudo gsd-test',
+]) {
+  test(`ENF-24 m-02: \`${cmd}\` cannot resolve the config path -> ASK with ZERO reads`, () => {
+    const { d, calls, reason } = run(cmd);
+    assert.strictEqual(d.permissionDecision, 'ask');
+    assert.match(reason, /ENF-24/);
+    assert.match(reason, /dangerously-skip-permissions/);
+    assert.strictEqual(calls.readConfig, 0);
+  });
+}
+
+test('ENF-24 m-02: `DOCKER_HOST=ssh://bench gsd-test` probes WITH that DOCKER_HOST', () => {
+  const seen = [];
+  const { d } = run('DOCKER_HOST=ssh://bench gsd-test', { dockerProbe: (e) => { seen.push(e); return { state: 'ok' }; } });
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(seen.length, 1);
+  assert.strictEqual(seen[0].DOCKER_HOST, 'ssh://bench');
+});
+
+test('ENF-24 m-02: the default probe passes a command DOCKER_CONTEXT into the spawned env', () => {
+  const spawn = recordingSpawn({ status: 0, stdout: '27\n' });
+  const { deps } = scenario({ spawnSync: spawn.fn });
+  delete deps.dockerProbe;
+  runGsdTestViabilityGate(input('DOCKER_CONTEXT=remote gsd-test'), deps);
+  assert.strictEqual(spawn.rec.count, 1);
+  assert.strictEqual(spawn.rec.calls[0].opts.env.DOCKER_CONTEXT, 'remote');
+});
+
+test('ENF-24 m-02: `env -u DOCKER_HOST gsd-test` removes DOCKER_HOST from the spawned probe env', () => {
+  const spawn = recordingSpawn({ status: 0, stdout: '27\n' });
+  const { deps } = scenario({ spawnSync: spawn.fn });
+  delete deps.dockerProbe;
+  const saved = process.env.DOCKER_HOST;
+  process.env.DOCKER_HOST = 'tcp://inherited:2375';
+  try {
+    runGsdTestViabilityGate(input('env -u DOCKER_HOST gsd-test'), deps);
+  } finally {
+    if (saved === undefined) delete process.env.DOCKER_HOST; else process.env.DOCKER_HOST = saved;
+  }
+  assert.strictEqual(spawn.rec.count, 1);
+  assert.ok(!('DOCKER_HOST' in spawn.rec.calls[0].opts.env), 'DOCKER_HOST is unset for the probe');
+});
+
+test('ENF-24 m-02: `DOCKER_HOST="$H" gsd-test` cannot tell which daemon -> ASK, ZERO probes', () => {
+  const { d, calls } = run('DOCKER_HOST="$H" gsd-test');
+  assert.strictEqual(d.permissionDecision, 'ask');
+  assert.strictEqual(calls.dockerProbe, 0);
+});
+
+test('ENF-24 m-02: two dispatches with different DOCKER_HOST -> two probes; the same -> one', () => {
+  const a = run('DOCKER_HOST=tcp://a gsd-test; DOCKER_HOST=tcp://b gsd-test');
+  assert.strictEqual(a.calls.dockerProbe, 2);
+  const b = run('DOCKER_HOST=tcp://a gsd-test; DOCKER_HOST=tcp://a gsd-test');
+  assert.strictEqual(b.calls.dockerProbe, 1);
 });
