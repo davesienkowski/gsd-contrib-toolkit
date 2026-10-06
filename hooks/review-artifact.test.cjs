@@ -1307,3 +1307,154 @@ test('38-03 request-changes: `gh pr review 42 -r -b x` with R10 absent and compl
   assert.deepStrictEqual(dp._calls.readToolLog, [SESSION], 'request-changes is a verdict: R8a read the log');
   assert.deepStrictEqual(dp._calls.scaffolded, []);
 });
+
+// ── 38-03: R8a scaffold-on-deny and the deny-path evidence rows ─────────────
+
+const R8A = 'R8a-memtrace.json';
+const R8A_PATH = DIR + '/' + R8A;
+
+/** The R8a gate entry, asserted to carry a spec so a missing one fails on an assertion. */
+function r8aEntry() {
+  const e = GATES.find((x) => x.id === 'R8a-memtrace');
+  assert.ok(e, 'the R8a-memtrace entry exists');
+  assert.ok(e.spec && typeof e.spec === 'object', 'R8a-memtrace carries a scaffold spec');
+  return e;
+}
+
+/** An approve against a COMPLETE log whose own successful rows are `records`. */
+function approveWith(records, over = {}) {
+  const dp = depsWithLog(toolLog(records), over);
+  return { dp, d: runReviewArtifactGate(input('gh pr review 42 --approve'), dp) };
+}
+
+test('38-03 scaffold: complete log, missing evidence, artifact absent → DENY + scaffold; names the path, the tools and the ask-never-allow escape', () => {
+  const { dp, d } = approveWith(ONLY_BASH.slice());
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.deepStrictEqual(dp._calls.scaffolded, [R8A_PATH], 'the R8a deny scaffolds the attestation');
+  const why = d.permissionDecisionReason;
+  assert.match(why, /ENF-20 R8a-memtrace \(re-review step 8a\)/);
+  assert.ok(why.includes(R8A_PATH), 'the deny names the scaffold path: ' + why);
+  for (const t of ALL_FIVE) assert.ok(why.includes(t), 'the deny names ' + t);
+  assert.match(why, /human ask/i);
+  assert.match(why, /never an allow/i);
+});
+
+test('38-03 scaffold: the R8a spec renders obligations only — FILL sentinels, constants exactly schema 1 + pass', () => {
+  const e = r8aEntry();
+  assert.doesNotThrow(() => validateSpec(e.spec));
+  assert.strictEqual(e.file, undefined, 'R8a keeps `artifact`, never `file`');
+  assert.strictEqual(e.artifact, R8A);
+  const doc = JSON.parse(scaffold(e.spec));
+  for (const k of ['head_oid', 'status', 'unavailable_reason']) {
+    assert.ok(typeof doc[k] === 'string' && doc[k].startsWith('<<<FILL:' + k + '>>>'), k + ' is a FILL sentinel: ' + doc[k]);
+  }
+  assert.notStrictEqual(doc.status, 'unavailable', 'status is never pre-filled');
+  const constants = {};
+  for (const k of Object.keys(doc)) {
+    if (k.startsWith('_') || ['head_oid', 'status', 'unavailable_reason'].includes(k)) continue;
+    constants[k] = doc[k];
+  }
+  assert.deepStrictEqual(constants, { schema: 1, pass: 'memtrace-unavailable' });
+});
+
+test('38-03 scaffold: the fresh scaffold present + missing evidence → DENY naming status, unavailable_reason and head_oid as unfilled', () => {
+  const e = r8aEntry();
+  const { dp, d } = approveWith(ONLY_BASH.slice(), { files: { [R8A_PATH]: scaffold(e.spec) } });
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  const why = d.permissionDecisionReason;
+  for (const f of ['status', 'unavailable_reason', 'head_oid']) {
+    assert.ok(why.includes('`' + f + '`'), 'the deny names `' + f + '` as unfilled: ' + why);
+  }
+  assert.match(why, /placeholder/i);
+  assert.deepStrictEqual(dp._calls.scaffolded, [], 'a present file is never re-scaffolded');
+});
+
+for (const [label, res, re] of [
+  ["{written:false, reason:'exists'}", { written: false, reason: 'exists' }, /already present/],
+  ["{written:false, reason:'race'}", { written: false, reason: 'race' }, /already present/],
+  ["{written:false, error:'EACCES'}", { written: false, reason: 'write-failed', error: 'EACCES' }, /could NOT be written[\s\S]*EACCES/],
+]) {
+  test('38-03 scaffold result: writeScaffold returns ' + label + ' → the deny says so', () => {
+    const calls = [];
+    const { d } = approveWith(ONLY_BASH.slice(), {
+      writeScaffold: (rel) => {
+        calls.push(rel);
+        return Object.assign({ path: '/tmp/wt/' + rel }, res);
+      },
+    });
+    assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+    assert.deepStrictEqual(calls, [R8A_PATH]);
+    assert.match(d.permissionDecisionReason, re);
+  });
+}
+
+test('38-03 source: a `### Memtrace Evidence` body naming all five tools, log with only Bash rows → DENY (evidence never comes from the body)', () => {
+  const body = '## Re-Review\n\n### Memtrace Evidence\n' + ALL_FIVE.map((t) => '- ' + t + ': ran, no impact').join('\n');
+  const dp = depsWithLog(toolLog(ONLY_BASH.slice()));
+  const d = runReviewArtifactGate(input('gh pr review 42 --approve --body "' + body + '"'), dp);
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /R8a-memtrace/);
+});
+
+test('38-03 evidence: the three memtrace tools with outcome fail plus Bash ok → DENY naming all of them', () => {
+  const { d } = approveWith([
+    { tool_name: MT + 'get_impact', outcome: 'fail' },
+    { tool_name: MT + 'get_symbol_context', outcome: 'fail' },
+    { tool_name: MT + 'recall_decision', outcome: 'fail' },
+    { tool_name: 'Bash', outcome: 'ok' },
+  ]);
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  for (const t of ALL_FIVE) assert.ok(d.permissionDecisionReason.includes(t), 'the deny names ' + t);
+});
+
+for (const name of ['mcp__memtrace__get_impact_v2', 'MCP__MEMTRACE__GET_IMPACT', 'mcp__memtracex__get_impact', 'mcp__memtrace__']) {
+  test('38-03 names: `' + name + '` never satisfies get_impact → DENY naming mcp__memtrace__get_impact', () => {
+    const { d } = approveWith([
+      { tool_name: MT + 'get_symbol_context', outcome: 'ok' },
+      { tool_name: MT + 'recall_decision', outcome: 'ok' },
+      { tool_name: name, outcome: 'ok' },
+    ]);
+    assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+    assert.ok(d.permissionDecisionReason.includes('`' + MT + 'get_impact`'), d.permissionDecisionReason);
+  });
+}
+
+for (const verb of ['recall_decision', 'why_is_this_here', 'governing_contracts']) {
+  test('38-03 any-of: `' + verb + '` alone satisfies the recorded-decision group → allow', () => {
+    const { d } = approveWith([
+      { tool_name: MT + 'get_impact', outcome: 'ok' },
+      { tool_name: MT + 'get_symbol_context', outcome: 'ok' },
+      { tool_name: MT + verb, outcome: 'ok' },
+    ]);
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  });
+}
+
+test('38-03 order: only get_impact present → the deny names get_symbol_context and the any-of group, not get_impact', () => {
+  const { d } = approveWith([{ tool_name: MT + 'get_impact', outcome: 'ok' }, { tool_name: 'Bash', outcome: 'ok' }]);
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  const why = d.permissionDecisionReason;
+  assert.ok(why.includes(MT + 'get_symbol_context'));
+  for (const v of ['recall_decision', 'why_is_this_here', 'governing_contracts']) assert.ok(why.includes(MT + v), v);
+  assert.ok(!why.includes(MT + 'get_impact'), 'get_impact ran, so the deny does not name it: ' + why);
+});
+
+test('38-03 order: the same incomplete records in two different orders → byte-identical deny reasons', () => {
+  const rows = [
+    { tool_name: 'Bash', outcome: 'ok' },
+    { tool_name: MT + 'get_symbol_context', outcome: 'ok' },
+    { tool_name: MT + 'get_impact', outcome: 'fail' },
+    { tool_name: 'Read', outcome: 'ok' },
+  ];
+  const a = approveWith(rows.slice()).d;
+  const b = approveWith(rows.slice().reverse()).d;
+  assert.strictEqual(a.permissionDecision, 'deny');
+  assert.strictEqual(a.permissionDecisionReason, b.permissionDecisionReason);
+});
+
+test('38-03 order: R8-code-review.json absent + no memtrace → DENY R8-code; the log is never read', () => {
+  const { dp, d } = approveWith(ONLY_BASH.slice(), { files: absent(R8_CODE) });
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-20 R8-code/);
+  assert.deepStrictEqual(dp._calls.readToolLog, []);
+});
