@@ -2120,3 +2120,58 @@ test('261006-jsm forms: every emitted via code is a VERDICT_ROUTE_FORMS key with
     }
   }
 });
+
+// ---------------------------------------------------------------------------
+// 261006-jsm Task 2e: xargs verdict route (RESEARCH section 4). xargs runs its command argv
+// directly (a prefix strip at peels + 1, not a payload re-parse). The option table has three
+// classes: no value, required value (attached or next token) and optional-attached-only (a
+// separate token is the command); long options resolve by unique prefix; `--` ends options.
+// ---------------------------------------------------------------------------
+
+const JSM_XARGS_TOKENS = ['gh', 'pr', 'review', '-a'];
+const JSM_XARGS_BRACE_TOKENS = ['gh', 'pr', 'review', '{}', '-a'];
+
+for (const [cmd, tokens] of [
+  ['echo 42 | xargs gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs -n1 gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs -rn1 gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs -I{} gh pr review {} -a', JSM_XARGS_BRACE_TOKENS],
+  ['xargs -I {} gh pr review {} -a', JSM_XARGS_BRACE_TOKENS],
+  ['xargs -0 -P 4 gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs --max-args 1 gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs --max-a 1 gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs --max-args=1 gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs -- gh pr review -a', JSM_XARGS_TOKENS],
+  ['xargs -i gh pr review {} -a', JSM_XARGS_BRACE_TOKENS],
+  ['xargs -iX gh pr review X -a', ['gh', 'pr', 'review', 'X', '-a']],
+  ['xargs --replace gh pr review {} -a', JSM_XARGS_BRACE_TOKENS],
+  ["xargs -I{} sh -c 'gh pr review {} -a'", JSM_XARGS_BRACE_TOKENS],
+]) {
+  test('261006-jsm xargs: `' + cmd + '` -> recovered pr-review, via xargs, one verdict segment', () => {
+    assertPrefixReview(cmd, 'xargs', tokens);
+  });
+}
+
+for (const cmd of [
+  'xargs -l 1 gh pr review -a',
+  'xargs --bogus ls',
+  'ls | xargs grep foo',
+  'find . -name x | xargs rm -f',
+  "xargs -I{} sh -c 'echo {}'",
+  'xargs',
+  'xargs -n1',
+  'xargs git push',
+]) {
+  test('261006-jsm xargs lock: `' + cmd + '` stays other', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasFailClosedSegment(parseCommand(cmd)), false, cmd);
+  });
+}
+
+for (const cmd of ['xargs --bogus gh pr review -a', 'xargs --max gh pr review -a', 'xargs -z gh pr review -a']) {
+  test('261006-jsm xargs: unknown or ambiguous option `' + cmd + '` with a review hint -> UNCERTAIN', () => {
+    assertUncertainRoute(cmd, 'xargs-unknown-option');
+  });
+}
+
+jsmD2Rows('xargs', 'xargs gh pr review -a', { merge: 'xargs gh pr review -a && gh pr merge 1' });

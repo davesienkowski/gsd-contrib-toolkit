@@ -2526,3 +2526,36 @@ for (const cmd of ['nohup '.repeat(9) + 'ls', '$X 42 -a']) {
     assert.deepStrictEqual(dp._calls.readToolLog, []);
   });
 }
+
+// -- 261006-jsm Task 2e: an xargs-run verdict reaches R8a ----------------------------------------
+
+for (const cmd of [
+  'echo 42 | xargs gh pr review -a',
+  'xargs -n1 gh pr review -a',
+  'xargs -rn1 gh pr review -a',
+  'xargs -I{} gh pr review {} -a',
+  'xargs -I {} gh pr review {} -a',
+  'xargs -0 -P 4 gh pr review -a',
+  'xargs --max-args 1 gh pr review -a',
+  'xargs --max-a 1 gh pr review -a',
+  'xargs -- gh pr review -a',
+  'xargs -i gh pr review {} -a',
+]) {
+  test('261006-jsm gate xargs: `' + cmd + '` with only Bash rows -> DENY R8a-memtrace', () => {
+    assertJsmR8aDeny(cmd);
+  });
+}
+
+test('261006-jsm gate xargs: an unknown xargs option with a review hint -> ASK (UNCERTAIN) with no lookup', () => {
+  assertJsmUncertainAsk('xargs --bogus gh pr review -a', 'xargs-unknown-option');
+});
+
+for (const cmd of ['xargs -l 1 gh pr review -a', 'xargs --bogus ls', 'xargs']) {
+  test('261006-jsm gate xargs lock: `' + cmd + '` -> allow with no PR lookup or log read', () => {
+    const dp = deps();
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+    assert.strictEqual(dp._calls.resolvePr, 0);
+    assert.deepStrictEqual(dp._calls.readToolLog, []);
+  });
+}
