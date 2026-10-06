@@ -2580,3 +2580,26 @@ test('ENF-25 MI-01 e2e (fx10): A on next behind its last-fetched origin/next, or
     fx.dispose();
   }
 });
+
+// ── MA-03: `git checkout next && git worktree add ...` (HEAD base) is unattributable ──
+
+test('ENF-25 MA-03: a HEAD-base cut after `git checkout next` in the same command -> the constant uncertain deny, ZERO resolve and fetch', () => {
+  const { deps, calls } = scenario({ branch: 'work' });
+  const d = runWorktreeFreshBaseGate(input('git checkout next && git worktree add -b f p'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /ENF-25/);
+  assert.strictEqual(calls.resolveTreeRoot, 0);
+  assert.strictEqual(calls.fetchOrigin, 0);
+});
+
+test('ENF-25 MA-03 e2e (fx5): A on work, origin advanced, `git checkout next && git worktree add -b f <x>` -> deny; no fetch', () => {
+  const fx = makeFixture();
+  try {
+    fx.advanceOrigin();
+    const r = spawnIn(fx.A, 'git checkout next && git worktree add -b f ' + path.join(fx.root, 'x'));
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/remotes/origin/next'), fx.initial, 'the uncertain deny does no I/O');
+  } finally {
+    fx.dispose();
+  }
+});

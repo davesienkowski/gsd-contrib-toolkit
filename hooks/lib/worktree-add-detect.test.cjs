@@ -443,3 +443,44 @@ for (const cmd of PARITY) {
     assert.deepStrictEqual(generic(cmd), gtd.findGsdTestDispatches(cmd));
   });
 }
+
+// ───────────────────────── 37-REVIEW MA-03: a HEAD base after an earlier checkout / switch ─────────────────────────
+//
+// The gate reads the current branch at hook time; an earlier `git checkout` / `git switch` in the
+// SAME command changes HEAD before the cut runs, so a HEAD-kind cut after one is unattributable.
+
+const SWITCHED_HEAD = [
+  'git checkout next && git worktree add -b f ../x',
+  'git switch next && git worktree add -b f ../x',
+  'git switch -c foo origin/next; git worktree add -b f ../x HEAD',
+  'git -C /o checkout next && git worktree add -b f ../x',
+  'sudo git checkout -B next origin/next && git worktree add -b f ../x @',
+  'FOO=1 git checkout next && git worktree add -b f ../x',
+  '(git checkout next) && git worktree add -b f ../x',
+  "bash -c 'git checkout next' && git worktree add -b f ../x",
+  "git checkout next && bash -c 'git worktree add -b f ../x'",
+  'git checkout -- file.txt && git worktree add --detach ../x',
+];
+for (const cmd of SWITCHED_HEAD) {
+  test('MA-03 detect: ' + JSON.stringify(cmd) + ' -> uncertain (HEAD changes before the cut)', () => {
+    oneUncertain(cmd);
+  });
+}
+
+const SWITCHED_NOT_HEAD = [
+  ['git checkout next && git worktree add -b f ../x origin/next', 'remote'],
+  ['git checkout next && git worktree add -b f ../x next', 'local'],
+  ['git checkout next && git worktree add -b f ../x feature', 'other'],
+  ['git worktree add -b f ../x && git checkout next', 'head'],
+  ['git status && git worktree add -b f ../x', 'head'],
+];
+for (const [cmd, kind] of SWITCHED_NOT_HEAD) {
+  test('MA-03 detect: ' + JSON.stringify(cmd) + ' stays a ' + kind + ' cut', () => {
+    assert.strictEqual(oneCut(cmd).baseKind, kind);
+  });
+}
+
+test('MA-03 detect: the switch state is per call (a later, unrelated command is not tainted)', () => {
+  oneUncertain('git checkout next && git worktree add -b f ../x');
+  assert.strictEqual(oneCut('git worktree add -b f ../x').baseKind, 'head');
+});
