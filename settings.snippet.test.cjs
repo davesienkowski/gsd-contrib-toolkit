@@ -12,7 +12,8 @@
  *      plus binlib-edit + protocol-reminder) appears exactly once, each command referencing
  *      its hooks/<name>.cjs by an ABSOLUTE path
  *   3. matchers are correct: Bash gates under "Bash", binlib-edit under "Write|Edit",
- *      protocol-reminder under "UserPromptSubmit"
+ *      protocol-reminder under "UserPromptSubmit", and the two-matcher gate worktree-fresh-base
+ *      (ENF-25) under BOTH "Bash" and "EnterWorktree" (one registration each)
  *   4. NO command references ~/.claude (project-scoped blast radius — PROJECT settings-scope)
  *   5. the doctor CLI is NOT wired (it is a CLI self-test, not a hook)
  *
@@ -64,9 +65,18 @@ const PROMPT_HOOKS = ['protocol-reminder'];
  */
 const RECORDER_HOOKS = ['tool-recorder'];
 const RECORDER_EVENTS = ['PostToolUse', 'PostToolUseFailure'];
+/**
+ * ENF-25 (Phase 37, WTREE-01): the worktree fresh-base gate must reach BOTH a `git worktree add`
+ * typed through the Bash tool AND the harness EnterWorktree tool, so it is registered TWICE under
+ * PreToolUse: once in the existing `Bash` group and once in its own `EnterWorktree` group (same
+ * script). Like tool-recorder it is kept OUT of ALL_HOOKS (whose invariant is "exactly once") and
+ * asserted separately below; it is in ALL_WIRED_SCRIPTS so the install-merge proof covers it.
+ */
+const TWO_MATCHER_GATES = ['worktree-fresh-base'];
+const TWO_MATCHER_MATCHERS = ['Bash', 'EnterWorktree'];
 const ALL_HOOKS = [...BASH_GATES, ...WRITE_EDIT_GATES, ...PROMPT_HOOKS];
 /** Every wired script, however many times it appears — the presence set the merge proof uses. */
-const ALL_WIRED_SCRIPTS = [...ALL_HOOKS, ...RECORDER_HOOKS];
+const ALL_WIRED_SCRIPTS = [...ALL_HOOKS, ...RECORDER_HOOKS, ...TWO_MATCHER_GATES];
 
 function loadSnippet() {
   const raw = fs.readFileSync(SNIPPET_PATH, 'utf8');
@@ -216,6 +226,51 @@ test('m-06: each gsd-test gate settings timeout exceeds its shared subprocess bu
     const hit = allCommands(loadSnippet()).find((c) => c.command.includes(`/hooks/${name}.cjs"`));
     assert.ok(hit.timeout * 1000 >= mod.GATE_BUDGET_MS + 3000,
       `${name} timeout ${hit.timeout * 1000} ms must exceed GATE_BUDGET_MS ${mod.GATE_BUDGET_MS} by >= 3000 ms`);
+  }
+});
+
+test('ENF-25: worktree-fresh-base is wired exactly twice, PreToolUse on Bash and EnterWorktree, equal timeouts', () => {
+  const cmds = allCommands(loadSnippet());
+  for (const name of TWO_MATCHER_GATES) {
+    const hits = cmds.filter((c) => c.command.includes(`/hooks/${name}.cjs"`));
+    // Count first, so an unwired gate is an assertion failure (clean RED), never a TypeError.
+    assert.equal(hits.length, TWO_MATCHER_MATCHERS.length,
+      `${name} must be wired exactly ${TWO_MATCHER_MATCHERS.length} times (found ${hits.length})`);
+    for (const h of hits) {
+      assert.equal(h.evt, 'PreToolUse', `${name} is a PreToolUse hook (got ${h.evt})`);
+    }
+    // A registration lost on either matcher silently disarms half the gate (T-37-27).
+    assert.deepEqual(hits.map((h) => h.matcher).sort(), [...TWO_MATCHER_MATCHERS].sort(),
+      `${name} matchers must be exactly ${JSON.stringify(TWO_MATCHER_MATCHERS)}`);
+    assert.equal(hits[0].timeout, hits[1].timeout,
+      `${name} registrations must carry equal timeouts (got ${hits[0].timeout} and ${hits[1].timeout})`);
+  }
+});
+
+/**
+ * ENF-25 / T-37-26: the harness kills a hook at its settings timeout and then applies NO decision,
+ * so each of the two registrations' timeout must exceed the gate's shared subprocess deadline
+ * (GATE_BUDGET_MS) by at least 3 s (the 36-REVIEW m-06 headroom for node start-up and the verdict
+ * write). The deadline must in turn cover the worst case it is meant to bound: one fetch belt plus
+ * MAX_GIT_CALLS_PER_ROOT bounded non-fetch git calls. Every bound is read from the hook module, so
+ * raising one without the other goes red here. Both comparisons are inclusive (45 s = 42 s + 3 s;
+ * 20 s + 7 x 3 s = 41 s <= 42 s).
+ */
+test('ENF-25: worktree-fresh-base timeout covers its shared budget', () => {
+  const wt = require('./hooks/worktree-fresh-base.cjs');
+  for (const k of ['GATE_BUDGET_MS', 'FETCH_BELT_MS', 'MAX_GIT_CALLS_PER_ROOT', 'GIT_TIMEOUT_MS']) {
+    assert.equal(typeof wt[k], 'number', `worktree-fresh-base exports ${k}`);
+  }
+  assert.ok(wt.GATE_BUDGET_MS >= wt.FETCH_BELT_MS + wt.MAX_GIT_CALLS_PER_ROOT * wt.GIT_TIMEOUT_MS,
+    `GATE_BUDGET_MS ${wt.GATE_BUDGET_MS} must cover FETCH_BELT_MS ${wt.FETCH_BELT_MS} + ` +
+    `MAX_GIT_CALLS_PER_ROOT ${wt.MAX_GIT_CALLS_PER_ROOT} x GIT_TIMEOUT_MS ${wt.GIT_TIMEOUT_MS}`);
+  const hits = allCommands(loadSnippet()).filter((c) => c.command.includes('/hooks/worktree-fresh-base.cjs"'));
+  assert.equal(hits.length, TWO_MATCHER_MATCHERS.length,
+    `worktree-fresh-base must be wired on ${TWO_MATCHER_MATCHERS.length} matchers (found ${hits.length})`);
+  for (const h of hits) {
+    assert.ok(h.timeout * 1000 >= wt.GATE_BUDGET_MS + 3000,
+      `worktree-fresh-base (${h.matcher}) timeout ${h.timeout * 1000} ms must exceed ` +
+      `GATE_BUDGET_MS ${wt.GATE_BUDGET_MS} by >= 3000 ms`);
   }
 });
 
