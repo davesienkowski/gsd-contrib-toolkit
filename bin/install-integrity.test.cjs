@@ -51,7 +51,7 @@ const SETTINGS_REL = path.join('.claude', 'settings.json');
 const ENGINE_LIB_REL = path.join('gsd-core', 'bin', 'lib');
 
 /**
- * WIRED_TOTAL / WIRED_BASH — DERIVED AT RUNTIME from the canonical `settings.snippet.json` (the
+ * WIRED.{total,bash,writeEdit,enterWorktree} — DERIVED AT RUNTIME from the canonical `settings.snippet.json` (the
  * wired-set source `bin/build-capability.cjs` reads) instead of hardcoded numerals, which went
  * silently stale on every newly wired gate. The assertions below stay STRUCTURAL — "EXACTLY the
  * canonical set, none dangling" — and now track the snippet without an edit here.
@@ -61,15 +61,17 @@ const WIRED = (() => {
   let total = 0;
   let bash = 0;
   let writeEdit = 0;
+  let enterWorktree = 0;
   for (const [event, groups] of Object.entries(snip.hooks || {})) {
     for (const g of groups) {
       const n = (g.hooks || []).length;
       total += n;
       if (event === 'PreToolUse' && g.matcher === 'Bash') bash += n;
       if (event === 'PreToolUse' && g.matcher === 'Write|Edit') writeEdit += n;
+      if (event === 'PreToolUse' && g.matcher === 'EnterWorktree') enterWorktree += n;
     }
   }
-  return { total, bash, writeEdit };
+  return { total, bash, writeEdit, enterWorktree };
 })();
 
 // The REAL canonical binlib-edit entrypoint (never the sandbox copy) — the 260630-v1h fix under test.
@@ -341,6 +343,21 @@ test('INST-03(b) MATCHER SCOPE: the installed binlib-edit entry keeps its scoped
       bashScoped.length, WIRED.bash,
       'exactly ' + WIRED.bash + ' Bash-scoped gates — a gate that lost its matcher would show up here'
     );
+    // ENF-25 (worktree-fresh-base) is the one gate ALSO registered under `EnterWorktree`. The count is
+    // derived from the snippet; every EnterWorktree-scoped installed target must run that gate (an
+    // EnterWorktree entry pointing at any other script, or a lost/dropped one, goes RED).
+    const enterWorktree = targets.filter((t) => t.matcher === 'EnterWorktree');
+    assert.strictEqual(
+      enterWorktree.length, WIRED.enterWorktree,
+      'exactly ' + WIRED.enterWorktree + ' EnterWorktree-scoped target(s) (worktree-fresh-base), got ' +
+        JSON.stringify(enterWorktree.map((t) => t.scriptPath))
+    );
+    for (const t of enterWorktree) {
+      assert.ok(
+        /(^|[\\/])worktree-fresh-base\.cjs$/.test(t.scriptPath),
+        'every EnterWorktree-scoped target must run worktree-fresh-base.cjs; got: ' + JSON.stringify(t.scriptPath)
+      );
+    }
   } finally {
     sb.dispose();
   }

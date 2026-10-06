@@ -13,7 +13,13 @@
  *
  * ─────────── WHAT IT COVERS (do not over-read this list) ───────────
  *   (1) Derivation self-consistency: registrations = Σ per-event; distinct scripts = registrations
- *       minus the multi-event duplicates.
+ *       minus the extra registrations (counted PER SCRIPT REGISTRATION, so a script on two events
+ *       and a script under two matchers of one event both count); PreToolUse registrations =
+ *       Bash + Write|Edit + EnterWorktree; every EnterWorktree script is also a Bash script; distinct
+ *       PreToolUse GATES = Bash + Write|Edit registrations. An unknown PreToolUse matcher fails the
+ *       categorisation check (a synthetic `Read` row proves it).
+ *       COUNT SEMANTICS: "N gates" counts DISTINCT gate scripts (`preGates`); registrations are
+ *       counted separately. ENF-25 (`worktree-fresh-base`) is ONE gate with TWO registrations.
  *   (2) The two deliberately-UNWIRED scripts (`doctor.cjs`, `preflight-shipped-paths.cjs`) exist on
  *       disk, are absent from the wired set, and are absent from README's gate-reference table.
  *   (3) README.md — every primary count claim, as a whitespace-normalized literal built from the
@@ -22,8 +28,8 @@
  *       equality, both directions). This is the check that catches "new hook, undocumented".
  *   (5) docs/guides/overview.md + docs/guides/contributor-guide.md — their primary count claims.
  *   (6) capabilities/contribution-toolkit/README.md (the published-capability README) — its
- *       primary count claims, including the spelled-out "thirteen".
- *   (7) capability.json `hooks[]` parity with the snippet (registrations + per-event breakdown).
+ *       primary count claims, including the spelled-out gate count.
+ *   (7) capability.json `hooks[]` parity with the snippet (registrations + per-(event, matcher)).
  *   (8) A GENERIC stale-number scan over the four covered doc files: any number sitting directly
  *       in front of a hook/gate noun must be one of the derived values.
  *
@@ -70,16 +76,24 @@ const DELIBERATELY_UNWIRED = ['doctor.cjs', 'preflight-shipped-paths.cjs'];
  * Derive the authoritative wired-set numbers from a harness settings block.
  *
  * Category rules (the ONLY place they are defined):
- *   - blocking / fail-closed  = every `PreToolUse` registration (each one can return `deny`)
+ *   - blocking / fail-closed  = every DISTINCT script with a `PreToolUse` registration (each one can
+ *                               return `deny`). A GATE is a script, not a registration: ENF-25
+ *                               (`worktree-fresh-base`) is ONE gate registered under TWO PreToolUse
+ *                               matchers (`Bash` + `EnterWorktree`), so the PreToolUse REGISTRATION
+ *                               count (`pre`) is one higher than the GATE count (`preGates`). Every
+ *                               "N gates" doc claim uses `preGates`; registration claims use `pre`.
  *   - advisory / fail-open    = every `UserPromptSubmit` registration (reminds, never denies)
  *   - observability / fail-open = every `PostToolUse` + `PostToolUseFailure` registration
+ *
+ * Extra registrations are counted PER SCRIPT REGISTRATION (not per event), so a script registered
+ * twice on one event (two matchers) and a script registered on two events both contribute one.
  *
  * @param {object} snip parsed `{hooks:{<event>:[{matcher,hooks:[{command}]}]}}`
  */
 function deriveCounts(snip) {
   const perEvent = Object.create(null);
   const perEventMatcher = Object.create(null);
-  const scriptEvents = new Map(); // basename -> Set<event>
+  const scriptRegs = new Map(); // basename -> Array<"event|matcher"> (one entry per registration)
   let registrations = 0;
 
   for (const [event, groups] of Object.entries(snip.hooks)) {
@@ -92,8 +106,8 @@ function deriveCounts(snip) {
         const m = String(h.command).match(/hooks[\\/]([A-Za-z0-9._-]+\.cjs)/);
         assert.ok(m, `every wired command must reference a hooks/<name>.cjs path: ${h.command}`);
         registrations += 1;
-        if (!scriptEvents.has(m[1])) scriptEvents.set(m[1], new Set());
-        scriptEvents.get(m[1]).add(event);
+        if (!scriptRegs.has(m[1])) scriptRegs.set(m[1], []);
+        scriptRegs.get(m[1]).push(key);
       }
     }
   }
@@ -103,36 +117,107 @@ function deriveCounts(snip) {
   const post = perEvent.PostToolUse || 0;
   const postFail = perEvent.PostToolUseFailure || 0;
 
-  const observabilityScripts = new Set(
-    [...scriptEvents.entries()]
-      .filter(([, evs]) => evs.has('PostToolUse') || evs.has('PostToolUseFailure'))
-      .map(([f]) => f)
-  );
+  /** distinct scripts having at least one registration under `event|matcher` */
+  const scriptsOn = (key) =>
+    new Set([...scriptRegs.entries()].filter(([, regs]) => regs.includes(key)).map(([f]) => f));
+  const scriptsOnEvent = (event) =>
+    new Set(
+      [...scriptRegs.entries()]
+        .filter(([, regs]) => regs.some((r) => r.startsWith(event + '|')))
+        .map(([f]) => f)
+    );
+
+  const preGateScripts = scriptsOnEvent('PreToolUse');
+  const observabilityScripts = new Set([
+    ...scriptsOnEvent('PostToolUse'),
+    ...scriptsOnEvent('PostToolUseFailure'),
+  ]);
 
   return {
     registrations,
-    scripts: new Set(scriptEvents.keys()),
-    scriptCount: scriptEvents.size,
+    scripts: new Set(scriptRegs.keys()),
+    scriptCount: scriptRegs.size,
     perEvent,
+    perEventMatcher,
+    /** PreToolUse REGISTRATIONS (Bash + Write|Edit + EnterWorktree) — NOT the gate count. */
     pre,
+    /** DISTINCT PreToolUse scripts — the GATE count every "N gates" claim uses. */
+    preGates: preGateScripts.size,
     bash: perEventMatcher['PreToolUse|Bash'] || 0,
     writeEdit: perEventMatcher['PreToolUse|Write|Edit'] || 0,
+    enterWorktree: perEventMatcher['PreToolUse|EnterWorktree'] || 0,
+    bashScripts: scriptsOn('PreToolUse|Bash'),
+    enterWorktreeScripts: scriptsOn('PreToolUse|EnterWorktree'),
     ups,
     post,
     postFail,
-    blocking: pre,
+    blocking: preGateScripts.size,
     advisory: ups,
     observabilityRegistrations: post + postFail,
     observabilityScripts: observabilityScripts.size,
-    /** scripts wired on more than one event (why registrations > scriptCount) */
-    multiEventScripts: [...scriptEvents.entries()].filter(([, evs]) => evs.size > 1).map(([f]) => f),
-    /** Σ (events per script − 1) — the extra registrations the multi-event scripts contribute. */
-    extraRegistrations: [...scriptEvents.values()].reduce((n, evs) => n + (evs.size - 1), 0),
+    /** scripts with more than one registration (why registrations > scriptCount) */
+    multiRegScripts: [...scriptRegs.entries()].filter(([, regs]) => regs.length > 1).map(([f]) => f),
+    /** Σ (registrations per script − 1) — the extra registrations the multi-registration scripts contribute. */
+    extraRegistrations: [...scriptRegs.values()].reduce((n, regs) => n + (regs.length - 1), 0),
   };
+}
+
+/**
+ * The self-consistency (categorisation) checks over a derived count object. Returns the list of
+ * violated checks (empty = consistent). Split out of the test so a unit row can feed it a synthetic
+ * snippet and prove an unknown PreToolUse matcher is REJECTED rather than silently miscounted.
+ * @param {ReturnType<typeof deriveCounts>} c
+ */
+function consistencyViolations(c) {
+  const v = [];
+  const summed = Object.values(c.perEvent).reduce((a, b) => a + b, 0);
+  if (c.registrations !== summed) v.push('registrations must equal the sum of the per-event counts');
+  if (c.registrations !== c.pre + c.ups + c.post + c.postFail) {
+    v.push(
+      'the four known events must account for every registration — a NEW event was added and this ' +
+        'guard does not know its blocking/advisory/observability category yet'
+    );
+  }
+  if (c.registrations - c.scriptCount !== c.extraRegistrations) {
+    v.push(
+      `registrations (${c.registrations}) minus distinct scripts (${c.scriptCount}) must equal the ` +
+        `extra registrations contributed by multi-registration scripts (${JSON.stringify(c.multiRegScripts)})`
+    );
+  }
+  if (c.pre !== c.bash + c.writeEdit + c.enterWorktree) {
+    v.push(
+      `every PreToolUse registration is Bash, Write|Edit or EnterWorktree — an unknown PreToolUse ` +
+        `matcher was wired (${JSON.stringify(Object.keys(c.perEventMatcher).filter((k) => k.startsWith('PreToolUse|')))}) ` +
+        `and this guard does not know how to count it`
+    );
+  }
+  const strayEW = [...c.enterWorktreeScripts].filter((f) => !c.bashScripts.has(f));
+  if (strayEW.length) {
+    v.push(`every EnterWorktree-matched script must also be Bash-matched; not on Bash: ${JSON.stringify(strayEW)}`);
+  }
+  if (c.preGates !== c.bash + c.writeEdit) {
+    v.push(
+      `distinct PreToolUse gates (${c.preGates}) must equal Bash (${c.bash}) + Write|Edit (${c.writeEdit}) ` +
+        `registrations — a gate registered twice under one matcher, or on both Bash and Write|Edit`
+    );
+  }
+  if (!(c.registrations > 0 && c.scriptCount > 0)) v.push('the snippet must wire something');
+  return v;
 }
 
 const SNIP = JSON.parse(fs.readFileSync(SNIPPET_PATH, 'utf8'));
 const C = deriveCounts(SNIP);
+
+/** The one-line derived summary every failure message prints (prefix is grepped by the plan verify). */
+function derivedTruth(c = C) {
+  return (
+    `DERIVED TRUTH: ${c.registrations} registrations across ${c.scriptCount} scripts — ` +
+    `${c.pre} PreToolUse registrations (${c.bash} Bash + ${c.writeEdit} Write|Edit + ` +
+    `${c.enterWorktree} EnterWorktree) from ${c.preGates} fail-closed PreToolUse gates, ` +
+    `${c.ups} UserPromptSubmit (advisory), ${c.observabilityRegistrations} post-tool registrations from ` +
+    `${c.observabilityScripts} observability script(s).`
+  );
+}
 
 /** Read a repo-relative doc and collapse all whitespace so assertions survive line-wrapping. */
 function normalized(rel) {
@@ -154,35 +239,39 @@ function assertClaims(rel, claims) {
     `STALE HOOK COUNT in ${rel} — ${missing.length} claim(s) do not match the wired set derived ` +
       `from settings.snippet.json.\n` +
       missing.map(([label, expected]) => `  • [${label}] expected to find: ${expected}`).join('\n') +
-      `\n\nDERIVED TRUTH: ${C.registrations} registrations across ${C.scriptCount} scripts — ` +
-      `${C.pre} PreToolUse (${C.bash} Bash + ${C.writeEdit} Write|Edit, all fail-closed/blocking), ` +
-      `${C.ups} UserPromptSubmit (advisory), ` +
-      `${C.observabilityRegistrations} post-tool registrations from ` +
-      `${C.observabilityScripts} observability script(s).\n` +
+      `\n\n${derivedTruth()}\n` +
       `FIX ${rel} (do not "fix" this test unless settings.snippet.json genuinely changed).`
   );
 }
 
+/**
+ * The headline PreToolUse split, worded so GATES (scripts) and MATCHERS never conflate: the Bash and
+ * Write|Edit numbers sum to the gate count, and the EnterWorktree number names how many of the Bash
+ * gates are ALSO registered under `EnterWorktree` (a second registration, not a second gate).
+ */
+const PRE_SPLIT =
+  `(${C.bash} on \`Bash\`, ${C.writeEdit} on \`Write\`/\`Edit\`; ` +
+  `${C.enterWorktree} of the \`Bash\` gates also on \`EnterWorktree\`)`;
+
 // ───────────────────────────── (1) derivation sanity ─────────────────────────────
 
 test('derived counts are self-consistent with settings.snippet.json', () => {
-  const summed = Object.values(C.perEvent).reduce((a, b) => a + b, 0);
-  assert.equal(C.registrations, summed, 'registrations must equal the sum of the per-event counts');
-  assert.equal(
-    C.registrations,
-    C.pre + C.ups + C.post + C.postFail,
-    'the four known events must account for every registration — a NEW event was added and this ' +
-      'guard does not know its blocking/advisory/observability category yet'
+  assert.deepEqual(consistencyViolations(C), [], `self-consistency violated.\n${derivedTruth()}`);
+});
+
+test('the categorisation check REJECTS an unknown PreToolUse matcher (synthetic Read group)', () => {
+  const synthetic = JSON.parse(JSON.stringify(SNIP));
+  synthetic.hooks.PreToolUse.push({
+    matcher: 'Read',
+    hooks: [{ type: 'command', command: 'node hooks/synthetic-read-gate.cjs' }],
+  });
+  const violations = consistencyViolations(deriveCounts(synthetic));
+  assert.ok(
+    violations.some((m) => m.startsWith('every PreToolUse registration is Bash, Write|Edit or EnterWorktree')),
+    `a PreToolUse \`Read\` group must fail the categorisation check; got: ${JSON.stringify(violations)}`
   );
-  assert.equal(
-    C.registrations - C.scriptCount,
-    C.extraRegistrations,
-    `registrations (${C.registrations}) minus distinct scripts (${C.scriptCount}) must equal the ` +
-      `extra registrations contributed by multi-event scripts ` +
-      `(${JSON.stringify(C.multiEventScripts)})`
-  );
-  assert.equal(C.pre, C.bash + C.writeEdit, 'every PreToolUse registration is Bash or Write|Edit');
-  assert.ok(C.registrations > 0 && C.scriptCount > 0, 'the snippet must wire something');
+  // and the real snippet passes the same check (the rejection is the Read group, not the harness)
+  assert.deepEqual(consistencyViolations(C), []);
 });
 
 // ───────────────────────────── (2) the deliberately-unwired scripts ─────────────────────────────
@@ -241,12 +330,12 @@ test('README.md primary hook-count claims match the derived wired set', () => {
     ],
     [
       'headline PreToolUse split',
-      `**${C.pre} fail-closed \`PreToolUse\` gates** (${C.bash} on \`Bash\`, ${C.writeEdit} on \`Write\`/\`Edit\`)`,
+      `**${C.preGates} fail-closed \`PreToolUse\` gates** ${PRE_SPLIT}`,
     ],
-    ['headline "only these block"', `Only the ${C.pre} \`PreToolUse\` gates block`],
-    ['contributor-workflow blocking count', `**${C.pre} fail-closed \`PreToolUse\` gates**`],
+    ['headline "only these block"', `Only the ${C.preGates} \`PreToolUse\` gates block`],
+    ['contributor-workflow blocking count', `**${C.preGates} fail-closed \`PreToolUse\` gates**`],
     ['contributor-workflow wired-set size', `the wired set of ${C.registrations} registrations`],
-    ['share-form bundle script count', `**${C.scriptCount} hook scripts** (the ${C.pre} fail-closed \`PreToolUse\` gates`],
+    ['share-form bundle script count', `**${C.scriptCount} hook scripts** (the ${C.preGates} fail-closed \`PreToolUse\` gates`],
     ['share-form bundle registration total', `= **${C.registrations} wired registrations**`],
     [
       'directory-layout capabilities row',
@@ -266,10 +355,10 @@ test('docs/guides/overview.md primary hook-count claims match the derived wired 
     ],
     [
       'enforcement-row breakdown',
-      `${C.pre} fail-closed \`PreToolUse\` gates (${C.bash} on \`Bash\`, ${C.writeEdit} on \`Write\`/\`Edit\`) + ` +
+      `${C.preGates} fail-closed \`PreToolUse\` gates ${PRE_SPLIT} + ` +
         `${C.ups} advisory \`UserPromptSubmit\` reminder + ${C.observabilityScripts} observability recorder`,
     ],
-    ['enforcement-row "only these block"', `Only the ${C.pre} \`PreToolUse\` gates block`],
+    ['enforcement-row "only these block"', `Only the ${C.preGates} \`PreToolUse\` gates block`],
     ['share-form row', `bundling the ${C.scriptCount} hook scripts + 2 skills + 5 commands`],
   ]);
 });
@@ -293,15 +382,15 @@ const SPELLED = [
 ];
 
 test('capabilities/contribution-toolkit/README.md primary hook-count claims match the derived wired set', () => {
-  assert.ok(C.pre < SPELLED.length, `no spelled-out form for ${C.pre} — extend SPELLED`);
+  assert.ok(C.preGates < SPELLED.length, `no spelled-out form for ${C.preGates} — extend SPELLED`);
   assertClaims(CAP_README, [
     [
       'intro spelled-out gate count',
-      `${SPELLED[C.pre]} fail-closed \`PreToolUse\` enforcement hooks`,
+      `${SPELLED[C.preGates]} fail-closed \`PreToolUse\` enforcement hooks`,
     ],
     [
       "what's-included gates row",
-      `| \`PreToolUse\` gates (fail-closed — these block) | ${C.pre} |`,
+      `| \`PreToolUse\` gates (fail-closed — these block) | ${C.preGates} |`,
     ],
     [
       "what's-included advisory row",
@@ -317,8 +406,8 @@ test('capabilities/contribution-toolkit/README.md primary hook-count claims matc
       `That is **${C.scriptCount} hook scripts** producing **${C.registrations} \`hooks[]\` registrations**`,
     ],
     ['consent disclosure', `executable surfaces (the ${C.scriptCount} hook scripts)`],
-    ['how-it-works gate count', `The ${C.pre} \`PreToolUse\` gates are written into \`settings.json\``],
-    ['honesty-section gate count', `property of the ${C.pre} \`PreToolUse\` hooks`],
+    ['how-it-works gate count', `The ${C.preGates} \`PreToolUse\` gates are written into \`settings.json\``],
+    ['honesty-section gate count', `property of the ${C.preGates} \`PreToolUse\` hooks`],
   ]);
 });
 
@@ -340,7 +429,7 @@ test('capabilities/contribution-toolkit/README.md names every wired script', () 
 
 // ───────────────────────────── (7) capability.json parity ─────────────────────────────
 
-test('capability.json hooks[] matches the snippet registrations + per-event breakdown', () => {
+test('capability.json hooks[] matches the snippet registrations + per-(event, matcher) breakdown', () => {
   const manifest = JSON.parse(fs.readFileSync(CAP_MANIFEST, 'utf8'));
   const hooks = manifest.hooks || [];
   assert.equal(
@@ -353,6 +442,19 @@ test('capability.json hooks[] matches the snippet registrations + per-event brea
     const got = hooks.filter((h) => h.event === event).length;
     assert.equal(got, expected, `capability.json ${event} entries: got ${got}, snippet has ${expected}`);
   }
+  // Per (event, matcher): a manifest entry with no `matcher` key is the catch-all, i.e. the
+  // snippet's `"*"` (capability.json's UserPromptSubmit entry omits the key; the harness treats an
+  // absent matcher as match-all). Both directions, so a matcher present on only one side is RED.
+  const manifestPerKey = Object.create(null);
+  for (const h of hooks) {
+    const key = `${h.event}|${h.matcher === undefined ? '*' : h.matcher}`;
+    manifestPerKey[key] = (manifestPerKey[key] || 0) + 1;
+  }
+  assert.deepEqual(
+    { ...manifestPerKey },
+    { ...C.perEventMatcher },
+    `capability.json hooks[] per-(event, matcher) counts differ from settings.snippet.json.\n${derivedTruth()}`
+  );
 });
 
 // ───────────────────────────── (8) generic stale-number scan ─────────────────────────────
@@ -394,14 +496,15 @@ test('no stale numeral sits in front of a hook/gate noun in the covered docs', (
   // Allowed values per noun, all derived. Documented so a failure explains itself.
   const nonBlocking = C.advisory + C.observabilityScripts;
   const allowed = {
-    registrations: new Set([C.registrations]),
+    // "hook registrations" may name the total or the PreToolUse registration subset.
+    registrations: new Set([C.registrations, C.pre]),
     scripts: new Set([C.scriptCount]),
-    // "gates" may legitimately name the blocking total, the Bash subset, the Write|Edit subset,
-    // or a single gate.
-    gates: new Set([1, C.writeEdit, C.bash, C.pre]),
+    // "gates" counts DISTINCT gate scripts: the blocking total (preGates), the Bash subset, the
+    // Write|Edit subset, the EnterWorktree subset, or a single gate. Never PreToolUse registrations.
+    gates: new Set([1, C.writeEdit, C.bash, C.enterWorktree, C.preGates]),
     // "hooks" is the ambiguous noun: it may mean the blocking gates, the distinct scripts, the
     // registration total, the non-blocking pair, or a single hook.
-    hooks: new Set([1, nonBlocking, C.pre, C.scriptCount, C.registrations]),
+    hooks: new Set([1, nonBlocking, C.preGates, C.scriptCount, C.registrations]),
   };
   const bucketFor = (noun) => {
     const n = noun.toLowerCase();
@@ -434,9 +537,6 @@ test('no stale numeral sits in front of a hook/gate noun in the covered docs', (
     [],
     `STALE HOOK/GATE COUNT(S) found by the generic scan:\n` +
       offenders.map((o) => '  • ' + o).join('\n') +
-      `\n\nDERIVED TRUTH from settings.snippet.json: ${C.registrations} registrations across ` +
-      `${C.scriptCount} scripts — ${C.pre} blocking PreToolUse gates (${C.bash} Bash + ` +
-      `${C.writeEdit} Write|Edit), ${C.advisory} advisory UserPromptSubmit reminder, ` +
-      `${C.observabilityScripts} observability recorder on ${C.observabilityRegistrations} post-tool events.`
+      `\n\n${derivedTruth()}`
   );
 });
