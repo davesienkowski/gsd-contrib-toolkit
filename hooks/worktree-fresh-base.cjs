@@ -32,12 +32,13 @@
  *      held by a worktree -> POLICY deny with `git -C <holder> merge --ff-only origin/next`; held
  *      by none -> CAS `update-ref refs/heads/next <remote> <local>` -> allow; AHEAD (origin/next is
  *      an ancestor of local next; flagged planner refinement, CTK-ADR-0009) -> allow, nothing
- *      moved; diverged (neither is an ancestor) -> POLICY deny naming the divergence;
+ *      moved; diverged (neither is an ancestor) -> POLICY deny naming the divergence; a refused
+ *      CAS (next moved between read and write) -> POLICY deny with the fix, ONE attempt only;
  *   5. first deny wins; otherwise allow.
  *
- * KNOWN STUBS (unregistered hook): a failed CAS and a missing origin/next are thrown (37-03 Task 2
- * / 37-04 refine them); an unreachable origin throws FetchUnavailable, which denies until 37-04
- * maps it to `ask` (CTK-ADR-0007).
+ * KNOWN STUBS (unregistered hook): a missing origin/next is thrown (37-04 refines it); an
+ * unreachable origin throws FetchUnavailable, which denies until 37-04 maps it to `ask`
+ * (CTK-ADR-0007).
  *
  * The gate's own git argv is limited to: fetch (via coreutils timeout), rev-parse, symbolic-ref,
  * merge-base --is-ancestor, worktree list --porcelain and update-ref. The fix commands it names
@@ -233,6 +234,20 @@ function divergedReason(local, remote) {
 }
 
 /**
+ * POLICY deny: the compare-and-swap fast-forward was refused because local next changed between the
+ * gate's read and its write (another process moved it). Nothing was changed by the gate.
+ */
+function casLostReason(local, remote) {
+  return (
+    'ENF-25 worktree fresh-base gate: local `next` changed while the gate ran (it was ' + short(local) +
+    ' when read), so the compare-and-swap fast-forward to origin/next (' + short(remote) +
+    ') was refused and not retried; the gate changed nothing. Re-issue your command so the gate ' +
+    're-reads next, or base the worktree on the remote ref, which is already current:\n' +
+    ORIGIN_ALTERNATIVE
+  );
+}
+
+/**
  * Freshness for one trunk-naming cut in one gsd-core root: a deny decision, or null (passes).
  *
  *   head   -> the trunk only when the tree's current branch is `next` (read BEFORE any fetch);
@@ -269,40 +284,20 @@ function checkCut(e, root, deps, fetched) {
   if (deps.isAncestor(root, local, remote)) {
     const holders = deps.worktreesHolding(root, NEXT_REF);
     if (holders.length > 0) return deny(heldReason(holders, local, remote));
+    // ONE compare-and-swap attempt. Refused = next moved since it was read: a POLICY deny, never a
+    // retry (a retry would act on a value this call did not prove is an ancestor).
     if (deps.casUpdateRef(root, NEXT_REF, remote, local)) return null;
-    // 37-03 Task 2 makes this a policy deny with the fix.
-    throw new FailClosed(
-      'ENF-25 worktree fresh-base gate: local next moved while it was being fast-forwarded to ' +
-        'origin/next (compare-and-swap refused) — failing closed. Re-run the command.'
-    );
+    return deny(casLostReason(local, remote));
   }
   if (deps.isAncestor(root, remote, local)) return null; // ahead: not stale, nothing to move
   return deny(divergedReason(local, remote));
 }
 
-/** A copy of process.env without the variables that would redirect git to another repo. */
-function gitEnv(extra) {
-  const env = Object.assign({}, process.env, extra || {});
+/** A copy of `base` (plus `extra`) without the variables that would redirect git to another repo. */
+function gitEnv(base, extra) {
+  const env = Object.assign({}, base, extra || {});
   for (const k of GIT_REDIRECT_VARS) delete env[k];
   return env;
-}
-
-/** One bounded local git call; a spawn error or timeout fails closed naming the operation. */
-function runGit(dir, args, op) {
-  const r = spawnSync('git', args, {
-    cwd: dir,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: GIT_TIMEOUT_MS,
-    env: gitEnv(),
-  });
-  if (r.error) {
-    throw new FailClosed(
-      'ENF-25 worktree fresh-base gate: git ' + op + ' could not run (' + (r.error.code || r.error.message) +
-        ') — failing closed.'
-    );
-  }
-  return r;
 }
 
 function unexpected(op, r) {
@@ -318,100 +313,137 @@ function requireSha(op, sha) {
   }
 }
 
-/** status 0 + a full sha -> the sha; status 1 -> null; anything else -> FailClosed. */
-function defaultRevParse(dir, ref) {
-  const r = runGit(dir, ['rev-parse', '--verify', '--quiet', '--end-of-options', ref + '^{commit}'], 'rev-parse');
-  if (r.status === 0) {
-    const sha = String(r.stdout || '').trim();
-    if (SHA_RE.test(sha)) return sha;
-    throw new FailClosed('ENF-25 worktree fresh-base gate: git rev-parse returned a non-sha — failing closed.');
-  }
-  if (r.status === 1) return null;
-  throw unexpected('rev-parse', r);
-}
-
 /**
- * The tree's current branch name, or null when HEAD is detached. Reads the FULL ref
- * (`symbolic-ref --quiet HEAD`) and strips `refs/heads/` itself: `--short` prints the shortest
- * unambiguous name, so a tag named `next` would turn the branch into `heads/next` and the HEAD-on-next
- * check would silently allow. exit 0 -> name (a non-branch symref is returned whole), 1 -> null,
- * else FailClosed.
+ * The real git seams, built on a scrubbed copy of `env` (default process.env): GIT_DIR,
+ * GIT_WORK_TREE, GIT_INDEX_FILE and GIT_COMMON_DIR removed, argv only (never a shell), every local
+ * call bounded by GIT_TIMEOUT_MS, the fetch bounded by coreutils `timeout` plus a SIGKILL belt, and
+ * SHA_RE checked before merge-base and update-ref. Nothing is spawned until a seam is called.
+ *
+ * @param {{env?: Object}} [opts]
+ * @returns {{fetchOrigin: Function, revParse: Function, currentBranch: Function, isAncestor: Function,
+ *   worktreesHolding: Function, casUpdateRef: Function}}
  */
-function defaultCurrentBranch(dir) {
-  const r = runGit(dir, ['symbolic-ref', '--quiet', 'HEAD'], 'symbolic-ref');
-  if (r.status === 0) {
-    const ref = String(r.stdout || '').trim();
-    return ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref;
-  }
-  if (r.status === 1) return null;
-  throw unexpected('symbolic-ref', r);
-}
+function createDefaultSeams({ env } = {}) {
+  const base = env || process.env;
 
-/** exit 0 -> true, 1 -> false, else FailClosed. */
-function defaultIsAncestor(dir, a, b) {
-  requireSha('merge-base', a);
-  requireSha('merge-base', b);
-  const r = runGit(dir, ['merge-base', '--is-ancestor', a, b], 'merge-base');
-  if (r.status === 0) return true;
-  if (r.status === 1) return false;
-  throw unexpected('merge-base', r);
-}
-
-/** The `worktree <path>` of every porcelain block carrying the exact line `branch <ref>`. */
-function defaultWorktreesHolding(dir, ref) {
-  const r = runGit(dir, ['worktree', 'list', '--porcelain'], 'worktree list');
-  if (r.status !== 0) throw unexpected('worktree list', r);
-  const holders = [];
-  for (const block of String(r.stdout || '').split(/\r?\n\s*\r?\n/)) {
-    const lines = block.split(/\r?\n/);
-    if (!lines.includes('branch ' + ref)) continue;
-    const wt = lines.find((l) => l.startsWith('worktree '));
-    holders.push(wt ? wt.slice('worktree '.length) : '');
-  }
-  return holders;
-}
-
-/** Compare-and-swap ref move: exit 0 -> true, any other exit -> false; spawn error -> FailClosed. */
-function defaultCasUpdateRef(dir, ref, newSha, oldSha) {
-  requireSha('update-ref', newSha);
-  requireSha('update-ref', oldSha);
-  const r = runGit(dir, ['update-ref', '-m', REFLOG_MESSAGE, ref, newSha, oldSha], 'update-ref');
-  return r.status === 0;
-}
-
-/**
- * `timeout -k 2 15 git -C <dir> fetch --quiet --no-auto-maintenance origin next`, argv only.
- * Success returns; anything else throws FetchUnavailable with a short reason (never the remote's
- * raw stderr).
- */
-function defaultFetchOrigin(dir) {
-  if (typeof dir !== 'string' || !path.isAbsolute(dir)) {
-    throw new FailClosed('ENF-25 worktree fresh-base gate: fetch target is not an absolute path — failing closed.');
-  }
-  const r = spawnSync(
-    'timeout',
-    ['-k', String(FETCH_KILL_AFTER_S), String(FETCH_TIMEOUT_S), 'git', '-C', dir, ...FETCH_ARGV],
-    {
+  /** One bounded local git call; a spawn error or timeout fails closed naming the operation. */
+  function runGit(dir, args, op) {
+    const r = spawnSync('git', args, {
+      cwd: dir,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: FETCH_BELT_MS,
-      killSignal: 'SIGKILL',
-      env: gitEnv({ GIT_TERMINAL_PROMPT: '0' }),
+      timeout: GIT_TIMEOUT_MS,
+      env: gitEnv(base),
+    });
+    if (r.error) {
+      throw new FailClosed(
+        'ENF-25 worktree fresh-base gate: git ' + op + ' could not run (' + (r.error.code || r.error.message) +
+          ') — failing closed.'
+      );
     }
-  );
-  if (r.error) {
-    const code = r.error.code || r.error.message;
-    throw new FetchUnavailable(
-      code === 'ETIMEDOUT'
-        ? '`git fetch origin next` did not finish within ' + FETCH_BELT_MS / 1000 + ' s'
-        : '`git fetch origin next` could not run (' + code + ')'
+    return r;
+  }
+
+  /** status 0 + a full sha -> the sha; status 1 -> null; anything else -> FailClosed. */
+  function revParse(dir, ref) {
+    const r = runGit(dir, ['rev-parse', '--verify', '--quiet', '--end-of-options', ref + '^{commit}'], 'rev-parse');
+    if (r.status === 0) {
+      const sha = String(r.stdout || '').trim();
+      if (SHA_RE.test(sha)) return sha;
+      throw new FailClosed('ENF-25 worktree fresh-base gate: git rev-parse returned a non-sha — failing closed.');
+    }
+    if (r.status === 1) return null;
+    throw unexpected('rev-parse', r);
+  }
+
+  /**
+   * The tree's current branch name, or null when HEAD is detached. Reads the FULL ref
+   * (`symbolic-ref --quiet HEAD`) and strips `refs/heads/` itself: `--short` prints the shortest
+   * unambiguous name, so a tag named `next` would turn the branch into `heads/next` and the
+   * HEAD-on-next check would silently allow. exit 0 -> name (a non-branch symref is returned
+   * whole), 1 -> null, else FailClosed.
+   */
+  function currentBranch(dir) {
+    const r = runGit(dir, ['symbolic-ref', '--quiet', 'HEAD'], 'symbolic-ref');
+    if (r.status === 0) {
+      const ref = String(r.stdout || '').trim();
+      return ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref;
+    }
+    if (r.status === 1) return null;
+    throw unexpected('symbolic-ref', r);
+  }
+
+  /** exit 0 -> true, 1 -> false, else FailClosed. */
+  function isAncestor(dir, a, b) {
+    requireSha('merge-base', a);
+    requireSha('merge-base', b);
+    const r = runGit(dir, ['merge-base', '--is-ancestor', a, b], 'merge-base');
+    if (r.status === 0) return true;
+    if (r.status === 1) return false;
+    throw unexpected('merge-base', r);
+  }
+
+  /** The `worktree <path>` of every porcelain block carrying the exact line `branch <ref>`. */
+  function worktreesHolding(dir, ref) {
+    const r = runGit(dir, ['worktree', 'list', '--porcelain'], 'worktree list');
+    if (r.status !== 0) throw unexpected('worktree list', r);
+    const holders = [];
+    for (const block of String(r.stdout || '').split(/\r?\n\s*\r?\n/)) {
+      const lines = block.split(/\r?\n/);
+      if (!lines.includes('branch ' + ref)) continue;
+      const wt = lines.find((l) => l.startsWith('worktree '));
+      holders.push(wt ? wt.slice('worktree '.length) : '');
+    }
+    return holders;
+  }
+
+  /**
+   * Compare-and-swap ref move: exit 0 -> true, any other exit -> false (the ref did not hold
+   * `oldSha`, so git's ref transaction left it untouched); spawn error -> FailClosed.
+   */
+  function casUpdateRef(dir, ref, newSha, oldSha) {
+    requireSha('update-ref', newSha);
+    requireSha('update-ref', oldSha);
+    const r = runGit(dir, ['update-ref', '-m', REFLOG_MESSAGE, ref, newSha, oldSha], 'update-ref');
+    return r.status === 0;
+  }
+
+  /**
+   * `timeout -k 2 15 git -C <dir> fetch --quiet --no-auto-maintenance origin next`, argv only.
+   * Success returns; anything else throws FetchUnavailable with a short reason (never the remote's
+   * raw stderr).
+   */
+  function fetchOrigin(dir) {
+    if (typeof dir !== 'string' || !path.isAbsolute(dir)) {
+      throw new FailClosed('ENF-25 worktree fresh-base gate: fetch target is not an absolute path — failing closed.');
+    }
+    const r = spawnSync(
+      'timeout',
+      ['-k', String(FETCH_KILL_AFTER_S), String(FETCH_TIMEOUT_S), 'git', '-C', dir, ...FETCH_ARGV],
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: FETCH_BELT_MS,
+        killSignal: 'SIGKILL',
+        env: gitEnv(base, { GIT_TERMINAL_PROMPT: '0' }),
+      }
     );
+    if (r.error) {
+      const code = r.error.code || r.error.message;
+      throw new FetchUnavailable(
+        code === 'ETIMEDOUT'
+          ? '`git fetch origin next` did not finish within ' + FETCH_BELT_MS / 1000 + ' s'
+          : '`git fetch origin next` could not run (' + code + ')'
+      );
+    }
+    if (r.status === 0) return;
+    if (r.status === 124 || r.status === 137 || r.signal) {
+      throw new FetchUnavailable('`git fetch origin next` timed out after ' + FETCH_TIMEOUT_S + ' s');
+    }
+    throw new FetchUnavailable('`git fetch origin next` failed (exit ' + r.status + ')');
   }
-  if (r.status === 0) return;
-  if (r.status === 124 || r.status === 137 || r.signal) {
-    throw new FetchUnavailable('`git fetch origin next` timed out after ' + FETCH_TIMEOUT_S + ' s');
-  }
-  throw new FetchUnavailable('`git fetch origin next` failed (exit ' + r.status + ')');
+
+  return { fetchOrigin, revParse, currentBranch, isAncestor, worktreesHolding, casUpdateRef };
 }
 
 /**
@@ -448,12 +480,12 @@ function runWorktreeFreshBaseGate(stdinString, deps = {}) {
         }
       };
     }
-    if (!resolved.fetchOrigin) resolved.fetchOrigin = defaultFetchOrigin;
-    if (!resolved.revParse) resolved.revParse = defaultRevParse;
-    if (!resolved.currentBranch) resolved.currentBranch = defaultCurrentBranch;
-    if (!resolved.isAncestor) resolved.isAncestor = defaultIsAncestor;
-    if (!resolved.worktreesHolding) resolved.worktreesHolding = defaultWorktreesHolding;
-    if (!resolved.casUpdateRef) resolved.casUpdateRef = defaultCasUpdateRef;
+    // The real seams spawn git with the HOOK's environment (scrubbed), not `deps.env`, which only
+    // feeds static `cd` / `-C` expansion. Injected seams win.
+    const defaults = createDefaultSeams({ env: process.env });
+    for (const k of Object.keys(defaults)) {
+      if (!resolved[k]) resolved[k] = defaults[k];
+    }
     return gate(stdinString, resolved);
   }, ctx);
 }
@@ -476,6 +508,7 @@ if (require.main === module) {
 module.exports = {
   runWorktreeFreshBaseGate,
   gate,
+  createDefaultSeams,
   FetchUnavailable,
   FETCH_ARGV,
   FETCH_TIMEOUT_S,
