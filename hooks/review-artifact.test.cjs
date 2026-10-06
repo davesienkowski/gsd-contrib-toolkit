@@ -2727,3 +2727,59 @@ for (const cmd of [
     assert.deepStrictEqual(dp._calls.readToolLog, []);
   });
 }
+
+// -- 261006-jsm Task 3c: a CLEAR verdict in a comment arms R8a (CONTEXT D5) -----------------------
+
+test('261006-jsm CLEAR: the R8a-memtrace entry governs pr-review and both comment actions', () => {
+  const e = GATES.find((x) => x.id === 'R8a-memtrace');
+  assert.deepStrictEqual([...e.on].sort(), ['issue-comment', 'pr-comment', 'pr-review']);
+});
+
+for (const cmd of [
+  'gh pr comment 42 -b "CLEAR"',
+  'gh pr comment 42 --body "## Re-Review - PR #42 - **CLEAR**"',
+  'gh api -X POST repos/open-gsd/gsd-core/issues/42/comments -f body="## Re-Review - PR #42 - **CLEAR**"',
+  'gh issue comment 42 -b "CLEAR"',
+  'gh pr review 42 --comment -b "CLEAR"',
+]) {
+  test('261006-jsm gate CLEAR: `' + cmd + '` with only Bash rows -> DENY R8a-memtrace', () => {
+    assertJsmR8aDeny(cmd);
+  });
+}
+
+for (const cmd of [
+  'gh pr comment 42 -b "thanks, rebased"',
+  'gh pr comment 42 -b "that makes the intent clear"',
+  'gh pr comment 42 -b "the failure is unclear"',
+  'gh pr comment 42 -b "## Re-Review - PR #42"',
+  'gh pr review 42 --comment -b x',
+  'gh pr review 42 --comment -b "unclear"',
+]) {
+  test('261006-jsm gate CLEAR lock: `' + cmd + '` with only Bash rows -> allow; the log is never read', () => {
+    const dp = depsWithLog(toolLog(ONLY_BASH.slice()));
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assert.strictEqual(d.permissionDecision, 'allow', cmd + ': ' + d.permissionDecisionReason);
+    assert.deepStrictEqual(dp._calls.readToolLog, [], cmd);
+  });
+}
+
+test('261006-jsm gate CLEAR lock: a CLEAR comment on a real ISSUE with only Bash rows -> allow; no PR lookup, no log read', () => {
+  const dp = depsWithLog(toolLog(ONLY_BASH.slice()), { resolveIsPullRequest: () => false });
+  const d = runReviewArtifactGate(input('gh issue comment 42 -b "CLEAR"'), dp);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.strictEqual(dp._calls.resolvePr, 0);
+  assert.deepStrictEqual(dp._calls.readToolLog, []);
+});
+
+test('261006-jsm gate CLEAR: a CLEAR comment with complete evidence -> allow (the obligation is met)', () => {
+  const dp = deps();
+  const d = runReviewArtifactGate(input('gh pr comment 42 -b "CLEAR"'), dp);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.deepStrictEqual(dp._calls.readToolLog, [SESSION]);
+});
+
+test('261006-jsm parity: the re-review.md `8a.` line says a CLEAR body ends the --comment exemption and binds a PR comment', () => {
+  const line = reReview8aLine();
+  assert.ok(line.includes('a `--comment` review is exempt unless its body carries `CLEAR`'), line);
+  assert.ok(line.includes('a PR comment whose body carries `CLEAR` needs the same evidence'), line);
+});
