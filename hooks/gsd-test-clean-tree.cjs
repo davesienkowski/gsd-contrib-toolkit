@@ -19,7 +19,7 @@
  *      resolve, git or fs work (RES-01; 36-CONTEXT Addendum 2 — `isNonGovernedCommand` is
  *      deliberately NOT used, gsd-test is not a classifyAction action);
  *   3. any `uncertain` entry -> throw FailClosed (HARD-01), still before any I/O;
- *   4. informational dispatches (`--version`, `-h`, `--probe-benches`) are dropped; none left
+ *   4. informational dispatches (`--version`, `-h`, `--help`) are dropped; none left
  *      -> allow;
  *   5. per dispatch, in command order (first deny wins):
  *        a. tree = `-source` resolved against the dispatch's start dir, else that start dir;

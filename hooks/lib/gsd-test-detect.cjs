@@ -56,8 +56,12 @@ const BOOLEAN_FLAGS = new Set([
   'json-events', 'probe-benches', 'quiet', 'verbose', 'version', 'help', 'h',
 ]);
 
-/** A dispatch carrying any of these (truthy) only prints information; both gates pass it. */
-const INFORMATIONAL_FLAGS = new Set(['version', 'help', 'h', 'probe-benches']);
+/**
+ * A dispatch carrying any of these (truthy) only prints information; both gates pass it.
+ * `probe-benches` is NOT here (36-REVIEW B-01): v1.8.0 probes bench reachability during
+ * config.Load and then runs the full suite — only `--version` returns before runner.Run.
+ */
+const INFORMATIONAL_FLAGS = new Set(['version', 'help', 'h']);
 
 /** Go's flag package reads these boolean values as false. */
 const GO_FALSE = new Set(['false', '0', 'f', 'F', 'FALSE', 'False']);

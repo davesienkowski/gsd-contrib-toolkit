@@ -18,7 +18,7 @@
  *   2. the shared detector: no entry -> allow, BEFORE any resolve, fs or spawn work (RES-01;
  *      36-CONTEXT Addendum 2 — `isNonGovernedCommand` is deliberately NOT used);
  *   3. any `uncertain` entry -> throw FailClosed (HARD-01), still before any I/O;
- *   4. informational dispatches (`--version`, `-h`, `--probe-benches`) are dropped; none left
+ *   4. informational dispatches (`--version`, `-h`, `--help`) are dropped; none left
  *      -> allow;
  *   5. per dispatch, in command order:
  *        a. tree = `treeDirFor` (start dir + `-source`); unresolvable -> throw FailClosed;
