@@ -60,7 +60,8 @@
  * the budget, and the budget plus 3 s fits the HOOK_TIMEOUT_S (60 s) hook timeout (asserted by tests).
  *
  * The gate's own git argv is limited to: remote get-url origin, fetch (via coreutils timeout),
- * rev-parse, symbolic-ref, merge-base --is-ancestor, worktree list --porcelain and update-ref. The
+ * rev-parse, symbolic-ref, merge-base --is-ancestor, worktree list --porcelain and update-ref
+ * --no-deref --create-reflog. The
  * fix commands it names in deny and ask reasons are text for the operator; the gate never runs them.
  *
  * A returned deny is a POLICY deny: GSD_CONTRIB_OVERRIDE rescues THROWN errors only and never
@@ -128,6 +129,17 @@ const SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const UNCERTAIN_REASON =
   'ENF-25 worktree fresh-base gate cannot attribute this `git worktree add` command (its repository or ' +
   'base is not statically known) — failing closed. Re-run it as a plain command with literal paths and base.';
+
+/**
+ * The constant reason for a symbolic `refs/heads/next` (37-REVIEW BL-01). rev-parse and update-ref
+ * would read and write THROUGH the symref, so the CAS could move whatever branch it points at,
+ * including a checked-out one. The gate cannot attribute such a trunk: thrown, override-escapable.
+ */
+const SYMREF_REASON =
+  'ENF-25 worktree fresh-base gate: refs/heads/next in this repository is a symbolic ref, so the gate ' +
+  'will not read or move it (a move would land on the branch it points at) — failing closed. Make ' +
+  '`next` a plain branch, or base the worktree on the remote ref:\n' +
+  '  git worktree add -b <branch> <path> origin/next';
 
 /** Inherited variables that would redirect a git call away from the target repo. */
 const GIT_REDIRECT_VARS = Object.freeze(['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']);
@@ -348,6 +360,7 @@ function readBaseRef(root, homedir, readSettings) {
  * @param {(root:string, ref:string)=>(string|null)} deps.revParse commit sha or null
  * @param {(root:string, a:string, b:string)=>boolean} deps.isAncestor
  * @param {(root:string, ref:string)=>string[]} deps.worktreesHolding worktree paths holding ref
+ * @param {(root:string, ref:string)=>boolean} deps.isSymbolicRef true when `ref` is a symbolic ref
  * @param {(root:string, ref:string, newSha:string, oldSha:string)=>boolean} deps.casUpdateRef
  *   Every seam also receives its time slice in ms as a trailing argument (the fetch: its belt).
  * @param {(root:string, homedir:string)=>string} deps.readBaseRef the effective worktree.baseRef
@@ -567,6 +580,8 @@ function checkCut(e, root, ctx) {
     if (deps.currentBranch(root, git()) !== 'next') return null;
     kind = 'local';
   }
+  // BL-01: a symbolic next is refused BEFORE any fetch, read or write of it.
+  if (kind === 'local' && deps.isSymbolicRef(root, NEXT_REF, git())) throw new FailClosed(SYMREF_REASON);
 
   if (!fetchState.has(root)) {
     const belt = budget(FETCH_BELT_MS);
@@ -633,8 +648,8 @@ function requireSha(op, sha) {
  * @param {{env?: Object, spawnSync?: Function, budget?: (capMs:number)=>number}} [opts]
  *   `spawnSync` defaults to child_process.spawnSync; `budget` is the gate call's shared deadline
  *   (absent: each call gets its full cap).
- * @returns {{fetchOrigin: Function, revParse: Function, currentBranch: Function, isAncestor: Function,
- *   worktreesHolding: Function, casUpdateRef: Function}}
+ * @returns {{fetchOrigin: Function, revParse: Function, currentBranch: Function, isSymbolicRef: Function,
+ *   isAncestor: Function, worktreesHolding: Function, casUpdateRef: Function}}
  */
 function createDefaultSeams({ env, spawnSync, budget } = {}) {
   const base = env || process.env;
@@ -695,6 +710,18 @@ function createDefaultSeams({ env, spawnSync, budget } = {}) {
     throw unexpected('symbolic-ref', r);
   }
 
+  /**
+   * BL-01: `git symbolic-ref -q <ref>`: exit 0 (a symbolic ref) -> true, 1 (not a symbolic ref,
+   * or missing) -> false, else FailClosed. A git call, not a file read: packed-refs and reftable
+   * mean the ref need not be a loose file.
+   */
+  function isSymbolicRef(dir, ref, ms) {
+    const r = runGit(dir, ['symbolic-ref', '-q', '--', ref], 'symbolic-ref', ms);
+    if (r.status === 0) return true;
+    if (r.status === 1) return false;
+    throw unexpected('symbolic-ref', r);
+  }
+
   /** exit 0 -> true, 1 -> false, else FailClosed. */
   function isAncestor(dir, a, b, ms) {
     requireSha('merge-base', a);
@@ -722,11 +749,18 @@ function createDefaultSeams({ env, spawnSync, budget } = {}) {
   /**
    * Compare-and-swap ref move: exit 0 -> true, any other exit -> false (the ref did not hold
    * `oldSha`, so git's ref transaction left it untouched); spawn error -> FailClosed.
+   * `--no-deref` (BL-01): never write through a symbolic ref. `--create-reflog` (NI-03): the move
+   * is recorded even with core.logAllRefUpdates=false and no existing reflog for the ref.
    */
   function casUpdateRef(dir, ref, newSha, oldSha, ms) {
     requireSha('update-ref', newSha);
     requireSha('update-ref', oldSha);
-    const r = runGit(dir, ['update-ref', '-m', REFLOG_MESSAGE, ref, newSha, oldSha], 'update-ref', ms);
+    const r = runGit(
+      dir,
+      ['update-ref', '--no-deref', '--create-reflog', '-m', REFLOG_MESSAGE, ref, newSha, oldSha],
+      'update-ref',
+      ms
+    );
     return r.status === 0;
   }
 
@@ -772,7 +806,7 @@ function createDefaultSeams({ env, spawnSync, budget } = {}) {
     throw new FailClosed('ENF-25 worktree fresh-base gate: ' + graded.detail + ' — failing closed.');
   }
 
-  return { fetchOrigin, revParse, currentBranch, isAncestor, worktreesHolding, casUpdateRef };
+  return { fetchOrigin, revParse, currentBranch, isSymbolicRef, isAncestor, worktreesHolding, casUpdateRef };
 }
 
 /**

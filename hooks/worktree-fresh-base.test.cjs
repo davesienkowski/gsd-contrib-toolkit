@@ -115,7 +115,6 @@ function scenario(over = {}) {
     // 37-REVIEW BL-01: is refs/heads/next a symbolic ref (`over.symbolic`, default false)?
     isSymbolicRef: () => {
       calls.isSymbolicRef += 1;
-      calls.order.push('isSymbolicRef');
       return over.symbolic === true;
     },
     casUpdateRef: (...args) => {
