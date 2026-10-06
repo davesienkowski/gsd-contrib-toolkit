@@ -805,3 +805,30 @@ for (const cmd of ['command -v gsd-test && gsd-test --version', 'command -V gsd-
     assert.strictEqual(calls.resolveTreeRoot + gitCalls(calls), 0);
   });
 }
+
+// ─────────────── m-01 (36-REVIEW): a policy deny is never override-escapable via an uncertain neighbour ───────────────
+
+for (const cmd of ['gsd-test | tail; gsd-test $X', 'gsd-test $X; gsd-test | tail', 'gsd-test -source $X; gsd-test | tail']) {
+  test(`ENF-23 m-01: override set + \`${cmd}\` still DENIES with PIPE_REASON and writes no receipt`, () => {
+    const { deps, calls } = scenario({ override: true });
+    const d = runGsdTestCleanTreeGate(input(cmd), deps);
+    assert.strictEqual(d.permissionDecision, 'deny');
+    assert.strictEqual(d.permissionDecisionReason, PIPE_REASON);
+    assert.strictEqual(calls.writeReceipt, 0);
+  });
+}
+
+test('ENF-23 m-01: override set + dirty `gsd-test $X; gsd-test --head HEAD` DENIES with the dirty reason, no receipt', () => {
+  const { deps, calls } = scenario({ override: true, porcelain: DIRTY_ONE });
+  const d = runGsdTestCleanTreeGate(input('gsd-test $X; gsd-test --head HEAD'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /ref-based/);
+  assert.strictEqual(calls.writeReceipt, 0);
+});
+
+test('ENF-23 m-01: without a policy deny, an uncertain entry beside a clean dispatch still DENIES (thrown)', () => {
+  const { deps } = scenario();
+  const d = runGsdTestCleanTreeGate(input('gsd-test $X; gsd-test --head HEAD'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /cannot attribute/);
+});

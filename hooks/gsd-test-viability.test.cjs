@@ -804,3 +804,25 @@ test('ENF-24 M-05: `command -v gsd-test && gsd-test --version` with Docker down 
   assert.strictEqual(d.permissionDecision, 'allow');
   assert.strictEqual(calls.resolveTreeRoot + calls.readConfig + calls.dockerProbe, 0);
 });
+
+// ─────────────── m-01 (36-REVIEW): policy deny wins over uncertain / thrown ───────────────
+
+for (const cmd of ['gsd-test; gsd-test $X', 'gsd-test $X; gsd-test', 'gsd-test -source $S; gsd-test']) {
+  test(`ENF-24 m-01: override set + missing config + \`${cmd}\` DENIES (policy) with no receipt`, () => {
+    const { d, calls, reason } = run(cmd, { config: null, override: true });
+    assert.strictEqual(d.permissionDecision, 'deny');
+    assert.match(reason, /does not exist/);
+    assert.strictEqual(calls.writeReceipt, 0);
+  });
+}
+
+test('ENF-24 m-01: an uncertain entry beside a viable dispatch still DENIES (thrown), never allow', () => {
+  const { d, reason } = run('gsd-test $X; gsd-test');
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(reason, /cannot attribute/);
+});
+
+test('ENF-24 m-01: a thrown error beats an ask (uncertain + unresolvable --config)', () => {
+  const { d } = run('gsd-test $X; gsd-test --config $CFG');
+  assert.strictEqual(d.permissionDecision, 'deny');
+});
