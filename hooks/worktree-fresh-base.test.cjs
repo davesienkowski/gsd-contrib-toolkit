@@ -2705,3 +2705,14 @@ test('ENF-25 NI-04 seam: a NON-zero exit with ETIMEDOUT still fails closed', () 
   const rec = recSpawn(() => ({ status: null, signal: 'SIGTERM', error: { code: 'ETIMEDOUT' } }));
   assert.throws(() => seamsWith(rec).casUpdateRef('/abs/dir', 'refs/heads/next', SHA_REMOTE, SHA_LOCAL), (err) => err instanceof FailClosed);
 });
+
+// ── NI-05: the fetch env also disables the ssh / Git Credential Manager prompts it can disable ──
+
+test('ENF-25 NI-05 seam: the fetch env sets SSH_ASKPASS_REQUIRE=never and GCM_INTERACTIVE=never next to GIT_TERMINAL_PROMPT=0', () => {
+  const rec = recSpawn();
+  seamsWith(rec).fetchOrigin('/abs/dir');
+  const env = rec.calls[0].opts.env;
+  assert.strictEqual(env.GIT_TERMINAL_PROMPT, '0');
+  assert.strictEqual(env.SSH_ASKPASS_REQUIRE, 'never');
+  assert.strictEqual(env.GCM_INTERACTIVE, 'never');
+});
