@@ -1331,6 +1331,61 @@ function cdTarget(seg, ctx) {
   return { target };
 }
 
+/** Programs that may change the shell's directory (37-REVIEW MA-04). */
+const DIR_CHANGE_PROGRAMS = new Set(['cd', 'pushd', 'popd', 'builtin', 'command']);
+
+/** Index of the first token at or after `k` that is not a redirect (redirects are the shell's). */
+function skipRedirects(toks, k) {
+  let i = k;
+  while (i < toks.length) {
+    const m = REDIRECT.exec(toks[i]);
+    if (!m) break;
+    i += m[2] === '' ? 2 : 1;
+  }
+  return i;
+}
+
+/**
+ * 37-REVIEW MA-04: a prefix segment as a directory change. `builtin` and `command` (with `-p`)
+ * are peeled; `command -v` / `-V` is a lookup, not a run. Returns:
+ *   null                    not a directory change
+ *   {tokens: ['cd', ...]}   a `cd` (from `cd`, `builtin cd`, `command cd`), or a `pushd <dir>`
+ *                           rewritten to `cd -- <dir>` (pushd changes to <dir> exactly like cd)
+ *   {unresolvable: true}    `popd`, a bare `pushd` (swaps the top two dirs), `pushd -n`, and
+ *                           `pushd +N` / `-N` (rotations): the directory is not knowable here
+ *
+ * @param {Object} seg a parse-shaped segment
+ * @returns {null|{tokens:string[]}|{unresolvable:true}}
+ */
+function dirChange(seg) {
+  if (!seg || !DIR_CHANGE_PROGRAMS.has(seg.program)) return null;
+  const toks = Array.isArray(seg.tokens) ? seg.tokens : [];
+  let k = 0;
+  while (k < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[k])) k += 1;
+  for (let peel = 0; peel < MAX_PEELS && (toks[k] === 'builtin' || toks[k] === 'command'); peel++) {
+    const w = toks[k];
+    k += 1;
+    if (w === 'command') {
+      while (k < toks.length && /^-[pvV]+$/.test(toks[k])) {
+        if (/[vV]/.test(toks[k])) return null; // `command -v cd`: a lookup
+        k += 1;
+      }
+    }
+    if (toks[k] === '--') k += 1;
+  }
+  const word = toks[k];
+  const rest = toks.slice(k + 1);
+  if (word === 'cd') return { tokens: ['cd'].concat(rest) };
+  if (word === 'popd') return { unresolvable: true };
+  if (word !== 'pushd') return null;
+  let i = skipRedirects(rest, 0);
+  if (rest[i] === '--') i = skipRedirects(rest, i + 1);
+  else if (typeof rest[i] === 'string' && rest[i].startsWith('-')) return { unresolvable: true }; // -n, -N, `-`
+  const target = rest[i];
+  if (typeof target !== 'string' || target.startsWith('+')) return { unresolvable: true }; // bare pushd, +N
+  return { tokens: ['cd', '--', target] };
+}
+
 /**
  * A prefix with every `cd` target read past its options (M-02) and statically expanded (36-03
  * handoff 1). resolve.commandStartDir would resolve `cd "$X"` as the literal path `<cwd>/$X`;
@@ -1339,17 +1394,21 @@ function cdTarget(seg, ctx) {
  * when one is given, and a `~user`, `cd -` or unknown-option target cannot be resolved at all.
  * Each rewritten `cd` segment carries exactly `tokens: ['cd', target]` and `positionals:
  * [target]`, the two fields commandStartDir reads. null when any persisting `cd` target is
- * unresolvable.
+ * unresolvable. 37-REVIEW MA-04: `pushd <dir>`, `builtin cd` and `command cd` are read as `cd`
+ * (dirChange); `popd` and the pushd forms that rotate or swap the stack are unresolvable.
  */
 function expandCdTargets(prefix, ctx) {
   if (!prefix || prefix.ok !== true || !Array.isArray(prefix.segments)) return prefix;
   const segments = [];
-  for (const seg of prefix.segments) {
-    if (!seg || seg.program !== 'cd') {
-      segments.push(seg);
+  for (const raw of prefix.segments) {
+    if (raw && raw.unresolvable) return null; // a wrapper chdir option with no value (M-03)
+    const dc = dirChange(raw);
+    if (dc === null) {
+      segments.push(raw);
       continue;
     }
-    if (seg.unresolvable) return null; // a wrapper chdir option with no value (M-03)
+    if (dc.unresolvable) return null; // popd, a bare / -n / +N pushd (37-REVIEW MA-04)
+    const seg = Object.assign({}, raw, { program: 'cd', tokens: dc.tokens });
     const t = cdTarget(seg, ctx);
     if (t === null) return null;
     if (t.noop) continue; // `cd ""` stays put

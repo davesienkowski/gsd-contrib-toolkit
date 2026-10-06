@@ -30,7 +30,8 @@
  *      GIT_COMMON_DIR (37-04): the real cut would run in a repository the gate cannot see;
  *   3. per cut, in command order: a base that does not name the trunk ('other', 'none') is
  *      skipped with no I/O (no fetch on non-trunk cuts); the target dir = the cut's start dir
- *      (gsd-test-detect `startDirFor`: `cd`, `env -C`, `sudo -D`) with each git `-C` statically
+ *      (gsd-test-detect `startDirFor`: `cd`, `pushd <dir>`, `builtin cd`, `command cd`, `env -C`,
+ *      `sudo -D`; `popd` -> FailClosed: 37-REVIEW MA-04) with each git `-C` statically
  *      expanded and folded on (37-02; either unresolvable -> FailClosed before any I/O); not a
  *      gsd-core checkout -> skipped;
  *   4. freshness, once per root: a HEAD base (omitted, `HEAD`, `@`) is the trunk only when the
@@ -501,7 +502,8 @@ function targetDir(e, deps) {
   if (start === null) {
     throw new FailClosed(
       'ENF-25 worktree fresh-base gate cannot resolve the target repository statically (an earlier ' +
-        '`cd`, `env -C` or `sudo -D` target is a shell expansion, `~user` or `-`) — failing closed. ' +
+        '`cd` / `pushd` / `env -C` / `sudo -D` target is a shell expansion, `~user` or `-`, or a `popd` or ' +
+        'stack-rotating `pushd` precedes the cut) — failing closed. ' +
         'Pass a literal path.'
     );
   }
