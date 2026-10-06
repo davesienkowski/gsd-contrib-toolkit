@@ -209,9 +209,9 @@ test('38 verifier: the live-slot FIFO residual says it hangs every gate and poin
   assert.ok(b.includes('SEED-live-tool-log-fifo-hangs-all-gates'), b);
 });
 
-// ── quick 261006-jsm (CONTEXT D10, coordinator, orchestrator B1): CTK-ADR-0010 marks the fixed ENF-20
+// -- quick 261006-jsm (CONTEXT D10, coordinator, orchestrator B1): CTK-ADR-0010 marks the fixed ENF-20
 // verdict routes and records the new residuals. Every lock anchors on its own bullet's bold lead
-// (adr10Bullet asserts exactly one match); no Status line and no Decision text changes. ──
+// (adr10Bullet asserts exactly one match); no Status line and no Decision text changes. --
 
 test('261006-jsm: the classify-`other` residual marks the routes this branch fixed and keeps the open ones listed', () => {
   const b = adr10Bullet(/classif(y|ies) `other`/);
