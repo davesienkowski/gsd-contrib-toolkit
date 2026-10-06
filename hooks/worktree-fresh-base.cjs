@@ -57,7 +57,7 @@
  * min(GIT_TIMEOUT_MS, remaining), the fetch belt min(FETCH_BELT_MS, remaining); with less than
  * MIN_CALL_MS left the gate throws FailClosed (deny, override-escapable). One trunk cut spawns at
  * most MAX_GIT_CALLS_PER_ROOT non-fetch git processes, so FETCH_BELT_MS + MAX * GIT_TIMEOUT_MS fits
- * the budget, and the budget plus 3 s fits the 45 s hook timeout (asserted by tests).
+ * the budget, and the budget plus 3 s fits the HOOK_TIMEOUT_S (60 s) hook timeout (asserted by tests).
  *
  * The gate's own git argv is limited to: remote get-url origin, fetch (via coreutils timeout),
  * rev-parse, symbolic-ref, merge-base --is-ancestor, worktree list --porcelain and update-ref. The
@@ -96,14 +96,22 @@ const FETCH_BELT_MS = 20000;
 /** Per local git call (rev-parse, merge-base, worktree list, update-ref). */
 const GIT_TIMEOUT_MS = 3000;
 /** One deadline per gate call shared by every subprocess (36-REVIEW m-06 pattern). */
-const GATE_BUDGET_MS = 42000;
+const GATE_BUDGET_MS = 50000;
+/**
+ * The settings.snippet.json timeout of both ENF-25 registrations, in seconds. GATE_BUDGET_MS plus
+ * 3 s of headroom (node start-up, the verdict write) must fit it, and it equals the harness default
+ * the capability install falls back to (that install writes no timeout: 37-REVIEW NI-07).
+ */
+const HOOK_TIMEOUT_S = 60;
 /** Below this many ms left before a call, the gate fails closed instead of starting it. */
 const MIN_CALL_MS = 100;
 /**
- * Worst case non-fetch git processes for ONE trunk cut in one root: symbolic-ref (HEAD base),
- * remote get-url (inside the fetch seam), rev-parse x2, merge-base, worktree list, update-ref.
+ * Worst case non-fetch git processes for ONE trunk cut in one root (37-REVIEW TIME BUDGET):
+ * symbolic-ref HEAD (HEAD base), remote get-url origin (the arming check), symbolic-ref -q
+ * refs/heads/next (BL-01), rev-parse x2, merge-base, worktree list, rev-parse --git-common-dir
+ * (BL-02), update-ref. FETCH_BELT_MS + 9 x GIT_TIMEOUT_MS = 47 s <= GATE_BUDGET_MS.
  */
-const MAX_GIT_CALLS_PER_ROOT = 7;
+const MAX_GIT_CALLS_PER_ROOT = 9;
 /** The fetch detail that reaches a reason is cut to this many characters. */
 const DETAIL_MAX = 200;
 /** A settings layer larger than this (1 MiB) contributes nothing to the worktree.baseRef cascade. */
@@ -847,6 +855,7 @@ module.exports = {
   FETCH_BELT_MS,
   GIT_TIMEOUT_MS,
   GATE_BUDGET_MS,
+  HOOK_TIMEOUT_S,
   MIN_CALL_MS,
   MAX_GIT_CALLS_PER_ROOT,
 };

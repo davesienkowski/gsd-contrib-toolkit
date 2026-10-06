@@ -87,7 +87,7 @@
           {
             "type": "command",
             "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/worktree-fresh-base.cjs\"",
-            "timeout": 45
+            "timeout": 60
           }
         ]
       },
@@ -107,7 +107,7 @@
           {
             "type": "command",
             "command": "\"/home/dave/.nvm/versions/node/v22.22.3/bin/node\" \"/home/dave/repos/gsd-contrib-toolkit/hooks/worktree-fresh-base.cjs\"",
-            "timeout": 45
+            "timeout": 60
           }
         ]
       }
