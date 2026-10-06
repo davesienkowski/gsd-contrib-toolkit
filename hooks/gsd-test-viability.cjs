@@ -26,10 +26,12 @@
  *   5. per dispatch, in command order:
  *        a. tree = `treeDirFor` (start dir + `-source`); unresolvable -> throw FailClosed;
  *        b. not a gsd-core checkout -> this dispatch contributes allow (ROB-01 precedent);
- *        c. config path: `--config` (static expansion, relative to the start dir), else
- *           `$XDG_CONFIG_HOME/gsd-test/config.toml` (non-empty absolute), else
- *           `<homedir>/.config/gsd-test/config.toml`. An unexpandable value -> ask;
- *           missing file -> deny;
+ *        c. config path: `--config` (static expansion in the shell env, relative to the start
+ *           dir), else `$XDG_CONFIG_HOME/gsd-test/config.toml` (any non-empty value, relative
+ *           to the start dir — v1.8.0 config.go), else `$HOME/.config/gsd-test/config.toml`,
+ *           where XDG_CONFIG_HOME / HOME are the gsd-test process's (36-REVIEW m-02: `export`,
+ *           `unset`, `NAME=v gsd-test`, `env -u` / `-i` and `sudo` are applied). An unexpandable
+ *           value -> ask; missing file -> deny;
  *        d. a named bench absent from the config -> deny; an unexpandable value -> ask;
  *        e. GTEST-06: when the bench gsd-test can use may be local (36-REVIEW m-08: the named
  *           `--bench`, else `defaults.pin`, else any bench left after `--exclude` /
@@ -69,7 +71,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { runGate, readHookInput, deny, allow, ask, emit, safeCommand, FailClosed } = require('./lib/failclosed.cjs');
 const { resolveGsdCoreRoot, ScriptResolveError } = require('./lib/resolve.cjs');
-const { findGsdTestDispatches, treeDirFor, startDirFor, expandStatic } = require('./lib/gsd-test-detect.cjs');
+const { findGsdTestDispatches, treeDirFor, startDirFor, expandStatic, dispatchEnv } = require('./lib/gsd-test-detect.cjs');
 
 /** The honesty clause appended to every `ask` reason (same sentence as runtime-drift.cjs). */
 const ASK_LIMIT_NOTE =
@@ -332,26 +334,52 @@ function governs(d) {
   return false;
 }
 
+function askEnv(names, what) {
+  return ask(
+    'ENF-24 gsd-test viability gate cannot check this dispatch: the command sets ' +
+      names.map((n) => '`' + n + '`').join(' / ') + ' to a value that cannot be resolved statically ' +
+      '(a shell expansion, `env -i`, `sudo`\'s environment reset or `export -n`), so the gate cannot ' +
+      'tell ' + what + '. Use literal values to have it checked. ' + ASK_LIMIT_NOTE
+  );
+}
+
 /**
- * The config path this dispatch reads, or `{ask}` when `--config` cannot be expanded.
+ * The config path this dispatch reads, or `{ask}` when it cannot be known statically.
+ *
+ * `--config` is expanded in the SHELL environment (36-REVIEW m-02: `export HOME=/e;` applies, a
+ * `HOME=/e gsd-test` prefix does not — the shell expands `~` before the prefix takes effect).
+ * Without `--config`, v1.8.0 config.go defaultConfigPath uses the gsd-test PROCESS environment:
+ * any non-empty XDG_CONFIG_HOME (joined as given, so a relative one resolves against the start
+ * dir), else `$HOME/.config/gsd-test/config.toml`.
  *
  * @returns {{path:string}|{ask:Object}}
  */
-function configPathFor(d, startDir, deps) {
-  const ctx = { env: deps.env, homedir: deps.homedir };
+function configPathFor(d, startDir, deps, envs) {
+  // The shell expands `~` from its own $HOME (an `export HOME=...` earlier in the command counts).
+  const sh = envs.shell;
+  const shellHome = sh.unresolved.has('HOME')
+    ? null
+    : typeof sh.env.HOME === 'string' && sh.env.HOME !== '' ? sh.env.HOME : deps.homedir;
   const flag = d.flags ? d.flags.config : undefined;
   if (typeof flag === 'string' && flag !== '') {
-    const expanded = expandStatic(flag, ctx);
+    const expanded = expandStatic(flag, { env: envs.shell.env, homedir: shellHome });
     if (expanded === null) return { ask: askUnexpandable('config', flag) };
     return { path: path.resolve(startDir, expanded) };
   }
   // An empty `--config=` is an empty Go value; gsd-test falls back to its default (the same
   // reading 36-03 gave an empty `--head=`).
-  const xdg = deps.env ? deps.env.XDG_CONFIG_HOME : undefined;
-  if (typeof xdg === 'string' && xdg.length > 0 && path.isAbsolute(xdg)) {
-    return { path: path.join(xdg, 'gsd-test', 'config.toml') };
+  const child = envs.child;
+  if (child.unresolved.has('XDG_CONFIG_HOME')) return { ask: askEnv(['XDG_CONFIG_HOME'], 'which config file gsd-test reads') };
+  const xdg = child.env.XDG_CONFIG_HOME;
+  if (typeof xdg === 'string' && xdg.length > 0) {
+    return { path: path.resolve(startDir, xdg, 'gsd-test', 'config.toml') };
   }
-  return { path: path.join(deps.homedir, '.config', 'gsd-test', 'config.toml') };
+  if (child.unresolved.has('HOME')) return { ask: askEnv(['HOME'], 'which config file gsd-test reads') };
+  const home = child.changed.has('HOME') ? child.env.HOME : deps.homedir;
+  if (typeof home !== 'string' || home.length === 0) {
+    return { ask: askEnv(['HOME'], 'which config file gsd-test reads') };
+  }
+  return { path: path.resolve(startDir, home, '.config', 'gsd-test', 'config.toml') };
 }
 
 /**
@@ -391,7 +419,7 @@ function gate(stdinString, deps) {
   // subcommands ENF-24 does not govern (see `governs`).
   const dispatches = entries.filter((e) => e.kind === 'dispatch' && !e.informational && governs(e));
 
-  const state = { firstAsk: null, docker: null };
+  const state = { firstAsk: null, docker: new Map() };
   for (const d of dispatches) {
     let decision = null;
     try {
@@ -428,8 +456,9 @@ function checkDispatch(d, deps, state) {
   // (5b) Out-of-tree passthrough.
   if (deps.resolveTreeRoot(treeDir) === null) return null;
 
-  // (5c) GTEST-04: the config file exists.
-  const cfg = configPathFor(d, startDir, deps);
+  // (5c) GTEST-04: the config file exists. m-02: the per-command environment decides the path.
+  const envs = dispatchEnv(d, deps.env, deps.homedir);
+  const cfg = configPathFor(d, startDir, deps, envs);
   if (cfg.ask) {
     if (!state.firstAsk) state.firstAsk = cfg.ask;
     return null;
@@ -454,8 +483,21 @@ function checkDispatch(d, deps, state) {
   // (5e) GTEST-06: the local Docker probe, only when the bench gsd-test can use may be local
   // (m-08: --bench, else defaults.pin, else the non-excluded benches; an empty host is local).
   if (!mayUseLocalBench(d, text, named, ctx)) return null;
-  if (state.docker === null) state.docker = deps.dockerProbe();
-  const docker = state.docker;
+  // m-02: the probe reaches the daemon the command's DOCKER_HOST / DOCKER_CONTEXT name; one
+  // probe per distinct daemon selection per gate call.
+  const dockerVars = ['DOCKER_HOST', 'DOCKER_CONTEXT'];
+  const unknown = dockerVars.filter((n) => envs.child.unresolved.has(n));
+  if (unknown.length > 0) {
+    if (!state.firstAsk) state.firstAsk = askEnv(unknown, 'which Docker daemon the run uses');
+    return null;
+  }
+  const overrides = {};
+  for (const n of dockerVars) {
+    if (envs.child.changed.has(n)) overrides[n] = typeof envs.child.env[n] === 'string' ? envs.child.env[n] : null;
+  }
+  const key = JSON.stringify(overrides);
+  if (!state.docker.has(key)) state.docker.set(key, deps.dockerProbe(overrides));
+  const docker = state.docker.get(key);
   const st = docker && docker.state;
   if (st === 'ok') return null;
   if (st === 'missing') return deny(DOCKER_MISSING_REASON);
@@ -498,6 +540,20 @@ function defaultReadConfig(p) {
 }
 
 /**
+ * The docker probe's environment: the hook's own, with the command's DOCKER_HOST /
+ * DOCKER_CONTEXT applied (null = unset) — m-02. Only these two names can change.
+ */
+function probeEnv(overrides) {
+  const env = Object.assign({}, process.env);
+  for (const [k, v] of Object.entries(overrides || {})) {
+    if (k !== 'DOCKER_HOST' && k !== 'DOCKER_CONTEXT') continue;
+    if (v === null || v === undefined) delete env[k];
+    else env[k] = String(v);
+  }
+  return env;
+}
+
+/**
  * Injectable entry seam. Defaults the real impls INSIDE the runGate callback so a throwing
  * default fails closed rather than escaping the harness.
  *
@@ -536,14 +592,14 @@ function runGsdTestViabilityGate(stdinString, deps = {}) {
     if (!resolved.dockerProbe) {
       // Built ONLY when no probe is injected; the spawn seam defaults to child_process.spawnSync.
       const spawn = resolved.spawnSync || require('node:child_process').spawnSync;
-      resolved.dockerProbe = () =>
+      resolved.dockerProbe = (overrides) =>
         classifyDockerResult(
           spawn('docker', [...DOCKER_PROBE_ARGS], {
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'pipe'],
             timeout: DOCKER_PROBE_TIMEOUT_MS,
             killSignal: 'SIGKILL',
-            env: process.env,
+            env: probeEnv(overrides),
           })
         );
     }

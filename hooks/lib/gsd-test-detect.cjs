@@ -561,6 +561,28 @@ function resolveSegmentProgram(tokens) {
 }
 
 /**
+ * Rejoin assignment tokens whose value opens a command substitution argv split on whitespace
+ * (`SHA=$(git rev-parse HEAD)` arrives as `SHA=$(git`, `rev-parse`, `HEAD)`), so the program slot
+ * is not mistaken for a word inside the substitution. null when the substitution never closes.
+ */
+function joinAssignmentSubstitutions(tokens) {
+  const out = [];
+  for (let k = 0; k < tokens.length; k++) {
+    let t = tokens[k];
+    const a = /^[A-Za-z_][A-Za-z0-9_]*=/.exec(t);
+    if (a && (t.includes('$(') || t.includes('`'))) {
+      while (substitutionOpen(t)) {
+        if (k + 1 >= tokens.length) return null;
+        k += 1;
+        t += ' ' + tokens[k];
+      }
+    }
+    out.push(t);
+  }
+  return out;
+}
+
+/**
  * The working-directory options of the `env` and `sudo` wrappers (36-REVIEW M-03): `env -C <dir>`
  * / `--chdir[=]<dir>` and `sudo -D <dir>` / `--chdir[=]<dir>`. `value` lists each wrapper's OTHER
  * value-taking options (short letters and long names), so a cluster or a value is never misread
@@ -677,6 +699,166 @@ function isCommandLookup(toks, idx) {
     }
   }
   return false;
+}
+
+/**
+ * The environment variables whose value changes what ENF-24 checks (36-REVIEW m-02): the config
+ * path (HOME, XDG_CONFIG_HOME — v1.8.0 config.go defaultConfigPath) and the daemon the Docker
+ * probe reaches (DOCKER_HOST, DOCKER_CONTEXT).
+ */
+const WATCHED_ENV = Object.freeze(['HOME', 'XDG_CONFIG_HOME', 'DOCKER_HOST', 'DOCKER_CONTEXT']);
+
+const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/;
+
+/**
+ * Environment operations a dispatch's OWN segment applies to the gsd-test process, read from the
+ * tokens before the program: leading / post-wrapper `NAME=value`, `env -u NAME` / `--unset`,
+ * `env -i` / `-` / `--ignore-environment` (clear), and `sudo` (opaque: its env_reset policy is
+ * not knowable here). Only WATCHED_ENV names are recorded.
+ *
+ * @returns {Object[]} ops: {op:'set', name, value} | {op:'unset', name} | {op:'clear'} | {op:'opaque'}
+ */
+function ownEnvOps(toks, idx) {
+  const ops = [];
+  let inEnv = false;
+  for (let k = 0; k < idx; k++) {
+    const t = toks[k];
+    const a = ASSIGNMENT.exec(t);
+    if (a) {
+      if (WATCHED_ENV.includes(a[1])) ops.push({ op: 'set', name: a[1], value: a[2] });
+      continue;
+    }
+    const base = path.basename(t);
+    if (base === 'env') { inEnv = true; continue; }
+    if (base === 'sudo') { ops.push({ op: 'opaque' }); inEnv = false; continue; }
+    if (inEnv && (t === '-' || t === '-i' || t === '--ignore-environment')) { ops.push({ op: 'clear' }); continue; }
+    if (inEnv && t.startsWith('--unset')) {
+      const name = t.startsWith('--unset=') ? t.slice(8) : toks[k + 1];
+      if (!t.startsWith('--unset=')) k += 1;
+      if (WATCHED_ENV.includes(name)) ops.push({ op: 'unset', name });
+      continue;
+    }
+    if (inEnv && /^-[A-Za-z]+/.test(t) && !t.startsWith('--')) {
+      for (let c = 1; c < t.length; c++) {
+        if (t[c] === 'i') ops.push({ op: 'clear' });
+        if (t[c] === 'u' || t[c] === 'S') {
+          const value = c + 1 < t.length ? t.slice(c + 1) : toks[k + 1];
+          if (c + 1 >= t.length) k += 1;
+          if (t[c] === 'u' && WATCHED_ENV.includes(value)) ops.push({ op: 'unset', name: value });
+          break;
+        }
+      }
+      continue;
+    }
+    inEnv = false;
+  }
+  return ops;
+}
+
+/**
+ * Environment operations a PREFIX segment leaves in the shell for later segments: `export
+ * NAME=v`, `declare -x` / `typeset -x NAME=v` (exported), `unset NAME`, `export -n NAME`
+ * (opaque for that name), and a bare `NAME=v` segment (a shell variable, exported only if it
+ * already was). Only WATCHED_ENV names are recorded.
+ */
+function prefixEnvOps(seg) {
+  const toks = seg && Array.isArray(seg.tokens) ? seg.tokens : [];
+  let k = 0;
+  const ops = [];
+  while (k < toks.length && ASSIGNMENT.test(toks[k])) k += 1;
+  if (k === toks.length) {
+    for (const t of toks) {
+      const a = ASSIGNMENT.exec(t);
+      if (WATCHED_ENV.includes(a[1])) ops.push({ op: 'shellset', name: a[1], value: a[2] });
+    }
+    return ops;
+  }
+  const prog = path.basename(toks[k]);
+  const rest = toks.slice(k + 1);
+  if (prog === 'export' || ((prog === 'declare' || prog === 'typeset') && rest.some((t) => /^-[A-Za-z]*x/.test(t)))) {
+    const unexport = prog === 'export' && rest.some((t) => /^-[A-Za-z]*n/.test(t));
+    for (const t of rest) {
+      if (t.startsWith('-')) continue;
+      const a = ASSIGNMENT.exec(t);
+      const name = a ? a[1] : t;
+      if (!WATCHED_ENV.includes(name)) continue;
+      if (unexport) ops.push({ op: 'opaque-name', name });
+      else if (a) ops.push({ op: 'set', name, value: a[2] });
+    }
+  } else if (prog === 'unset') {
+    if (rest.some((t) => /^-[A-Za-z]*f/.test(t))) return ops; // functions
+    for (const t of rest) if (WATCHED_ENV.includes(t)) ops.push({ op: 'unset', name: t });
+  }
+  return ops;
+}
+
+/**
+ * The environment a dispatch's gsd-test process sees, and the shell environment its flag values
+ * were expanded in (36-REVIEW m-02). Folds the persisting prefix segments (export / unset /
+ * declare -x / bare assignment) over `baseEnv`, then the dispatch's own prefix (`NAME=v
+ * gsd-test`, `env -u`, `env -i`, sudo). A value carrying an expansion expandStatic cannot resolve
+ * makes that name UNRESOLVED (the gate asks rather than guess). Pure.
+ *
+ * @param {Object} d a `kind:'dispatch'` entry
+ * @param {Object} baseEnv the hook's environment
+ * @param {string} [homedir]
+ * @returns {{shell:{env:Object, unresolved:Set<string>}, child:{env:Object, unresolved:Set<string>, changed:Set<string>}}}
+ */
+function dispatchEnv(d, baseEnv, homedir) {
+  const pick = (e) => {
+    const o = {};
+    for (const n of WATCHED_ENV) if (e && typeof e[n] === 'string') o[n] = e[n];
+    return o;
+  };
+  const shell = { env: pick(baseEnv), unresolved: new Set() };
+  const child = { env: pick(baseEnv), unresolved: new Set(), changed: new Set() };
+  const valueOf = (raw) => expandStatic(raw, { env: shell.env, homedir: shell.unresolved.has('HOME') ? undefined : homedir });
+
+  const prefixes = d && Array.isArray(d.prefixes) ? d.prefixes : [];
+  for (const p of prefixes) {
+    const segs = p && Array.isArray(p.segments) ? p.segments : [];
+    for (const seg of segs) {
+      for (const op of prefixEnvOps(seg)) {
+        if (op.op === 'unset') {
+          for (const t of [shell, child]) { delete t.env[op.name]; t.unresolved.delete(op.name); }
+          child.changed.add(op.name);
+        } else if (op.op === 'opaque-name') {
+          child.unresolved.add(op.name);
+          child.changed.add(op.name);
+        } else {
+          const exported = op.op === 'set' || Object.prototype.hasOwnProperty.call(child.env, op.name) || child.unresolved.has(op.name);
+          const v = valueOf(op.value);
+          const targets = exported ? [shell, child] : [shell];
+          for (const t of targets) {
+            if (v === null) { delete t.env[op.name]; t.unresolved.add(op.name); }
+            else { t.env[op.name] = v; t.unresolved.delete(op.name); }
+          }
+          if (exported) child.changed.add(op.name);
+        }
+      }
+    }
+  }
+
+  for (const op of Array.isArray(d && d.envOps) ? d.envOps : []) {
+    if (op.op === 'clear') {
+      child.env = {};
+      child.unresolved.clear();
+      for (const n of WATCHED_ENV) child.changed.add(n);
+    } else if (op.op === 'opaque') {
+      for (const n of WATCHED_ENV) { delete child.env[n]; child.unresolved.add(n); child.changed.add(n); }
+    } else if (op.op === 'unset') {
+      delete child.env[op.name];
+      child.unresolved.delete(op.name);
+      child.changed.add(op.name);
+    } else if (op.op === 'set') {
+      // `NAME=v cmd`: the value is expanded in the SHELL's environment, before the prefix applies.
+      const v = valueOf(op.value);
+      if (v === null) { delete child.env[op.name]; child.unresolved.add(op.name); }
+      else { child.env[op.name] = v; child.unresolved.delete(op.name); }
+      child.changed.add(op.name);
+    }
+  }
+  return { shell, child };
 }
 
 /**
@@ -807,8 +989,15 @@ function scanParsed(parsed, st) {
     for (const type of n.openers) frames.push({ type, segs: [] });
 
     if (n.tokens.length > 0) {
+      // m-02 follow-on: rejoin `NAME=$(a b)` assignment values argv split on spaces.
+      const joined = joinAssignmentSubstitutions(n.tokens);
+      if (joined === null) {
+        if (GSD_TEST_WORD.test(n.tokens.join(' '))) {
+          out.push({ kind: 'uncertain', reason: 'unbalanced command substitution in an assignment before gsd-test' });
+        }
+      }
       // M-03: `env -C <dir>` / `sudo -D <dir>` change the directory of THIS segment only.
-      const cd = stripChdirOptions(n.tokens);
+      const cd = stripChdirOptions(joined === null ? [] : joined);
       const toks = cd.tokens;
       const here = () => st.prefixes.concat([prefixNow()], chdirPrefixes(cd.chdirs));
       const r = resolveSegmentProgram(toks);
@@ -832,6 +1021,7 @@ function scanParsed(parsed, st) {
           out.push({
             kind: 'dispatch',
             subcommand: sub.name,
+            envOps: ownEnvOps(toks, r.idx),
             seg: toSeg(toks, segments[i].nextOp),
             segIndex: i,
             args: w.positionals,
@@ -1133,6 +1323,8 @@ module.exports = {
   expandStatic,
   startDirFor,
   treeDirFor,
+  dispatchEnv,
+  WATCHED_ENV,
   INFORMATIONAL_FLAGS,
   SUBCOMMANDS,
   MAX_DASH_C_DEPTH,
