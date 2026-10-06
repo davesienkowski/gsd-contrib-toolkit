@@ -397,7 +397,7 @@ test('38-02 reader: an fsImpl whose every method throws a non-Error value -> com
   const thrower = () => {
     throw 'boom'; // eslint-disable-line no-throw-literal
   };
-  const impl = { openSync: thrower, fstatSync: thrower, readSync: thrower, closeSync: thrower, existsSync: thrower, statSync: thrower };
+  const impl = { lstatSync: thrower, openSync: thrower, fstatSync: thrower, readSync: thrower, closeSync: thrower, existsSync: thrower, statSync: thrower };
   let r;
   assert.doesNotThrow(() => {
     r = readerModule.readSessionRecords('sess-n', { env: { GSD_CONTRIB_LOG_DIR: dir }, fsImpl: impl });
@@ -405,4 +405,152 @@ test('38-02 reader: an fsImpl whose every method throws a non-Error value -> com
   assert.strictEqual(r.complete, false);
   assert.deepStrictEqual(r.records, []);
   assert.deepStrictEqual(r.problems, ['unreadable tool-log.jsonl: error', 'unreadable tool-log.1.jsonl: error']);
+});
+
+// ── 38 review fix BL-01: a non-regular file in a log slot never blocks the reader ──────────
+//
+// openSync on a FIFO blocks until a writer opens it, and that wait is outside every size and
+// time bound. Each case runs the reader in a CHILD process under a hard kill timeout, so a reader
+// that blocks fails the test instead of hanging the runner, and asserts a wall-clock bound.
+
+const { execFileSync, spawnSync } = require('node:child_process');
+
+const READER_PATH = path.join(__dirname, 'tool-log-reader.cjs');
+
+/** Hard wall-clock bound a FIFO case must return within (node start-up included). */
+const FIFO_BOUND_MS = 2000;
+
+/** True when this platform has named pipes and `mkfifo` (never on win32). */
+function canMkfifo() {
+  if (process.platform === 'win32') return false;
+  try {
+    execFileSync('mkfifo', ['--version'], { stdio: 'ignore' });
+    return true;
+  } catch (_) {
+    // BSD mkfifo has no --version; probe by making one in a throwaway dir.
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'tlr-fifo-probe-'));
+    try {
+      execFileSync('mkfifo', [path.join(d, 'p')], { stdio: 'ignore' });
+      return true;
+    } catch (__) {
+      return false;
+    } finally {
+      fs.rmSync(d, { recursive: true, force: true });
+    }
+  }
+}
+const NO_FIFO = !canMkfifo();
+
+/**
+ * readSessionRecords in a child process, killed after `killMs`. Returns the elapsed wall time,
+ * the spawn result, and the parsed reader result (null when the child did not finish cleanly).
+ */
+function readBounded(sessionId, dir, killMs = 6000) {
+  const script =
+    'const r = require(' + JSON.stringify(READER_PATH) + ').readSessionRecords(' +
+    JSON.stringify(sessionId) + ', { env: { GSD_CONTRIB_LOG_DIR: ' + JSON.stringify(dir) + ' } });' +
+    'process.stdout.write(JSON.stringify(r));';
+  const t0 = Date.now();
+  const res = spawnSync(process.execPath, ['-e', script], {
+    encoding: 'utf8',
+    timeout: killMs,
+    env: { PATH: process.env.PATH || '' },
+  });
+  const elapsed = Date.now() - t0;
+  let r = null;
+  if (res.status === 0 && !res.signal) r = JSON.parse(res.stdout);
+  return { elapsed, res, r };
+}
+
+function assertBoundedRefusal(out, base) {
+  assert.strictEqual(out.res.signal, null, 'the reader was killed after ' + out.elapsed + ' ms: it blocked');
+  assert.strictEqual(out.res.status, 0, out.res.stderr);
+  assert.ok(out.elapsed < FIFO_BOUND_MS, 'returned in ' + out.elapsed + ' ms (bound ' + FIFO_BOUND_MS + ' ms)');
+  assert.strictEqual(out.r.complete, false, 'a refused slot makes the read incomplete');
+  assert.ok(
+    out.r.problems.includes('unreadable ' + base + ': not a regular file'),
+    JSON.stringify(out.r.problems)
+  );
+}
+
+test('38 fix BL-01 reader: a FIFO at tool-log.1.jsonl returns in under 2 s, refused as not a regular file; the live rows still count', { skip: NO_FIFO && 'no mkfifo on this platform' }, () => {
+  const dir = tmpDir2();
+  writeFile(dir, LOG, [recLine('sess-fifo', 'mcp__memtrace__get_impact')]);
+  execFileSync('mkfifo', [path.join(dir, ROTATED)]);
+  const out = readBounded('sess-fifo', dir);
+  assertBoundedRefusal(out, ROTATED);
+  assert.deepStrictEqual(out.r.records, [{ tool_name: 'mcp__memtrace__get_impact', outcome: 'ok' }]);
+});
+
+test('38 fix BL-01 reader: a FIFO at tool-log.jsonl returns in under 2 s, refused as not a regular file; the rotated rows still count', { skip: NO_FIFO && 'no mkfifo on this platform' }, () => {
+  const dir = tmpDir2();
+  execFileSync('mkfifo', [path.join(dir, LOG)]);
+  writeFile(dir, ROTATED, [recLine('sess-fifo2', 'mcp__memtrace__get_symbol_context')]);
+  const out = readBounded('sess-fifo2', dir);
+  assertBoundedRefusal(out, LOG);
+  assert.deepStrictEqual(out.r.records, [{ tool_name: 'mcp__memtrace__get_symbol_context', outcome: 'ok' }]);
+});
+
+test('38 fix BL-01 reader: a symlink at tool-log.1.jsonl pointing at a FIFO returns in under 2 s and is refused', { skip: NO_FIFO && 'no mkfifo on this platform' }, () => {
+  const dir = tmpDir2();
+  writeFile(dir, LOG, [recLine('sess-fifo3', 'Bash')]);
+  const pipe = path.join(dir, 'elsewhere.pipe');
+  execFileSync('mkfifo', [pipe]);
+  fs.symlinkSync(pipe, path.join(dir, ROTATED));
+  assertBoundedRefusal(readBounded('sess-fifo3', dir), ROTATED);
+});
+
+test('38 fix BL-01 reader: a directory at tool-log.jsonl is refused as not a regular file', () => {
+  const dir = tmpDir2();
+  fs.mkdirSync(path.join(dir, LOG));
+  writeFile(dir, ROTATED, [recLine('sess-dir', 'Bash')]);
+  const r = readerModule.readSessionRecords('sess-dir', { env: { GSD_CONTRIB_LOG_DIR: dir } });
+  assert.strictEqual(r.complete, false);
+  assert.deepStrictEqual(r.problems, ['unreadable ' + LOG + ': not a regular file']);
+  assert.deepStrictEqual(r.records, [{ tool_name: 'Bash', outcome: 'ok' }]);
+});
+
+test('38 fix BL-01 reader: a symlink to a REGULAR file is still read (the accepted forgery class, not a refusal)', () => {
+  const dir = tmpDir2();
+  const real = path.join(dir, 'real.jsonl');
+  fs.writeFileSync(real, recLine('sess-link', 'mcp__memtrace__get_impact'));
+  fs.symlinkSync(real, path.join(dir, LOG));
+  const r = readerModule.readSessionRecords('sess-link', { env: { GSD_CONTRIB_LOG_DIR: dir } });
+  assert.deepStrictEqual(r.records, [{ tool_name: 'mcp__memtrace__get_impact', outcome: 'ok' }]);
+  assert.deepStrictEqual(r.problems, [], 'an absent rotated slot is not a problem');
+  assert.strictEqual(r.complete, true);
+});
+
+test('38 fix BL-01 reader: the log is opened read-only and non-blocking', () => {
+  const dir = tmpDir2();
+  writeFile(dir, LOG, [recLine('sess-flags', 'Bash')]);
+  const flags = [];
+  const spy = spyFs({
+    openSync: (p, f) => {
+      flags.push(f);
+      return fs.openSync(p, f);
+    },
+  });
+  readerModule.readSessionRecords('sess-flags', { env: { GSD_CONTRIB_LOG_DIR: dir }, fsImpl: spy });
+  assert.strictEqual(flags.length, 1, 'only the live file exists, so one open');
+  assert.strictEqual(typeof flags[0], 'number', 'numeric open flags, not the blocking string mode: ' + flags[0]);
+  assert.strictEqual(flags[0] & fs.constants.O_ACCMODE, fs.constants.O_RDONLY, 'read-only');
+  if (fs.constants.O_NONBLOCK !== undefined) {
+    assert.ok(flags[0] & fs.constants.O_NONBLOCK, 'O_NONBLOCK is set');
+  }
+});
+
+test('38 fix BL-01 reader: lstat says regular but the opened fd is not (a swap between the two) → refused after fstat', () => {
+  const dir = tmpDir2();
+  writeFile(dir, LOG, [recLine('sess-swap', 'mcp__memtrace__get_impact')]);
+  const spy = spyFs({
+    fstatSync: (fd) => {
+      const st = fs.fstatSync(fd);
+      return Object.assign(Object.create(Object.getPrototypeOf(st)), st, { isFile: () => false });
+    },
+  });
+  const r = readerModule.readSessionRecords('sess-swap', { env: { GSD_CONTRIB_LOG_DIR: dir }, fsImpl: spy });
+  assert.strictEqual(r.complete, false);
+  assert.deepStrictEqual(r.problems, ['unreadable ' + LOG + ': not a regular file']);
+  assert.deepStrictEqual(r.records, []);
 });

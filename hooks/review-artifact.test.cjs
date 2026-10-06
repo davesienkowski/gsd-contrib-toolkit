@@ -1709,3 +1709,97 @@ test('38-04 parity: the re-review.md `8a.` line names every required memtrace ve
 test('38-04 parity: the re-review.md `8a.` line keeps the "name the unavailable verb" rule', () => {
   assert.ok(reReview8aLine().includes('name the unavailable verb'));
 });
+
+// ── 38 review fix BL-01: the spawned hook emits a decision with a FIFO in the log slot ────
+//
+// The real entrypoint (`node hooks/review-artifact.cjs`), not the injectable seam: a temp root with
+// the gsd-core sentinel layout and the R8/R10 artifacts, a fake `gh` first on PATH (canned PR
+// number + head oid, an empty posted-review list), and a log dir whose rotated slot is a FIFO. A
+// reader that blocks on the FIFO never emits, and the harness then treats the timed-out hook as
+// allow; the fixed reader refuses the FIFO, the read is incomplete, and the hook emits an ask.
+
+const { execFileSync, spawnSync } = require('node:child_process');
+
+/** True when this platform has named pipes and `mkfifo`. */
+function hasMkfifo() {
+  if (process.platform === 'win32') return false;
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'rev-art-fifo-probe-'));
+  try {
+    execFileSync('mkfifo', [path.join(d, 'p')], { stdio: 'ignore' });
+    return true;
+  } catch (_) {
+    return false;
+  } finally {
+    fs.rmSync(d, { recursive: true, force: true });
+  }
+}
+
+test('38 fix BL-01 e2e (spawned hook): a FIFO at tool-log.1.jsonl → the real entrypoint emits an ask, within its bound', { skip: !hasMkfifo() && 'no mkfifo on this platform' }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rev-art-e2e-root-'));
+  const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rev-art-e2e-log-'));
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rev-art-e2e-bin-'));
+  try {
+    // gsd-core sentinel layout (hooks/lib/resolve.cjs hasSentinel): scripts/ with one identity
+    // script, and gsd-core/bin/lib/. Nothing here is executed.
+    fs.mkdirSync(path.join(root, 'scripts'));
+    fs.writeFileSync(path.join(root, 'scripts', 'issue-dedupe.cjs'), '');
+    fs.mkdirSync(path.join(root, 'gsd-core', 'bin', 'lib'), { recursive: true });
+    const adir = path.join(root, DIR);
+    fs.mkdirSync(adir, { recursive: true });
+    fs.writeFileSync(path.join(adir, R8_CODE), text(R8_CODE_OK));
+    fs.writeFileSync(path.join(adir, R8_SEC), text(R8_SEC_OK));
+    fs.writeFileSync(path.join(adir, R10), text(R10_OK));
+
+    // Fake gh: `gh pr view …` → PR 42 at HEAD; every `gh api …` (the posted-review list) → empty.
+    fs.writeFileSync(
+      path.join(binDir, 'gh'),
+      '#!/bin/sh\nif [ "$1" = "pr" ]; then printf \'%s\' \'{"number":42,"headRefOid":"' + HEAD + '"}\'; fi\nexit 0\n',
+      { mode: 0o755 }
+    );
+
+    const sid = 'sess-38-fix-e2e-fifo';
+    const live = serializeRecord(
+      recordToolCall(
+        JSON.stringify({
+          hook_event_name: 'PostToolUse',
+          session_id: sid,
+          tool_use_id: 'toolu_e2e',
+          tool_name: 'Bash',
+          tool_input: { command: 'ls' },
+          tool_response: {},
+          cwd: '/tmp/wt',
+        }),
+        { env: {} }
+      )
+    );
+    fs.writeFileSync(path.join(logDir, LOG_FILENAME), live);
+    execFileSync('mkfifo', [path.join(logDir, 'tool-log.1.jsonl')]);
+
+    const env = Object.assign({}, process.env, {
+      PATH: binDir + path.delimiter + (process.env.PATH || ''),
+      GSD_CONTRIB_LOG_DIR: logDir,
+    });
+    delete env.GSD_CONTRIB_RECORD;
+    delete env.GSD_CONTRIB_OVERRIDE;
+
+    const t0 = Date.now();
+    const res = spawnSync(process.execPath, [path.join(__dirname, 'review-artifact.cjs')], {
+      input: input('gh pr review 42 --approve', sid),
+      encoding: 'utf8',
+      cwd: root,
+      env,
+      timeout: 10000,
+    });
+    const elapsed = Date.now() - t0;
+    assert.strictEqual(res.signal, null, 'the hook was killed after ' + elapsed + ' ms without a decision');
+    assert.strictEqual(res.status, 0, res.stderr);
+    assert.ok(elapsed < 5000, 'the hook decided in ' + elapsed + ' ms');
+    const out = JSON.parse(res.stdout.trim().split('\n').pop());
+    const hso = out.hookSpecificOutput;
+    assert.strictEqual(hso.permissionDecision, 'ask', hso.permissionDecisionReason);
+    assert.ok(hso.permissionDecisionReason.startsWith(R8A_ASK_PREFIX), hso.permissionDecisionReason);
+    assert.match(hso.permissionDecisionReason, /unreadable tool-log\.1\.jsonl: not a regular file/);
+  } finally {
+    for (const d of [root, logDir, binDir]) fs.rmSync(d, { recursive: true, force: true });
+  }
+});
