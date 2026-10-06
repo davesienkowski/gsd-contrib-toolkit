@@ -345,3 +345,20 @@ test('W5 P1 guard: a directory at runtime-stamp.json -> ENF-21 denies (could not
   assertDecided(t, runEnf21(fx), 'deny', P1_UNREADABLE);
   assertPlanted('dir', fx.stamp, null);
 });
+
+// -------------------------------------------------------------------- P2: upstream-tip-cache.json read
+
+const P2_MISS = /no cached tip is available/;
+
+// The OFFLINE stub, so the cache write never runs: a hang here is the READ (research pitfall 3).
+for (const p of PLANTINGS) {
+  const guard = p.kind === 'dir';
+  test('W5 P2' + (guard ? ' guard' : '') + ': ' + p.label + ' at upstream-tip-cache.json (offline) -> a cache miss, ENF-21 asks within the bound', { skip: p.skip }, (t) => {
+    const fx = enf21Fixture(t, 'offline');
+    const target = plant(t, p.kind, fx.cache);
+    const out = runEnf21(fx);
+    assertDecided(t, out, 'ask', ENF21_ASK);
+    assert.match(out.hso.permissionDecisionReason, P2_MISS);
+    assertPlanted(p.kind, fx.cache, target);
+  });
+}
