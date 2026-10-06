@@ -1728,6 +1728,13 @@ const L2 = path.join(BR_ROOT, '.claude', 'settings.json');
 const L3 = path.join(BR_HOME, '.claude', 'settings.json');
 const HEAD_JSON = '{"worktree":{"baseRef":"head"}}';
 const FRESH_JSON = '{"worktree":{"baseRef":"fresh"}}';
+// 37-REVIEW MI-04: the managed-settings layer and the main-checkout probe. Every unit row injects a
+// fake managed dir and an empty drop-in listing, so no row ever reads a real system path.
+const BR_MANAGED = path.join(path.sep, 'm');
+const MJ = path.join(BR_MANAGED, 'managed-settings.json');
+const MD = path.join(BR_MANAGED, 'managed-settings.d');
+const GITF = path.join(BR_ROOT, '.git');
+const BR_OPTS = Object.freeze({ managedDir: BR_MANAGED, listDir: () => [] });
 
 /** An injected settings reader over a path -> text table, recording every path it is asked for. */
 function tableReader(table) {
@@ -1760,43 +1767,49 @@ for (const [name, table, want] of BASEREF_TABLE) {
   test('ENF-25 baseRef: ' + name, () => {
     const readBaseRef = exp('readBaseRef');
     const { read } = tableReader(table);
-    assert.strictEqual(readBaseRef(BR_ROOT, BR_HOME, read), want);
+    assert.strictEqual(readBaseRef(BR_ROOT, BR_HOME, read, BR_OPTS), want);
   });
 }
 
-test('ENF-25 baseRef: the reader is asked for exactly the three layers, in order, and nothing else', () => {
+test('ENF-25 baseRef: the reader is asked for exactly managed, the two project layers, the .git probe and user, in order', () => {
   const readBaseRef = exp('readBaseRef');
   const { read, asked } = tableReader({});
-  assert.strictEqual(readBaseRef(BR_ROOT, BR_HOME, read), 'fresh');
-  assert.deepStrictEqual(asked, [L1, L2, L3]);
+  assert.strictEqual(readBaseRef(BR_ROOT, BR_HOME, read, BR_OPTS), 'fresh');
+  assert.deepStrictEqual(asked, [MJ, L1, L2, GITF, L3]);
 });
 
-test('ENF-25 baseRef: the first layer that answers stops the cascade (layer 1 head -> layers 2 and 3 not read)', () => {
+test('ENF-25 baseRef: the first layer that answers stops the cascade (layer 1 head -> later layers not read)', () => {
   const readBaseRef = exp('readBaseRef');
   const { read, asked } = tableReader({ [L1]: HEAD_JSON });
-  assert.strictEqual(readBaseRef(BR_ROOT, BR_HOME, read), 'head');
-  assert.deepStrictEqual(asked, [L1]);
+  assert.strictEqual(readBaseRef(BR_ROOT, BR_HOME, read, BR_OPTS), 'head');
+  assert.deepStrictEqual(asked, [MJ, L1]);
 });
 
-test('ENF-25 baseRef: homedir equal to root -> layer 3 (the same file as layer 2) is not read', () => {
+test('ENF-25 baseRef: homedir equal to root -> the user layer (the same file as layer 2) is not read', () => {
   const readBaseRef = exp('readBaseRef');
   const { read, asked } = tableReader({});
-  assert.strictEqual(readBaseRef(BR_ROOT, BR_ROOT + path.sep, read), 'fresh');
-  assert.deepStrictEqual(asked, [L1, L2], 'two reads, not three');
+  assert.strictEqual(readBaseRef(BR_ROOT, BR_ROOT + path.sep, read, BR_OPTS), 'fresh');
+  assert.deepStrictEqual(asked, [MJ, L1, L2, GITF], 'no user-layer read');
 });
 
 test('ENF-25 baseRef: MAX_SETTINGS_BYTES is 1 MiB', () => {
   assert.strictEqual(exp('MAX_SETTINGS_BYTES'), 1048576);
 });
 
-/** A temp project root + temp homedir, each with a `.claude` dir; the caller writes the layers. */
+/**
+ * A temp project root + temp homedir, each with a `.claude` dir, and a temp managed-settings dir
+ * (MI-04: never the real system path); the caller writes the layers. `opts` is the readBaseRef
+ * options object pointing the managed layer at the temp dir.
+ */
 function settingsDirs() {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'wtfb-set-'));
   const root = path.join(base, 'root');
   const home = path.join(base, 'home');
+  const managed = path.join(base, 'managed');
   fs.mkdirSync(path.join(root, '.claude'), { recursive: true });
   fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
-  return { root, home, dispose: () => fs.rmSync(base, { recursive: true, force: true }) };
+  fs.mkdirSync(managed, { recursive: true });
+  return { root, home, managed, opts: { managedDir: managed }, dispose: () => fs.rmSync(base, { recursive: true, force: true }) };
 }
 
 test('ENF-25 baseRef: default reader, a small regular settings.local.json saying head -> head (positive control)', () => {
@@ -1804,7 +1817,7 @@ test('ENF-25 baseRef: default reader, a small regular settings.local.json saying
   const d = settingsDirs();
   try {
     fs.writeFileSync(path.join(d.root, '.claude', 'settings.local.json'), HEAD_JSON);
-    assert.strictEqual(readBaseRef(d.root, d.home), 'head');
+    assert.strictEqual(readBaseRef(d.root, d.home, undefined, d.opts), 'head');
   } finally {
     d.dispose();
   }
@@ -1819,11 +1832,11 @@ test('ENF-25 baseRef: default reader, a regular file over MAX_SETTINGS_BYTES is 
     fs.writeFileSync(path.join(d.root, '.claude', 'settings.local.json'), HEAD_JSON + ' '.repeat(max));
     fs.writeFileSync(path.join(d.root, '.claude', 'settings.json'), FRESH_JSON);
     fs.writeFileSync(path.join(d.home, '.claude', 'settings.json'), HEAD_JSON);
-    assert.strictEqual(readBaseRef(d.root, d.home), 'fresh');
+    assert.strictEqual(readBaseRef(d.root, d.home, undefined, d.opts), 'fresh');
     // And alone (no other layer) it yields the default.
     fs.rmSync(path.join(d.root, '.claude', 'settings.json'));
     fs.rmSync(path.join(d.home, '.claude', 'settings.json'));
-    assert.strictEqual(readBaseRef(d.root, d.home), 'fresh');
+    assert.strictEqual(readBaseRef(d.root, d.home, undefined, d.opts), 'fresh');
   } finally {
     d.dispose();
   }
@@ -1835,7 +1848,7 @@ test('ENF-25 baseRef: default reader, a directory at the settings path is ignore
   try {
     fs.mkdirSync(path.join(d.root, '.claude', 'settings.local.json'));
     fs.writeFileSync(path.join(d.root, '.claude', 'settings.json'), HEAD_JSON);
-    assert.strictEqual(readBaseRef(d.root, d.home), 'head');
+    assert.strictEqual(readBaseRef(d.root, d.home, undefined, d.opts), 'head');
   } finally {
     d.dispose();
   }
@@ -1845,9 +1858,9 @@ test('ENF-25 baseRef: default reader, missing files are ignored (only layer 3 pr
   const readBaseRef = exp('readBaseRef');
   const d = settingsDirs();
   try {
-    assert.strictEqual(readBaseRef(d.root, d.home), 'fresh');
+    assert.strictEqual(readBaseRef(d.root, d.home, undefined, d.opts), 'fresh');
     fs.writeFileSync(path.join(d.home, '.claude', 'settings.json'), HEAD_JSON);
-    assert.strictEqual(readBaseRef(d.root, d.home), 'head');
+    assert.strictEqual(readBaseRef(d.root, d.home, undefined, d.opts), 'head');
   } finally {
     d.dispose();
   }
@@ -1859,7 +1872,7 @@ test('ENF-25 baseRef: default reader never writes: the temp settings dirs are by
   try {
     fs.writeFileSync(path.join(d.root, '.claude', 'settings.local.json'), '{bad');
     const before = [d.root, d.home].map((x) => fs.readdirSync(path.join(x, '.claude')).join(','));
-    readBaseRef(d.root, d.home);
+    readBaseRef(d.root, d.home, undefined, d.opts);
     const after = [d.root, d.home].map((x) => fs.readdirSync(path.join(x, '.claude')).join(','));
     assert.deepStrictEqual(after, before);
     assert.strictEqual(fs.readFileSync(path.join(d.root, '.claude', 'settings.local.json'), 'utf8'), '{bad');
@@ -2715,4 +2728,98 @@ test('ENF-25 NI-05 seam: the fetch env sets SSH_ASKPASS_REQUIRE=never and GCM_IN
   assert.strictEqual(env.GIT_TERMINAL_PROMPT, '0');
   assert.strictEqual(env.SSH_ASKPASS_REQUIRE, 'never');
   assert.strictEqual(env.GCM_INTERACTIVE, 'never');
+});
+
+// ── MI-04: the worktree.baseRef cascade also reads managed settings and, from a linked worktree, the main checkout ──
+
+test('ENF-25 MI-04: defaultManagedSettingsDir is /etc/claude-code on Linux, the ClaudeCode dirs on macOS and Windows', () => {
+  const dirOf = exp('defaultManagedSettingsDir');
+  assert.strictEqual(dirOf('linux'), '/etc/claude-code');
+  assert.strictEqual(dirOf('darwin'), '/Library/Application Support/ClaudeCode');
+  assert.strictEqual(dirOf('win32'), 'C:\\Program Files\\ClaudeCode');
+});
+
+test('ENF-25 MI-04: managed-settings.json head beats a project settings.local.json fresh (managed is highest precedence)', () => {
+  const { read, asked } = tableReader({ [MJ]: HEAD_JSON, [L1]: FRESH_JSON });
+  assert.strictEqual(exp('readBaseRef')(BR_ROOT, BR_HOME, read, BR_OPTS), 'head');
+  assert.deepStrictEqual(asked, [MJ]);
+});
+
+test('ENF-25 MI-04: managed-settings.d drop-ins are read last-sorted first (the later file wins), before managed-settings.json; non-.json and dot files skipped', () => {
+  const listDir = (d) => (d === MD ? ['20-b.json', '10-a.json', '.hidden.json', 'notes.txt'] : []);
+  const opts = { managedDir: BR_MANAGED, listDir };
+  const A = path.join(MD, '10-a.json');
+  const B = path.join(MD, '20-b.json');
+  const one = tableReader({ [A]: HEAD_JSON, [B]: FRESH_JSON });
+  assert.strictEqual(exp('readBaseRef')(BR_ROOT, BR_HOME, one.read, opts), 'fresh');
+  assert.deepStrictEqual(one.asked, [B]);
+  const two = tableReader({ [A]: HEAD_JSON, [MJ]: FRESH_JSON });
+  assert.strictEqual(exp('readBaseRef')(BR_ROOT, BR_HOME, two.read, opts), 'head');
+  assert.deepStrictEqual(two.asked, [B, A]);
+});
+
+const MAIN = path.join(path.sep, 'main');
+const MAIN_L1 = path.join(MAIN, '.claude', 'settings.local.json');
+const MAIN_L2 = path.join(MAIN, '.claude', 'settings.json');
+const WT_ADMIN = path.join(MAIN, '.git', 'worktrees', 'wt');
+
+test('ENF-25 MI-04: from a linked worktree, the main checkout\'s settings.local.json answers after the worktree\'s own layers', () => {
+  const { read, asked } = tableReader({
+    [GITF]: 'gitdir: ' + WT_ADMIN + '\n',
+    [path.join(WT_ADMIN, 'commondir')]: '../..\n',
+    [MAIN_L1]: HEAD_JSON,
+  });
+  assert.strictEqual(exp('readBaseRef')(BR_ROOT, BR_HOME, read, BR_OPTS), 'head');
+  assert.deepStrictEqual(asked, [MJ, L1, L2, GITF, path.join(WT_ADMIN, 'commondir'), MAIN_L1]);
+});
+
+test('ENF-25 MI-04: the main checkout\'s layers come AFTER the worktree\'s own (worktree project fresh beats main local head) and BEFORE user', () => {
+  const linked = { [GITF]: 'gitdir: ' + WT_ADMIN + '\n', [path.join(WT_ADMIN, 'commondir')]: '../..\n' };
+  const a = tableReader(Object.assign({ [L2]: FRESH_JSON, [MAIN_L1]: HEAD_JSON }, linked));
+  assert.strictEqual(exp('readBaseRef')(BR_ROOT, BR_HOME, a.read, BR_OPTS), 'fresh');
+  const b = tableReader(Object.assign({ [MAIN_L2]: FRESH_JSON, [L3]: HEAD_JSON }, linked));
+  assert.strictEqual(exp('readBaseRef')(BR_ROOT, BR_HOME, b.read, BR_OPTS), 'fresh');
+});
+
+test('ENF-25 MI-04: a relative gitdir resolves against the worktree root; a bare common dir or a main that IS the root adds no layers', () => {
+  const rel = tableReader({
+    [GITF]: 'gitdir: ../main/.git/worktrees/wt\n',
+    [path.join(WT_ADMIN, 'commondir')]: '../..\n',
+    [MAIN_L2]: HEAD_JSON,
+  });
+  assert.strictEqual(exp('readBaseRef')(BR_ROOT, BR_HOME, rel.read, BR_OPTS), 'head');
+  const bareAdmin = path.join(path.sep, 'bare.git', 'worktrees', 'wt');
+  const bare = tableReader({ [GITF]: 'gitdir: ' + bareAdmin + '\n', [path.join(bareAdmin, 'commondir')]: '../..\n' });
+  assert.strictEqual(exp('readBaseRef')(BR_ROOT, BR_HOME, bare.read, BR_OPTS), 'fresh');
+  assert.ok(!bare.asked.some((p) => p.startsWith(path.join(path.sep, 'bare.git', '.claude'))), JSON.stringify(bare.asked));
+});
+
+test('ENF-25 MI-04 default reader: a real linked worktree reads its main checkout\'s settings.local.json (temp repo, temp managed dir)', () => {
+  const d = settingsDirs();
+  try {
+    git(d.root, '-c', 'init.defaultBranch=next', 'init', '-q');
+    fs.writeFileSync(path.join(d.root, 'f.txt'), '1\n');
+    commitAll(d.root, 'init');
+    fs.writeFileSync(path.join(d.root, '.claude', 'settings.local.json'), HEAD_JSON);
+    const wt = path.join(path.dirname(d.root), 'linked');
+    git(d.root, 'worktree', 'add', '-q', '-b', 'side', wt);
+    assert.strictEqual(exp('readBaseRef')(wt, d.home, undefined, d.opts), 'head');
+  } finally {
+    d.dispose();
+  }
+});
+
+test('ENF-25 MI-04 default reader: a temp managed-settings.json saying head wins over the project layers', () => {
+  const d = settingsDirs();
+  try {
+    fs.writeFileSync(path.join(d.root, '.claude', 'settings.local.json'), FRESH_JSON);
+    fs.writeFileSync(path.join(d.managed, 'managed-settings.json'), HEAD_JSON);
+    assert.strictEqual(exp('readBaseRef')(d.root, d.home, undefined, d.opts), 'head');
+    fs.rmSync(path.join(d.managed, 'managed-settings.json'));
+    fs.mkdirSync(path.join(d.managed, 'managed-settings.d'));
+    fs.writeFileSync(path.join(d.managed, 'managed-settings.d', '50-wt.json'), HEAD_JSON);
+    assert.strictEqual(exp('readBaseRef')(d.root, d.home, undefined, d.opts), 'head');
+  } finally {
+    d.dispose();
+  }
 });
