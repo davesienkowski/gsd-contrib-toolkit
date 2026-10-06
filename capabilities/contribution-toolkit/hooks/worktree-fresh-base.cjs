@@ -52,9 +52,10 @@
  * `ask`; origin/next missing after a good fetch asks too. Every other throw denies through
  * runGate. An ask degrades to an allow under --dangerously-skip-permissions (ASK_LIMIT_NOTE, stated
  * in the reason). A failed fetch is not retried for a second cut of the same root in one call.
- * 37-REVIEW MI-01: for a local / HEAD-on-next base the gate first judges next against the
- * LAST-FETCHED origin/next; when that already proves next held-and-behind or diverged it returns
- * the POLICY deny (worded as stale evidence) instead of the ask. It never moves next on that data.
+ * The grade is ALWAYS ask (CTK-ADR-0007, locked; 37-REVIEW MI-01's deny was reverted by the
+ * orchestrator). For a local / HEAD-on-next base the gate still reads next against the LAST-FETCHED
+ * origin/next; when that shows next held-and-behind or diverged, the evidence and its exact fix
+ * command are added to the ask reason. It never moves next on that data.
  *
  * TIME BOUND (37-04, the 36-REVIEW m-06 per-call deadline mirrored from gsd-test-clean-tree): one
  * GATE_BUDGET_MS deadline per gate call is shared by every subprocess. A non-fetch git call gets
@@ -101,9 +102,13 @@ const { findWorktreeAdds } = require('./lib/worktree-add-detect.cjs');
  * 37-REVIEW MA-02: a fully qualified, forced refspec, so `refs/remotes/origin/next` is ALWAYS the
  * remote BRANCH (a narrowed `remote.origin.fetch` would otherwise leave it stale, and a tag named
  * `next` on origin would win the DWIM of a bare `next`); `--no-tags` fetches no tags at all.
+ * Verifier gap VG-01: `--no-write-fetch-head`, so the fetch writes no FETCH_HEAD file (a symlinked
+ * FETCH_HEAD would be written through). The forced destination is safe only because trunkRefHazards
+ * refuses a symbolic or symlinked refs/remotes/origin/next before the fetch runs.
  */
 const FETCH_ARGV = Object.freeze([
-  'fetch', '--quiet', '--no-auto-maintenance', '--no-tags', 'origin', '+refs/heads/next:refs/remotes/origin/next',
+  'fetch', '--quiet', '--no-auto-maintenance', '--no-tags', '--no-write-fetch-head',
+  'origin', '+refs/heads/next:refs/remotes/origin/next',
 ]);
 /** coreutils `timeout` duration and kill-after grace for the fetch. */
 const FETCH_TIMEOUT_S = 15;
@@ -124,9 +129,10 @@ const HOOK_TIMEOUT_S = 60;
 const MIN_CALL_MS = 100;
 /**
  * Worst case non-fetch git processes for ONE trunk cut in one root (37-REVIEW TIME BUDGET):
- * symbolic-ref HEAD (HEAD base), remote get-url origin (the arming check), symbolic-ref -q
- * refs/heads/next (BL-01), rev-parse x2, merge-base, worktree list, rev-parse --git-common-dir
- * (BL-02), update-ref. FETCH_BELT_MS + 9 x GIT_TIMEOUT_MS = 47 s <= GATE_BUDGET_MS.
+ * symbolic-ref HEAD (HEAD base), remote get-url origin (the arming check), for-each-ref of the two
+ * trunk refs (BL-01 / VG-01, replacing BL-01's symbolic-ref), rev-parse x2, merge-base, worktree
+ * list, rev-parse --git-common-dir (BL-02), update-ref. FETCH_BELT_MS + 9 x GIT_TIMEOUT_MS = 47 s
+ * <= GATE_BUDGET_MS.
  */
 const MAX_GIT_CALLS_PER_ROOT = 9;
 /** The fetch detail that reaches a reason is cut to this many characters. */
@@ -147,15 +153,18 @@ const UNCERTAIN_REASON =
   'base is not statically known) — failing closed. Re-run it as a plain command with literal paths and base.';
 
 /**
- * The constant reason for a symbolic `refs/heads/next` (37-REVIEW BL-01). rev-parse and update-ref
- * would read and write THROUGH the symref, so the CAS could move whatever branch it points at,
- * including a checked-out one. The gate cannot attribute such a trunk: thrown, override-escapable.
+ * The constant reason for a trunk-ref hazard (37-REVIEW BL-01, widened by verifier gap VG-01).
+ * `refs/heads/next` (written by the CAS) or `refs/remotes/origin/next` (written by the forced fetch)
+ * is a symbolic ref, a filesystem symlink or sits under one, or is unreadable: a write would land
+ * THROUGH it on another ref or file, including a checked-out branch. Refused before any fetch for
+ * every trunk base kind: thrown, override-escapable (the override allows the cut, nothing is moved).
  */
-const SYMREF_REASON =
-  'ENF-25 worktree fresh-base gate: refs/heads/next in this repository is a symbolic ref, so the gate ' +
-  'will not read or move it (a move would land on the branch it points at) — failing closed. Make ' +
-  '`next` a plain branch, or base the worktree on the remote ref:\n' +
-  '  git worktree add -b <branch> <path> origin/next';
+const TRUNK_REF_REASON =
+  'ENF-25 worktree fresh-base gate: refs/heads/next or refs/remotes/origin/next in this repository is a ' +
+  'symbolic ref, a filesystem symlink (or sits under a symlinked directory), or unreadable, so a fetch or ' +
+  'fast-forward could write through it onto another branch — failing closed before any fetch. Inspect ' +
+  'them with\n  git for-each-ref --format=\'%(refname) %(symref)\' refs/heads/next refs/remotes/origin/next\n' +
+  'make both plain refs, then re-issue your command.';
 
 /** Inherited variables that would redirect a git call away from the target repo. */
 const GIT_REDIRECT_VARS = Object.freeze(['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']);
@@ -282,14 +291,18 @@ function classifyFetchResult(res) {
  * The `ask` for an unobtainable origin. Names ENF-25, the (redacted) failure, that this is a
  * network limit and not a policy decision, the manual fetch, and ends with ASK_LIMIT_NOTE.
  */
-function fetchUnavailableReason(root, message) {
+function fetchUnavailableReason(root, message, evidence) {
+  const local = typeof evidence === 'string' && evidence !== ''
+    ? 'LOCAL EVIDENCE (from the last-fetched origin/next, so not proof of the current trunk, but enough to ' +
+      'act on):\n' + evidence + '\n\n'
+    : '';
   return (
     'ENF-25 worktree fresh-base gate could not refresh origin/next before this worktree cut: ' +
     (cleanDetail(message, 300) || 'origin is unobtainable') + '. ' +
     'This is a NETWORK limit, not a policy decision: the gate cannot tell whether local `next` is current, ' +
     'so a worktree cut now may start from a stale trunk. To check it deterministically once origin is ' +
     'reachable, run\n\n  git -C ' + shellWord(root) + ' fetch origin next\n\nthen re-issue your command.\n\n' +
-    ASK_LIMIT_NOTE
+    local + ASK_LIMIT_NOTE
   );
 }
 
@@ -477,7 +490,8 @@ function readBaseRef(root, homedir, readSettings, opts) {
  * @param {(root:string, ref:string)=>(string|null)} deps.revParse commit sha or null
  * @param {(root:string, a:string, b:string)=>boolean} deps.isAncestor
  * @param {(root:string, ref:string)=>string[]} deps.worktreesHolding worktree paths holding ref
- * @param {(root:string, ref:string)=>boolean} deps.isSymbolicRef true when `ref` is a symbolic ref
+ * @param {(root:string)=>string[]} deps.trunkRefHazards write-through hazards on the two trunk refs
+ *   (VG-01); empty when both are plain or absent
  * @param {(root:string, ref:string)=>{path:string, op:string}[]} deps.nextInProgress worktrees
  *   mid-rebase / mid-bisect of `ref` (op 'rebase' | 'bisect')
  * @param {(root:string, ref:string, newSha:string, oldSha:string)=>boolean} deps.casUpdateRef
@@ -558,6 +572,8 @@ function checkContext(deps) {
     fetchState: new Map(),
     // root -> whether its origin parses as open-gsd/gsd-core (MA-01): one `remote get-url` per root.
     armed: new Map(),
+    // roots whose two trunk refs were checked for write-through hazards (VG-01): once per root.
+    refsChecked: new Set(),
   };
 }
 
@@ -750,8 +766,12 @@ function checkCut(e, root, ctx) {
   // fork-only clone, no `origin`) is out of scope: allow with no fetch.
   if (!armed.has(root)) armed.set(root, repoSpecTargetsGsdCore(deps.originUrl(root, git()) || ''));
   if (!armed.get(root)) return null;
-  // BL-01: a symbolic next is refused BEFORE any fetch, read or write of it.
-  if (kind === 'local' && deps.isSymbolicRef(root, NEXT_REF, git())) throw new FailClosed(SYMREF_REASON);
+  // BL-01 / VG-01: a symbolic or symlinked trunk ref is refused BEFORE any fetch, read or write, for
+  // every trunk base kind: the forced fetch writes refs/remotes/origin/next, the CAS refs/heads/next.
+  if (!ctx.refsChecked.has(root)) {
+    ctx.refsChecked.add(root);
+    if (deps.trunkRefHazards(root, git()).length > 0) throw new FailClosed(TRUNK_REF_REASON);
+  }
 
   if (!fetchState.has(root)) {
     const belt = budget(FETCH_BELT_MS);
@@ -768,11 +788,13 @@ function checkCut(e, root, ctx) {
   }
   const unobtainable = fetchState.get(root);
   if (unobtainable) {
-    // MI-01: nothing local can prove a remote base current -> ask. For a local base, the
-    // LAST-FETCHED origin/next may already prove next held-and-behind or diverged: deny on that
-    // proof; otherwise ask. Never a CAS on unrefreshed data.
+    // CTK-ADR-0007 (LOCKED): an unobtainable upstream resolves to ASK, always. MI-01 (reverted to a
+    // deny-free form): for a local base the LAST-FETCHED origin/next may already show next
+    // held-and-behind or diverged; that evidence and its fix go INTO the ask reason. A remote base
+    // has nothing local to add. Never a CAS on unrefreshed data.
     if (kind === 'remote') return unobtainable.decision;
-    return judgeLocal(root, ctx, unobtainable.detail) || unobtainable.decision;
+    const evidence = staleEvidence(root, ctx, unobtainable.detail);
+    return evidence === null ? unobtainable.decision : ask(fetchUnavailableReason(root, unobtainable.detail, evidence));
   }
 
   const remote = deps.revParse(root, ORIGIN_NEXT_REF, git());
@@ -798,12 +820,13 @@ function checkCut(e, root, ctx) {
 }
 
 /**
- * MI-01: judge local next against the LAST-FETCHED origin/next after a failed fetch. Returns a
- * POLICY deny only when that evidence already proves next held-and-behind (checked out, or being
- * rebased / bisected) or diverged; null (the caller asks) when it cannot decide: no origin/next, no
- * next, equal, ahead, or behind and unheld (a move on unrefreshed data is never made).
+ * MI-01 (reverted to evidence-only by the orchestrator): judge local next against the LAST-FETCHED
+ * origin/next after a failed fetch. Returns the held / in-progress / diverged reason TEXT (with its
+ * exact fix command) when that evidence already shows next held-and-behind or diverged, for the
+ * caller to put inside its ASK; null when it cannot decide: no origin/next, no next, equal, ahead,
+ * or behind and unheld. It never decides, and a move on unrefreshed data is never made.
  */
-function judgeLocal(root, ctx, stale) {
+function staleEvidence(root, ctx, stale) {
   const { deps, budget } = ctx;
   const git = () => budget(GIT_TIMEOUT_MS);
   const remote = deps.revParse(root, ORIGIN_NEXT_REF, git());
@@ -812,13 +835,13 @@ function judgeLocal(root, ctx, stale) {
   if (local === null || local === undefined || local === remote) return null;
   if (deps.isAncestor(root, local, remote, git())) {
     const holders = deps.worktreesHolding(root, NEXT_REF, git());
-    if (holders.length > 0) return deny(heldReason(holders, local, remote, stale));
+    if (holders.length > 0) return heldReason(holders, local, remote, stale);
     const busy = deps.nextInProgress(root, NEXT_REF, git());
-    if (busy.length > 0) return deny(inProgressReason(busy, local, remote, stale));
+    if (busy.length > 0) return inProgressReason(busy, local, remote, stale);
     return null;
   }
   if (deps.isAncestor(root, remote, local, git())) return null;
-  return deny(divergedReason(local, remote, stale));
+  return divergedReason(local, remote, stale);
 }
 
 /** fs errors that mean "this state file / dir is absent". */
@@ -849,6 +872,67 @@ function readDirOrEmpty(p) {
     if (err && ABSENT_CODES.has(err.code)) return [];
     throw stateReadFailed(p, err);
   }
+}
+
+/**
+ * VG-01: the loose-ref and reflog paths (relative to the common dir) whose being a symlink would
+ * route a trunk-ref write elsewhere.
+ */
+const TRUNK_REF_PATHS = Object.freeze([
+  'refs', 'refs/heads', 'refs/heads/next', 'refs/remotes', 'refs/remotes/origin', 'refs/remotes/origin/next',
+  'logs', 'logs/refs', 'logs/refs/heads', 'logs/refs/heads/next', 'logs/refs/remotes', 'logs/refs/remotes/origin',
+  'logs/refs/remotes/origin/next',
+]);
+
+/** lstat of p, or null when it is absent; any other error fails closed. */
+function lstatOrNull(p) {
+  try {
+    return fs.lstatSync(p);
+  } catch (err) {
+    if (err && ABSENT_CODES.has(err.code)) return null;
+    throw stateReadFailed(p, err);
+  }
+}
+
+/** At most this many parent directories are walked to find `.git` (git's own discovery walk). */
+const MAX_GIT_DISCOVERY_DEPTH = 64;
+
+/**
+ * VG-01: the git dir and common dir that `git -C <dir>` uses, located with fs reads only: the first
+ * `.git` at or above `dir` (a directory is the git dir; a file's `gitdir:` line names it), then that
+ * git dir's `commondir` file (a linked worktree's admin dir) or the git dir itself. null when none is
+ * found or the `.git` file cannot be parsed. GIT_DIR and friends are scrubbed from the gate's own git
+ * calls, so they do not apply here either.
+ *
+ * @returns {{gitdir:string, common:string}|null}
+ */
+function gitDirsOf(dir) {
+  let d = path.resolve(String(dir));
+  for (let i = 0; i < MAX_GIT_DISCOVERY_DEPTH; i++) {
+    const candidate = path.join(d, '.git');
+    let st = null;
+    try {
+      st = fs.statSync(candidate);
+    } catch (err) {
+      if (!(err && ABSENT_CODES.has(err.code))) throw stateReadFailed(candidate, err);
+    }
+    if (st) {
+      let gitdir = null;
+      if (st.isDirectory()) gitdir = candidate;
+      else if (st.isFile()) {
+        const m = /^gitdir:[ \t]*(.+?)[ \t]*$/m.exec(readOrNull(candidate) || '');
+        if (m) gitdir = path.resolve(d, m[1]);
+      }
+      if (gitdir === null) return null;
+      const commondir = readOrNull(path.join(gitdir, 'commondir'));
+      const common = commondir !== null && commondir.trim() !== '' ? path.resolve(gitdir, commondir.trim()) : gitdir;
+      return { gitdir, common };
+    }
+    const parent = path.dirname(d);
+    if (parent === d) return null;
+    d = parent;
+  }
+  return null;
 }
 
 /** realpath of p, or p itself when it cannot be resolved (a label only). */
@@ -890,7 +974,7 @@ function requireSha(op, sha) {
  * @param {{env?: Object, spawnSync?: Function, budget?: (capMs:number)=>number}} [opts]
  *   `spawnSync` defaults to child_process.spawnSync; `budget` is the gate call's shared deadline
  *   (absent: each call gets its full cap).
- * @returns {{originUrl: Function, fetchOrigin: Function, revParse: Function, currentBranch: Function, isSymbolicRef: Function,
+ * @returns {{originUrl: Function, fetchOrigin: Function, revParse: Function, currentBranch: Function, trunkRefHazards: Function,
  *   isAncestor: Function, worktreesHolding: Function, nextInProgress: Function, casUpdateRef: Function}}
  */
 function createDefaultSeams({ env, spawnSync, budget } = {}) {
@@ -955,15 +1039,59 @@ function createDefaultSeams({ env, spawnSync, budget } = {}) {
   }
 
   /**
-   * BL-01: `git symbolic-ref -q <ref>`: exit 0 (a symbolic ref) -> true, 1 (not a symbolic ref,
-   * or missing) -> false, else FailClosed. A git call, not a file read: packed-refs and reftable
-   * mean the ref need not be a loose file.
+   * BL-01 / verifier gap VG-01: every reason a write to `refs/heads/next` (the CAS) or
+   * `refs/remotes/origin/next` (the forced fetch) could land THROUGH the ref onto another ref or
+   * file. ONE git call:
+   *   `git for-each-ref --format='%(refname) %(symref)' refs/heads/next refs/remotes/origin/next`
+   *   - a non-empty %(symref) -> the ref is symbolic;
+   *   - a stderr line naming either ref (`ignoring broken ref`) -> unreadable.
+   * Then plain fs reads (no git call) in the common dir, located the way git discovers it from
+   * `dir` (a `.git` dir, or a `.git` file's `gitdir:` plus that admin dir's `commondir`):
+   *   - lstat of refs, refs/heads, refs/heads/next, refs/remotes, refs/remotes/origin,
+   *     refs/remotes/origin/next and the same chain under logs/: a symlink anywhere is a hazard
+   *     (the ref, its lock-and-rename, or its reflog append would follow it);
+   *   - each loose trunk ref file: `ref: ...` (a symref, including a DANGLING one for-each-ref
+   *     omits) or anything that is not a full sha is a hazard.
+   * A git dir that cannot be located is a hazard (when unsure, do not write). An fs error other
+   * than ENOENT / ENOTDIR fails closed.
+   *
+   * @returns {string[]} hazard descriptions; [] when both refs are plain or absent
    */
-  function isSymbolicRef(dir, ref, ms) {
-    const r = runGit(dir, ['symbolic-ref', '-q', '--', ref], 'symbolic-ref', ms);
-    if (r.status === 0) return true;
-    if (r.status === 1) return false;
-    throw unexpected('symbolic-ref', r);
+  function trunkRefHazards(dir, ms) {
+    const trunk = [NEXT_REF, ORIGIN_NEXT_REF];
+    const r = runGit(dir, ['for-each-ref', '--format=%(refname) %(symref)', ...trunk], 'for-each-ref', ms);
+    if (r.status !== 0) throw unexpected('for-each-ref', r);
+    const hazards = [];
+    for (const line of String(r.stdout || '').split(/\r?\n/)) {
+      const sp = line.indexOf(' ');
+      if (sp === -1) continue;
+      const name = line.slice(0, sp);
+      const target = line.slice(sp + 1).trim();
+      if (trunk.includes(name) && target !== '') hazards.push(name + ' is a symbolic ref');
+    }
+    const err = String(r.stderr || '');
+    for (const ref of trunk) if (err.includes(ref)) hazards.push(ref + ' is unreadable (git: broken ref)');
+
+    const dirs = gitDirsOf(dir);
+    if (dirs === null) {
+      hazards.push('the git dir could not be located from ' + path.basename(String(dir)));
+      return hazards;
+    }
+    for (const rel of TRUNK_REF_PATHS) {
+      const p = path.join(dirs.common, ...rel.split('/'));
+      const st = lstatOrNull(p);
+      if (st && st.isSymbolicLink()) hazards.push(rel + ' is a filesystem symlink');
+    }
+    for (const ref of trunk) {
+      const p = path.join(dirs.common, ...ref.split('/'));
+      const st = lstatOrNull(p);
+      if (!st || !st.isFile()) continue;
+      const text = readOrNull(p);
+      const t = text === null ? '' : text.trim();
+      if (t.startsWith('ref:')) hazards.push(ref + ' is a symbolic ref (loose)');
+      else if (!SHA_RE.test(t)) hazards.push(ref + ' is not a full object name (loose)');
+    }
+    return hazards;
   }
 
   /** exit 0 -> true, 1 -> false, else FailClosed. */
@@ -1101,7 +1229,7 @@ function createDefaultSeams({ env, spawnSync, budget } = {}) {
     throw new FailClosed('ENF-25 worktree fresh-base gate: ' + graded.detail + ' — failing closed.');
   }
 
-  return { originUrl, fetchOrigin, revParse, currentBranch, isSymbolicRef, isAncestor, worktreesHolding, nextInProgress, casUpdateRef };
+  return { originUrl, fetchOrigin, revParse, currentBranch, trunkRefHazards, isAncestor, worktreesHolding, nextInProgress, casUpdateRef };
 }
 
 /**
