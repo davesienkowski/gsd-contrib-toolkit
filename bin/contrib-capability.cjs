@@ -1936,6 +1936,7 @@ module.exports = {
   countStripped,
   requireReason,
   writeAccountabilityReceipt,
+  probeReceiptWritable,
   parseReason,
   ENFORCEMENT_FLAG,
   runInstall,
