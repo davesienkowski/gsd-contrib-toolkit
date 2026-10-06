@@ -8,8 +8,11 @@
  *   (b) docs/adr/README.md lists CTK-ADR-0008 as Proposed.
  *   (c) CTK-ADR-0001..0007 still say Accepted (no silent status edit of an Accepted record).
  *   (d) README.md's gsd-test-viability (ENF-24) row describes the docker timeout as `ask`, never deny.
+ *   (e) Phase 37 (37-08): CTK-ADR-0009 is Proposed (Dave has not approved it), its Status line never
+ *       says Accepted, and docs/adr/README.md lists it as Proposed.
  *
  * Approving ADR-0008 is Dave's call: when he does, update (a) and (b) here deliberately.
+ * Approving ADR-0009 is also Dave's call: when he does, update (e) here deliberately.
  */
 
 const test = require('node:test');
@@ -53,6 +56,24 @@ test('36-06a: CTK-ADR-0008 Status line says Proposed and not Accepted', () => {
 
 test('36-06a: docs/adr/README.md row for CTK-ADR-0008 says Proposed (not Accepted)', () => {
   const cells = readmeRow('CTK-ADR-0008').split('|').map((c) => c.trim());
+  assert.ok(cells.includes('Proposed'), `status cell is Proposed: ${JSON.stringify(cells)}`);
+  assert.ok(!cells.includes('Accepted'), 'status cell is not Accepted');
+});
+
+test('37-08: CTK-ADR-0009 Status line says Proposed and not Accepted', () => {
+  const line = statusLine(adrFile(9));
+  assert.match(line, /^- \*\*Status:\*\*\s*Proposed/, line);
+  assert.doesNotMatch(line, /^- \*\*Status:\*\*\s*Accepted/, line);
+  // The status paragraph may say "It becomes Accepted ... only when Dave approves" (conditional);
+  // it must never claim the record IS accepted or approved.
+  const lines = fs.readFileSync(adrFile(9), 'utf8').split('\n');
+  const para = [];
+  for (let i = lines.findIndex((l) => l === line); i < lines.length && lines[i].trim() !== ''; i++) para.push(lines[i]);
+  assert.doesNotMatch(para.join(' '), /\b(is|was|been|now) (accepted|approved)\b/i, para.join(' '));
+});
+
+test('37-08: CTK-ADR-0009 docs/adr/README.md row says Proposed (not Accepted)', () => {
+  const cells = readmeRow('CTK-ADR-0009').split('|').map((c) => c.trim());
   assert.ok(cells.includes('Proposed'), `status cell is Proposed: ${JSON.stringify(cells)}`);
   assert.ok(!cells.includes('Accepted'), 'status cell is not Accepted');
 });
