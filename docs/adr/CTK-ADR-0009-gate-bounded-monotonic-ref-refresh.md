@@ -1,8 +1,7 @@
 # CTK-ADR-0009: A gate may perform a bounded, monotonic, compare-and-swap ref refresh
 
-- **Status:** Proposed. Dave has not approved this record. It becomes Accepted, or is superseded, only
-  by his explicit sign-off; until then it documents a decision implemented on a branch, not an approved
-  one.
+- **Status:** Accepted (2026-10-06, by Dave's explicit sign-off). Dave has approved this record; before
+  that sign-off it was Proposed, documenting a decision implemented on a branch.
 - **Review:** Published for maintainer review and open to revision. A changed decision will be recorded
   by a superseding or amending CTK-ADR, never by a silent edit to an accepted record.
 - **Date:** 2026-10-06 (milestone v2.8).

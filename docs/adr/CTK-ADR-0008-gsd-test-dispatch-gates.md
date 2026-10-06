@@ -1,8 +1,8 @@
 # CTK-ADR-0008: Gate gsd-test dispatches at dispatch time (clean tree, unmasked exit, viable run)
 
-- **Status:** Proposed. Dave has not approved this record. It becomes Accepted, or is superseded, only
-  by his explicit sign-off; until then it documents a decision implemented on a branch, not an approved
-  one.
+- **Status:** Accepted (2026-10-06, by Dave's explicit sign-off). Dave has approved this record; before
+  that sign-off it was Proposed, documenting a decision implemented on a branch. The sign-off covers
+  the whole record, including the orchestrator-amended Decision 3 (36-REVIEW M-01).
 - **Review:** Published for maintainer review and open to revision. A changed decision will be recorded
   by a superseding or amending CTK-ADR, never by a silent edit to an accepted record.
 - **Date:** 2026-10-05 (milestone v2.8); amended in place 2026-10-06 from the Phase 36 code review
@@ -307,8 +307,8 @@ unbypassable. Known gaps, largest first:
 The Phase 36 code review read the gsd-test v1.8.0 source (`open-gsd/gsd-test-runner@v1.8.0`:
 `cmd/gsd-test/main.go`, `internal/runner/runner.go`, `internal/runner/policy.go`,
 `internal/worktree/worktree.go`, `internal/config/config.go`, `internal/refs/refs.go`) and found four
-premises of the original record false. The record is still Proposed, so the corrections are made in
-place and listed here:
+premises of the original record false. The record was still Proposed then, so the corrections are made
+in place and listed here:
 
 1. **`--probe-benches` is not informational.** It runs the full suite after probing benches (B-01).
 2. **v1.8.0 has subcommands** (`submit`, `run`, `install-agent-hooks`, `wait`, `status`), and `run`

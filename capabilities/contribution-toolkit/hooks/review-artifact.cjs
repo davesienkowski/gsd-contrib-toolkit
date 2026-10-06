@@ -13,7 +13,7 @@
  *
  * A hook cannot evaluate judgement, and this gate does not try. It mechanizes the FIVE
  * re-review steps whose evidence is a machine fact, not a judgement: the four pure
- * artifact-EXISTENCE checks (`full-system-map.md:169-174`) and, since CTK-ADR-0010 (Proposed,
+ * artifact-EXISTENCE checks (`full-system-map.md:169-174`) and, since CTK-ADR-0010 (Accepted,
  * amending CTK-ADR-0006 Decision 4), step 8a's harness-recorded memtrace evidence:
  *
  *   step 8  -> `gh pr review`   two orthogonal isolated passes (`/code-review` AND

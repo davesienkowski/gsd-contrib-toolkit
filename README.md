@@ -108,7 +108,7 @@ memtrace verb is an MCP tool call on the same hook path), so a granted subagent'
 drops `agent_id`, so the log does not say which agent ran them. The forms not measured are listed in CTK-ADR-0010. When memtrace genuinely cannot run, or its calls are not
 visible to the recorder, the sanctioned escape is filling the scaffolded `.gsd/contrib/pr-<n>-<oid12>/R8a-memtrace.json`
 with `status: "unavailable"`: the gate then asks a human and never allows by itself. See
-[CTK-ADR-0010](docs/adr/CTK-ADR-0010-memtrace-review-evidence.md) (Proposed).
+[CTK-ADR-0010](docs/adr/CTK-ADR-0010-memtrace-review-evidence.md) (Accepted).
 
 ### Worktree cuts `worktree-fresh-base` cannot see
 
