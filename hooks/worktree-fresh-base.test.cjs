@@ -1407,3 +1407,256 @@ test('ENF-25 bound: a non-fetch git call gets min(GIT_TIMEOUT_MS, remaining)', (
   runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps);
   assert.deepStrictEqual(slices, [1500, 1500]);
 });
+
+// ───────────────────────── 37-04 WTREE-04 seam: the hardened default fetch ─────────────────────────
+//
+// createDefaultSeams({env, spawnSync}) with a RECORDING spawnSync: `git remote get-url origin` first
+// (exit 2 = no such remote -> FetchUnavailable; any other failure -> FailClosed), then exactly
+// `timeout -k 2 15 git -C <abs dir> fetch --quiet --no-auto-maintenance origin next` with a 20 s
+// SIGKILL belt, a scrubbed env and GIT_TERMINAL_PROMPT=0. Nothing spawns for a relative dir.
+
+/** A recording spawnSync: `answers(cmd, args)` returns the fake result for each call. */
+function recSpawn(answers) {
+  const calls = [];
+  const fn = (cmd, args, opts) => {
+    calls.push({ cmd, args, opts });
+    return Object.assign({ status: 0, signal: null, stdout: '', stderr: '' }, answers ? answers(cmd, args) : {});
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+function seamsWith(rec, extra) {
+  return gateModule.createDefaultSeams(Object.assign({ env: { GIT_DIR: '/x', PATH: process.env.PATH }, spawnSync: rec }, extra || {}));
+}
+
+const isGetUrl = (cmd, args) => cmd === 'git' && args.join(' ') === 'remote get-url origin';
+const isFetch = (cmd) => cmd === 'timeout';
+
+test('ENF-25 WTREE-04 seam: the default fetch runs `remote get-url origin`, then the bounded fetch with the exact argv, belt and scrubbed env', () => {
+  const rec = recSpawn();
+  seamsWith(rec).fetchOrigin('/abs/dir');
+  assert.strictEqual(rec.calls.length, 2, JSON.stringify(rec.calls.map((c) => [c.cmd, c.args])));
+  const [g, f] = rec.calls;
+  assert.ok(isGetUrl(g.cmd, g.args), JSON.stringify([g.cmd, g.args]));
+  assert.strictEqual(g.opts.cwd, '/abs/dir');
+  assert.strictEqual(g.opts.timeout, gateModule.GIT_TIMEOUT_MS);
+  assert.strictEqual(g.opts.env.GIT_DIR, undefined);
+  assert.strictEqual(f.cmd, 'timeout');
+  assert.deepStrictEqual(f.args, ['-k', '2', '15', 'git', '-C', '/abs/dir', 'fetch', '--quiet', '--no-auto-maintenance', 'origin', 'next']);
+  assert.strictEqual(f.opts.timeout, 20000);
+  assert.strictEqual(f.opts.killSignal, 'SIGKILL');
+  assert.strictEqual(f.opts.env.GIT_DIR, undefined);
+  assert.strictEqual(f.opts.env.GIT_TERMINAL_PROMPT, '0');
+  assert.strictEqual(f.opts.shell, undefined);
+});
+
+test('ENF-25 WTREE-04 seam: `remote get-url` exit 2 (no such remote) -> FetchUnavailable naming no `origin` remote, and no fetch spawn', () => {
+  const rec = recSpawn((cmd, args) => (isGetUrl(cmd, args) ? { status: 2, stderr: 'error: No such remote \'origin\'\n' } : {}));
+  assert.throws(
+    () => seamsWith(rec).fetchOrigin('/abs/dir'),
+    (err) => err instanceof gateModule.FetchUnavailable && /no `origin` remote/.test(err.message)
+  );
+  assert.strictEqual(rec.calls.filter((c) => isFetch(c.cmd)).length, 0);
+});
+
+test('ENF-25 WTREE-04 seam: `remote get-url` exit 128 (unexpected) -> FailClosed, not FetchUnavailable', () => {
+  const rec = recSpawn((cmd, args) => (isGetUrl(cmd, args) ? { status: 128, stderr: 'fatal: not a git repository\n' } : {}));
+  assert.throws(
+    () => seamsWith(rec).fetchOrigin('/abs/dir'),
+    (err) => err instanceof FailClosed && !(err instanceof gateModule.FetchUnavailable)
+  );
+  assert.strictEqual(rec.calls.filter((c) => isFetch(c.cmd)).length, 0);
+});
+
+test('ENF-25 WTREE-04 seam: a relative fetch dir -> FailClosed with ZERO spawns', () => {
+  const rec = recSpawn();
+  assert.throws(() => seamsWith(rec).fetchOrigin('rel/dir'), (err) => err instanceof FailClosed);
+  assert.strictEqual(rec.calls.length, 0);
+});
+
+test('ENF-25 WTREE-04 seam: the fetch exiting 124 -> FetchUnavailable naming the timeout', () => {
+  const rec = recSpawn((cmd) => (isFetch(cmd) ? { status: 124 } : {}));
+  assert.throws(
+    () => seamsWith(rec).fetchOrigin('/abs/dir'),
+    (err) => err instanceof gateModule.FetchUnavailable && /timed out/.test(err.message)
+  );
+});
+
+test('ENF-25 WTREE-04 seam: coreutils `timeout` missing (spawn ENOENT) -> FailClosed naming `timeout`, never FetchUnavailable', () => {
+  const rec = recSpawn((cmd) => (isFetch(cmd) ? { status: null, error: Object.assign(new Error('spawn timeout ENOENT'), { code: 'ENOENT' }) } : {}));
+  assert.throws(
+    () => seamsWith(rec).fetchOrigin('/abs/dir'),
+    (err) => err instanceof FailClosed && /`timeout`/.test(err.message)
+  );
+});
+
+test('ENF-25 WTREE-04 seam: the fetch exiting 126 -> FailClosed', () => {
+  const rec = recSpawn((cmd) => (isFetch(cmd) ? { status: 126 } : {}));
+  assert.throws(() => seamsWith(rec).fetchOrigin('/abs/dir'), (err) => err instanceof FailClosed);
+});
+
+test('ENF-25 WTREE-04 seam: a credentialed fetch stderr reaches the FetchUnavailable message redacted', () => {
+  const rec = recSpawn((cmd) =>
+    isFetch(cmd) ? { status: 128, stderr: "fatal: unable to access 'https://user:s3cr3t@example.invalid/r.git/': Could not resolve host\n" } : {}
+  );
+  assert.throws(
+    () => seamsWith(rec).fetchOrigin('/abs/dir'),
+    (err) => err instanceof gateModule.FetchUnavailable && err.message.includes('https://***@example.invalid') && !err.message.includes('s3cr3t')
+  );
+});
+
+test('ENF-25 WTREE-04 seam: a reduced belt also shortens the coreutils duration so git is killed before the belt', () => {
+  const rec = recSpawn();
+  seamsWith(rec, { budget: (cap) => Math.min(cap, 9000) }).fetchOrigin('/abs/dir');
+  const f = rec.calls.find((c) => isFetch(c.cmd));
+  assert.strictEqual(f.opts.timeout, 9000);
+  const duration = Number(f.args[2]);
+  const killAfter = Number(f.args[1]);
+  assert.ok(duration >= 1 && (duration + killAfter) * 1000 < 9000, JSON.stringify(f.args));
+});
+
+// ───────────────────────── 37-04 WTREE-04 e2e: spawned ask on real fixtures ─────────────────────────
+//
+// proof-harness spawnHook treats `ask` as inconclusive, so these rows spawn the hook directly with
+// an absolute process.execPath and parse stdout (36-04 precedent). No network: an unreachable origin
+// is a nonexistent local path; timeouts and remote stderr come from a fake `timeout` on a PATH that
+// holds ONLY a temp bin dir (plus a `git` symlink to the real git).
+
+const childProcess = require('node:child_process');
+
+function spawnRaw(dir, command, env) {
+  const r = childProcess.spawnSync(process.execPath, [HOOK], {
+    input: input(command),
+    cwd: dir,
+    env: env || process.env,
+    encoding: 'utf8',
+  });
+  assert.strictEqual(r.status, 0, 'hook exit ' + r.status + ' ' + r.stderr);
+  const out = JSON.parse(r.stdout).hookSpecificOutput;
+  return { decision: out.permissionDecision, reason: out.permissionDecisionReason || '' };
+}
+
+function realGit() {
+  for (const d of String(process.env.PATH || '').split(path.delimiter)) {
+    if (!d) continue;
+    const p = path.join(d, 'git');
+    try {
+      fs.accessSync(p, fs.constants.X_OK);
+      return p;
+    } catch {
+      // keep looking
+    }
+  }
+  throw new Error('no git on PATH');
+}
+
+/** A temp bin dir holding `git` (symlink to the real git) and, when `timeoutScript`, a fake `timeout`. */
+function fakeBin(timeoutScript) {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'wtfb-bin-'));
+  fs.symlinkSync(realGit(), path.join(bin, 'git'));
+  if (timeoutScript !== null) {
+    fs.writeFileSync(path.join(bin, 'timeout'), timeoutScript);
+    fs.chmodSync(path.join(bin, 'timeout'), 0o755);
+  }
+  return bin;
+}
+
+function envWithPath(bin) {
+  return Object.assign({}, process.env, { PATH: bin });
+}
+
+const CUT = (fx) => 'git worktree add -b feat ' + path.join(fx.root, 'wt') + ' next';
+
+test('ENF-25 WTREE-04 e2e: origin URL is a nonexistent path -> ask; refs/heads/next unchanged', () => {
+  const fx = makeFixture();
+  try {
+    fx.advanceOrigin();
+    git(fx.A, 'remote', 'set-url', 'origin', path.join(fx.root, 'nope.git'));
+    const r = spawnRaw(fx.A, CUT(fx));
+    assert.strictEqual(r.decision, 'ask', r.reason);
+    assert.match(r.reason, /ENF-25/);
+    assert.match(r.reason, /fetch origin next/);
+    assert.match(r.reason, /dangerously-skip-permissions/);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), fx.initial);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 WTREE-04 e2e: no `origin` remote -> ask naming the missing origin remote; refs/heads/next unchanged', () => {
+  const fx = makeFixture();
+  try {
+    git(fx.A, 'remote', 'remove', 'origin');
+    const r = spawnRaw(fx.A, CUT(fx));
+    assert.strictEqual(r.decision, 'ask', r.reason);
+    assert.match(r.reason, /no `origin` remote/);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), fx.initial);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 WTREE-04 e2e: a fake `timeout` exiting 124 -> ask naming a timeout; refs/heads/next unchanged', () => {
+  const fx = makeFixture();
+  const bin = fakeBin('#!/bin/sh\nexit 124\n');
+  try {
+    fx.advanceOrigin();
+    const r = spawnRaw(fx.A, CUT(fx), envWithPath(bin));
+    assert.strictEqual(r.decision, 'ask', r.reason);
+    assert.match(r.reason, /timed out/);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), fx.initial);
+  } finally {
+    fx.dispose();
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+});
+
+test('ENF-25 WTREE-04 e2e: a fake `timeout` printing a credentialed URL and exiting 128 -> ask with the credentials redacted', () => {
+  const fx = makeFixture();
+  const bin = fakeBin(
+    "#!/bin/sh\necho \"fatal: unable to access 'https://user:s3cr3t@example.invalid/r.git/': Could not resolve host\" >&2\nexit 128\n"
+  );
+  try {
+    const r = spawnRaw(fx.A, CUT(fx), envWithPath(bin));
+    assert.strictEqual(r.decision, 'ask', r.reason);
+    assert.ok(r.reason.includes('***@example.invalid'), r.reason);
+    assert.ok(!r.reason.includes('s3cr3t'), r.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), fx.initial);
+  } finally {
+    fx.dispose();
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+});
+
+test('ENF-25 WTREE-04 e2e: a concurrent git holding the origin/next ref lock -> ask; next and origin/next unchanged', () => {
+  const fx = makeFixture();
+  try {
+    fx.advanceOrigin();
+    const remoteBefore = refOf(fx.A, 'refs/remotes/origin/next');
+    const lock = path.join(fx.A, '.git', 'refs', 'remotes', 'origin', 'next.lock');
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, '');
+    const r = spawnRaw(fx.A, CUT(fx));
+    assert.strictEqual(r.decision, 'ask', r.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), fx.initial);
+    assert.strictEqual(refOf(fx.A, 'refs/remotes/origin/next'), remoteBefore);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 WTREE-04 e2e: no coreutils `timeout` on PATH -> DENY (the fetch cannot be bounded), not ask; next unchanged', () => {
+  const fx = makeFixture();
+  const bin = fakeBin(null);
+  try {
+    fx.advanceOrigin();
+    const r = spawnRaw(fx.A, CUT(fx), envWithPath(bin));
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.match(r.reason, /`timeout`/);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/next'), fx.initial);
+  } finally {
+    fx.dispose();
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+});
