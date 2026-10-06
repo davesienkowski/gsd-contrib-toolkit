@@ -342,10 +342,43 @@ const GATES = Object.freeze([
     when: 'verdict',
     // `artifact`, deliberately NOT `file`: the evidence is the recorder log, so requireArtifact
     // must never run for this entry (a missing file must not deny when the evidence exists).
-    // The unavailable-escape scaffold for this path arrives in 38-03.
+    // The file is the sanctioned UNAVAILABLE escape, scaffolded on a deny and read only when the
+    // evidence is short: a filled one turns the deny into a human ask, never an allow.
     artifact: 'R8a-memtrace.json',
     what: 'memtrace evidence for this session: `get_impact` + `get_symbol_context` + one ' +
       'recorded-decision verb (`recall_decision` | `why_is_this_here` | `governing_contracts`)',
+    // Obligations only (CTK-ADR-0006): `status: 'unavailable'` is NEVER pre-filled; the only
+    // constants are the format fields.
+    spec: Object.freeze({
+      title: 'R8a-memtrace.json',
+      step: 're-review step 8a — memtrace graph pass; this file is ONLY its sanctioned unavailable fallback',
+      what: 'NOT evidence. It attests that memtrace could not run in this session, and a filled ' +
+        'one makes the gate ASK a human; it never allows. If memtrace can run, delete this file ' +
+        'and run the tools instead',
+      constants: Object.freeze({ schema: 1, pass: 'memtrace-unavailable' }),
+      fields: Object.freeze([
+        Object.freeze({ path: 'head_oid',
+          observed: 'the PR HEAD OID this review is for — `gh pr view <n> --json headRefOid -q .headRefOid`' }),
+        Object.freeze({ path: 'status',
+          observed: 'write `unavailable` ONLY when memtrace genuinely could not run in this session ' +
+            '(sidecar down, tools not granted to this agent, stale or empty graph); the gate then ' +
+            'asks a human, it never allows' }),
+        Object.freeze({ path: 'unavailable_reason',
+          observed: 'why memtrace could not run, which verbs were unavailable, and the fallback you ' +
+            'used (grep + /code-review)' }),
+      ]),
+    }),
+    assert: Object.freeze([
+      Object.freeze({ path: 'pass', equals: 'memtrace-unavailable',
+        else: 'This file must record `pass: "memtrace-unavailable"`: it is the step-8a unavailable ' +
+          'attestation, not a copy of another review pass.' }),
+      Object.freeze({ path: 'status', equals: 'unavailable',
+        else: 'Set `status` to exactly `unavailable`, and only when memtrace genuinely could not ' +
+          'run in this session. Otherwise delete this file and run the memtrace tools.' }),
+      Object.freeze({ path: 'unavailable_reason', nonEmpty: true,
+        else: 'Record why memtrace could not run, which verbs were unavailable, and the fallback ' +
+          'you used (grep + /code-review).' }),
+    ]),
     verify: 'memtrace-evidence',
   }),
 
@@ -1042,10 +1075,11 @@ function shortfallClause(short) {
  *   (e) the session has zero successful rows    → ASK (recorder not registered where this
  *                                                 session runs, a session-id mismatch, …)
  *   (f) evidence short and the read incomplete  → ASK (the unread part may hold it)
- *   (g) evidence short in a COMPLETE read       → DENY naming the missing tools
+ *   (g) evidence short in a COMPLETE read       → memtraceArtifactBranch: DENY naming the
+ *                                                 missing tools and scaffolding the unavailable
+ *                                                 attestation; a filled one only ever ASKS
  * An ask is never flipped by GSD_CONTRIB_OVERRIDE (failclosed.runGateInner passes it through),
  * and gateSegment/gate keep evaluating after it, so it can never mask a later deny.
- * The unavailable-escape scaffold arrives in 38-03.
  *
  * @param {Object} g
  * @param {Object} ctx carries `sessionId`
@@ -1108,15 +1142,97 @@ function verifyMemtraceEvidence(g, ctx, deps) {
     );
   }
 
-  // (g)
-  return deny(
+  // (g) evidence short in a complete read: the unavailable-attestation branch.
+  return memtraceArtifactBranch(g, ctx, deps, short);
+}
+
+/** The closing note of every R8a deny: the override does not lift it. */
+const R8A_DENY_NOTE =
+  '`GSD_CONTRIB_OVERRIDE` does not lift this deny: it rescues thrown gate errors only. ' +
+  '(CTK-ADR-0004, ENF-20)';
+
+/**
+ * The head of every R8a missing-evidence deny: what is required and which tools have not run.
+ * Built from the gate entry and the constant-ordered shortfall only, so the same records in any
+ * order give the same text.
+ *
+ * @param {Object} g
+ * @param {{missing:string[], missingAnyOf:(string[]|null)}} short
+ * @returns {string}
+ */
+function memtraceDenyHead(g, short) {
+  return (
     'ENF-20 ' + g.id + ' (re-review step ' + g.step + ') — this verdict requires ' + g.what +
-      ', and that evidence is missing. Not yet run in this session: ' + shortfallClause(short) + '.\n\n' +
-      'The evidence is read from tool-recorder\'s log for THIS session only ' +
-      '(re-review.md step 8a).\n\n' +
-      'Run the named memtrace tools on the PR\'s changed symbols, then re-submit this review. ' +
-      '`GSD_CONTRIB_OVERRIDE` does not lift this deny: it rescues thrown gate errors only. ' +
-      '(CTK-ADR-0004, ENF-20)'
+    ', and that evidence is missing. Not yet run in this session: ' + shortfallClause(short) + '.'
+  );
+}
+
+/**
+ * The run-the-tools instruction and the escape, shared by every R8a deny.
+ *
+ * @param {string} rel
+ * @returns {string}
+ */
+function memtraceRemedy(rel) {
+  return (
+    'Run the memtrace tools named above on the PR\'s changed symbols, then re-submit this review. ' +
+    'The evidence is read from tool-recorder\'s log for THIS session only (re-review.md step 8a); ' +
+    'a `### Memtrace Evidence` section in the review body is not evidence.\n\n' +
+    'Escape, ONLY when memtrace genuinely cannot run in this session (sidecar down, tools not ' +
+    'granted to this agent, stale or empty graph): fill `' + rel + '` with `status: "unavailable"`, ' +
+    'the `unavailable_reason` (which verbs were unavailable and the fallback you used: grep + ' +
+    '/code-review) and this push\'s `head_oid`. A filled unavailable attestation turns this deny ' +
+    'into a human ask, never an allow.'
+  );
+}
+
+/**
+ * Step 8a with the evidence short in a COMPLETE read (severity map (g)). The artifact is the
+ * sanctioned unavailable escape, and this branch only ever denies or asks:
+ *   absent              → scaffold (obligations only) + DENY naming the path and the tools
+ *   unreadable          → THROW (fail closed)
+ *   placeholders left   → DENY naming the unfilled fields (checked before any shape)
+ *   filled              → DENY: not yet evaluated (KNOWN STUB, 38-03 Task 2; Task 3 replaces it)
+ *
+ * @param {Object} g
+ * @param {Object} ctx
+ * @param {Object} deps
+ * @param {{missing:string[], missingAnyOf:(string[]|null)}} short
+ * @returns {Object} a deny (or ask); never null, never allow
+ */
+function memtraceArtifactBranch(g, ctx, deps, short) {
+  const rel = ctx.dir + '/' + g.artifact;
+  const head = memtraceDenyHead(g, short);
+
+  if (!deps.artifactExists(rel)) {
+    const res = deps.writeScaffold(rel, g.spec);
+    const wrote = res && res.written
+      ? 'A SKELETON HAS BEEN WRITTEN at `' + rel + '`. It is not evidence: it lists the ' +
+        'attestation\'s obligations, and an unfilled one keeps this deny in place.'
+      : res && (res.reason === 'exists' || res.reason === 'race')
+        ? 'A skeleton is already present at `' + rel + '`.'
+        : 'A skeleton could NOT be written at `' + rel + '` (' +
+          ((res && (res.error || res.reason)) || 'unknown') + ') — create it by hand only under ' +
+          'the escape below.';
+    return deny(head + '\n\n' + wrote + '\n\n' + memtraceRemedy(rel) + '\n\n' + R8A_DENY_NOTE);
+  }
+
+  const text = deps.readArtifactText(rel); // may throw → fail closed
+
+  if (hasUnfilledPlaceholders(text)) {
+    const fields = unfilledFields(text);
+    return deny(
+      head + '\n\n`' + rel + '` still carries unfilled placeholder(s): ' +
+        (fields.length ? fields.map((f) => '`' + f + '`').join(', ') : '(the file is empty)') +
+        '.\n\n' + memtraceRemedy(rel) + '\n\n' + R8A_DENY_NOTE
+    );
+  }
+
+  // KNOWN STUB (38-03 Task 2): a filled attestation is not yet evaluated; Task 3 replaces this
+  // deny with the parse → assert → head_oid → ask sequence.
+  return deny(
+    head + '\n\n`' + rel + '` is filled, but the unavailable attestation is not yet evaluated.\n\n' +
+      memtraceRemedy(rel) + '\n\n' + R8A_DENY_NOTE
   );
 }
 
