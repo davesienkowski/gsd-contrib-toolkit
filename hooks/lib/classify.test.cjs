@@ -2394,3 +2394,141 @@ test('261006-jsm forms (Task 3): every Task 3 via code is a VERDICT_ROUTE_FORMS 
 test('261006-jsm CR-01: a review mutation in a LATER repeated `-f query=` field is a recovered GraphQL pr-review', () => {
   assertGraphqlReview("gh api graphql -f query='query { viewer { login } }' -f query='" + JSM_GQL_SUBMIT + "'");
 });
+
+// -- 261006-jsm review fix round CR-02 + WR-04: bundled short flags in the recovery path --------
+//
+// gh api's only boolean short flag is -i (`gh api --help`, gh 2.95: -p takes a value), so `-if`,
+// `-iF` and `-iFevent=...` carry a field; curl's boolean shorts bundle in front of -d (`-sd`,
+// `-sSd`) and -X (`-sX POST`). argv records the bundle under the first letter, so the frozen
+// hasWriteBody / explicitMethod see no body and no method; only the recovery reads it. A REST
+// comment POST whose body is an attached or bundled field recovers as issue-comment / pr-comment
+// (the review-artifact gate governs comments; no other gate does), tier 4, never failClosed.
+
+const JSM_CR02_CURL = 'https://api.github.com/repos/o/r/';
+
+/** `cmd` is a recovered REST result (`action`, `route`, `via`) whose one verdict segment is the outer one. */
+function assertRestRecovered(cmd, action, route, via) {
+  const r = cls(cmd);
+  assert.strictEqual(r.action, action, cmd + ' -> ' + JSON.stringify(r));
+  assert.strictEqual(r.recovered, true, cmd);
+  assert.strictEqual(r.route, route, cmd);
+  assert.strictEqual(r.via, via, cmd);
+  assert.ok(!('uncertain' in r) && !('unresolved' in r), cmd + ' is statically readable');
+  assert.deepStrictEqual(r.verdictSegments.map((s) => s.tokens), [parseCommand(cmd).segments[0].tokens], cmd);
+}
+
+for (const [cmd, action, route, via] of [
+  ['gh api ' + JSM_REST_REVIEWS + ' -if event=APPROVE', 'pr-review', 'gh-api', 'gh-api-bundled-field'],
+  ['gh api ' + JSM_REST_REVIEWS + ' -iFevent=APPROVE', 'pr-review', 'gh-api', 'gh-api-bundled-field'],
+  ['gh api ' + JSM_REST_REVIEWS + ' -iif=event=APPROVE', 'pr-review', 'gh-api', 'gh-api-bundled-field'],
+  ["curl -sd '{\"event\":\"APPROVE\"}' " + JSM_CR02_CURL + 'pulls/42/reviews', 'pr-review', 'curl', 'curl-bundled-flag'],
+  ["curl -sSd '{\"event\":\"APPROVE\"}' " + JSM_CR02_CURL + 'pulls/42/reviews', 'pr-review', 'curl', 'curl-bundled-flag'],
+  ["curl -sSLd'{\"event\":\"APPROVE\"}' " + JSM_CR02_CURL + 'pulls/42/reviews', 'pr-review', 'curl', 'curl-bundled-flag'],
+  ['curl -sX POST ' + JSM_CR02_CURL + 'pulls/42/reviews', 'pr-review', 'curl', 'curl-bundled-flag'],
+  ['curl -sXPOST ' + JSM_CR02_CURL + 'pulls/42/reviews', 'pr-review', 'curl', 'curl-bundled-flag'],
+  ['gh api repos/o/r/issues/42/comments -fbody=CLEAR', 'issue-comment', 'gh-api', 'gh-api-attached-field'],
+  ['gh api repos/o/r/issues/42/comments -f=body=CLEAR', 'issue-comment', 'gh-api', 'gh-api-attached-field'],
+  ['gh api repos/o/r/issues/42/comments -ifbody=CLEAR', 'issue-comment', 'gh-api', 'gh-api-bundled-field'],
+  ['gh api repos/o/r/issues/42/comments -if body=CLEAR', 'issue-comment', 'gh-api', 'gh-api-bundled-field'],
+  ['gh api repos/o/r/pulls/42/comments -fbody=CLEAR', 'pr-comment', 'gh-api', 'gh-api-attached-field'],
+  ["curl -sd '{\"body\":\"CLEAR\"}' " + JSM_CR02_CURL + 'issues/42/comments', 'issue-comment', 'curl', 'curl-bundled-flag'],
+]) {
+  test('261006-jsm CR-02: `' + cmd + '` -> recovered ' + action + ', via ' + via + ', the outer segment', () => {
+    assertRestRecovered(cmd, action, route, via);
+  });
+}
+
+for (const cmd of [
+  "gh api graphql -if query='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql -iFquery='" + JSM_GQL_SUBMIT + "'",
+  "curl -sd '" + JSM_GQL_ADD_JSON + "' https://api.github.com/graphql",
+  "curl -sSd '" + JSM_GQL_ADD_JSON + "' https://api.github.com/graphql",
+]) {
+  test('261006-jsm CR-02 GraphQL: `' + cmd.slice(0, 60) + '...` -> recovered pr-review, route graphql', () => {
+    assertGraphqlReview(cmd);
+  });
+}
+
+for (const cmd of [
+  'gh api graphql -iF query=@q.graphql',
+  'gh api graphql -iFquery=@q.graphql',
+  'curl -sd @q.json https://api.github.com/graphql',
+  'curl -sSd@q.json https://api.github.com/graphql',
+]) {
+  test('261006-jsm CR-02 GraphQL file query: `' + cmd + '` -> UNRESOLVED pr-review, via graphql-file-query', () => {
+    assertGraphqlFileQuery(cmd);
+  });
+}
+
+for (const cmd of [
+  'gh api -X GET ' + JSM_REST_REVIEWS + ' -if event=APPROVE',
+  'gh api ' + JSM_REST_REVIEWS + ' -pf event=APPROVE',
+  'curl -s ' + JSM_CR02_CURL + 'pulls/42/reviews',
+  'curl -sX GET ' + JSM_CR02_CURL + 'pulls/42/reviews',
+  'curl -sX GET -d x ' + JSM_CR02_CURL + 'pulls/42/reviews',
+  'curl -sGd x ' + JSM_CR02_CURL + 'pulls/42/reviews',
+  'curl -sId x ' + JSM_CR02_CURL + 'pulls/42/reviews',
+  'curl -sd x ' + JSM_CR02_CURL + 'issues/42/labels',
+  'curl -sd x https://example.com/repos/o/r/pulls/42/reviews',
+  'gh api repos/o/r/issues/42/comments --input f.json',
+  'gh api -X GET repos/o/r/issues/42/comments -fbody=CLEAR',
+  'gh api repos/o/r/issues/42/labels -iflabels=x',
+  'gh api repos/o/r/issues -iftitle=x',
+]) {
+  test('261006-jsm CR-02 lock: `' + cmd + '` stays other', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasFailClosedSegment(parseCommand(cmd)), false, cmd);
+  });
+}
+
+jsmD2Rows('REST bundled gh field', 'gh api ' + JSM_REST_REVIEWS + ' -if event=APPROVE', {
+  lone: (r) => assert.strictEqual(r.via, 'gh-api-bundled-field'),
+});
+jsmD2Rows('REST bundled curl data', "curl -sd '{\"event\":\"APPROVE\"}' " + JSM_CR02_CURL + 'pulls/42/reviews', {
+  lone: (r) => assert.strictEqual(r.via, 'curl-bundled-flag'),
+});
+
+/** The D2 rows for a recovered COMMENT form F: tier 4 only, governed by the review-artifact gate alone. */
+function jsmD2CommentRows(label, F, action) {
+  test('261006-jsm D2 ' + label + ' lock: `F && gh pr merge 1` is pr-merge', () => {
+    assert.strictEqual(cls(F + ' && gh pr merge 1').action, 'pr-merge');
+  });
+  test('261006-jsm D2 ' + label + ' lock: `gh pr review 1 -a; F` is the NATIVE pr-review, no recovered key', () => {
+    assert.deepStrictEqual(cls('gh pr review 1 -a; ' + F), { action: 'pr-review', route: 'native' });
+  });
+  test('261006-jsm D2 ' + label + ' lock: `F && git push` is push and `git commit -m x && F` is commit', () => {
+    assert.strictEqual(cls(F + ' && git push').action, 'push');
+    assert.strictEqual(cls('git commit -m x && ' + F).action, 'commit');
+  });
+  test('261006-jsm D2 ' + label + ': lone F is a recovered ' + action, () => {
+    const r = cls(F);
+    assert.strictEqual(r.action, action, F + ' -> ' + JSON.stringify(r));
+    assert.strictEqual(r.recovered, true, F);
+  });
+  test('261006-jsm D2 ' + label + ' corpus lock: F is non-governed for every OTHER gate set and never fails closed', () => {
+    const parsed = parseCommand(F);
+    assert.strictEqual(hasFailClosedSegment(parsed), false);
+    for (const [gate, actions] of Object.entries(EXISTING_GATE_SETS)) {
+      assert.strictEqual(hasGovernedSegment(parsed, actions), false, gate + ' must NOT be governed by ' + F);
+      assert.strictEqual(isNonGovernedCommand(parsed, actions), true, gate + ' must short-circuit for ' + F);
+    }
+  });
+  test('261006-jsm D2 ' + label + ' corpus: F IS governed by the review-artifact set', () => {
+    assert.strictEqual(hasGovernedSegment(parseCommand(F), REVIEW_ARTIFACT_GOVERNED), true, F);
+  });
+}
+
+jsmD2CommentRows('REST attached comment field', 'gh api repos/o/r/issues/42/comments -fbody=CLEAR', 'issue-comment');
+jsmD2CommentRows('REST bundled comment field', 'gh api repos/o/r/pulls/42/comments -ifbody=CLEAR', 'pr-comment');
+jsmD2CommentRows('curl bundled comment body', "curl -sd '{\"body\":\"CLEAR\"}' " + JSM_CR02_CURL + 'issues/42/comments', 'issue-comment');
+
+test('261006-jsm CR-02: a WRAPPED recovered comment is discarded (D1 residual: wrapped comments stay other)', () => {
+  assert.deepStrictEqual(cls('bash -c "gh api repos/o/r/issues/42/comments -fbody=CLEAR"'), { action: 'other' });
+});
+
+test('261006-jsm CR-02 forms: the new via codes are VERDICT_ROUTE_FORMS keys with ASCII descriptions', () => {
+  const { VERDICT_ROUTE_FORMS } = require('./classify.cjs');
+  for (const via of ['gh-api-bundled-field', 'curl-bundled-flag']) {
+    assert.ok(typeof VERDICT_ROUTE_FORMS[via] === 'string' && /^[\x20-\x7e]+$/.test(VERDICT_ROUTE_FORMS[via]), via);
+  }
+});

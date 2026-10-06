@@ -2843,3 +2843,61 @@ for (const [label, cmd] of [
     assert.deepStrictEqual(dp._calls.readToolLog, []);
   });
 }
+
+// -- 261006-jsm review fix round CR-02 + WR-04: bundled short flags and attached comment bodies ---
+
+const JSM_CR02_URL = 'https://api.github.com/repos/open-gsd/gsd-core/';
+const JSM_CR02_GQL_JSON =
+  '{"query":"mutation { submitPullRequestReview(input:{pullRequestReviewId:\\"X\\", event: APPROVE}) { clientMutationId } }"}';
+
+for (const cmd of [
+  'gh api ' + JSM_REVIEWS + ' -if event=APPROVE',
+  'gh api ' + JSM_REVIEWS + ' -iFevent=APPROVE',
+  'gh api -X POST ' + JSM_REVIEWS + ' -iFevent=APPROVE',
+  "gh api graphql -if query='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql -iFquery='" + JSM_GQL_SUBMIT + "'",
+  "curl -sd '" + JSM_CR02_GQL_JSON + "' https://api.github.com/graphql",
+  "curl -sd '{\"event\":\"APPROVE\"}' " + JSM_CR02_URL + 'pulls/42/reviews',
+  "curl -sSd '{\"event\":\"REQUEST_CHANGES\"}' " + JSM_CR02_URL + 'pulls/42/reviews',
+  'gh api repos/open-gsd/gsd-core/issues/42/comments -fbody=CLEAR',
+  'gh api repos/open-gsd/gsd-core/issues/42/comments -ifbody=CLEAR',
+  'gh api repos/open-gsd/gsd-core/issues/42/comments -if body=CLEAR',
+  'gh api repos/open-gsd/gsd-core/pulls/42/comments -fbody=CLEAR',
+  "curl -sd '{\"body\":\"CLEAR\"}' " + JSM_CR02_URL + 'issues/42/comments',
+]) {
+  test('261006-jsm CR-02 gate: `' + cmd.slice(0, 100) + '` with only Bash rows -> DENY R8a-memtrace', () => {
+    assertJsmR8aDeny(cmd);
+  });
+}
+
+test('261006-jsm CR-02 gate: a bundled curl body read from a file on a reviews POST -> the MJ-02 UNRESOLVED ask', () => {
+  assertUnresolvedAsk(runReviewArtifactGate(input('curl -sd @rev.json ' + JSM_CR02_URL + 'pulls/42/reviews'), deps()), /curl reads the request body/);
+});
+
+for (const cmd of [
+  'gh api repos/open-gsd/gsd-core/issues/42/comments -fbody=thanks',
+  'gh api repos/open-gsd/gsd-core/issues/42/comments -ifbody=rebased',
+  "curl -sd '{\"body\":\"thanks\"}' " + JSM_CR02_URL + 'issues/42/comments',
+]) {
+  test('261006-jsm CR-02 gate lock: `' + cmd + '` (no CLEAR) with only Bash rows -> allow; the log is never read', () => {
+    const dp = depsWithLog(toolLog(ONLY_BASH.slice()));
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assert.strictEqual(d.permissionDecision, 'allow', cmd + ': ' + d.permissionDecisionReason);
+    assert.deepStrictEqual(dp._calls.readToolLog, [], cmd);
+  });
+}
+
+test('261006-jsm CR-02 gate lock: an attached CLEAR comment on a real ISSUE with only Bash rows -> allow; no PR lookup', () => {
+  const dp = depsWithLog(toolLog(ONLY_BASH.slice()), { resolveIsPullRequest: () => false });
+  const d = runReviewArtifactGate(input('gh api repos/open-gsd/gsd-core/issues/42/comments -fbody=CLEAR'), dp);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.strictEqual(dp._calls.resolvePr, 0);
+  assert.deepStrictEqual(dp._calls.readToolLog, []);
+});
+
+test('261006-jsm CR-02 fieldCandidates: a bundled gh field and a bundled curl body yield the bare value', () => {
+  const c1 = fieldCandidates(seg0('gh api ' + JSM_REVIEWS + ' -iFevent=APPROVE'));
+  assert.ok(c1.includes('event=APPROVE'), JSON.stringify(c1));
+  const c2 = fieldCandidates(seg0("curl -sSd'{\"event\":\"APPROVE\"}' " + JSM_CR02_URL + 'pulls/42/reviews'));
+  assert.ok(c2.includes('{"event":"APPROVE"}'), JSON.stringify(c2));
+});
