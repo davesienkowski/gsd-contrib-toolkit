@@ -579,6 +579,8 @@ const VERDICT_ROUTE_FORMS = Object.freeze({
   'prefix-bound': 'a review command behind more stacked wrappers than the gate reads',
   xargs: 'a review command run through xargs',
   'xargs-unknown-option': 'an xargs command with an option the gate cannot read',
+  'gh-api-attached-field': 'a gh api review post whose fields are attached to the flag (-fevent=...)',
+  'gh-api-input': 'a gh api review post whose body is read with --input',
 });
 
 /**
@@ -662,7 +664,7 @@ function classifySegment(seg, state) {
  */
 function recoverVerdictRoute(seg, state) {
   if (!seg || typeof seg !== 'object' || !Array.isArray(seg.tokens)) return null;
-  const { prog } = resolveProgram(seg);
+  const { prog, args } = resolveProgram(seg);
   if (RECOVERY_SHELLS.has(prog)) return recoverShellCommandString(seg, prog, state);
 
   const tokens = seg.tokens;
@@ -679,6 +681,9 @@ function recoverVerdictRoute(seg, state) {
   if (word.length > 1 && word[0] === '(') {
     return recoverStripped(withoutClosingParen([word.slice(1), ...after]), 'subshell', state);
   }
+  // Task 3: `gh api` review posts the frozen hasWriteBody does not read (an attached field, a bare
+  // --input) and GraphQL review mutations.
+  if (prog === 'gh' && args[0] === 'api') return recoverGhApi(seg);
   // Task 2c: gh with -R / --repo before the area or between `pr` and the verb (the direct walk
   // reads -R's value as the area or verb, so it returned null).
   if (prog === 'gh') return recoverGhRepoFlag(seg, after);
@@ -776,6 +781,42 @@ function recoverGhRepoFlag(seg, after) {
   const verb = skipGhRepoFlags(after, area + 1);
   if (after[verb] !== 'review') return null;
   return { action: 'pr-review', route: 'recovered', recovered: true, via: 'gh-repo-flag', verdictSegments: [seg] };
+}
+
+/**
+ * Recover a `gh api` verdict route the direct classifier returned null for (Task 3, CONTEXT D4).
+ *
+ * @param {Object} seg
+ * @returns {Object|null}
+ */
+function recoverGhApi(seg) {
+  return recoverRestReviewPost(seg);
+}
+
+/**
+ * A `gh api .../pulls/<n>/reviews[/...]` post with no explicit method whose body is carried by an
+ * ATTACHED short field (`-fevent=APPROVE`, `-Fevent=APPROVE`) or by `--input` (RESEARCH section 1:
+ * gh api defaults to POST when a field or --input is present). argv records the attached field as
+ * shortFlags{fevent} and --input as flags.input, neither of which the frozen hasWriteBody reads,
+ * so the direct classifier saw no write and returned null. The outer segment is the verdict
+ * segment: the gate's fieldCandidates strips the attached flag letter, and unresolvedVerdictForm
+ * already asks on --input. An explicit method returns null: a mutating one already classified
+ * directly, a GET is a read. Any other target returns null (D1: an attached-field
+ * `gh api .../issues -ftitle=x` create stays other, a recorded residual).
+ *
+ * @param {Object} seg
+ * @returns {Object|null}
+ */
+function recoverRestReviewPost(seg) {
+  if (explicitMethod(seg) !== null) return null;
+  const kind = classifyGithubPath(extractTarget(seg, false) || '');
+  if (!kind || kind.resource !== 'pulls' || kind.sub !== true || kind.subPath[0] !== 'reviews') return null;
+  const tokens = seg.tokens.filter((t) => typeof t === 'string');
+  let via = null;
+  if (tokens.some((t) => /^-[fF][^=]+=/.test(t))) via = 'gh-api-attached-field';
+  else if (tokens.some((t) => t === '--input' || t.startsWith('--input='))) via = 'gh-api-input';
+  if (via === null) return null;
+  return { action: 'pr-review', route: 'gh-api', recovered: true, via, verdictSegments: [seg] };
 }
 
 /**
