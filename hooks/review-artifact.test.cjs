@@ -2446,3 +2446,83 @@ test('261006-jsm gate gh -R: `gh pr -R o/r review 42 -a` keys the PR lookup to 4
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
   assert.deepStrictEqual(seen, [['42', 'o/r']]);
 });
+
+// -- 261006-jsm Task 2d: an opaque verdict route asks (UNCERTAIN), with no PR lookup -------------
+
+const { VERDICT_ROUTE_FORMS: JSM_FORMS } = require('./lib/classify.cjs');
+
+/**
+ * `cmd` with ALL artifacts and COMPLETE evidence present must ASK on the uncertain route named
+ * `via`, with no PR lookup, no scaffold and no log read (so the ask is not a missing-artifact side
+ * effect). Returns the reason.
+ */
+function assertJsmUncertainAsk(cmd, via) {
+  const dp = deps();
+  const d = runReviewArtifactGate(input(cmd), dp);
+  assert.strictEqual(d.permissionDecision, 'ask', cmd + ': ' + d.permissionDecisionReason);
+  const why = d.permissionDecisionReason;
+  assert.ok(why.startsWith('ENF-20 '), why);
+  assert.ok(why.includes('UNCERTAIN verdict route'), why);
+  assert.strictEqual(typeof JSM_FORMS[via], 'string', 'via ' + via + ' has a fixed description');
+  assert.ok(why.includes(JSM_FORMS[via]), why);
+  assert.ok(why.includes('does not answer this prompt'), why);
+  assert.ok(/^[\x09\x0a\x20-\x7e]+$/.test(why), 'the ask reason is plain ASCII');
+  assert.strictEqual(dp._calls.resolvePr, 0, cmd);
+  assert.deepStrictEqual(dp._calls.scaffolded, [], cmd);
+  assert.deepStrictEqual(dp._calls.readToolLog, [], cmd);
+  return why;
+}
+
+for (const [cmd, via] of [
+  ['$(echo gh) pr review 42 -a', 'expansion-program'],
+  ['$GH pr review 42 -a', 'expansion-program'],
+  ['`echo gh` pr review 42 --approve', 'expansion-program'],
+  ['eval "$CMD"', 'opaque-payload'],
+  ['eval "$(ssh-agent -s)"', 'opaque-payload'],
+  ['bash -c "$CMD"', 'opaque-payload'],
+  ["bash -c \"echo 'x\"", 'unparseable-payload'],
+  ['eval eval eval eval eval gh pr review 42 -a', 'depth-bound'],
+  ['eval eval eval eval eval echo hi', 'depth-bound'],
+  ['nohup '.repeat(9) + 'gh pr review 42 -a', 'prefix-bound'],
+]) {
+  test('261006-jsm gate opaque: `' + cmd + '` -> ASK (UNCERTAIN verdict route) with no lookup, scaffold or log read', () => {
+    assertJsmUncertainAsk(cmd, via);
+  });
+}
+
+test('261006-jsm gate opaque privacy: the ask never echoes the payload', () => {
+  const why = assertJsmUncertainAsk('eval "$ZZMARKER_42"', 'opaque-payload');
+  assert.ok(!why.includes('ZZMARKER'), why);
+});
+
+test('261006-jsm gate opaque: a repeated call yields the same ask and no side effect', () => {
+  const a = assertJsmUncertainAsk('eval "$CMD"', 'opaque-payload');
+  const b = assertJsmUncertainAsk('eval "$CMD"', 'opaque-payload');
+  assert.strictEqual(a, b);
+});
+
+test('261006-jsm gate opaque precedence: `eval "$CMD" && gh pr merge 42 --squash` with R13 absent -> DENY R13', () => {
+  const d = runReviewArtifactGate(input('eval "$CMD" && gh pr merge 42 --squash'), deps({ files: absent(R13) }));
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-20 R13/);
+});
+
+test('261006-jsm gate opaque: a mixed inner chain with only Bash rows -> DENY R8a (deny beats the held ask)', () => {
+  assertJsmR8aDeny("bash -c 'gh pr review 42 -a; $CMD'");
+});
+
+test('261006-jsm gate opaque: a mixed inner chain with complete evidence -> the held UNCERTAIN ask', () => {
+  const d = runReviewArtifactGate(input("bash -c 'gh pr review 42 -a; $CMD'"), deps());
+  assert.strictEqual(d.permissionDecision, 'ask', d.permissionDecisionReason);
+  assert.ok(d.permissionDecisionReason.includes('UNCERTAIN verdict route'), d.permissionDecisionReason);
+});
+
+for (const cmd of ['nohup '.repeat(9) + 'ls', '$X 42 -a']) {
+  test('261006-jsm gate opaque lock: `' + cmd + '` -> allow with no PR lookup (no review hint)', () => {
+    const dp = deps();
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+    assert.strictEqual(dp._calls.resolvePr, 0);
+    assert.deepStrictEqual(dp._calls.readToolLog, []);
+  });
+}

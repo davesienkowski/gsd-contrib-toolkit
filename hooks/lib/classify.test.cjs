@@ -2006,3 +2006,117 @@ for (const [cmd, action] of [
 }
 
 jsmD2Rows('gh -R', 'gh -R o/r pr review 42 -a');
+
+// ---------------------------------------------------------------------------
+// 261006-jsm Task 2d: opaque verdict routes are UNCERTAIN (CONTEXT D3, D6, D7; orchestrator W3).
+// An uncertain route is a pr-review the gate grades `ask` without a PR lookup:
+//   (B) a program built by expansion, only with a visible review hint (1,509 / 47,642 noise);
+//   (A) an expansion-named program inside an eval or shell -c payload, no hint needed while
+//       OPAQUE_SHELL_PAYLOAD_NEEDS_HINT is false (17 / 47,642), and a payload argv cannot parse;
+//   a payload nested past RECOVERY_MAX_DEPTH (no hint, D3 literal); a prefix stack past
+//   MAX_PREFIX_PEELS (hint required, W3).
+// ---------------------------------------------------------------------------
+
+const JSM_NOHUP9 = 'nohup '.repeat(9);
+
+/** Assert `cmd` is an uncertain recovered pr-review with no verdict segment, named by `via`. */
+function assertUncertainRoute(cmd, via) {
+  assert.deepStrictEqual(
+    cls(cmd),
+    { action: 'pr-review', route: 'recovered', recovered: true, uncertain: true, via, verdictSegments: [] },
+    cmd
+  );
+}
+
+for (const [cmd, via] of [
+  ['$(echo gh) pr review 42 -a', 'expansion-program'],
+  ['$GH pr review 42 -a', 'expansion-program'],
+  ['`echo gh` pr review 42 --approve', 'expansion-program'],
+  ['eval "$CMD"', 'opaque-payload'],
+  ['eval "$(ssh-agent -s)"', 'opaque-payload'],
+  ['bash -c "$CMD"', 'opaque-payload'],
+  ["bash -c \"echo 'x\"", 'unparseable-payload'],
+  ['eval eval eval eval eval gh pr review 42 -a', 'depth-bound'],
+  ['eval eval eval eval eval echo hi', 'depth-bound'],
+  [JSM_NOHUP9 + 'gh pr review 42 -a', 'prefix-bound'],
+]) {
+  test('261006-jsm opaque: `' + cmd + '` -> UNCERTAIN pr-review, via ' + via, () => {
+    assertUncertainRoute(cmd, via);
+  });
+}
+
+for (const cmd of ['"$CHROME" --headless', '$G query commit x', JSM_NOHUP9 + 'ls', '$X 42 -a']) {
+  test('261006-jsm opaque lock: `' + cmd + '` stays other (no review hint, D7 B / W3)', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+  });
+}
+
+test('261006-jsm opaque: eight stacked nohup are inside MAX_PREFIX_PEELS and recover statically', () => {
+  const { MAX_PREFIX_PEELS } = require('./classify.cjs');
+  assert.strictEqual(MAX_PREFIX_PEELS, 8);
+  assertPrefixReview('nohup '.repeat(8) + 'gh pr review 42 -a', 'nohup');
+});
+
+test('261006-jsm opaque: OPAQUE_SHELL_PAYLOAD_NEEDS_HINT is exported and false (CONTEXT D7 A, coordinator)', () => {
+  assert.strictEqual(require('./classify.cjs').OPAQUE_SHELL_PAYLOAD_NEEDS_HINT, false);
+});
+
+test('261006-jsm opaque: hasReviewHint reads only the listed hint tokens', () => {
+  const { hasReviewHint } = require('./classify.cjs');
+  assert.strictEqual(typeof hasReviewHint, 'function');
+  for (const t of [['x', 'review'], ['--approve'], ['--request-changes'], ['repos/o/r/pulls/42/reviews'],
+    ['query=mutation { submitPullRequestReview(input: {}) }'], ['addPullRequestReview']]) {
+    assert.strictEqual(hasReviewHint(t), true, JSON.stringify(t));
+  }
+  for (const t of [['42', '-a'], ['reviews'], ['submitpullrequestreview'], ['query', 'commit'], []]) {
+    assert.strictEqual(hasReviewHint(t), false, JSON.stringify(t));
+  }
+});
+
+test('261006-jsm opaque: a mixed inner chain keeps its verdict segment and adds uncertain', () => {
+  const r = cls("bash -c 'gh pr review 1 -a; $CMD'");
+  assert.strictEqual(r.action, 'pr-review');
+  assert.strictEqual(r.recovered, true);
+  assert.strictEqual(r.uncertain, true);
+  assert.strictEqual(r.via, 'shell-c');
+  assert.strictEqual(r.uncertainVia, 'opaque-payload');
+  assert.deepStrictEqual(r.verdictSegments.map((s) => s.tokens), [['gh', 'pr', 'review', '1', '-a']]);
+});
+
+test('261006-jsm opaque: a prefix around an opaque route passes the uncertain route through', () => {
+  assertUncertainRoute('nohup $GH pr review 42 -a', 'expansion-program');
+  assertUncertainRoute('( eval "$CMD" )', 'opaque-payload');
+});
+
+test('261006-jsm opaque: classification is pure, a repeated call yields the same result', () => {
+  const cmd = 'eval "$CMD"';
+  assert.deepStrictEqual(cls(cmd), cls(cmd));
+});
+
+jsmD2Rows('expansion-program', '$(echo gh) pr review 42 -a', {
+  lone: (r) => {
+    assert.strictEqual(r.uncertain, true);
+    assert.deepStrictEqual(r.verdictSegments, []);
+  },
+});
+
+// Every via code the recovery emits names a FIXED ASCII description (the gate never builds one
+// from command text, and a missing key would surface as `undefined` in an ask reason).
+test('261006-jsm forms: every emitted via code is a VERDICT_ROUTE_FORMS key with an ASCII description', () => {
+  const { VERDICT_ROUTE_FORMS } = require('./classify.cjs');
+  for (const desc of Object.values(VERDICT_ROUTE_FORMS)) {
+    assert.ok(typeof desc === 'string' && /^[\x20-\x7e]+$/.test(desc), JSON.stringify(desc));
+  }
+  for (const cmd of [
+    'bash -c "gh pr review 42 -a"', '( gh pr review 42 -a )', '{ gh pr review 42 -a; }', '! gh pr review 42 -a',
+    'nohup gh pr review 42 -a', 'setsid gh pr review 42 -a', 'time gh pr review 42 -a', 'eval "gh pr review 42 -a"',
+    'gh -R o/r pr review 42 -a', '$GH pr review 42 -a', 'eval "$CMD"', "bash -c \"echo 'x\"",
+    'eval eval eval eval eval echo hi', JSM_NOHUP9 + 'gh pr review 42 -a', "bash -c 'gh pr review 1 -a; $CMD'",
+  ]) {
+    const r = cls(cmd);
+    assert.ok(Object.prototype.hasOwnProperty.call(VERDICT_ROUTE_FORMS, r.via), cmd + ' via ' + r.via);
+    if (r.uncertainVia !== undefined) {
+      assert.ok(Object.prototype.hasOwnProperty.call(VERDICT_ROUTE_FORMS, r.uncertainVia), cmd + ' uncertainVia');
+    }
+  }
+});
