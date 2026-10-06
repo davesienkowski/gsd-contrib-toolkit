@@ -35,6 +35,12 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
+// 36-REVIEW m-07: runGate records every verdict (OBS-02). Point the log at a per-file temp dir so
+// this suite never appends synthetic verdicts to the real ~/.gsd-contrib/tool-log.jsonl that
+// bin/verdict-stats.cjs reads; spawned hooks inherit it through process.env.
+process.env.GSD_CONTRIB_LOG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'gtest-ct-vlog-'));
+process.on('exit', () => fs.rmSync(process.env.GSD_CONTRIB_LOG_DIR, { recursive: true, force: true }));
+
 const cleanTree = require('./gsd-test-clean-tree.cjs');
 const { runGsdTestCleanTreeGate, PIPE_REASON } = cleanTree;
 const { FailClosed } = require('./lib/failclosed.cjs');

@@ -25,6 +25,12 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+// 36-REVIEW m-07: runGate records every verdict (OBS-02). Point the log at a per-file temp dir so
+// this suite never appends synthetic verdicts to the real ~/.gsd-contrib/tool-log.jsonl that
+// bin/verdict-stats.cjs reads; the spawned e2e hooks inherit it through process.env.
+process.env.GSD_CONTRIB_LOG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'gtest-via-vlog-'));
+process.on('exit', () => fs.rmSync(process.env.GSD_CONTRIB_LOG_DIR, { recursive: true, force: true }));
+
 const viability = require('./gsd-test-viability.cjs');
 const { runGsdTestViabilityGate, parseBenches } = viability;
 const { FailClosed } = require('./lib/failclosed.cjs');
