@@ -51,6 +51,9 @@
  * `ask`; origin/next missing after a good fetch asks too. Every other throw denies through
  * runGate. An ask degrades to an allow under --dangerously-skip-permissions (ASK_LIMIT_NOTE, stated
  * in the reason). A failed fetch is not retried for a second cut of the same root in one call.
+ * 37-REVIEW MI-01: for a local / HEAD-on-next base the gate first judges next against the
+ * LAST-FETCHED origin/next; when that already proves next held-and-behind or diverged it returns
+ * the POLICY deny (worded as stale evidence) instead of the ask. It never moves next on that data.
  *
  * TIME BOUND (37-04, the 36-REVIEW m-06 per-call deadline mirrored from gsd-test-clean-tree): one
  * GATE_BUDGET_MS deadline per gate call is shared by every subprocess. A non-fetch git call gets
@@ -448,7 +451,8 @@ function checkContext(deps) {
   return {
     deps,
     budget: typeof deps.budget === 'function' ? deps.budget : makeBudget(deps.now),
-    // root -> null (fetched) or the ask decision (origin unobtainable): one fetch per root per call.
+    // root -> null (fetched) or {decision: the ask, detail} (origin unobtainable): one fetch per root
+    // per call.
     fetchState: new Map(),
     // root -> whether its origin parses as open-gsd/gsd-core (MA-01): one `remote get-url` per root.
     armed: new Map(),
@@ -532,24 +536,42 @@ function shellWord(p) {
 const ORIGIN_ALTERNATIVE = '  git worktree add -b <branch> <path> origin/next';
 
 /**
+ * 37-REVIEW MI-01: how a reason describes origin/next. `stale` is null after a good fetch, else the
+ * fetch failure's detail: the deny then rests on the LAST-FETCHED origin/next, which can only make
+ * the true trunk newer, so a "behind" or "diverged" verdict on it still holds.
+ */
+function remoteNote(stale) {
+  if (stale === null || stale === undefined) return ', just fetched by this gate';
+  return ', the last-fetched value: the gate could not refresh origin/next (' + (cleanDetail(stale, DETAIL_MAX) || 'origin is unobtainable') + ')';
+}
+
+/** The remote-ref alternative, worded for fresh or last-fetched (MI-01) evidence. */
+function remoteAlternative(stale) {
+  if (stale === null || stale === undefined) {
+    return 'Or base the worktree on the remote ref, which is already current:\n' + ORIGIN_ALTERNATIVE;
+  }
+  return 'Or, once origin is reachable, run `git fetch origin next` and base the worktree on the remote ref:\n' +
+    ORIGIN_ALTERNATIVE;
+}
+
+/**
  * POLICY deny: local next is a strict ancestor of origin/next but checked out in a worktree, so the
  * gate will not move it. The fix fast-forwards it in the holder tree (`merge --ff-only` refuses
  * rather than rewrites when the holder has conflicting changes).
  */
-function heldReason(holders, local, remote) {
+function heldReason(holders, local, remote, stale) {
   const listed = holders.slice(0, 3).map((h) => (h === '' ? '<unknown worktree>' : h));
   const more = holders.length > 3 ? ' (and ' + (holders.length - 3) + ' more)' : '';
   const first = holders[0] ? shellWord(holders[0]) : '<the worktree holding next>';
   return (
     'ENF-25 worktree fresh-base gate: local `next` (' + short(local) + ') is behind origin/next (' +
-    short(remote) + ', just fetched by this gate) and is checked out in ' + listed.join(', ') + more +
+    short(remote) + remoteNote(stale) + ') and is checked out in ' + listed.join(', ') + more +
     ', so the gate will not move it. A worktree cut from it now would start from a stale trunk.\n' +
     'Fast-forward the checked-out trunk first, then re-issue your command:\n' +
     '  git -C ' + first + ' merge --ff-only origin/next\n' +
     'If that working tree has uncommitted changes, park them first with `git stash push -m <msg>` ' +
     '(recoverable), then fast-forward.\n' +
-    'Or base the worktree on the remote ref, which is already current:\n' +
-    ORIGIN_ALTERNATIVE
+    remoteAlternative(stale)
   );
 }
 
@@ -559,7 +581,7 @@ function heldReason(holders, local, remote) {
  * so `worktree list` shows no `branch` line). git's own `branch -f next` refuses the same move
  * (find_shared_symref reads the rebase head-name files and BISECT_START), so the gate does too.
  */
-function inProgressReason(entries, local, remote) {
+function inProgressReason(entries, local, remote, stale) {
   const listed = entries.slice(0, 3).map((x) => (x.path === '' ? '<unknown worktree>' : x.path) + ' (' +
     (x.op === 'bisect' ? 'bisecting' : 'rebasing') + ')');
   const more = entries.length > 3 ? ' (and ' + (entries.length - 3) + ' more)' : '';
@@ -569,21 +591,21 @@ function inProgressReason(entries, local, remote) {
     : '  git -C ' + first + ' rebase --continue    (or: rebase --abort)\n';
   return (
     'ENF-25 worktree fresh-base gate: local `next` (' + short(local) + ') is behind origin/next (' +
-    short(remote) + ', just fetched by this gate), but a rebase or bisect of `next` is in progress in ' +
+    short(remote) + remoteNote(stale) + '), but a rebase or bisect of `next` is in progress in ' +
     listed.join(', ') + more + ', so the gate will not move it (git itself refuses to move a branch in ' +
     'that state). Finish or abort that operation first, then re-issue your command:\n' + fix +
-    'Or base the worktree on the remote ref, which is already current:\n' +
-    ORIGIN_ALTERNATIVE
+    remoteAlternative(stale)
   );
 }
 
 /** POLICY deny: neither sha contains the other. Names the divergence; suggests nothing that rewrites. */
-function divergedReason(local, remote) {
+function divergedReason(local, remote, stale) {
   return (
     'ENF-25 worktree fresh-base gate: local `next` (' + short(local) + ') and origin/next (' + short(remote) +
-    ', just fetched by this gate) have diverged: neither contains the other, so local next cannot be ' +
+    remoteNote(stale) + ') have diverged: neither contains the other, so local next cannot be ' +
     'fast-forwarded and a worktree cut from it would not start from the current trunk. Leave local next ' +
-    'as it is and base the worktree on the remote ref instead:\n' +
+    'as it is and base the worktree on the remote ref instead' +
+    (stale === null || stale === undefined ? '' : ' (once origin is reachable, after `git fetch origin next`)') + ':\n' +
     ORIGIN_ALTERNATIVE
   );
 }
@@ -638,11 +660,17 @@ function checkCut(e, root, ctx) {
       fetchState.set(root, null);
     } catch (err) {
       if (!(err instanceof FetchUnavailable)) throw err;
-      fetchState.set(root, ask(fetchUnavailableReason(root, err.message)));
+      fetchState.set(root, { decision: ask(fetchUnavailableReason(root, err.message)), detail: err.message });
     }
   }
   const unobtainable = fetchState.get(root);
-  if (unobtainable) return unobtainable; // nothing below runs: no rev-parse, merge-base or CAS
+  if (unobtainable) {
+    // MI-01: nothing local can prove a remote base current -> ask. For a local base, the
+    // LAST-FETCHED origin/next may already prove next held-and-behind or diverged: deny on that
+    // proof; otherwise ask. Never a CAS on unrefreshed data.
+    if (kind === 'remote') return unobtainable.decision;
+    return judgeLocal(root, ctx, unobtainable.detail) || unobtainable.decision;
+  }
 
   const remote = deps.revParse(root, ORIGIN_NEXT_REF, git());
   if (remote === null || remote === undefined) return ask(originNextMissingReason(root));
@@ -664,6 +692,30 @@ function checkCut(e, root, ctx) {
   }
   if (deps.isAncestor(root, remote, local, git())) return null; // ahead: not stale, nothing to move
   return deny(divergedReason(local, remote));
+}
+
+/**
+ * MI-01: judge local next against the LAST-FETCHED origin/next after a failed fetch. Returns a
+ * POLICY deny only when that evidence already proves next held-and-behind (checked out, or being
+ * rebased / bisected) or diverged; null (the caller asks) when it cannot decide: no origin/next, no
+ * next, equal, ahead, or behind and unheld (a move on unrefreshed data is never made).
+ */
+function judgeLocal(root, ctx, stale) {
+  const { deps, budget } = ctx;
+  const git = () => budget(GIT_TIMEOUT_MS);
+  const remote = deps.revParse(root, ORIGIN_NEXT_REF, git());
+  if (remote === null || remote === undefined) return null;
+  const local = deps.revParse(root, NEXT_REF, git());
+  if (local === null || local === undefined || local === remote) return null;
+  if (deps.isAncestor(root, local, remote, git())) {
+    const holders = deps.worktreesHolding(root, NEXT_REF, git());
+    if (holders.length > 0) return deny(heldReason(holders, local, remote, stale));
+    const busy = deps.nextInProgress(root, NEXT_REF, git());
+    if (busy.length > 0) return deny(inProgressReason(busy, local, remote, stale));
+    return null;
+  }
+  if (deps.isAncestor(root, remote, local, git())) return null;
+  return deny(divergedReason(local, remote, stale));
 }
 
 /** fs errors that mean "this state file / dir is absent". */
