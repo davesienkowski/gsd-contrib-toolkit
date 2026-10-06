@@ -71,6 +71,7 @@ function scenario(over = {}) {
     casArgs: [],
     isSymbolicRef: 0,
     nextInProgress: 0,
+    originUrl: 0,
     currentBranch: 0,
     readBaseRef: 0,
     readBaseRefArgs: [],
@@ -113,6 +114,11 @@ function scenario(over = {}) {
       calls.worktreesHolding += 1;
       return over.held || [];
     },
+    // 37-REVIEW MA-01: the raw `remote get-url origin` (`over.originUrl`, default the gsd-core URL).
+    originUrl: () => {
+      calls.originUrl += 1;
+      return Object.prototype.hasOwnProperty.call(over, 'originUrl') ? over.originUrl : 'https://github.com/open-gsd/gsd-core.git';
+    },
     // 37-REVIEW BL-02: worktrees mid-rebase / mid-bisect of next (`over.inProgress`, default none).
     nextInProgress: () => {
       calls.nextInProgress += 1;
@@ -141,7 +147,7 @@ function scenario(over = {}) {
     },
   };
   const rest = Object.assign({}, over);
-  for (const k of ['refs', 'ancestor', 'held', 'casOk', 'branch', 'baseRef', 'symbolic', 'inProgress']) delete rest[k];
+  for (const k of ['refs', 'ancestor', 'held', 'casOk', 'branch', 'baseRef', 'symbolic', 'inProgress', 'originUrl']) delete rest[k];
   return { deps: Object.assign(base, rest), calls };
 }
 
@@ -1339,9 +1345,9 @@ test('ENF-25 bound: FETCH_BELT_MS + MAX_GIT_CALLS_PER_ROOT * GIT_TIMEOUT_MS <= G
   assert.ok(budget + 3000 <= exp('HOOK_TIMEOUT_S') * 1000);
 });
 
-/** Every non-fetch git process the default seams would spawn; the fetch seam's `remote get-url` counts 1. */
+/** Every non-fetch git process the default seams would spawn (MA-01: `remote get-url` is the originUrl seam). */
 function gitProcesses(calls) {
-  return calls.currentBranch + calls.revParse + calls.isAncestor + calls.worktreesHolding + calls.casUpdateRef + calls.fetchOrigin +
+  return calls.currentBranch + calls.revParse + calls.isAncestor + calls.worktreesHolding + calls.casUpdateRef + calls.originUrl +
     calls.isSymbolicRef + calls.nextInProgress;
 }
 
@@ -1463,15 +1469,11 @@ function seamsWith(rec, extra) {
 const isGetUrl = (cmd, args) => cmd === 'git' && args.join(' ') === 'remote get-url origin';
 const isFetch = (cmd) => cmd === 'timeout';
 
-test('ENF-25 WTREE-04 seam: the default fetch runs `remote get-url origin`, then the bounded fetch with the exact argv, belt and scrubbed env', () => {
+test('ENF-25 WTREE-04 seam: the default fetch runs ONLY the bounded fetch (MA-01 hoisted `remote get-url` out) with the exact argv, belt and scrubbed env', () => {
   const rec = recSpawn();
   seamsWith(rec).fetchOrigin('/abs/dir');
-  assert.strictEqual(rec.calls.length, 2, JSON.stringify(rec.calls.map((c) => [c.cmd, c.args])));
-  const [g, f] = rec.calls;
-  assert.ok(isGetUrl(g.cmd, g.args), JSON.stringify([g.cmd, g.args]));
-  assert.strictEqual(g.opts.cwd, '/abs/dir');
-  assert.strictEqual(g.opts.timeout, gateModule.GIT_TIMEOUT_MS);
-  assert.strictEqual(g.opts.env.GIT_DIR, undefined);
+  assert.strictEqual(rec.calls.length, 1, JSON.stringify(rec.calls.map((c) => [c.cmd, c.args])));
+  const [f] = rec.calls;
   assert.strictEqual(f.cmd, 'timeout');
   assert.deepStrictEqual(f.args, ['-k', '2', '15', 'git', '-C', '/abs/dir', 'fetch', '--quiet', '--no-auto-maintenance', 'origin', 'next']);
   assert.strictEqual(f.opts.timeout, 20000);
@@ -1481,22 +1483,25 @@ test('ENF-25 WTREE-04 seam: the default fetch runs `remote get-url origin`, then
   assert.strictEqual(f.opts.shell, undefined);
 });
 
-test('ENF-25 WTREE-04 seam: `remote get-url` exit 2 (no such remote) -> FetchUnavailable naming no `origin` remote, and no fetch spawn', () => {
-  const rec = recSpawn((cmd, args) => (isGetUrl(cmd, args) ? { status: 2, stderr: 'error: No such remote \'origin\'\n' } : {}));
-  assert.throws(
-    () => seamsWith(rec).fetchOrigin('/abs/dir'),
-    (err) => err instanceof gateModule.FetchUnavailable && /no `origin` remote/.test(err.message)
-  );
-  assert.strictEqual(rec.calls.filter((c) => isFetch(c.cmd)).length, 0);
+test('ENF-25 MA-01 seam: default originUrl runs `remote get-url origin` (scrubbed, bounded) and returns the trimmed URL', () => {
+  const rec = recSpawn((cmd, args) => (isGetUrl(cmd, args) ? { stdout: 'https://github.com/open-gsd/gsd-core.git\n' } : {}));
+  assert.strictEqual(seamsWith(rec).originUrl('/abs/dir'), 'https://github.com/open-gsd/gsd-core.git');
+  assert.strictEqual(rec.calls.length, 1);
+  const g = rec.calls[0];
+  assert.ok(isGetUrl(g.cmd, g.args), JSON.stringify([g.cmd, g.args]));
+  assert.strictEqual(g.opts.cwd, '/abs/dir');
+  assert.strictEqual(g.opts.timeout, gateModule.GIT_TIMEOUT_MS);
+  assert.strictEqual(g.opts.env.GIT_DIR, undefined);
 });
 
-test('ENF-25 WTREE-04 seam: `remote get-url` exit 128 (unexpected) -> FailClosed, not FetchUnavailable', () => {
+test('ENF-25 MA-01 seam: default originUrl exit 2 (no such remote) -> null', () => {
+  const rec = recSpawn((cmd, args) => (isGetUrl(cmd, args) ? { status: 2, stderr: 'error: No such remote \'origin\'\n' } : {}));
+  assert.strictEqual(seamsWith(rec).originUrl('/abs/dir'), null);
+});
+
+test('ENF-25 MA-01 seam: default originUrl exit 128 (unexpected) -> FailClosed', () => {
   const rec = recSpawn((cmd, args) => (isGetUrl(cmd, args) ? { status: 128, stderr: 'fatal: not a git repository\n' } : {}));
-  assert.throws(
-    () => seamsWith(rec).fetchOrigin('/abs/dir'),
-    (err) => err instanceof FailClosed && !(err instanceof gateModule.FetchUnavailable)
-  );
-  assert.strictEqual(rec.calls.filter((c) => isFetch(c.cmd)).length, 0);
+  assert.throws(() => seamsWith(rec).originUrl('/abs/dir'), (err) => err instanceof FailClosed);
 });
 
 test('ENF-25 WTREE-04 seam: a relative fetch dir -> FailClosed with ZERO spawns', () => {
@@ -1614,13 +1619,12 @@ test('ENF-25 WTREE-04 e2e: origin URL is a nonexistent path -> ask; refs/heads/n
   }
 });
 
-test('ENF-25 WTREE-04 e2e: no `origin` remote -> ask naming the missing origin remote; refs/heads/next unchanged', () => {
+test('ENF-25 MA-01 e2e: no `origin` remote -> not an open-gsd/gsd-core clone: allow with no fetch; refs/heads/next unchanged', () => {
   const fx = makeFixture();
   try {
     git(fx.A, 'remote', 'remove', 'origin');
     const r = spawnRaw(fx.A, CUT(fx));
-    assert.strictEqual(r.decision, 'ask', r.reason);
-    assert.match(r.reason, /no `origin` remote/);
+    assert.strictEqual(r.decision, 'allow', r.reason);
     assert.strictEqual(refOf(fx.A, 'refs/heads/next'), fx.initial);
   } finally {
     fx.dispose();
@@ -2378,5 +2382,78 @@ test('ENF-25 BL-02 e2e (fx2c): next mid-bisect in W, origin advanced -> deny; ne
     assert.strictEqual(refOf(fx.A, 'refs/heads/next'), next);
   } finally {
     fx.dispose();
+  }
+});
+
+// ── MA-01: arm (fetch / move) only when origin parses as open-gsd/gsd-core ──
+
+for (const url of ['https://github.com/davesienkowski/gsd-core-experiments.git', 'git@github.com:someone/gsd-core.git', '/srv/other-origin.git', null]) {
+  test('ENF-25 MA-01: origin ' + JSON.stringify(url) + ' is not open-gsd/gsd-core -> allow with ZERO fetch, symref, rev-parse and CAS', () => {
+    const { deps, calls } = scenario({ originUrl: url });
+    const d = runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps);
+    assert.strictEqual(d.permissionDecision, 'allow');
+    assert.strictEqual(calls.originUrl, 1);
+    assert.strictEqual(calls.fetchOrigin, 0);
+    assert.strictEqual(calls.isSymbolicRef, 0);
+    assert.strictEqual(calls.revParse, 0);
+    assert.strictEqual(calls.casUpdateRef, 0);
+  });
+}
+
+for (const url of ['https://github.com/open-gsd/gsd-core.git', 'git@github.com:open-gsd/gsd-core.git', 'ssh://git@github.com/Open-GSD/gsd-core', '/tmp/x/open-gsd/gsd-core.git']) {
+  test('ENF-25 MA-01: origin ' + url + ' arms the gate (fetch once, CAS once)', () => {
+    const { deps, calls } = scenario({ originUrl: url });
+    assert.strictEqual(runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps).permissionDecision, 'allow');
+    assert.strictEqual(calls.fetchOrigin, 1);
+    assert.strictEqual(calls.casUpdateRef, 1);
+  });
+}
+
+test('ENF-25 MA-01: the origin check runs once per root, and after the HEAD-branch read (HEAD on work: ZERO originUrl)', () => {
+  const two = scenario();
+  runWorktreeFreshBaseGate(input('git worktree add -b a p next && git worktree add -b b q origin/next'), two.deps);
+  assert.strictEqual(two.calls.originUrl, 1);
+  const head = scenario({ branch: 'work' });
+  runWorktreeFreshBaseGate(input('git worktree add -b f p'), head.deps);
+  assert.strictEqual(head.calls.originUrl, 0);
+});
+
+test('ENF-25 MA-01: an EnterWorktree cut in a non-gsd-core origin allows with ZERO fetch', () => {
+  const { deps, calls } = scenario({ originUrl: 'https://example.invalid/other/repo.git' });
+  const d = runWorktreeFreshBaseGate(JSON.stringify({ tool_name: 'EnterWorktree', tool_input: { name: 'x' } }), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.fetchOrigin, 0);
+});
+
+test('ENF-25 MA-01 e2e (fx4): a sentinel vendored inside a NON-gsd-core repo -> allow; that repo is neither fetched nor moved', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wtfb-fx4-'));
+  try {
+    const origin = path.join(root, 'other-origin.git');
+    const other = path.join(root, 'other');
+    const writer = path.join(root, 'writer');
+    git(root, '-c', 'init.defaultBranch=next', 'init', '-q', '--bare', origin);
+    git(root, 'clone', '-q', origin, other);
+    git(other, 'symbolic-ref', 'HEAD', 'refs/heads/next');
+    const vendored = path.join(other, 'vendor', 'gsdc');
+    fs.mkdirSync(path.join(vendored, 'scripts'), { recursive: true });
+    fs.mkdirSync(path.join(vendored, 'gsd-core', 'bin', 'lib'), { recursive: true });
+    fs.writeFileSync(path.join(vendored, 'scripts', 'pr-target-policy.cjs'), '');
+    fs.writeFileSync(path.join(vendored, 'gsd-core', 'bin', 'lib', '.keep'), '');
+    fs.writeFileSync(path.join(other, 'f.txt'), '1\n');
+    const before = commitAll(other, 'init');
+    git(other, 'push', '-q', 'origin', 'next');
+    git(other, 'switch', '-q', '-c', 'work');
+    git(root, 'clone', '-q', origin, writer);
+    fs.writeFileSync(path.join(writer, 'f.txt'), '2\n');
+    commitAll(writer, 'upstream');
+    git(writer, 'push', '-q', 'origin', 'next');
+    assert.ok(hasSentinel(vendored), 'setup: the vendored dir carries the gsd-core sentinel');
+
+    const r = spawnIn(vendored, 'git worktree add -b f ' + path.join(root, 'x') + ' next');
+    assert.strictEqual(r.decision, 'allow', r.reason);
+    assert.strictEqual(refOf(other, 'refs/heads/next'), before, 'a non-gsd-core next must not move');
+    assert.strictEqual(refOf(other, 'refs/remotes/origin/next'), before, 'a non-gsd-core origin must not be fetched');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
