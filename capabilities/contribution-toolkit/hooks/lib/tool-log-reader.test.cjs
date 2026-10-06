@@ -534,7 +534,8 @@ test('38 fix BL-01 reader: the log is opened read-only and non-blocking', () => 
   readerModule.readSessionRecords('sess-flags', { env: { GSD_CONTRIB_LOG_DIR: dir }, fsImpl: spy });
   assert.strictEqual(flags.length, 1, 'only the live file exists, so one open');
   assert.strictEqual(typeof flags[0], 'number', 'numeric open flags, not the blocking string mode: ' + flags[0]);
-  assert.strictEqual(flags[0] & fs.constants.O_ACCMODE, fs.constants.O_RDONLY, 'read-only');
+  // Node exposes no O_ACCMODE, so read-only is checked as "neither write bit set".
+  assert.strictEqual(flags[0] & (fs.constants.O_WRONLY | fs.constants.O_RDWR), 0, 'read-only');
   if (fs.constants.O_NONBLOCK !== undefined) {
     assert.ok(flags[0] & fs.constants.O_NONBLOCK, 'O_NONBLOCK is set');
   }
