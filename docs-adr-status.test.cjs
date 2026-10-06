@@ -187,3 +187,24 @@ test('38 review BL-01 scope: CTK-ADR-0010 records that a FIFO at the LIVE slot s
   assert.match(b, /FIFO/);
   assert.match(b, /verdict/);
 });
+
+test('38 verifier VF-1: the classify-`other` residual also names the seven wrapper forms the verifier found', () => {
+  const b = adr10Bullet(/classif(y|ies) `other`/);
+  for (const form of [
+    '( gh pr review 42 -a )',
+    '{ gh pr review 42 -a; }',
+    'nohup gh pr review 42 -a',
+    'eval "gh pr review 42 -a"',
+    'echo 42 | xargs gh pr review -a',
+    '$(echo gh) pr review 42 -a',
+    'gh -R o/r pr review 42 -a',
+  ]) {
+    assert.ok(b.includes(form), 'the residual names `' + form + '`: ' + b);
+  }
+});
+
+test('38 verifier: the live-slot FIFO residual says it hangs every gate and points at its seed', () => {
+  const b = adr10Bullet(/live slot/i);
+  assert.match(b, /every gate/);
+  assert.ok(b.includes('SEED-live-tool-log-fifo-hangs-all-gates'), b);
+});
