@@ -335,3 +335,36 @@ test('261006-jsm WR-03: this suite reads no git object (hermetic in any clone)',
   const gitShow = "['sh" + "ow', ";
   assert.ok(!src.includes(gitShow), 'docs-adr-status.test.cjs must not call git show');
 });
+
+// -- quick 261006-jsm review fix round (CR-01..04, WR-04, IN-01..03): the residual list matches what
+// the review round fixed and what it found still open. Consequences bullets only.
+test('261006-jsm review round: the still-open bullet lists the other shells, compound statements and multi-line eval', () => {
+  const b = adr10Bullet(/^- \*\*Verdict routes still open after quick 261006-jsm/);
+  for (const s of [
+    "echo 'gh pr review 42 -a' | bash", "bash <<< 'gh pr review 42 -a'", '`ash -c`', '`mksh -c`', '`busybox sh -c`',
+    '`su <user> -c`', '`script -c`', '`if true; then gh pr review 42 -a; fi`', '`for` / `while` ... `do`',
+    'a multi-line eval or `-c` payload', '16 multi-line sh -c calls in 48,055',
+    'curl -sX PUT', 'gh api -iX PUT', '`--input`', 'wrapped REST comment',
+  ]) {
+    assert.ok(b.includes(s), 'the still-open residual names ' + s + ': ' + b);
+  }
+});
+
+test('261006-jsm review round: the fixed markers name the review-round spellings', () => {
+  const other = adr10Bullet(/classif(y|ies) `other`/);
+  for (const s of ['eval --', 'builtin eval', '-iFevent=APPROVE', 'curl -sd', 'gh api https://api.github.com/graphql', '`input: $var`']) {
+    assert.ok(other.includes(s), 'the classify-other fixed marker names ' + s + ': ' + other);
+  }
+  const clear = adr10Bullet(/CLEAR-verdict PR comment/);
+  for (const s of ['-fbody=CLEAR', 'curl -sd', 'a wrapped comment']) {
+    assert.ok(clear.includes(s), 'the CLEAR fixed marker names ' + s + ': ' + clear);
+  }
+});
+
+test('261006-jsm review round (IN-03): observability names verdict-log.cjs; bypass mode names the readable-event scope', () => {
+  const o = adr10Bullet(/^- \*\*tool-recorder logs the recovered forms as `pr-review`/);
+  assert.ok(o.includes('verdict-log.cjs'), o);
+  const b = adr10Bullet(/^- \*\*The uncertain and unresolved asks are a prompt only in default mode/);
+  assert.match(b, /statically recovered forms still deny/);
+  assert.match(b, /readable event/);
+});
