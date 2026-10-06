@@ -4,31 +4,313 @@
 /**
  * hooks/gsd-test-viability.cjs — PreToolUse(Bash) ENF-24 gsd-test viability gate.
  *
- * 36-04 Task 1 RED STUB: allows everything. The tests in gsd-test-viability.test.cjs are run
- * against this stub first (fail-first), then the real gate replaces it.
+ * A gsd-test dispatch can pass every SHAPE check and still be launched against an environment
+ * that cannot run it. trek-e's 2026-09-13 incidents: with no docker CLI the run produced zero
+ * containers and hung 26 minutes in silence; a stale client wasted a full round trip. This gate
+ * turns those into an immediate deny that names the fix, checking cheapest first:
+ *
+ *   GTEST-04 — the gsd-test config file exists;
+ *   GTEST-05 — the `--bench` the dispatch names is a `[[benches]]` entry in that config.
+ *
+ * ── ORDER (load-bearing) ────────────────────────────────────────────────────────────────
+ *   1. read the harness payload (malformed JSON throws -> fail-closed deny);
+ *   2. the shared detector: no entry -> allow, BEFORE any resolve, fs or spawn work (RES-01;
+ *      36-CONTEXT Addendum 2 — `isNonGovernedCommand` is deliberately NOT used);
+ *   3. any `uncertain` entry -> throw FailClosed (HARD-01), still before any I/O;
+ *   4. informational dispatches (`--version`, `-h`, `--probe-benches`) are dropped; none left
+ *      -> allow;
+ *   5. per dispatch, in command order:
+ *        a. tree = `treeDirFor` (start dir + `-source`); unresolvable -> throw FailClosed;
+ *        b. not a gsd-core checkout -> this dispatch contributes allow (ROB-01 precedent);
+ *        c. config path: `--config` (static expansion, relative to the start dir), else
+ *           `$XDG_CONFIG_HOME/gsd-test/config.toml` (non-empty absolute), else
+ *           `<homedir>/.config/gsd-test/config.toml`. An unexpandable value -> ask;
+ *           missing file -> deny;
+ *        d. a named bench absent from the config -> deny; an unexpandable value -> ask.
+ *   6. precedence across dispatches: the first deny returns at once; else the first ask; else
+ *      allow.
+ *
+ * ── SEVERITY ────────────────────────────────────────────────────────────────────────────
+ * A returned deny is a POLICY deny: GSD_CONTRIB_OVERRIDE rescues THROWN errors only and never
+ * flips it (Addendum 4), so every deny reason names the real fix. The two `ask` returns (an
+ * unexpandable `--config` or `--bench` value) mean "cannot check", not a known-bad fact; no
+ * catch anywhere produces ask, so every throw still denies.
+ *
+ * ── PRIVACY ─────────────────────────────────────────────────────────────────────────────
+ * The config is only READ (never executed or required) and only `name`/`host` lines inside
+ * `[[benches]]` blocks are parsed. A deny reason echoes configured bench NAMES (truncated and
+ * capped) — never hosts, users, tokens or file excerpts (T-36-15).
+ *
+ * Registered in settings.snippet.json by 36-05 (until then it is not wired and not bundled).
  *
  * @module hooks/gsd-test-viability
  */
 
-const { runGate, allow, emit, safeCommand } = require('./lib/failclosed.cjs');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { runGate, readHookInput, deny, allow, ask, emit, safeCommand, FailClosed } = require('./lib/failclosed.cjs');
+const { resolveGsdCoreRoot, ScriptResolveError } = require('./lib/resolve.cjs');
+const { findGsdTestDispatches, treeDirFor, startDirFor, expandStatic } = require('./lib/gsd-test-detect.cjs');
 
-function gate() {
-  return allow();
+/** The honesty clause appended to every `ask` reason (same sentence as runtime-drift.cjs). */
+const ASK_LIMIT_NOTE =
+  'Note: an `ask` degrades to an ALLOW under `--dangerously-skip-permissions` — the same ' +
+  'accepted limit ENF-11\'s advisory carries.';
+
+/** A config file larger than this is not a gsd-test config; reading it fails closed. */
+const MAX_CONFIG_BYTES = 1024 * 1024;
+
+/** Bench-name listing bounds in a deny reason. */
+const MAX_BENCHES_LISTED = 20;
+const MAX_BENCH_NAME_CHARS = 64;
+
+/** Truncate a name for display. */
+function clip(s) {
+  const v = String(s);
+  return v.length > MAX_BENCH_NAME_CHARS ? v.slice(0, MAX_BENCH_NAME_CHARS) + '...' : v;
 }
 
-function parseBenches() {
-  return [];
+const BENCHES_HEADER = /^\[\[\s*benches\s*\]\]\s*(?:#.*)?$/;
+const KEY_LINE = /^(name|host)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')\s*(?:#.*)?$/;
+
+/**
+ * Zero-dependency `[[benches]]` reader (CONTEXT §Viability gate: no TOML library). Returns every
+ * `[[benches]]` block that has a `name`, as `{name, host}` (`host` null when absent).
+ *
+ * @param {string} text the config file text
+ * @returns {{name:string, host:(string|null)}[]}
+ */
+function parseBenches(text) {
+  let src = typeof text === 'string' ? text : '';
+  if (src.charCodeAt(0) === 0xfeff) src = src.slice(1);
+  const out = [];
+  let cur = null;
+  const close = () => {
+    if (cur && cur.name !== null) out.push(cur);
+    cur = null;
+  };
+  for (const raw of src.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === '' || line.startsWith('#')) continue;
+    if (BENCHES_HEADER.test(line)) {
+      close();
+      cur = { name: null, host: null };
+      continue;
+    }
+    if (line.startsWith('[')) {
+      close();
+      continue;
+    }
+    if (!cur) continue;
+    const m = KEY_LINE.exec(line);
+    if (!m) continue;
+    const value = m[2] !== undefined ? m[2].replace(/\\(.)/g, '$1') : m[3];
+    if (cur[m[1]] === null) cur[m[1]] = value;
+  }
+  close();
+  return out;
 }
 
+/** The comma list of configured bench names for a deny reason. */
+function benchList(benches) {
+  if (benches.length === 0) return '<none>';
+  const shown = benches.slice(0, MAX_BENCHES_LISTED).map((b) => clip(b.name));
+  const more = benches.length - shown.length;
+  return shown.join(', ') + (more > 0 ? ' (and ' + more + ' more)' : '');
+}
+
+function askUnexpandable(flag, value) {
+  return ask(
+    'ENF-24 gsd-test viability gate cannot check this dispatch: the `--' + flag + '` value `' +
+      clip(value) + '` is a shell expansion that cannot be resolved statically, so the gate ' +
+      'cannot confirm the ' + (flag === 'config' ? 'config file exists' : 'bench is configured') +
+      '. Pass a literal value to have it checked. ' + ASK_LIMIT_NOTE
+  );
+}
+
+function missingConfigReason(p) {
+  return (
+    'Blocked by the ENF-24 gsd-test viability gate: the gsd-test config file `' + p + '` does ' +
+    'not exist. gsd-test cannot run without it — the run would fail (or stall) instead of testing ' +
+    'anything.\n\n' +
+    'Fix: restore the config from your documented gsd-test setup (do not hand-write one from ' +
+    'guesses), or pass `--config <path>` naming the config file that does exist, then re-run.'
+  );
+}
+
+function missingBenchReason(bench, p, benches) {
+  return (
+    'Blocked by the ENF-24 gsd-test viability gate: the bench `' + clip(bench) + '` named by ' +
+    '`--bench` is not a `[[benches]]` entry in `' + p + '`, so gsd-test has nowhere to run.\n\n' +
+    'Configured benches: ' + benchList(benches) + '\n\n' +
+    'Fix: pass `--bench <name>` with one of the configured names, or add the bench to the config, ' +
+    'then re-run.'
+  );
+}
+
+/**
+ * The config path this dispatch reads, or `{ask}` when `--config` cannot be expanded.
+ *
+ * @returns {{path:string}|{ask:Object}}
+ */
+function configPathFor(d, startDir, deps) {
+  const ctx = { env: deps.env, homedir: deps.homedir };
+  const flag = d.flags ? d.flags.config : undefined;
+  if (typeof flag === 'string' && flag !== '') {
+    const expanded = expandStatic(flag, ctx);
+    if (expanded === null) return { ask: askUnexpandable('config', flag) };
+    return { path: path.resolve(startDir, expanded) };
+  }
+  // An empty `--config=` is an empty Go value; gsd-test falls back to its default (the same
+  // reading 36-03 gave an empty `--head=`).
+  const xdg = deps.env ? deps.env.XDG_CONFIG_HOME : undefined;
+  if (typeof xdg === 'string' && xdg.length > 0 && path.isAbsolute(xdg)) {
+    return { path: path.join(xdg, 'gsd-test', 'config.toml') };
+  }
+  return { path: path.join(deps.homedir, '.config', 'gsd-test', 'config.toml') };
+}
+
+/**
+ * The pure gate decision with every impure dep injected.
+ *
+ * @param {string} stdinString raw PreToolUse JSON
+ * @param {Object} deps
+ * @param {string} deps.cwd the hook's working directory (the command's base cwd)
+ * @param {Object} deps.env environment for static expansion
+ * @param {string} deps.homedir home directory for `~` expansion and the default config path
+ * @param {(dir:string)=>(string|null)} deps.resolveTreeRoot gsd-core root for a dir, or null
+ * @param {(p:string)=>(string|null)} deps.readConfig config text, null when absent (may throw)
+ * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
+ */
+function gate(stdinString, deps) {
+  const input = readHookInput(stdinString);
+  const command = (input.tool_input && input.tool_input.command) || '';
+
+  // (2) RES-01: the detector is the first short-circuit.
+  const entries = findGsdTestDispatches(command);
+  if (entries.length === 0) return allow();
+
+  // (3) HARD-01: an unattributable gsd-test mention fails closed before any I/O.
+  const uncertain = entries.find((e) => e.kind === 'uncertain');
+  if (uncertain) {
+    throw new FailClosed(
+      'ENF-24 gsd-test viability gate cannot attribute this gsd-test command (' +
+        uncertain.reason +
+        ') — failing closed. Re-run it as a plain `gsd-test` invocation with literal flag values.'
+    );
+  }
+
+  // (4) Informational invocations only print; they need no config, bench or Docker.
+  const dispatches = entries.filter((e) => e.kind === 'dispatch' && !e.informational);
+  if (dispatches.length === 0) return allow();
+
+  const ctx = { env: deps.env, homedir: deps.homedir };
+  let firstAsk = null;
+  for (const d of dispatches) {
+    // (5a) Which tree, and the start dir a relative `--config` resolves against.
+    const startDir = startDirFor(d, deps.cwd, ctx);
+    const treeDir = startDir === null ? null : treeDirFor(d, deps.cwd, ctx);
+    if (startDir === null || treeDir === null) {
+      throw new FailClosed(
+        'ENF-24 gsd-test viability gate cannot resolve this dispatch\'s directory statically (a ' +
+          '`-source` value or an earlier `cd` target is a shell expansion, `~user` or `-`) — ' +
+          'failing closed. Pass a literal path.'
+      );
+    }
+
+    // (5b) Out-of-tree passthrough.
+    if (deps.resolveTreeRoot(treeDir) === null) continue;
+
+    // (5c) GTEST-04: the config file exists.
+    const cfg = configPathFor(d, startDir, deps);
+    if (cfg.ask) {
+      if (!firstAsk) firstAsk = cfg.ask;
+      continue;
+    }
+    const text = deps.readConfig(cfg.path);
+    if (text === null || text === undefined) return deny(missingConfigReason(cfg.path));
+
+    // (5d) GTEST-05: the named bench is configured. An empty `--bench=` names no bench.
+    const benchFlag = d.flags ? d.flags.bench : undefined;
+    if (typeof benchFlag === 'string' && benchFlag !== '') {
+      const bench = expandStatic(benchFlag, ctx);
+      if (bench === null) {
+        if (!firstAsk) firstAsk = askUnexpandable('bench', benchFlag);
+        continue;
+      }
+      const benches = parseBenches(text);
+      if (!benches.some((b) => b.name === bench)) return deny(missingBenchReason(bench, cfg.path, benches));
+    }
+  }
+
+  return firstAsk || allow();
+}
+
+/**
+ * Real config reader: ENOENT/ENOTDIR -> null (the missing-config policy deny); a path that is
+ * not a regular file, is larger than 1 MiB, or cannot be read -> throw FailClosed. The file is
+ * only ever read as text — never executed or required.
+ */
+function defaultReadConfig(p) {
+  let st;
+  try {
+    st = fs.statSync(p);
+  } catch (err) {
+    if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) return null;
+    throw new FailClosed('ENF-24 could not stat the gsd-test config `' + p + '` (' + ((err && err.code) || 'error') + ') — failing closed.');
+  }
+  if (!st.isFile()) {
+    throw new FailClosed('ENF-24: the gsd-test config `' + p + '` exists but is not a regular file — failing closed.');
+  }
+  if (st.size > MAX_CONFIG_BYTES) {
+    throw new FailClosed('ENF-24: the gsd-test config `' + p + '` is larger than 1 MiB — failing closed.');
+  }
+  try {
+    return fs.readFileSync(p, 'utf8');
+  } catch (err) {
+    throw new FailClosed('ENF-24 could not read the gsd-test config `' + p + '` (' + ((err && err.code) || 'error') + ') — failing closed.');
+  }
+}
+
+/**
+ * Injectable entry seam. Defaults the real impls INSIDE the runGate callback so a throwing
+ * default fails closed rather than escaping the harness.
+ *
+ * @param {string} stdinString raw PreToolUse JSON
+ * @param {Object} [deps]
+ * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
+ */
 function runGsdTestViabilityGate(stdinString, deps = {}) {
   const ctx = {
     command: safeCommand(stdinString),
     action: 'gsd-test-viability',
+    // OBS-02: read ONLY for session/tool ids in the verdict log; never logged verbatim.
     stdin: stdinString,
     worktreeRoot: deps.worktreeRoot,
     overrideImpl: deps.overrideImpl,
   };
-  return runGate(() => gate(stdinString, deps), ctx);
+
+  return runGate(() => {
+    const resolved = Object.assign({}, deps);
+    // Addendum 6: the hook's cwd is process.cwd(), as every other Bash gate.
+    if (!resolved.cwd) resolved.cwd = process.cwd();
+    if (!resolved.env) resolved.env = process.env;
+    if (!resolved.homedir) resolved.homedir = os.homedir();
+    if (!resolved.resolveTreeRoot) {
+      resolved.resolveTreeRoot = (dir) => {
+        try {
+          return resolveGsdCoreRoot(dir);
+        } catch (err) {
+          // Not a gsd-core checkout: not this gate's concern. Anything else fails closed.
+          if (err instanceof ScriptResolveError) return null;
+          throw err;
+        }
+      };
+    }
+    if (!resolved.readConfig) resolved.readConfig = defaultReadConfig;
+    return gate(stdinString, resolved);
+  }, ctx);
 }
 
 function main() {
@@ -46,4 +328,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { runGsdTestViabilityGate, gate, parseBenches };
+module.exports = { runGsdTestViabilityGate, gate, parseBenches, ASK_LIMIT_NOTE };
