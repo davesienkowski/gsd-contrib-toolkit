@@ -69,6 +69,7 @@ function scenario(over = {}) {
     worktreesHolding: 0,
     casUpdateRef: 0,
     casArgs: [],
+    isSymbolicRef: 0,
     currentBranch: 0,
     readBaseRef: 0,
     readBaseRefArgs: [],
@@ -111,6 +112,12 @@ function scenario(over = {}) {
       calls.worktreesHolding += 1;
       return over.held || [];
     },
+    // 37-REVIEW BL-01: is refs/heads/next a symbolic ref (`over.symbolic`, default false)?
+    isSymbolicRef: () => {
+      calls.isSymbolicRef += 1;
+      calls.order.push('isSymbolicRef');
+      return over.symbolic === true;
+    },
     casUpdateRef: (...args) => {
       calls.casUpdateRef += 1;
       calls.casArgs.push(args);
@@ -129,7 +136,7 @@ function scenario(over = {}) {
     },
   };
   const rest = Object.assign({}, over);
-  for (const k of ['refs', 'ancestor', 'held', 'casOk', 'branch', 'baseRef']) delete rest[k];
+  for (const k of ['refs', 'ancestor', 'held', 'casOk', 'branch', 'baseRef', 'symbolic']) delete rest[k];
   return { deps: Object.assign(base, rest), calls };
 }
 
@@ -1329,7 +1336,8 @@ test('ENF-25 bound: FETCH_BELT_MS + MAX_GIT_CALLS_PER_ROOT * GIT_TIMEOUT_MS <= G
 
 /** Every non-fetch git process the default seams would spawn; the fetch seam's `remote get-url` counts 1. */
 function gitProcesses(calls) {
-  return calls.currentBranch + calls.revParse + calls.isAncestor + calls.worktreesHolding + calls.casUpdateRef + calls.fetchOrigin;
+  return calls.currentBranch + calls.revParse + calls.isAncestor + calls.worktreesHolding + calls.casUpdateRef + calls.fetchOrigin +
+    calls.isSymbolicRef;
 }
 
 const WORST = [
@@ -2119,6 +2127,101 @@ test('ENF-25 EnterWorktree e2e: fresh pinned, A\'s origin is a nonexistent path 
     assert.match(r.reason, /dangerously-skip-permissions/);
     assert.strictEqual(refOf(fx.A, 'refs/heads/next'), fx.initial);
     assert.strictEqual(refOf(fx.A, 'refs/remotes/origin/next'), fx.initial);
+  } finally {
+    fx.dispose();
+  }
+});
+
+// ───────────────────────── 37-REVIEW fixes ─────────────────────────
+//
+// One block per 37-REVIEW finding. Real-git rows use the temp bare-origin + clone fixture only.
+
+/** `git status --porcelain` of a tree, trimmed ('' = clean). */
+function porcelain(dir) {
+  return git(dir, 'status', '--porcelain').trim();
+}
+
+// ── BL-01: a symbolic refs/heads/next is never read through or moved ──
+
+test('ENF-25 BL-01: a symbolic refs/heads/next denies (thrown, constant reason) with ZERO fetch and ZERO CAS', () => {
+  const { deps, calls } = scenario({ symbolic: true });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /ENF-25/);
+  assert.match(d.permissionDecisionReason, /symbolic ref/);
+  assert.strictEqual(calls.isSymbolicRef, 1);
+  assert.strictEqual(calls.fetchOrigin, 0);
+  assert.strictEqual(calls.casUpdateRef, 0);
+});
+
+test('ENF-25 BL-01: the symbolic-next deny is THROWN (override-escapable, one receipt) and still moves nothing', () => {
+  const o = yesOverride();
+  const { deps, calls } = scenario({ symbolic: true, overrideImpl: o.overrideImpl });
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(o.receipts.length, 1);
+  assert.strictEqual(calls.casUpdateRef, 0);
+});
+
+test('ENF-25 BL-01: a HEAD base on `next` checks the symref too; a remote base never asks for it', () => {
+  const head = scenario({ symbolic: true, branch: 'next' });
+  assert.strictEqual(runWorktreeFreshBaseGate(input('git worktree add -b f p'), head.deps).permissionDecision, 'deny');
+  assert.strictEqual(head.calls.casUpdateRef, 0);
+  const remote = scenario({ symbolic: true });
+  assert.strictEqual(runWorktreeFreshBaseGate(input('git worktree add -b f p origin/next'), remote.deps).permissionDecision, 'allow');
+  assert.strictEqual(remote.calls.isSymbolicRef, 0);
+});
+
+test('ENF-25 BL-01 seam: default isSymbolicRef is false for a plain next and true for next -> work', () => {
+  const fx = makeFixture();
+  try {
+    const seams = defaultSeams();
+    assert.strictEqual(seams.isSymbolicRef(fx.A, 'refs/heads/next'), false);
+    git(fx.A, 'update-ref', '-d', 'refs/heads/next');
+    git(fx.A, 'symbolic-ref', 'refs/heads/next', 'refs/heads/work');
+    assert.strictEqual(seams.isSymbolicRef(fx.A, 'refs/heads/next'), true);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 BL-01 / NI-03 seam: default casUpdateRef passes --no-deref and --create-reflog before the ref', () => {
+  const rec = recSpawn();
+  seamsWith(rec).casUpdateRef('/abs/dir', 'refs/heads/next', SHA_REMOTE, SHA_LOCAL);
+  assert.strictEqual(rec.calls.length, 1);
+  const args = rec.calls[0].args;
+  assert.strictEqual(args[0], 'update-ref');
+  assert.ok(args.includes('--no-deref'), JSON.stringify(args));
+  assert.ok(args.includes('--create-reflog'), JSON.stringify(args));
+  assert.deepStrictEqual(args.slice(-3), ['refs/heads/next', SHA_REMOTE, SHA_LOCAL]);
+});
+
+test('ENF-25 NI-03: with core.logAllRefUpdates=false and no next reflog, the CAS still records an ENF-25 reflog entry', () => {
+  const { fx, L, R } = fetchedFixture();
+  try {
+    git(fx.A, 'config', 'core.logAllRefUpdates', 'false');
+    fs.rmSync(path.join(fx.A, '.git', 'logs', 'refs', 'heads', 'next'), { force: true });
+    assert.strictEqual(defaultSeams().casUpdateRef(fx.A, 'refs/heads/next', R, L), true);
+    const first = git(fx.A, 'reflog', 'show', '--format=%gs', 'refs/heads/next').split('\n')[0];
+    assert.match(first, /ENF-25/);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 BL-01 e2e (fx1): next is a symref to the CHECKED-OUT work -> deny; work unmoved, tree clean', () => {
+  const fx = makeFixture();
+  try {
+    fx.advanceOrigin();
+    git(fx.A, 'update-ref', '-d', 'refs/heads/next');
+    git(fx.A, 'symbolic-ref', 'refs/heads/next', 'refs/heads/work');
+    const work = refOf(fx.A, 'refs/heads/work');
+    const r = spawnIn(fx.A, 'git worktree add -b f ' + path.join(fx.root, 'x') + ' next');
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.match(r.reason, /symbolic ref/);
+    assert.strictEqual(refOf(fx.A, 'refs/heads/work'), work, 'the checked-out branch must not move');
+    assert.strictEqual(porcelain(fx.A), '', 'the checked-out tree must stay clean');
+    assert.strictEqual(git(fx.A, 'symbolic-ref', 'refs/heads/next').trim(), 'refs/heads/work');
   } finally {
     fx.dispose();
   }
