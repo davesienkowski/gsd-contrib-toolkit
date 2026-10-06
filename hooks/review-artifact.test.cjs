@@ -2602,3 +2602,128 @@ for (const cmd of [
     assert.deepStrictEqual(dp._calls.readToolLog, [], cmd);
   });
 }
+
+// -- 261006-jsm Task 3b: GraphQL review mutations reach R8a; a file-sourced query asks -----------
+
+const JSM_GQL_SUBMIT =
+  'mutation { submitPullRequestReview(input: {pullRequestId: "x", event: APPROVE}) { clientMutationId } }';
+const JSM_GQL_VAR =
+  'mutation($e: PullRequestReviewEvent!) { submitPullRequestReview(input: {pullRequestReviewId: "r", event: $e}) { clientMutationId } }';
+const JSM_GQL_ADD_RC_JSON =
+  '{"query":"mutation { addPullRequestReview(input: {pullRequestId: \\"x\\", event: REQUEST_CHANGES}) { clientMutationId } }"}';
+const JSM_GQL_VAR_JSON =
+  '{"query":"mutation($e: PullRequestReviewEvent!) { submitPullRequestReview(input: {pullRequestReviewId: \\"r\\", event: $e}) { clientMutationId } }","variables":{"e":"APPROVE"}}';
+
+for (const cmd of [
+  "gh api graphql -f query='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql --raw-field query='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql -F query='" + JSM_GQL_SUBMIT + "'",
+  "gh api graphql -fquery='" + JSM_GQL_SUBMIT + "'",
+  "gh api /graphql -f query='" + JSM_GQL_SUBMIT + "'",
+  "curl -X POST https://api.github.com/graphql -d '" + JSM_GQL_ADD_RC_JSON + "'",
+  "gh api graphql -f query='" + JSM_GQL_VAR + "' -f e=APPROVE",
+  "gh api graphql -f query='" + JSM_GQL_VAR + "' -F e=REQUEST_CHANGES",
+  "curl https://api.github.com/graphql -d '" + JSM_GQL_VAR_JSON + "'",
+  "bash -c \"gh api graphql -f query='" + JSM_GQL_SUBMIT + "'\"",
+]) {
+  test('261006-jsm gate GraphQL: `' + cmd.slice(0, 70) + '...` with only Bash rows -> DENY R8a-memtrace', () => {
+    assertJsmR8aDeny(cmd);
+  });
+}
+
+test('261006-jsm gate GraphQL: a variable APPROVE event is an approve -> DENY R10 when R10 is absent', () => {
+  const cmd = "gh api graphql -f query='" + JSM_GQL_VAR + "' -f e=APPROVE";
+  assert.strictEqual(isApproveEvent(seg0(cmd)), true);
+  const d = runReviewArtifactGate(input(cmd), deps({ files: absent(R10) }));
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-20 R10/);
+});
+
+test('261006-jsm gate GraphQL: an inline APPROVE enum is an approve and REQUEST_CHANGES a request-changes', () => {
+  assert.strictEqual(isApproveEvent(seg0("gh api graphql -f query='" + JSM_GQL_SUBMIT + "'")), true);
+  assert.strictEqual(requestChanges("curl https://api.github.com/graphql -d '" + JSM_GQL_ADD_RC_JSON + "'"), true);
+  assert.strictEqual(isApproveEvent(seg0("curl https://api.github.com/graphql -d '" + JSM_GQL_ADD_RC_JSON + "'")), false);
+});
+
+for (const [label, cmd] of [
+  ['an @-sourced event variable', "gh api graphql -f query='" + JSM_GQL_VAR + "' -F e=@ev.txt"],
+  ['an event variable built by expansion', "gh api graphql -f query='" + JSM_GQL_VAR + "' -f e=$EV"],
+  ['an absent event variable', "gh api graphql -f query='" + JSM_GQL_VAR + "'"],
+  ['submitPullRequestReview with no event', "gh api graphql -f query='mutation { submitPullRequestReview(input: {pullRequestReviewId: \"r\"}) { clientMutationId } }'"],
+]) {
+  test('261006-jsm gate GraphQL: ' + label + ' -> the MJ-02 UNRESOLVED ask', () => {
+    const d = runReviewArtifactGate(input(cmd), deps());
+    const why = assertUnresolvedAsk(d, /GraphQL review mutation/);
+    assert.ok(!why.includes('$EV') && !why.includes('ev.txt'), 'the ask never echoes the value: ' + why);
+  });
+}
+
+for (const [label, cmd] of [
+  ['addPullRequestReview with no event (a pending review)', "gh api graphql -f query='mutation { addPullRequestReview(input: {pullRequestId: \"x\"}) { clientMutationId } }'"],
+  ['an inline COMMENT event', "gh api graphql -f query='mutation { submitPullRequestReview(input: {pullRequestReviewId: \"r\", event: COMMENT}) { clientMutationId } }'"],
+]) {
+  test('261006-jsm gate GraphQL: ' + label + ' with only Bash rows -> allow; the log is never read', () => {
+    const dp = depsWithLog(toolLog(ONLY_BASH.slice()));
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+    assert.deepStrictEqual(dp._calls.readToolLog, []);
+  });
+}
+
+/** A file-sourced GraphQL query: the MJ-02 ask with no PR lookup, scaffold or log read. */
+function assertJsmFileQueryAsk(cmd) {
+  const dp = deps();
+  const d = runReviewArtifactGate(input(cmd), dp);
+  const why = assertUnresolvedAsk(d, /GraphQL query read from a file or stdin/);
+  assert.strictEqual(dp._calls.resolvePr, 0, cmd);
+  assert.deepStrictEqual(dp._calls.scaffolded, [], cmd);
+  assert.deepStrictEqual(dp._calls.readToolLog, [], cmd);
+  return why;
+}
+
+for (const cmd of [
+  'gh api graphql -F query=@q.graphql',
+  'gh api graphql -F query=@-',
+  'gh api graphql --input body.json',
+  'gh api graphql --input -',
+  'gh api /graphql --input body.json',
+  'curl -X POST https://api.github.com/graphql -d @q.json',
+]) {
+  test('261006-jsm gate GraphQL file query: `' + cmd + '` -> UNRESOLVED ask with no PR lookup, scaffold or log read', () => {
+    assertJsmFileQueryAsk(cmd);
+  });
+}
+
+test('261006-jsm gate GraphQL file query privacy: the ask never echoes the file name', () => {
+  const why = assertJsmFileQueryAsk('gh api graphql -F query=@zzmarker.graphql');
+  assert.ok(!why.includes('zzmarker'), why);
+});
+
+test('261006-jsm gate GraphQL file query precedence: `gh api graphql --input b.json && gh pr merge 42 --squash` with R13 absent -> DENY R13', () => {
+  const d = runReviewArtifactGate(input('gh api graphql --input b.json && gh pr merge 42 --squash'), deps({ files: absent(R13) }));
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-20 R13/);
+});
+
+test('261006-jsm gate GraphQL file query: a mixed inner chain with only Bash rows -> DENY R8a (deny beats the held ask)', () => {
+  assertJsmR8aDeny("bash -c 'gh pr review 42 -a; gh api graphql --input b.json'");
+});
+
+test('261006-jsm gate GraphQL file query: a mixed inner chain with complete evidence -> the held UNRESOLVED ask', () => {
+  const d = runReviewArtifactGate(input("bash -c 'gh pr review 42 --comment -b x; gh api graphql --input b.json'"), deps());
+  assertUnresolvedAsk(d, /GraphQL query read from a file or stdin/);
+});
+
+for (const cmd of [
+  "gh api graphql -f query='mutation { submitpullrequestreview(input: {}) { x } }'",
+  'gh api graphql -f query=@x',
+  "gh api -X GET graphql -f query='" + JSM_GQL_SUBMIT + "'",
+]) {
+  test('261006-jsm gate GraphQL lock: `' + cmd.slice(0, 70) + '` -> allow with no PR lookup or log read', () => {
+    const dp = deps();
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+    assert.strictEqual(dp._calls.resolvePr, 0);
+    assert.deepStrictEqual(dp._calls.readToolLog, []);
+  });
+}
