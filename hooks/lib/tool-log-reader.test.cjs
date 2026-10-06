@@ -554,3 +554,31 @@ test('38 fix BL-01 reader: lstat says regular but the opened fd is not (a swap b
   assert.deepStrictEqual(r.problems, ['unreadable ' + LOG + ': not a regular file']);
   assert.deepStrictEqual(r.records, []);
 });
+
+// ── 38 review fix NT-01: a row must carry every field the recorder always writes ────────────
+
+for (const [label, row] of [
+  ['the three-field row {session_id, tool_name, outcome}', { session_id: 'sess-nt1', tool_name: 'mcp__memtrace__get_impact', outcome: 'ok' }],
+  ['no ts', (() => { const r = rec('sess-nt1', 'mcp__memtrace__get_impact'); delete r.ts; return r; })()],
+  ['a numeric ts', rec('sess-nt1', 'mcp__memtrace__get_impact', 'ok', { ts: 1 })],
+  ['no tool_use_id', (() => { const r = rec('sess-nt1', 'mcp__memtrace__get_impact'); delete r.tool_use_id; return r; })()],
+  ['a numeric tool_use_id', rec('sess-nt1', 'mcp__memtrace__get_impact', 'ok', { tool_use_id: 7 })],
+  ['no duration_ms', (() => { const r = rec('sess-nt1', 'mcp__memtrace__get_impact'); delete r.duration_ms; return r; })()],
+  ['a string duration_ms', rec('sess-nt1', 'mcp__memtrace__get_impact', 'ok', { duration_ms: '5' })],
+  ['no cwd', (() => { const r = rec('sess-nt1', 'mcp__memtrace__get_impact'); delete r.cwd; return r; })()],
+  ['a numeric cwd', rec('sess-nt1', 'mcp__memtrace__get_impact', 'ok', { cwd: 3 })],
+]) {
+  test('38 fix NT-01 reader: a row with ' + label + ' never counts', () => {
+    const dir = tmpDir();
+    writeLog(dir, [row, rec('sess-nt1', 'Bash')]);
+    const r = readSessionRecords('sess-nt1', { env: { GSD_CONTRIB_LOG_DIR: dir } });
+    assert.deepStrictEqual(r.records, [{ tool_name: 'Bash', outcome: 'ok' }]);
+  });
+}
+
+test('38 fix NT-01 reader: a recorder row whose nullable fields are null (tool_use_id, duration_ms, cwd) still counts', () => {
+  const dir = tmpDir();
+  writeLog(dir, [rec('sess-nt1n', 'mcp__memtrace__get_impact', 'ok', { tool_use_id: null, duration_ms: null, cwd: null })]);
+  const r = readSessionRecords('sess-nt1n', { env: { GSD_CONTRIB_LOG_DIR: dir } });
+  assert.deepStrictEqual(r.records, [{ tool_name: 'mcp__memtrace__get_impact', outcome: 'ok' }]);
+});
