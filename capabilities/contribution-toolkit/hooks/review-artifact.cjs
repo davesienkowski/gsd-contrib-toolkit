@@ -77,7 +77,7 @@ const {
   isNonGovernedCommand,
   PR_COMMENT_EQUIVALENT_ACTIONS,
 } = require('./lib/classify.cjs');
-const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
+const { runGate, readHookInput, deny, allow, ask, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand } = require('./lib/resolve.cjs');
 const { hasUnfilledPlaceholders, writeScaffoldIfAbsent } = require('./lib/scaffold.cjs');
 const { readSessionRecords } = require('./lib/tool-log-reader.cjs');
@@ -945,12 +945,78 @@ function memtraceShortfall(records) {
 }
 
 /**
+ * The closing note of every R8a ask: a human decides, and on what basis.
+ */
+const R8A_ASK_NOTE =
+  'A human decides: approve this prompt only if the memtrace graph pass (re-review.md step 8a) ' +
+  'ran in this session or memtrace was genuinely unavailable (name the unavailable verb in the ' +
+  'review); otherwise reject it and run the tools. `GSD_CONTRIB_OVERRIDE` does not answer this ' +
+  'prompt: it rescues thrown gate errors only. (CTK-ADR-0005, ENF-20)';
+
+/**
+ * An R8a cannot-observe ASK (CONTEXT §Severity map: cannot-observe is not did-not-run).
+ *
+ * @param {Object} g
+ * @param {string} why what could not be observed, and why
+ * @returns {Object}
+ */
+function memtraceAsk(g, why) {
+  return ask(
+    'ENF-20 ' + g.id + ' (re-review step ' + g.step + ') — the gate could not observe this ' +
+      'verdict\'s memtrace evidence in tool-recorder\'s log: ' + why + '\n\n' +
+      'This is not a finding that memtrace did not run; it is a statement that the log cannot ' +
+      'answer the question.\n\n' + R8A_ASK_NOTE
+  );
+}
+
+/**
+ * Reader problems for a reason: the reader emits basenames, codes and fixed words only; each is
+ * still bounded here so a misbehaving reader cannot flood a decision reason.
+ *
+ * @param {*} problems
+ * @returns {string}
+ */
+function problemText(problems) {
+  const list = (Array.isArray(problems) ? problems : [])
+    .filter((p) => typeof p === 'string' && p.length > 0)
+    .slice(0, 4)
+    .map((p) => p.slice(0, 120));
+  return list.length ? list.join('; ') : 'no reader problem reported';
+}
+
+/**
+ * The tool names a shortfall is missing, as one readable clause.
+ *
+ * @param {{missing:string[], missingAnyOf:(string[]|null)}} short
+ * @returns {string}
+ */
+function shortfallClause(short) {
+  const parts = [];
+  if (short.missing.length) parts.push('ALL of: ' + short.missing.map((t) => '`' + t + '`').join(', '));
+  if (short.missingAnyOf) {
+    parts.push('AT LEAST ONE recorded-decision verb of: ' + short.missingAnyOf.map((t) => '`' + t + '`').join(', '));
+  }
+  return parts.join('; and ');
+}
+
+/**
  * Step 8a: the session that submits a verdict must have run the memtrace graph pass.
  *
- * Tracer form (38-01). KNOWN STUBS, each a fail-closed throw until 38-02 turns it into `ask`
- * (cannot-observe is not did-not-run): no payload session id; recorder off; a session with zero
- * successful records; a shortfall in an INCOMPLETE read. The unavailable-escape scaffold
- * arrives in 38-03.
+ * Severity map (CONTEXT §Severity map; CTK-ADR-0005), in this order:
+ *   (a) no usable payload session id            → ASK (evidence cannot be scoped)
+ *   (b) `deps.readToolLog` throws, or returns a value without boolean `complete`, boolean
+ *       `recorderOff` and array `records`       → THROW (fail-closed deny; a throw is
+ *                                                 override-escapable with a receipt, HARD-03)
+ *   (c) the recorder is off                     → ASK
+ *   (d) the session's SUCCESSFUL rows hold the required tools → pass (null), even when part of
+ *       the log could not be read: evidence that was found is real
+ *   (e) the session has zero successful rows    → ASK (recorder not registered where this
+ *                                                 session runs, a session-id mismatch, …)
+ *   (f) evidence short and the read incomplete  → ASK (the unread part may hold it)
+ *   (g) evidence short in a COMPLETE read       → DENY naming the missing tools
+ * An ask is never flipped by GSD_CONTRIB_OVERRIDE (failclosed.runGateInner passes it through),
+ * and gateSegment/gate keep evaluating after it, so it can never mask a later deny.
+ * The unavailable-escape scaffold arrives in 38-03.
  *
  * @param {Object} g
  * @param {Object} ctx carries `sessionId`
@@ -958,42 +1024,65 @@ function memtraceShortfall(records) {
  * @returns {Object|null}
  */
 function verifyMemtraceEvidence(g, ctx, deps) {
-  if (typeof ctx.sessionId !== 'string' || ctx.sessionId.length === 0) {
-    throw new FailClosed(
-      'ENF-20 ' + g.id + ': the hook payload carries no session_id, so step-8a memtrace ' +
-        'evidence cannot be scoped to this session.'
-    );
-  }
-  const r = deps.readToolLog(ctx.sessionId) || {};
-  const records = Array.isArray(r.records) ? r.records : [];
-  if (r.recorderOff) {
-    throw new FailClosed('ENF-20 ' + g.id + ': tool-recorder is off, so step-8a memtrace evidence cannot be read.');
-  }
-  if (!records.some((x) => x && x.outcome === 'ok')) {
-    throw new FailClosed(
-      'ENF-20 ' + g.id + ': tool-recorder\'s log holds no successful call for this session, so ' +
-        'step-8a memtrace evidence cannot be observed.'
+  // (a)
+  if (typeof ctx.sessionId !== 'string' || ctx.sessionId.trim().length === 0) {
+    return memtraceAsk(
+      g,
+      'the hook payload carries no usable session_id, so the evidence cannot be scoped to this ' +
+        'session.'
     );
   }
 
-  const short = memtraceShortfall(records);
+  // (b) a throw propagates to runGate's fail-closed path unchanged.
+  const r = deps.readToolLog(ctx.sessionId);
+  if (
+    r === null || typeof r !== 'object' || Array.isArray(r) ||
+    typeof r.complete !== 'boolean' || typeof r.recorderOff !== 'boolean' || !Array.isArray(r.records)
+  ) {
+    throw new FailClosed(
+      'ENF-20 contract bug: readToolLog returned ' +
+        (r === null ? 'null' : Array.isArray(r) ? 'an array' : typeof r) +
+        ' without boolean `complete`, boolean `recorderOff` and array `records`; failing closed.'
+    );
+  }
+
+  // (c)
+  if (r.recorderOff) {
+    return memtraceAsk(g, 'tool-recorder is disabled (GSD_CONTRIB_RECORD=off), so nothing was recorded.');
+  }
+
+  // (d)
+  const okRecords = r.records.filter((x) => x && x.outcome === 'ok');
+  const short = memtraceShortfall(okRecords);
   if (short.missing.length === 0 && short.missingAnyOf === null) return null; // evidence complete
 
-  if (r.complete === false) {
-    throw new FailClosed(
-      'ENF-20 ' + g.id + ': tool-recorder\'s log could not be fully read, so missing step-8a ' +
-        'memtrace evidence cannot be told apart from an unreadable log.'
+  // (e)
+  if (okRecords.length === 0) {
+    return memtraceAsk(
+      g,
+      r.complete
+        ? 'the log holds no successful tool call for this session. Likely causes: tool-recorder ' +
+            'is not registered in the repo where this session runs, the session id does not ' +
+            'match the one the recorder stored, or the review is running somewhere the recorder ' +
+            'does not see.'
+        : 'the log could not be fully read (' + problemText(r.problems) + '), and the readable ' +
+            'part holds no successful tool call for this session.'
     );
   }
 
-  const parts = [];
-  if (short.missing.length) parts.push('ALL of: ' + short.missing.map((t) => '`' + t + '`').join(', '));
-  if (short.missingAnyOf) {
-    parts.push('AT LEAST ONE recorded-decision verb of: ' + short.missingAnyOf.map((t) => '`' + t + '`').join(', '));
+  // (f)
+  if (!r.complete) {
+    return memtraceAsk(
+      g,
+      'part of the log could not be read (' + problemText(r.problems) + '), and the readable part ' +
+        'does not show ' + shortfallClause(short) + '.'
+    );
   }
+
+  // (g)
   return deny(
     'ENF-20 ' + g.id + ' (re-review step ' + g.step + ') — this verdict requires ' + g.what +
-      ', and that evidence is missing. Not yet run in this session: ' + parts.join('; and ') + '.\n\n' +
+      ', and that evidence is missing. Not yet run in this session: ' + shortfallClause(short) + '.\n\n' +
       'The evidence is read from tool-recorder\'s log for THIS session only ' +
       '(re-review.md step 8a).\n\n' +
       'Run the named memtrace tools on the PR\'s changed symbols, then re-submit this review. ' +
@@ -1033,7 +1122,13 @@ function gateApplies(g, action, post) {
 }
 
 /**
- * Run one governed segment through the table. Returns a deny decision, or null to continue.
+ * Run one governed segment through the table. Returns a deny decision, the FIRST ask a verify
+ * step produced, or null to continue.
+ *
+ * Precedence: deny > thrown > ask > allow. Any deny (requireArtifact or a verify step) returns
+ * at once; an ask is HELD and the remaining entries are still evaluated, so a later deny (e.g.
+ * R1's treadmill, which sits after R8a in GATES) is never masked by an earlier ask; a throw
+ * propagates unchanged to runGate's fail-closed path.
  *
  * @param {Object} seg
  * @param {string} action
@@ -1101,6 +1196,8 @@ function gateSegment(seg, action, deps, opts = {}) {
     sessionId: opts && typeof opts.sessionId === 'string' ? opts.sessionId : null,
   };
 
+  let pendingAsk = null; // the FIRST ask; never returned while a later entry could still deny
+
   for (const g of applicable) {
     // Companion artifacts first: the merge record's re-fetch recency is meaningless without
     // the analysis artifacts it must post-date.
@@ -1116,21 +1213,24 @@ function gateSegment(seg, action, deps, opts = {}) {
       if (d) return d;
     }
 
+    let d = null;
     if (g.verify === 'merge-preconditions') {
-      const d = verifyMergePreconditions(g, ctx, deps);
-      if (d) return d;
+      d = verifyMergePreconditions(g, ctx, deps);
     } else if (g.verify === 'treadmill') {
-      const d = verifyTreadmill(g, ctx, deps);
-      if (d) return d;
+      d = verifyTreadmill(g, ctx, deps);
     } else if (g.verify === 'memtrace-evidence') {
-      const d = verifyMemtraceEvidence(g, ctx, deps);
-      if (d) return d;
+      d = verifyMemtraceEvidence(g, ctx, deps);
     } else if (g.verify !== undefined) {
       throw new FailClosed('ENF-20 contract bug: gate ' + g.id + ' names an unknown `verify`');
     }
+    if (d && d.permissionDecision === 'ask') {
+      if (!pendingAsk) pendingAsk = d;
+    } else if (d) {
+      return d;
+    }
   }
 
-  return null;
+  return pendingAsk;
 }
 
 /**
@@ -1147,9 +1247,16 @@ function gateSegment(seg, action, deps, opts = {}) {
  * @param {(pr:string, repoSpec:string|null) => Object[]} deps.readPostedReviews MAY THROW.
  * @param {(p:string) => string} deps.readBodyFile MAY THROW.
  * @param {(sessionId:string) => {recorderOff:boolean, complete:boolean, records:Array<{tool_name:string, outcome:string}>, problems:string[]}} deps.readToolLog
- *   step 8a evidence: tool-recorder rows of THIS session, projected. MAY NOT THROW (a read
- *   failure is `complete:false` with a problem, never an exception).
+ *   step 8a evidence: tool-recorder rows of THIS session, projected. The real reader is total (a
+ *   read failure is `complete:false` with a problem). A reader that THROWS, or returns a value
+ *   without boolean `complete` / boolean `recorderOff` / array `records`, is a fail-closed deny.
  * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
+ *
+ * Precedence across segments, as within one (gateSegment): deny > thrown > ask > allow. The first
+ * deny returns at once; the first ask is held while later segments are still evaluated (so
+ * `gh pr review 42 --approve && gh pr merge 42` cannot trade an R8a ask for the merge's deny);
+ * a throw propagates to runGate's fail-closed path; only when nothing denies is the held ask
+ * returned, else allow.
  */
 function gate(stdinString, deps) {
   const input = readHookInput(stdinString);
@@ -1176,14 +1283,19 @@ function gate(stdinString, deps) {
   if (!hasGovernedSegment(parsed, GOVERNED_ACTIONS)) return allow();
 
   const segs = Array.isArray(parsed.segments) && parsed.segments.length > 0 ? parsed.segments : [parsed];
+  let firstAsk = null;
   for (const seg of segs) {
     const r = classifyAction({ ok: true, segments: [seg] });
     if (!r || !GOVERNED_ACTIONS.has(r.action)) continue;
     const decision = gateSegment(seg, r.action, deps, { sessionId });
-    if (decision) return decision; // the first unmet requirement denies
+    if (decision && decision.permissionDecision === 'ask') {
+      if (!firstAsk) firstAsk = decision; // held: a later segment may still deny
+    } else if (decision) {
+      return decision; // the first unmet requirement denies
+    }
   }
 
-  return allow();
+  return firstAsk || allow();
 }
 
 /**
