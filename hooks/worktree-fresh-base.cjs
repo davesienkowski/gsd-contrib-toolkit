@@ -22,8 +22,9 @@
  *      fs, git or network work (RES-01). An `uncertain` entry throws FailClosed (HARD-01);
  *   3. per cut, in command order: a base that does not name the trunk ('other', 'none') is
  *      skipped with no I/O (no fetch on non-trunk cuts); the target dir = the cut's start dir
- *      (gsd-test-detect `startDirFor`, follows `cd`; unresolvable -> FailClosed) with the git
- *      `-C` values folded on; not a gsd-core checkout -> skipped;
+ *      (gsd-test-detect `startDirFor`: `cd`, `env -C`, `sudo -D`) with each git `-C` statically
+ *      expanded and folded on (37-02; either unresolvable -> FailClosed before any I/O); not a
+ *      gsd-core checkout -> skipped;
  *   4. freshness, once per root: bounded fetch of origin next; `origin/next` must resolve. A
  *      `origin/next` base is then current -> allow. A local `next` base: equal -> allow; a strict
  *      ancestor held by no worktree -> CAS `update-ref refs/heads/next <remote> <local>` -> allow;
@@ -50,7 +51,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { runGate, readHookInput, allow, emit, safeCommand, FailClosed } = require('./lib/failclosed.cjs');
 const { resolveGsdCoreRoot, ScriptResolveError } = require('./lib/resolve.cjs');
-const { startDirFor } = require('./lib/gsd-test-detect.cjs');
+const { startDirFor, expandStatic } = require('./lib/gsd-test-detect.cjs');
 const { findWorktreeAdds } = require('./lib/worktree-add-detect.cjs');
 
 /** The fetch argv after `git -C <root>`: literal, frozen; `--no-auto-maintenance` = no gc here. */
@@ -69,6 +70,11 @@ const REFLOG_MESSAGE = 'ENF-25 worktree-fresh-base: fast-forward next to origin/
 
 /** A full object name: SHA-1 (40) or SHA-256 (64) hex. */
 const SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+/** The constant, path-free reason for an unattributable cut (HARD-01). */
+const UNCERTAIN_REASON =
+  'ENF-25 worktree fresh-base gate cannot attribute this `git worktree add` command (its repository or ' +
+  'base is not statically known) — failing closed. Re-run it as a plain command with literal paths and base.';
 
 /** Inherited variables that would redirect a git call away from the target repo. */
 const GIT_REDIRECT_VARS = Object.freeze(['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']);
@@ -112,14 +118,9 @@ function gate(stdinString, deps) {
   const entries = findWorktreeAdds(command);
   if (entries.length === 0) return allow();
 
-  const uncertain = entries.find((e) => e.kind === 'uncertain');
-  if (uncertain) {
-    throw new FailClosed(
-      'ENF-25 worktree fresh-base gate cannot attribute this `git worktree add` command (' +
-        uncertain.reason +
-        ') — failing closed. Re-run it as a plain `git worktree add <path> <base>` with literal values.'
-    );
-  }
+  // HARD-01: an unattributable trunk-cut mention fails closed (thrown, so override-escapable with
+  // a receipt). The reason is a constant: the detector's detail can carry command text or paths.
+  if (entries.some((e) => e.kind === 'uncertain')) throw new FailClosed(UNCERTAIN_REASON);
 
   // (5) Verdict cache per root (and base kind) within this gate call; first deny wins.
   const verdicts = new Map();
@@ -129,14 +130,7 @@ function gate(stdinString, deps) {
     // (3) No fetch, resolve or git work for a base that does not name the trunk.
     if (e.baseKind === 'other' || e.baseKind === 'none') continue;
 
-    const start = startDirFor(e, deps.cwd, { env: deps.env, homedir: deps.homedir });
-    if (start === null) {
-      throw new FailClosed(
-        'ENF-25 worktree fresh-base gate cannot resolve the target repository statically (an earlier ' +
-          '`cd` target is a shell expansion, `~user` or `-`) — failing closed. Pass a literal path.'
-      );
-    }
-    const dir = e.gitChdirs.reduce((acc, c) => path.resolve(acc, c), start);
+    const dir = targetDir(e, deps);
     const root = deps.resolveTreeRoot(dir);
     if (root === null || root === undefined) continue;
 
@@ -146,6 +140,39 @@ function gate(stdinString, deps) {
     if (decision) return decision;
   }
   return allow();
+}
+
+/**
+ * The directory a cut runs git in: the start dir (shared walk: `cd` prefixes and the `env -C` /
+ * `sudo -D` wrapper chdirs, statically expanded), then each git `-C` in order — `''` is a no-op
+ * as in git, anything else is statically expanded (`~`, a leading `$HOME`) and resolved against
+ * the running dir. Throws FailClosed when either cannot be resolved statically, BEFORE any resolve,
+ * fetch or git call: `<cwd>/$X` is never a safe guess (it is usually not a gsd-core root, so the
+ * cut would silently allow on a stale trunk).
+ */
+function targetDir(e, deps) {
+  const ctx = { env: deps.env, homedir: deps.homedir };
+  const start = startDirFor(e, deps.cwd, ctx);
+  if (start === null) {
+    throw new FailClosed(
+      'ENF-25 worktree fresh-base gate cannot resolve the target repository statically (an earlier ' +
+        '`cd`, `env -C` or `sudo -D` target is a shell expansion, `~user` or `-`) — failing closed. ' +
+        'Pass a literal path.'
+    );
+  }
+  let running = start;
+  for (const c of e.gitChdirs) {
+    if (c === '') continue;
+    const expanded = expandStatic(c, ctx);
+    if (expanded === null) {
+      throw new FailClosed(
+        'ENF-25 worktree fresh-base gate cannot resolve a `git -C` directory statically (a shell ' +
+          'expansion or `~user`) — failing closed. Pass a literal path to -C.'
+      );
+    }
+    running = path.resolve(running, expanded);
+  }
+  return running;
 }
 
 /**
