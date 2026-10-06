@@ -342,10 +342,43 @@ const GATES = Object.freeze([
     when: 'verdict',
     // `artifact`, deliberately NOT `file`: the evidence is the recorder log, so requireArtifact
     // must never run for this entry (a missing file must not deny when the evidence exists).
-    // The unavailable-escape scaffold for this path arrives in 38-03.
+    // The file is the sanctioned UNAVAILABLE escape, scaffolded on a deny and read only when the
+    // evidence is short: a filled one turns the deny into a human ask, never an allow.
     artifact: 'R8a-memtrace.json',
     what: 'memtrace evidence for this session: `get_impact` + `get_symbol_context` + one ' +
       'recorded-decision verb (`recall_decision` | `why_is_this_here` | `governing_contracts`)',
+    // Obligations only (CTK-ADR-0006): `status: 'unavailable'` is NEVER pre-filled; the only
+    // constants are the format fields.
+    spec: Object.freeze({
+      title: 'R8a-memtrace.json',
+      step: 're-review step 8a — memtrace graph pass; this file is ONLY its sanctioned unavailable fallback',
+      what: 'NOT evidence. It attests that memtrace could not run in this session, and a filled ' +
+        'one makes the gate ASK a human; it never allows. If memtrace can run, delete this file ' +
+        'and run the tools instead',
+      constants: Object.freeze({ schema: 1, pass: 'memtrace-unavailable' }),
+      fields: Object.freeze([
+        Object.freeze({ path: 'head_oid',
+          observed: 'the PR HEAD OID this review is for — `gh pr view <n> --json headRefOid -q .headRefOid`' }),
+        Object.freeze({ path: 'status',
+          observed: 'write `unavailable` ONLY when memtrace genuinely could not run in this session ' +
+            '(sidecar down, tools not granted to this agent, stale or empty graph); the gate then ' +
+            'asks a human, it never allows' }),
+        Object.freeze({ path: 'unavailable_reason',
+          observed: 'why memtrace could not run, which verbs were unavailable, and the fallback you ' +
+            'used (grep + /code-review)' }),
+      ]),
+    }),
+    assert: Object.freeze([
+      Object.freeze({ path: 'pass', equals: 'memtrace-unavailable',
+        else: 'This file must record `pass: "memtrace-unavailable"`: it is the step-8a unavailable ' +
+          'attestation, not a copy of another review pass.' }),
+      Object.freeze({ path: 'status', equals: 'unavailable',
+        else: 'Set `status` to exactly `unavailable`, and only when memtrace genuinely could not ' +
+          'run in this session. Otherwise delete this file and run the memtrace tools.' }),
+      Object.freeze({ path: 'unavailable_reason', nonEmpty: true,
+        else: 'Record why memtrace could not run, which verbs were unavailable, and the fallback ' +
+          'you used (grep + /code-review).' }),
+    ]),
     verify: 'memtrace-evidence',
   }),
 
@@ -548,9 +581,15 @@ function bodyText(seg, deps = {}) {
 }
 
 /**
- * Is this review submission an APPROVE? `--approve` natively, `event=APPROVE` over REST.
+ * Is this review submission an APPROVE? `--approve` / `-a` natively, `event=APPROVE` over REST.
  * An approve IS a CLEAR verdict (re-review step 12 maps `CLEAR` → Approve), so it is the most
  * robust step-10 trigger available — far more so than parsing prose.
+ *
+ * The short `-a` counts only on a native `gh pr|issue` segment: curl's `-a` (append) is not a
+ * review verdict. It counts whatever value argv attached to it (`-a 42` parses as `{a:'42'}`,
+ * `-ab x` as `{a:'b'}`), because gh's `-a` takes no value; `-ba x` is a body (`{b:'a'}`), not an
+ * approve. Found and fixed in 38-03: before it, `gh pr review <n> -a` was not an approve and
+ * skipped step 10 (R10).
  *
  * @param {Object} seg
  * @returns {boolean}
@@ -558,9 +597,32 @@ function bodyText(seg, deps = {}) {
 function isApproveEvent(seg) {
   const flags = seg.flags || {};
   if (Object.prototype.hasOwnProperty.call(flags, 'approve')) return true;
+  if (isNativeGhSegment(seg) && Object.prototype.hasOwnProperty.call(seg.shortFlags || {}, 'a')) return true;
   for (const c of fieldCandidates(seg)) {
     if (/^event=APPROVE$/i.test(c)) return true;
     if (/"event"\s*:\s*"APPROVE"/i.test(c)) return true;
+  }
+  return false;
+}
+
+/**
+ * Is this review submission a REQUEST-CHANGES verdict? `--request-changes` / `-r` natively
+ * (including the bundled `-rb x`, which argv records as `{r:'b'}`), `event=REQUEST_CHANGES` over
+ * REST (a new review or `…/reviews/<id>/events`), or a JSON body `"event":"REQUEST_CHANGES"`.
+ * Mirrors isApproveEvent; the short `-r` counts only on a native gh segment, so curl's `-r`
+ * (byte range) never classifies as a verdict. Step 8a (R8a-memtrace) applies to it; step 10
+ * (R10) does not.
+ *
+ * @param {Object} seg
+ * @returns {boolean}
+ */
+function isRequestChangesEvent(seg) {
+  const flags = seg.flags || {};
+  if (Object.prototype.hasOwnProperty.call(flags, 'request-changes')) return true;
+  if (isNativeGhSegment(seg) && Object.prototype.hasOwnProperty.call(seg.shortFlags || {}, 'r')) return true;
+  for (const c of fieldCandidates(seg)) {
+    if (/^event=REQUEST_CHANGES$/i.test(c)) return true;
+    if (/"event"\s*:\s*"REQUEST_CHANGES"/i.test(c)) return true;
   }
   return false;
 }
@@ -1013,10 +1075,11 @@ function shortfallClause(short) {
  *   (e) the session has zero successful rows    → ASK (recorder not registered where this
  *                                                 session runs, a session-id mismatch, …)
  *   (f) evidence short and the read incomplete  → ASK (the unread part may hold it)
- *   (g) evidence short in a COMPLETE read       → DENY naming the missing tools
+ *   (g) evidence short in a COMPLETE read       → memtraceArtifactBranch: DENY naming the
+ *                                                 missing tools and scaffolding the unavailable
+ *                                                 attestation; a filled one only ever ASKS
  * An ask is never flipped by GSD_CONTRIB_OVERRIDE (failclosed.runGateInner passes it through),
  * and gateSegment/gate keep evaluating after it, so it can never mask a later deny.
- * The unavailable-escape scaffold arrives in 38-03.
  *
  * @param {Object} g
  * @param {Object} ctx carries `sessionId`
@@ -1079,16 +1142,151 @@ function verifyMemtraceEvidence(g, ctx, deps) {
     );
   }
 
-  // (g)
-  return deny(
+  // (g) evidence short in a complete read: the unavailable-attestation branch.
+  return memtraceArtifactBranch(g, ctx, deps, short);
+}
+
+/** The closing note of every R8a deny: the override does not lift it. */
+const R8A_DENY_NOTE =
+  '`GSD_CONTRIB_OVERRIDE` does not lift this deny: it rescues thrown gate errors only. ' +
+  '(CTK-ADR-0004, ENF-20)';
+
+/**
+ * The head of every R8a missing-evidence deny: what is required and which tools have not run.
+ * Built from the gate entry and the constant-ordered shortfall only, so the same records in any
+ * order give the same text.
+ *
+ * @param {Object} g
+ * @param {{missing:string[], missingAnyOf:(string[]|null)}} short
+ * @returns {string}
+ */
+function memtraceDenyHead(g, short) {
+  return (
     'ENF-20 ' + g.id + ' (re-review step ' + g.step + ') — this verdict requires ' + g.what +
-      ', and that evidence is missing. Not yet run in this session: ' + shortfallClause(short) + '.\n\n' +
-      'The evidence is read from tool-recorder\'s log for THIS session only ' +
-      '(re-review.md step 8a).\n\n' +
-      'Run the named memtrace tools on the PR\'s changed symbols, then re-submit this review. ' +
-      '`GSD_CONTRIB_OVERRIDE` does not lift this deny: it rescues thrown gate errors only. ' +
-      '(CTK-ADR-0004, ENF-20)'
+    ', and that evidence is missing. Not yet run in this session: ' + shortfallClause(short) + '.'
   );
+}
+
+/**
+ * The run-the-tools instruction and the escape, shared by every R8a deny.
+ *
+ * @param {string} rel
+ * @returns {string}
+ */
+function memtraceRemedy(rel) {
+  return (
+    'Run the memtrace tools named above on the PR\'s changed symbols, then re-submit this review. ' +
+    'The evidence is read from tool-recorder\'s log for THIS session only (re-review.md step 8a); ' +
+    'a `### Memtrace Evidence` section in the review body is not evidence.\n\n' +
+    'Escape, ONLY when memtrace genuinely cannot run in this session (sidecar down, tools not ' +
+    'granted to this agent, stale or empty graph): fill `' + rel + '` with `status: "unavailable"`, ' +
+    'the `unavailable_reason` (which verbs were unavailable and the fallback you used: grep + ' +
+    '/code-review) and this push\'s `head_oid`. A filled unavailable attestation turns this deny ' +
+    'into a human ask, never an allow.'
+  );
+}
+
+/**
+ * Step 8a with the evidence short in a COMPLETE read (severity map (g)). The artifact is the
+ * sanctioned unavailable escape, and this branch only ever denies or asks:
+ *   absent              → scaffold (obligations only) + DENY naming the path and the tools
+ *   unreadable          → THROW (fail closed)
+ *   placeholders left   → DENY naming the unfilled fields (checked before any shape)
+ *   malformed JSON      → THROW (fail closed)
+ *   a shape assertion   → DENY (pass, then status exactly `unavailable`, then a non-blank reason)
+ *   head_oid mismatch   → DENY (a >= 7-char hex prefix of the live head, as requireArtifact)
+ *   filled and valid    → ASK, quoting the reason as the reviewer's unverified attestation
+ * With complete evidence this branch is never reached, so the file is never read.
+ *
+ * @param {Object} g
+ * @param {Object} ctx
+ * @param {Object} deps
+ * @param {{missing:string[], missingAnyOf:(string[]|null)}} short
+ * @returns {Object} a deny (or ask); never null, never allow
+ */
+function memtraceArtifactBranch(g, ctx, deps, short) {
+  const rel = ctx.dir + '/' + g.artifact;
+  const head = memtraceDenyHead(g, short);
+
+  if (!deps.artifactExists(rel)) {
+    const res = deps.writeScaffold(rel, g.spec);
+    const wrote = res && res.written
+      ? 'A SKELETON HAS BEEN WRITTEN at `' + rel + '`. It is not evidence: it lists the ' +
+        'attestation\'s obligations, and an unfilled one keeps this deny in place.'
+      : res && (res.reason === 'exists' || res.reason === 'race')
+        ? 'A skeleton is already present at `' + rel + '`.'
+        : 'A skeleton could NOT be written at `' + rel + '` (' +
+          ((res && (res.error || res.reason)) || 'unknown') + ') — create it by hand only under ' +
+          'the escape below.';
+    return deny(head + '\n\n' + wrote + '\n\n' + memtraceRemedy(rel) + '\n\n' + R8A_DENY_NOTE);
+  }
+
+  const text = deps.readArtifactText(rel); // may throw → fail closed
+
+  if (hasUnfilledPlaceholders(text)) {
+    const fields = unfilledFields(text);
+    return deny(
+      head + '\n\n`' + rel + '` still carries unfilled placeholder(s): ' +
+        (fields.length ? fields.map((f) => '`' + f + '`').join(', ') : '(the file is empty)') +
+        '.\n\n' + memtraceRemedy(rel) + '\n\n' + R8A_DENY_NOTE
+    );
+  }
+
+  const doc = parseArtifact(rel, text); // malformed → FailClosed
+
+  for (const a of g.assert) {
+    const problem = checkAssertion(doc, a); // shared ENF-19 predicate (throws on a contract bug)
+    if (problem !== null) {
+      return deny(
+        head + '\n\n`' + rel + '` does not yet record a valid unavailable attestation.\n' + problem +
+          '\n\n' + memtraceRemedy(rel) + '\n\n' + R8A_DENY_NOTE
+      );
+    }
+  }
+
+  // Same rule as requireArtifact: a >= OID_MIN_LENGTH hex prefix of the live head.
+  const claimed = normalizeOid(readPath(doc, 'head_oid'));
+  if (!claimed || !ctx.headOid.startsWith(claimed)) {
+    return deny(
+      head + '\n\n`' + rel + '` records `head_oid` `' + String(readPath(doc, 'head_oid')).slice(0, 80) +
+        '`, but PR #' + ctx.number + ' now heads at `' + ctx.headOid.slice(0, OID_KEY_LENGTH) +
+        '`. An attestation for an older push does not cover this one.\n\n' + memtraceRemedy(rel) +
+        '\n\n' + R8A_DENY_NOTE
+    );
+  }
+
+  const quoted = quoteAttestation(readPath(doc, 'unavailable_reason'));
+  return ask(
+    'ENF-20 ' + g.id + ' (re-review step ' + g.step + ') — this verdict has no memtrace evidence ' +
+      'in this session (not yet run: ' + shortfallClause(short) + '), and `' + rel + '` attests ' +
+      'that memtrace was unavailable.\n\n' +
+      'The reviewer\'s own unverified attestation (at most ' + ATTESTATION_QUOTE_MAX + ' characters, ' +
+      'control characters replaced): «' + quoted.text + '»' + (quoted.truncated ? ' (truncated)' : '') +
+      '\n\nThe gate cannot verify this attestation. It checked only that the file is filled, records ' +
+      '`status: "unavailable"` with a reason, and names this push\'s head oid. A filled attestation ' +
+      'never allows on its own.\n\n' + R8A_ASK_NOTE
+  );
+}
+
+/** The most characters of an attested `unavailable_reason` a human ask may quote. */
+const ATTESTATION_QUOTE_MAX = 300;
+
+/**
+ * The attested reason as it may appear in a human prompt (prompt-injection guard, T-38-11):
+ * C0/C1 control characters and the Unicode line/paragraph separators become spaces, the quote
+ * delimiters `«` `»` become `"` so the text cannot close its own quote, and at most
+ * ATTESTATION_QUOTE_MAX code points are kept (replace first, then cut, so a cut never lands
+ * inside a surrogate pair).
+ *
+ * @param {*} value
+ * @returns {{text:string, truncated:boolean}}
+ */
+function quoteAttestation(value) {
+  const clean = String(value === undefined || value === null ? '' : value)
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
+    .replace(/[«»]/g, '"');
+  const chars = Array.from(clean);
+  return { text: chars.slice(0, ATTESTATION_QUOTE_MAX).join(''), truncated: chars.length > ATTESTATION_QUOTE_MAX };
 }
 
 // ── the gate ────────────────────────────────────────────────────────────────
@@ -1099,6 +1297,9 @@ function verifyMemtraceEvidence(g, ctx, deps) {
  * @param {Object} g
  * @param {string} action
  * @param {{approve:boolean, requestChanges:boolean, clear:boolean, reviewPost:boolean}} post
+ *   `approve` from isApproveEvent, `requestChanges` from isRequestChangesEvent, `clear` and
+ *   `reviewPost` from the body. A `--comment` review and a REST review with no event are neither
+ *   verdict, so 'verdict' (step 8a) never applies to them.
  * @returns {boolean}
  */
 function gateApplies(g, action, post) {
@@ -1144,9 +1345,7 @@ function gateSegment(seg, action, deps, opts = {}) {
   const body = bodyText(seg, deps); // may throw (unreadable --body-file) → fail closed
   const post = {
     approve: isApproveEvent(seg),
-    // KNOWN STUB (38-01 tracer): request-changes is not yet classified; 38-03 adds
-    // isRequestChangesEvent.
-    requestChanges: false,
+    requestChanges: isRequestChangesEvent(seg),
     clear: CLEAR_VERDICT_RE.test(body),
     reviewPost: REVIEW_POST_RE.test(body),
   };
@@ -1556,6 +1755,7 @@ module.exports = {
   bodyText,
   fieldCandidates,
   isApproveEvent,
+  isRequestChangesEvent,
   isHelpInvocation,
   isNativeGhSegment,
   unfilledFields,
