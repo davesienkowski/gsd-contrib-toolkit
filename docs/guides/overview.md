@@ -81,9 +81,10 @@ Three mechanisms recur across the whole toolkit:
    diagnosable deny, not a silent miss. This is what keeps the toolkit aligned as gsd-core evolves.
 
 3. **The override valve: deliberate, logged, never silent.** `GSD_CONTRIB_OVERRIDE` takes a non-empty
-   **reason string** (never a boolean). It rescues thrown gate errors only, and writes an append-only,
-   per-worktree receipt when it does. It does not lift a returned policy deny; the accountable off switch
-   is `node bin/contrib-capability.cjs off --reason "<why>"`. It is not a default, and the recovery
+   **reason string** (never a boolean). It rescues a thrown gate error, and writes an append-only,
+   per-worktree receipt when it does. It does not lift a returned policy deny, except ENF-07's deliberate
+   maintainer push to `origin`, which its deny names. Turning the gates off is a human operator's decision:
+   `node bin/contrib-capability.cjs off --reason "<why>"`. It is not a default, and the recovery
    offramp never suggests using it to dodge a real failure.
 
 ## What the skills encode (and the drift discipline)
