@@ -2559,3 +2559,46 @@ for (const cmd of ['xargs -l 1 gh pr review -a', 'xargs --bogus ls', 'xargs']) {
     assert.deepStrictEqual(dp._calls.readToolLog, []);
   });
 }
+
+// -- 261006-jsm Task 3a: REST review posts via an attached field or a bare --input reach R8a -------
+
+const JSM_REVIEWS = 'repos/open-gsd/gsd-core/pulls/42/reviews';
+
+for (const cmd of [
+  'gh api ' + JSM_REVIEWS + ' -fevent=APPROVE',
+  'gh api ' + JSM_REVIEWS + ' -Fevent=APPROVE',
+  'gh api ' + JSM_REVIEWS + ' -fevent=REQUEST_CHANGES -fbody=x',
+]) {
+  test('261006-jsm gate REST: `' + cmd + '` with only Bash rows -> DENY R8a-memtrace', () => {
+    assertJsmR8aDeny(cmd);
+  });
+}
+
+test('261006-jsm gate REST regression (green before the fix): `-f=event=APPROVE` with only Bash rows -> DENY R8a-memtrace', () => {
+  assertJsmR8aDeny('gh api ' + JSM_REVIEWS + ' -f=event=APPROVE');
+});
+
+for (const cmd of [
+  'gh api ' + JSM_REVIEWS + ' --input f.json',
+  'gh api ' + JSM_REVIEWS + ' --input=f.json',
+  'gh api ' + JSM_REVIEWS + ' --input -',
+]) {
+  test('261006-jsm gate REST: `' + cmd + '` (no -X) -> the MJ-02 UNRESOLVED ask naming --input', () => {
+    assertUnresolvedAsk(runReviewArtifactGate(input(cmd), deps()), /`--input`/);
+  });
+}
+
+for (const cmd of [
+  'gh api ' + JSM_REVIEWS,
+  'gh api -X GET ' + JSM_REVIEWS + ' -fevent=APPROVE',
+  'gh api repos/open-gsd/gsd-core/issues -ftitle=x',
+]) {
+  test('261006-jsm gate REST lock: `' + cmd + '` -> allow with no PR lookup, scaffold or log read', () => {
+    const dp = deps();
+    const d = runReviewArtifactGate(input(cmd), dp);
+    assert.strictEqual(d.permissionDecision, 'allow', cmd + ': ' + d.permissionDecisionReason);
+    assert.strictEqual(dp._calls.resolvePr, 0, cmd);
+    assert.deepStrictEqual(dp._calls.scaffolded, [], cmd);
+    assert.deepStrictEqual(dp._calls.readToolLog, [], cmd);
+  });
+}

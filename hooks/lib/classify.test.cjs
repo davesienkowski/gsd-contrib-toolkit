@@ -2175,3 +2175,68 @@ for (const cmd of ['xargs --bogus gh pr review -a', 'xargs --max gh pr review -a
 }
 
 jsmD2Rows('xargs', 'xargs gh pr review -a', { merge: 'xargs gh pr review -a && gh pr merge 1' });
+
+// ---------------------------------------------------------------------------
+// 261006-jsm Task 3a: REST review posts carried by an attached field or a bare --input (CONTEXT
+// D4, RESEARCH section 1). gh api defaults to POST when a field or --input is present; argv records
+// `-fevent=APPROVE` as shortFlags{fevent} and --input as flags.input, which the frozen hasWriteBody
+// does not read, so the direct classifier returned null. The recovery reads the tokens instead and
+// requires a `/pulls/<n>/reviews` target with no explicit method.
+// ---------------------------------------------------------------------------
+
+const JSM_REST_REVIEWS = 'repos/o/r/pulls/42/reviews';
+
+/** `cmd` is a recovered REST pr-review (route gh-api) whose one verdict segment is the outer one. */
+function assertRestReview(cmd, via) {
+  const r = cls(cmd);
+  assert.strictEqual(r.action, 'pr-review', cmd + ' -> ' + JSON.stringify(r));
+  assert.strictEqual(r.recovered, true, cmd);
+  assert.strictEqual(r.route, 'gh-api', cmd);
+  assert.strictEqual(r.via, via, cmd);
+  assert.ok(!('uncertain' in r) && !('unresolved' in r), cmd + ' is statically readable');
+  assert.deepStrictEqual(r.verdictSegments.map((s) => s.tokens), [parseCommand(cmd).segments[0].tokens], cmd);
+}
+
+for (const [cmd, via] of [
+  ['gh api ' + JSM_REST_REVIEWS + ' -fevent=APPROVE', 'gh-api-attached-field'],
+  ['gh api ' + JSM_REST_REVIEWS + ' -Fevent=APPROVE', 'gh-api-attached-field'],
+  ['gh api ' + JSM_REST_REVIEWS + ' -fevent=REQUEST_CHANGES -fbody=x', 'gh-api-attached-field'],
+  ['gh api ' + JSM_REST_REVIEWS + ' --input f.json', 'gh-api-input'],
+  ['gh api ' + JSM_REST_REVIEWS + ' --input=f.json', 'gh-api-input'],
+  ['gh api ' + JSM_REST_REVIEWS + ' --input -', 'gh-api-input'],
+]) {
+  test('261006-jsm REST: `' + cmd + '` -> recovered pr-review, via ' + via + ', the outer segment', () => {
+    assertRestReview(cmd, via);
+  });
+}
+
+test('261006-jsm REST regression (green before the fix): `-f=event=APPROVE` stays the direct gh-api pr-review', () => {
+  assert.deepStrictEqual(cls('gh api ' + JSM_REST_REVIEWS + ' -f=event=APPROVE'), { action: 'pr-review', route: 'gh-api' });
+});
+
+for (const cmd of [
+  'gh api ' + JSM_REST_REVIEWS,
+  'gh api -X GET ' + JSM_REST_REVIEWS + ' --input f',
+  'gh api -X GET ' + JSM_REST_REVIEWS + ' -fevent=APPROVE',
+  'gh api --method GET ' + JSM_REST_REVIEWS + ' --input f',
+  'gh api repos/o/r/pulls/42/comments --input f.json',
+  'gh api repos/o/r/issues/42/labels -flabels=x',
+]) {
+  test('261006-jsm REST lock: `' + cmd + '` stays other', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasFailClosedSegment(parseCommand(cmd)), false, cmd);
+  });
+}
+
+test('261006-jsm REST lock (D1 residual): `gh api repos/o/r/issues -ftitle=x` stays other, no issue-create gate starts firing', () => {
+  const cmd = 'gh api repos/o/r/issues -ftitle=x';
+  assert.deepStrictEqual(cls(cmd), { action: 'other' });
+  assert.strictEqual(hasGovernedSegment(parseCommand(cmd), ['issue-create']), false);
+});
+
+jsmD2Rows('REST attached field', 'gh api ' + JSM_REST_REVIEWS + ' -fevent=APPROVE', {
+  lone: (r) => assert.strictEqual(r.via, 'gh-api-attached-field'),
+});
+jsmD2Rows('REST bare --input', 'gh api ' + JSM_REST_REVIEWS + ' --input f.json', {
+  lone: (r) => assert.strictEqual(r.via, 'gh-api-input'),
+});
