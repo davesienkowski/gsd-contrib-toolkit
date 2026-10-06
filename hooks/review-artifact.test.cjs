@@ -1683,3 +1683,29 @@ test('38-03 sanitiser: a reason carrying the quote delimiters cannot close its o
   assert.strictEqual((why.match(/«/g) || []).length, 1);
   assert.strictEqual((why.match(/»/g) || []).length, 1);
 });
+
+// ── 38-04: the skill's step 8a and the hook's required set cannot drift apart ─
+
+/** The one physical line of the canonical sweep skill that starts `8a.`. */
+function reReview8aLine() {
+  const file = path.join(__dirname, '..', 'skills', 'maintainer-review-sweep', 're-review.md');
+  const lines = fs.readFileSync(file, 'utf8').split('\n').filter((l) => /^8a\. /.test(l));
+  assert.strictEqual(lines.length, 1, 'skills/maintainer-review-sweep/re-review.md has exactly one line starting `8a.`');
+  return lines[0];
+}
+
+test('38-04 parity: the re-review.md `8a.` line names every required memtrace verb, R8a-memtrace and tool-log', () => {
+  const line = reReview8aLine();
+  const { MEMTRACE_REQUIRED_ALL, MEMTRACE_REQUIRED_ANY } = reviewArtifact;
+  assert.ok(Array.isArray(MEMTRACE_REQUIRED_ALL) && MEMTRACE_REQUIRED_ALL.length > 0, 'MEMTRACE_REQUIRED_ALL exported');
+  assert.ok(Array.isArray(MEMTRACE_REQUIRED_ANY) && MEMTRACE_REQUIRED_ANY.length > 0, 'MEMTRACE_REQUIRED_ANY exported');
+  for (const verb of [...MEMTRACE_REQUIRED_ALL, ...MEMTRACE_REQUIRED_ANY]) {
+    assert.ok(line.includes(verb), `the 8a line names the required verb ${verb}`);
+  }
+  assert.ok(line.includes('R8a-memtrace'), 'the 8a line names the ENF-20 R8a-memtrace obligation');
+  assert.ok(line.includes('tool-log'), 'the 8a line names tool-recorder\'s tool-log as the evidence');
+});
+
+test('38-04 parity: the re-review.md `8a.` line keeps the "name the unavailable verb" rule', () => {
+  assert.ok(reReview8aLine().includes('name the unavailable verb'));
+});

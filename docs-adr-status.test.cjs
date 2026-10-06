@@ -14,6 +14,9 @@
  *       Decision 4) is Proposed (Dave has not approved it), its Status line never says Accepted, and
  *       docs/adr/README.md lists it as Proposed.
  *
+ *   (g) Phase 38 (38-04): README.md's review-artifact.cjs (ENF-20) row names step 8a, memtrace and `ask`,
+ *       and no longer says "four mechanizable".
+ *
  * Approving ADR-0008 is Dave's call: when he does, update (a) and (b) here deliberately.
  * Approving ADR-0009 is also Dave's call: when he does, update (e) here deliberately.
  * Approving ADR-0010 is Dave's call: when he does, update (f) here deliberately.
@@ -117,4 +120,13 @@ test('36-05b: README.md ENF-24 gsd-test-viability row describes the docker timeo
   assert.match(row, /`ask`, never deny, when `docker info` overruns its 8 s bound/);
   assert.doesNotMatch(row, /timeout[^;)]*\bdeny(es|ing)?\b(?!\W*never)/i);
   assert.doesNotMatch(row, /blocked|blocking/i);
+});
+
+test('38-04: README.md review-artifact.cjs row names step 8a, memtrace and `ask`, not "four mechanizable"', () => {
+  const row = fs.readFileSync(path.join(REPO, 'README.md'), 'utf8').split('\n').find((l) => l.includes('`review-artifact.cjs`'));
+  assert.ok(row, 'README.md has a review-artifact.cjs row');
+  assert.match(row, /step 8a/);
+  assert.match(row, /memtrace/);
+  assert.match(row, /`ask`/);
+  assert.doesNotMatch(row, /four mechanizable/);
 });
