@@ -1193,3 +1193,117 @@ test('38-02 R8a ask (real reader): GSD_CONTRIB_RECORD=off in process.env, defaul
     else delete process.env.GSD_CONTRIB_RECORD;
   }
 });
+
+// ── 38-03: verdict classifiers (`-a` fix, request-changes) and the comment boundary ────────
+
+/** Only non-memtrace successful rows: the log is readable, the session ran, memtrace did not. */
+const ONLY_BASH = Object.freeze([Object.freeze({ tool_name: 'Bash', outcome: 'ok' })]);
+
+/** The first segment of a parsed command (the classifier helpers read one segment). */
+function seg0(cmd) {
+  return parseCommand(cmd).segments[0];
+}
+
+/** isRequestChangesEvent, asserted present first so a missing export fails on an assertion. */
+function requestChanges(cmd) {
+  assert.strictEqual(typeof reviewArtifact.isRequestChangesEvent, 'function', 'isRequestChangesEvent is exported');
+  return reviewArtifact.isRequestChangesEvent(seg0(cmd));
+}
+
+test('38-03 -a: `gh pr review 42 -a` with R10-exogenous.json absent → DENY R10 (the step-10 bypass)', () => {
+  const dp = deps({ files: absent(R10) });
+  const d = runReviewArtifactGate(input('gh pr review 42 -a'), dp);
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-20 R10/);
+  assert.deepStrictEqual(dp._calls.scaffolded, [DIR + '/' + R10]);
+});
+
+test('38-03 -a: `gh pr review 42 -a` with all artifacts and only Bash rows → DENY R8a-memtrace', () => {
+  const d = runReviewArtifactGate(input('gh pr review 42 -a'), depsWithLog(toolLog(ONLY_BASH.slice())));
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /R8a-memtrace/);
+});
+
+for (const [cmd, want] of [
+  ['gh pr review -a 42', true],
+  ['gh pr review 42 -ab "x"', true],
+  ['gh pr review 42 -ba x', false],
+  ['curl -X POST https://api.github.com/repos/o/r/pulls/42/reviews -a -d \'{"event":"COMMENT","body":"b"}\'', false],
+]) {
+  test('38-03 isApproveEvent: `' + cmd + '` → ' + want, () => {
+    assert.strictEqual(isApproveEvent(seg0(cmd)), want);
+  });
+}
+
+for (const [cmd, want] of [
+  ['gh pr review 42 --request-changes -b x', true],
+  ['gh pr review 42 -r -b x', true],
+  ['gh pr review 42 -rb x', true],
+  ['gh api -X POST repos/o/r/pulls/42/reviews -f event=REQUEST_CHANGES', true],
+  ['gh api -X POST repos/o/r/pulls/42/reviews/9/events -f event=REQUEST_CHANGES', true],
+  ['curl -X POST https://api.github.com/repos/o/r/pulls/42/reviews -d \'{"event":"REQUEST_CHANGES","body":"b"}\'', true],
+  ['curl -X POST https://api.github.com/repos/o/r/pulls/42/reviews -r 0-10 -d \'{"event":"COMMENT","body":"b"}\'', false],
+  ['gh pr review 42 --approve', false],
+]) {
+  test('38-03 isRequestChangesEvent: `' + cmd + '` → ' + want, () => {
+    assert.strictEqual(requestChanges(cmd), want);
+  });
+}
+
+test('38-03 request-changes: `gh pr review 42 --request-changes -b x` with only Bash rows → DENY R8a-memtrace', () => {
+  const dp = depsWithLog(toolLog(ONLY_BASH.slice()));
+  const d = runReviewArtifactGate(input('gh pr review 42 --request-changes -b x'), dp);
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /R8a-memtrace/);
+  assert.deepStrictEqual(dp._calls.readToolLog, [SESSION]);
+});
+
+test('38-03 request-changes: gh api POST …/pulls/42/reviews `-f event=REQUEST_CHANGES -f body=b` with only Bash rows → DENY R8a-memtrace', () => {
+  const d = runReviewArtifactGate(
+    input('gh api -X POST repos/open-gsd/gsd-core/pulls/42/reviews -f event=REQUEST_CHANGES -f body=b'),
+    depsWithLog(toolLog(ONLY_BASH.slice()))
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /R8a-memtrace/);
+});
+
+test('38-03 comment: `gh pr review 42 --comment -b x` with only Bash rows → allow; the log is never read, nothing scaffolded', () => {
+  const dp = depsWithLog(toolLog(ONLY_BASH.slice()));
+  const d = runReviewArtifactGate(input('gh pr review 42 --comment -b x'), dp);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.deepStrictEqual(dp._calls.readToolLog, [], 'a comment review never reads the recorder log');
+  assert.ok(!dp._calls.scaffolded.includes(DIR + '/R8a-memtrace.json'), 'R8a-memtrace.json is not scaffolded');
+  assert.deepStrictEqual(dp._calls.scaffolded, []);
+});
+
+test('38-03 comment: `gh pr review 42 -c -b x` with only Bash rows → allow; the log is never read', () => {
+  const dp = depsWithLog(toolLog(ONLY_BASH.slice()));
+  const d = runReviewArtifactGate(input('gh pr review 42 -c -b x'), dp);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.deepStrictEqual(dp._calls.readToolLog, []);
+  assert.deepStrictEqual(dp._calls.scaffolded, []);
+});
+
+test('38-03 comment: `gh pr review 42 --comment -b x` with R8-code-review.json absent → DENY R8-code (R8 unchanged for comments)', () => {
+  const dp = depsWithLog(toolLog(ONLY_BASH.slice()), { files: absent(R8_CODE) });
+  const d = runReviewArtifactGate(input('gh pr review 42 --comment -b x'), dp);
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-20 R8-code/);
+  assert.deepStrictEqual(dp._calls.readToolLog, []);
+});
+
+test('38-03 pending: gh api POST …/pulls/42/reviews `-f body=x` (no event) → the log is never read', () => {
+  const dp = depsWithLog(toolLog(ONLY_BASH.slice()));
+  const d = runReviewArtifactGate(input('gh api -X POST repos/open-gsd/gsd-core/pulls/42/reviews -f body=x'), dp);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.deepStrictEqual(dp._calls.readToolLog, []);
+  assert.deepStrictEqual(dp._calls.scaffolded, []);
+});
+
+test('38-03 request-changes: `gh pr review 42 -r -b x` with R10 absent and complete evidence → allow (request-changes never needs R10)', () => {
+  const dp = deps({ files: absent(R10) });
+  const d = runReviewArtifactGate(input('gh pr review 42 -r -b x'), dp);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.deepStrictEqual(dp._calls.readToolLog, [SESSION], 'request-changes is a verdict: R8a read the log');
+  assert.deepStrictEqual(dp._calls.scaffolded, []);
+});
