@@ -1158,7 +1158,7 @@ for (const [label, value] of [['null', null], ['{}', {}], ["'x'", 'x']]) {
   });
 }
 
-test('38-02 budget: READ_BUDGET_MS × 3 fits inside the review-artifact hook timeout in settings.snippet.json', () => {
+test('38-02 budget (38 fix MJ-01): the ONE read budget a hook call spends fits inside the review-artifact hook timeout in settings.snippet.json, with the rest left for the gh lookups', () => {
   const { READ_BUDGET_MS } = require('./lib/tool-log-reader.cjs');
   const settings = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'settings.snippet.json'), 'utf8'));
   const timeouts = [];
@@ -1174,7 +1174,35 @@ test('38-02 budget: READ_BUDGET_MS × 3 fits inside the review-artifact hook tim
   assert.strictEqual(timeouts.length, 1, 'exactly one review-artifact hook is registered');
   assert.ok(Number.isFinite(timeouts[0]) && timeouts[0] > 0, 'it carries a numeric timeout');
   assert.ok(Number.isInteger(READ_BUDGET_MS) && READ_BUDGET_MS > 0);
-  assert.ok(READ_BUDGET_MS * 3 <= timeouts[0] * 1000, READ_BUDGET_MS + ' ms × 3 vs ' + timeouts[0] + ' s');
+  // The log is read at most once per hook call (gate() memoizes it per session id; the counting
+  // rows below prove it), so one budget is the reader's whole share. At most a third of the
+  // timeout keeps the rest for the gh lookups, which the reader's budget does not bound.
+  assert.ok(READ_BUDGET_MS * 3 <= timeouts[0] * 1000, READ_BUDGET_MS + ' ms vs a third of ' + timeouts[0] + ' s');
+});
+
+test('38 fix MJ-01: N chained verdict segments read the tool log ONCE per hook call (an injected counting reader)', () => {
+  const N = 6;
+  const cmd = Array.from({ length: N }, () => 'gh pr review 42 --approve').join(' && ');
+  const dp = deps();
+  const d = runReviewArtifactGate(input(cmd), dp);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.deepStrictEqual(dp._calls.readToolLog, [SESSION], N + ' verdict segments, one read');
+});
+
+test('38 fix MJ-01: N chained verdict segments that each ASK still read the log once; the held ask is returned', () => {
+  const N = 5;
+  const cmd = Array.from({ length: N }, (_, i) => (i % 2 ? 'gh pr review 42 -r -b x' : 'gh pr review 42 -a')).join(' ; ');
+  const dp = depsWithLog(RECORDER_OFF);
+  const d = runReviewArtifactGate(input(cmd), dp);
+  assertR8aAsk(d);
+  assert.deepStrictEqual(dp._calls.readToolLog, [SESSION]);
+});
+
+test('38 fix MJ-01: the memo is per hook call, never module-level — two calls read twice', () => {
+  const dp = deps();
+  runReviewArtifactGate(input('gh pr review 42 --approve && gh pr review 42 --approve'), dp);
+  runReviewArtifactGate(input('gh pr review 42 --approve && gh pr review 42 --approve'), dp);
+  assert.deepStrictEqual(dp._calls.readToolLog, [SESSION, SESSION]);
 });
 
 test('38-02 R8a ask (real reader): GSD_CONTRIB_RECORD=off in process.env, default readToolLog → ask', () => {
