@@ -102,10 +102,11 @@ wired set exactly.
 **ENF-20 step 8a (memtrace evidence).** The evidence for an approve or request-changes is tool-recorder's own log
 for the session (`tool-log.jsonl` and the rotated `tool-log.1.jsonl`): it proves `get_impact`, `get_symbol_context` and
 a recorded-decision verb ran in this session, not which symbols they targeted, and a review-body section never counts.
-Subagent tool calls are documented by Claude Code to carry the parent `session_id`, but that is not measured with
-tool-recorder. When memtrace genuinely cannot run, or its calls are not visible to the recorder, the sanctioned escape
-is filling the scaffolded `.gsd/contrib/pr-<n>-<oid12>/R8a-memtrace.json` with `status: "unavailable"`: the gate then
-asks a human and never allows by itself. See
+Subagent tool calls are logged under the parent `session_id` (measured 2026-10-06 on Claude Code 2.1.291, one level
+deep, foreground and background, print mode), so a granted subagent's memtrace calls count; tool-recorder drops
+`agent_id`, so the log does not say which agent ran them. When memtrace genuinely cannot run, or its calls are not
+visible to the recorder, the sanctioned escape is filling the scaffolded `.gsd/contrib/pr-<n>-<oid12>/R8a-memtrace.json`
+with `status: "unavailable"`: the gate then asks a human and never allows by itself. See
 [CTK-ADR-0010](docs/adr/CTK-ADR-0010-memtrace-review-evidence.md) (Proposed).
 
 ### Worktree cuts `worktree-fresh-base` cannot see
