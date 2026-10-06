@@ -223,7 +223,7 @@ test('W5: CTK-ADR-0010 has exactly one W5 severity-map row naming every hardened
     .filter((l) => l.trimStart().startsWith('|'))
     .filter((l) => l.includes('W5 (quick 261006-jts)'));
   assert.strictEqual(rows.length, 1, 'exactly one table row cites W5 (quick 261006-jts): ' + rows.length);
-  for (const name of ['runtime-stamp.json', 'upstream-tip-cache.json', 'override-receipts.log', 'ENF-19', 'hooks/lib/regular-file.cjs']) {
+  for (const name of ['runtime-stamp.json', 'upstream-tip-cache.json', 'override-receipts.log', 'ENF-19', 'hooks/lib/regular-file.cjs', 'failures.json']) {
     assert.ok(rows[0].includes(name), 'the W5 row names ' + name + ': ' + rows[0]);
   }
 });
@@ -245,4 +245,7 @@ test('W5: CTK-ADR-0010 has exactly one W5 residual bullet naming every same-clas
   ]) {
     assert.ok(b.includes(site), 'the W5 residual names ' + site + ': ' + b);
   }
+  // W5 review WR-01: the CLI receipt preflight was aligned with writeReceipt, so the residual must not
+  // still describe it as a blocking open.
+  assert.ok(!/preflight opens\s+first/.test(b), 'the W5 residual must not call the aligned CLI preflight unguarded: ' + b);
 });
