@@ -874,3 +874,12 @@ test('m-06: the same literal --head twice resolves it once (cached per root and 
   runGsdTestCleanTreeGate(input('gsd-test --head origin/next; gsd-test --head origin/next'), deps);
   assert.deepStrictEqual(calls.refs, ['HEAD', 'origin/next']);
 });
+
+// ─────────────── m-07 (36-REVIEW): the verdict log is isolated in a temp dir ───────────────
+
+test('m-07: this file points GSD_CONTRIB_LOG_DIR at its own temp dir, and the gate verdict lands there', () => {
+  const dir = process.env.GSD_CONTRIB_LOG_DIR || '';
+  assert.ok(path.basename(dir).startsWith('gtest-ct-vlog-'), 'GSD_CONTRIB_LOG_DIR is this file\'s mkdtemp dir, not ~/.gsd-contrib: ' + dir);
+  runGsdTestCleanTreeGate(input(PIPED), scenario().deps);
+  assert.ok(fs.existsSync(path.join(dir, 'tool-log.jsonl')), 'the verdict was recorded in the temp dir');
+});

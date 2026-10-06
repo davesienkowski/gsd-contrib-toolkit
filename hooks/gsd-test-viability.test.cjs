@@ -1047,3 +1047,12 @@ test('m-06: the default probe passes the remaining budget as the spawn timeout',
   runGsdTestViabilityGate(input('gsd-test'), deps);
   assert.strictEqual(spawn.rec.calls[0].opts.timeout, 8000);
 });
+
+// ─────────────── m-07 (36-REVIEW): the verdict log is isolated in a temp dir ───────────────
+
+test('m-07: this file points GSD_CONTRIB_LOG_DIR at its own temp dir, and the gate verdict lands there', () => {
+  const dir = process.env.GSD_CONTRIB_LOG_DIR || '';
+  assert.ok(path.basename(dir).startsWith('gtest-via-vlog-'), 'GSD_CONTRIB_LOG_DIR is this file\'s mkdtemp dir, not ~/.gsd-contrib: ' + dir);
+  runGsdTestViabilityGate(input('gsd-test'), scenario().deps);
+  assert.ok(fs.existsSync(path.join(dir, 'tool-log.jsonl')), 'the verdict was recorded in the temp dir');
+});
