@@ -422,3 +422,168 @@ test('ENF-23 GTEST-02 e2e: a sentinel dir WITHOUT `git init` DENIES (git failure
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ───────────────────────── 36-03 Task 2: ENF-23 hardening ─────────────────────────
+
+/** Total git invocations (status + ref lookups). */
+function gitCalls(calls) {
+  return calls.gitStatus + calls.resolveRef;
+}
+
+test('ENF-23 hardening: dirty + `--head $(git rev-parse HEAD)` DENIES, asks for a literal ref, zero resolveRef calls', () => {
+  const { deps, calls } = scenario({ porcelain: DIRTY_ONE });
+  const d = runGsdTestCleanTreeGate(input('gsd-test --base next --head $(git rev-parse HEAD)'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /ENF-23/);
+  assert.match(d.permissionDecisionReason, /literal sha or ref/);
+  assert.strictEqual(calls.resolveRef, 0, 'an expansion value is never passed to git');
+});
+
+test('ENF-23 hardening: dirty + `--head "$SHA"` DENIES (unresolved), zero resolveRef calls', () => {
+  const { deps, calls } = scenario({ porcelain: DIRTY_ONE });
+  const d = runGsdTestCleanTreeGate(input('gsd-test --head "$SHA"'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(calls.resolveRef, 0);
+});
+
+test('ENF-23 hardening (checker item 2): flags after a $(...) head are honoured — -source ../core from /w/sub resolves /w/core and DENIES', () => {
+  const { deps, calls } = scenario({ porcelain: DIRTY_ONE, cwd: '/w/sub' });
+  const d = runGsdTestCleanTreeGate(
+    input('gsd-test --base next --head $(git rev-parse HEAD) -source ../core'),
+    deps
+  );
+  assert.deepStrictEqual(calls.dirs, [path.resolve('/w/core')]);
+  assert.strictEqual(d.permissionDecision, 'deny');
+});
+
+const TREE_ROWS = [
+  ['gsd-test -source ../core', '/w/sub', '/w/core'],
+  ['cd /w/a && gsd-test', '/w/sub', '/w/a'],
+  ['gsd-test; cd /tmp', '/w/sub', '/w/sub'],
+  ['git -C /w/other status && gsd-test', '/w/sub', '/w/sub'],
+];
+for (const [cmd, cwd, want] of TREE_ROWS) {
+  test(`ENF-23 hardening: \`${cmd}\` from ${cwd} resolves the tree at ${want}`, () => {
+    const { deps, calls } = scenario({ cwd });
+    runGsdTestCleanTreeGate(input(cmd), deps);
+    assert.deepStrictEqual(calls.dirs, [path.resolve(want)]);
+  });
+}
+
+test('ENF-23 hardening: `gsd-test -source $X` DENIES (thrown: cannot resolve) with ZERO resolveTreeRoot calls', () => {
+  const { deps, calls } = scenario();
+  const d = runGsdTestCleanTreeGate(input('gsd-test -source $X'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /ENF-23/);
+  assert.match(d.permissionDecisionReason, /literal path/);
+  assert.strictEqual(calls.resolveTreeRoot, 0);
+  assert.strictEqual(gitCalls(calls), 0);
+});
+
+test('ENF-23 hardening: the unresolvable -source deny is THROWN (override-escapable with a receipt)', () => {
+  const { deps, calls } = scenario({ override: true });
+  const d = runGsdTestCleanTreeGate(input('gsd-test -source $X'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.writeReceipt, 1);
+});
+
+const UNCERTAIN_ROWS = [
+  'gsd-test --head "x',
+  "env -S 'gsd-test --head HEAD'",
+  `bash -c "bash -c 'bash -c gsd-test'"`,
+  'gsd-test $EXTRA --head x',
+  'gsd-test --head $(cd x; git rev-parse HEAD) --bench b',
+];
+for (const cmd of UNCERTAIN_ROWS) {
+  test(`ENF-23 hardening: uncertain \`${cmd}\` DENIES (HARD-01) with ZERO resolve/git calls`, () => {
+    const { deps, calls } = scenario();
+    const d = runGsdTestCleanTreeGate(input(cmd), deps);
+    assert.strictEqual(d.permissionDecision, 'deny');
+    assert.match(d.permissionDecisionReason, /ENF-23/);
+    assert.strictEqual(calls.resolveTreeRoot, 0, 'the uncertain throw precedes any resolve');
+    assert.strictEqual(gitCalls(calls), 0);
+  });
+}
+
+for (const cmd of ['echo "x', 'cat gsd-test-clean-tree.cjs "x']) {
+  test(`ENF-23 hardening: an unparseable command WITHOUT the gsd-test word (\`${cmd}\`) ALLOWS with zero calls`, () => {
+    const { deps, calls } = scenario();
+    const d = runGsdTestCleanTreeGate(input(cmd), deps);
+    assert.strictEqual(d.permissionDecision, 'allow');
+    assert.strictEqual(calls.resolveTreeRoot + gitCalls(calls), 0);
+  });
+}
+
+for (const cmd of ['gsd-test --version', 'gsd-test -h', 'gsd-test --probe-benches | head']) {
+  test(`ENF-23 hardening: informational \`${cmd}\` ALLOWS with zero resolveTreeRoot/gitStatus/resolveRef calls`, () => {
+    const { deps, calls } = scenario({ porcelain: DIRTY_ONE });
+    const d = runGsdTestCleanTreeGate(input(cmd), deps);
+    assert.strictEqual(d.permissionDecision, 'allow');
+    assert.strictEqual(calls.resolveTreeRoot, 0);
+    assert.strictEqual(gitCalls(calls), 0);
+  });
+}
+
+for (const cmd of ['git status', 'npm test', 'gh pr review 9 --approve', 'echo gsd-test', 'git commit -m "gsd-test | tail"']) {
+  test(`ENF-23 hardening: non-dispatch \`${cmd}\` ALLOWS with zero calls (RES-01)`, () => {
+    const { deps, calls } = scenario({ porcelain: DIRTY_ONE });
+    const d = runGsdTestCleanTreeGate(input(cmd), deps);
+    assert.strictEqual(d.permissionDecision, 'allow');
+    assert.strictEqual(calls.resolveTreeRoot, 0);
+    assert.strictEqual(gitCalls(calls), 0);
+  });
+}
+
+test('ENF-23 hardening: multi-dispatch `gsd-test -head origin/next; gsd-test` (dirty) DENIES — the second tests HEAD', () => {
+  const { deps, calls } = scenario({ porcelain: DIRTY_ONE });
+  const d = runGsdTestCleanTreeGate(input('gsd-test -head origin/next; gsd-test'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /ref-based/);
+  assert.strictEqual(calls.gitStatus, 1, 'the porcelain is cached per root within one gate call');
+});
+
+test('ENF-23 hardening: multi-dispatch `gsd-test --version && gsd-test -head HEAD | tail` (dirty) DENIES on the pipe', () => {
+  const { deps } = scenario({ porcelain: DIRTY_ONE });
+  const d = runGsdTestCleanTreeGate(input('gsd-test --version && gsd-test -head HEAD | tail'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(d.permissionDecisionReason, PIPE_REASON);
+});
+
+test('ENF-23 hardening: an out-of-tree piped dispatch (resolveTreeRoot null) ALLOWS with zero gitStatus calls', () => {
+  const { deps, calls } = scenario({ porcelain: DIRTY_ONE, resolveTreeRoot: () => null });
+  const d = runGsdTestCleanTreeGate(input('gsd-test -head HEAD | tail'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(gitCalls(calls), 0);
+});
+
+test('ENF-23 hardening: `bash -c "gsd-test -head HEAD"` (dirty) DENIES — a -c payload dispatch is evaluated like any other', () => {
+  const { deps } = scenario({ porcelain: DIRTY_ONE });
+  const d = runGsdTestCleanTreeGate(input('bash -c "gsd-test -head HEAD"'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /ENF-23/);
+});
+
+test('ENF-23 hardening e2e: `--head=--output=<tmp>/pwn` on a real dirty repo ALLOWS (unknown ref) and creates no file', () => {
+  const { dir } = makeGitRepo();
+  const pwn = path.join(dir, 'pwn');
+  try {
+    fs.writeFileSync(path.join(dir, 'tracked.txt'), 'dirty\n');
+    const r = spawnIn(dir, 'gsd-test --head=--output=' + pwn);
+    assert.strictEqual(r.decision, 'allow', r.reason);
+    assert.strictEqual(fs.existsSync(pwn), false, 'an option-shaped --head must be inert');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ENF-23 hardening e2e: dirty real repo + `--head $(git rev-parse HEAD)` DENIES asking for a literal ref', () => {
+  const { dir } = makeGitRepo();
+  try {
+    fs.writeFileSync(path.join(dir, 'tracked.txt'), 'dirty\n');
+    const r = spawnIn(dir, 'gsd-test --base next --head $(git rev-parse HEAD) --bench wsl-local');
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.match(r.reason, /literal sha or ref/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
