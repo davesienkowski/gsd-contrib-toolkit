@@ -80,6 +80,7 @@ const {
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand } = require('./lib/resolve.cjs');
 const { hasUnfilledPlaceholders, writeScaffoldIfAbsent } = require('./lib/scaffold.cjs');
+const { readSessionRecords } = require('./lib/tool-log-reader.cjs');
 // ONE ENGINE (CTK-ADR-0004 §Decision.1): ENF-19's assertion predicates are REUSED, not
 // re-implemented. A second copy of `nonEmpty`/`equals`/`in`/`every` would be a second gate
 // runtime that could drift from the first — and the whole reason ENF-20 is cheap is that
@@ -152,6 +153,25 @@ const FINDING_SEVERITIES = Object.freeze([
 
 /** The native `gh <area> <verb>` verbs whose positional argument names the PR/issue. */
 const NATIVE_TARGET_VERBS = Object.freeze(new Set(['review', 'merge', 'comment', 'close', 'view']));
+
+/**
+ * Re-review step 8a (R8a-memtrace): the memtrace graph pass a verdict requires. ONE place to
+ * change.
+ *
+ * Source: the toolkit's own canonical procedure, `skills/maintainer-review-sweep/re-review.md`
+ * step 8a — its "confirmed-available floor" — cross-checked against the live `mcp__memtrace__*`
+ * tool surface on 2026-10-05: ALL of `get_impact` and `get_symbol_context`, plus AT LEAST ONE
+ * recorded-decision verb. `find_code_review_issues` DOES exist on that surface (the Phase 38
+ * brief's "does not exist" was wrong), but the skill treats it and the other richer verbs as
+ * optional, so it is not required here.
+ *
+ * Evidence is read from tool-recorder's log for THIS session (hooks/lib/tool-log-reader.cjs).
+ * Records carry no tool inputs (tool-recorder D2), so this proves the tools RAN in the session,
+ * not which symbols they targeted.
+ */
+const MEMTRACE_TOOL_PREFIX = 'mcp__memtrace__';
+const MEMTRACE_REQUIRED_ALL = Object.freeze(['get_impact', 'get_symbol_context']);
+const MEMTRACE_REQUIRED_ANY = Object.freeze(['recall_decision', 'why_is_this_here', 'governing_contracts']);
 
 // ── the frozen contract ─────────────────────────────────────────────────────
 
@@ -311,6 +331,22 @@ const GATES = Object.freeze([
         else: 'Every verified claim needs the QUOTED primary source (diff line / CI assertion). ' +
           'trust-but-verify: the reviewer is the audit subject, not the validator.' }),
     ]),
+  }),
+
+  Object.freeze({
+    id: 'R8a-memtrace',
+    step: '8a',
+    on: Object.freeze(['pr-review']),
+    // Verdict-bearing reviews only (approve / request-changes); a `--comment` review is not
+    // governed by this obligation.
+    when: 'verdict',
+    // `artifact`, deliberately NOT `file`: the evidence is the recorder log, so requireArtifact
+    // must never run for this entry (a missing file must not deny when the evidence exists).
+    // The unavailable-escape scaffold for this path arrives in 38-03.
+    artifact: 'R8a-memtrace.json',
+    what: 'memtrace evidence for this session: `get_impact` + `get_symbol_context` + one ' +
+      'recorded-decision verb (`recall_decision` | `why_is_this_here` | `governing_contracts`)',
+    verify: 'memtrace-evidence',
   }),
 
   Object.freeze({
@@ -888,6 +924,84 @@ function verifyTreadmill(g, ctx, deps) {
   );
 }
 
+/**
+ * Which step-8a tools are missing among the session's SUCCESSFUL calls. Pure. Matching is exact
+ * string equality against prefix + verb; a `fail` outcome never counts.
+ *
+ * @param {Array<{tool_name:string, outcome:string}>} records
+ * @returns {{missing:string[], missingAnyOf:(string[]|null)}} `missing` in constant order;
+ *   `missingAnyOf` null when at least one recorded-decision verb ran, else all three full names.
+ */
+function memtraceShortfall(records) {
+  const ran = new Set();
+  for (const r of Array.isArray(records) ? records : []) {
+    if (r && r.outcome === 'ok' && typeof r.tool_name === 'string') ran.add(r.tool_name);
+  }
+  const full = (v) => MEMTRACE_TOOL_PREFIX + v;
+  const missing = MEMTRACE_REQUIRED_ALL.map(full).filter((t) => !ran.has(t));
+  const anyNames = MEMTRACE_REQUIRED_ANY.map(full);
+  const missingAnyOf = anyNames.some((t) => ran.has(t)) ? null : anyNames;
+  return { missing, missingAnyOf };
+}
+
+/**
+ * Step 8a: the session that submits a verdict must have run the memtrace graph pass.
+ *
+ * Tracer form (38-01). KNOWN STUBS, each a fail-closed throw until 38-02 turns it into `ask`
+ * (cannot-observe is not did-not-run): no payload session id; recorder off; a session with zero
+ * successful records; a shortfall in an INCOMPLETE read. The unavailable-escape scaffold
+ * arrives in 38-03.
+ *
+ * @param {Object} g
+ * @param {Object} ctx carries `sessionId`
+ * @param {Object} deps `readToolLog`
+ * @returns {Object|null}
+ */
+function verifyMemtraceEvidence(g, ctx, deps) {
+  if (typeof ctx.sessionId !== 'string' || ctx.sessionId.length === 0) {
+    throw new FailClosed(
+      'ENF-20 ' + g.id + ': the hook payload carries no session_id, so step-8a memtrace ' +
+        'evidence cannot be scoped to this session.'
+    );
+  }
+  const r = deps.readToolLog(ctx.sessionId) || {};
+  const records = Array.isArray(r.records) ? r.records : [];
+  if (r.recorderOff) {
+    throw new FailClosed('ENF-20 ' + g.id + ': tool-recorder is off, so step-8a memtrace evidence cannot be read.');
+  }
+  if (!records.some((x) => x && x.outcome === 'ok')) {
+    throw new FailClosed(
+      'ENF-20 ' + g.id + ': tool-recorder\'s log holds no successful call for this session, so ' +
+        'step-8a memtrace evidence cannot be observed.'
+    );
+  }
+
+  const short = memtraceShortfall(records);
+  if (short.missing.length === 0 && short.missingAnyOf === null) return null; // evidence complete
+
+  if (r.complete === false) {
+    throw new FailClosed(
+      'ENF-20 ' + g.id + ': tool-recorder\'s log could not be fully read, so missing step-8a ' +
+        'memtrace evidence cannot be told apart from an unreadable log.'
+    );
+  }
+
+  const parts = [];
+  if (short.missing.length) parts.push('ALL of: ' + short.missing.map((t) => '`' + t + '`').join(', '));
+  if (short.missingAnyOf) {
+    parts.push('AT LEAST ONE recorded-decision verb of: ' + short.missingAnyOf.map((t) => '`' + t + '`').join(', '));
+  }
+  return deny(
+    'ENF-20 ' + g.id + ' (re-review step ' + g.step + ') — this verdict requires ' + g.what +
+      ', and that evidence is missing. Not yet run in this session: ' + parts.join('; and ') + '.\n\n' +
+      'The evidence is read from tool-recorder\'s log for THIS session only ' +
+      '(re-review.md step 8a).\n\n' +
+      'Run the named memtrace tools on the PR\'s changed symbols, then re-submit this review. ' +
+      '`GSD_CONTRIB_OVERRIDE` does not lift this deny: it rescues thrown gate errors only. ' +
+      '(CTK-ADR-0004, ENF-20)'
+  );
+}
+
 // ── the gate ────────────────────────────────────────────────────────────────
 
 /**
@@ -895,7 +1009,7 @@ function verifyTreadmill(g, ctx, deps) {
  *
  * @param {Object} g
  * @param {string} action
- * @param {{approve:boolean, clear:boolean, reviewPost:boolean}} post
+ * @param {{approve:boolean, requestChanges:boolean, clear:boolean, reviewPost:boolean}} post
  * @returns {boolean}
  */
 function gateApplies(g, action, post) {
@@ -910,6 +1024,9 @@ function gateApplies(g, action, post) {
     // comment only when it carries the re-review header or a verdict.
     case 'review-post':
       return action === 'pr-review' || post.reviewPost || post.clear;
+    // Step 8a: a VERDICT-bearing review (approve or request-changes), never a plain comment.
+    case 'verdict':
+      return post.approve || post.requestChanges;
     default:
       throw new FailClosed('ENF-20 contract bug: gate ' + g.id + ' has an unknown `when`');
   }
@@ -921,9 +1038,10 @@ function gateApplies(g, action, post) {
  * @param {Object} seg
  * @param {string} action
  * @param {Object} deps
+ * @param {{sessionId?: (string|null)}} [opts] the PreToolUse payload's session id (step 8a).
  * @returns {Object|null}
  */
-function gateSegment(seg, action, deps) {
+function gateSegment(seg, action, deps, opts = {}) {
   // A help request is not an adjudicating act. `gh pr review --help` classifies as pr-review
   // because the classifier reads the verb; denying it would be a pure false positive.
   if (isHelpInvocation(seg)) return null;
@@ -931,6 +1049,9 @@ function gateSegment(seg, action, deps) {
   const body = bodyText(seg, deps); // may throw (unreadable --body-file) → fail closed
   const post = {
     approve: isApproveEvent(seg),
+    // KNOWN STUB (38-01 tracer): request-changes is not yet classified; 38-03 adds
+    // isRequestChangesEvent.
+    requestChanges: false,
     clear: CLEAR_VERDICT_RE.test(body),
     reviewPost: REVIEW_POST_RE.test(body),
   };
@@ -977,6 +1098,7 @@ function gateSegment(seg, action, deps) {
     number,
     headOid,
     repoSpec,
+    sessionId: opts && typeof opts.sessionId === 'string' ? opts.sessionId : null,
   };
 
   for (const g of applicable) {
@@ -1000,6 +1122,9 @@ function gateSegment(seg, action, deps) {
     } else if (g.verify === 'treadmill') {
       const d = verifyTreadmill(g, ctx, deps);
       if (d) return d;
+    } else if (g.verify === 'memtrace-evidence') {
+      const d = verifyMemtraceEvidence(g, ctx, deps);
+      if (d) return d;
     } else if (g.verify !== undefined) {
       throw new FailClosed('ENF-20 contract bug: gate ' + g.id + ' names an unknown `verify`');
     }
@@ -1021,11 +1146,16 @@ function gateSegment(seg, action, deps) {
  * @param {(rel:string, spec:Object) => Object} deps.writeScaffold never overwrites.
  * @param {(pr:string, repoSpec:string|null) => Object[]} deps.readPostedReviews MAY THROW.
  * @param {(p:string) => string} deps.readBodyFile MAY THROW.
+ * @param {(sessionId:string) => {recorderOff:boolean, complete:boolean, records:Array<{tool_name:string, outcome:string}>, problems:string[]}} deps.readToolLog
+ *   step 8a evidence: tool-recorder rows of THIS session, projected. MAY NOT THROW (a read
+ *   failure is `complete:false` with a problem, never an exception).
  * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
  */
 function gate(stdinString, deps) {
   const input = readHookInput(stdinString);
   const command = (input.tool_input && input.tool_input.command) || '';
+  // Step 8a scopes its evidence to the payload's session; threaded down, never guessed.
+  const sessionId = typeof input.session_id === 'string' ? input.session_id : null;
 
   const parsed = parseCommand(command);
   if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
@@ -1049,7 +1179,7 @@ function gate(stdinString, deps) {
   for (const seg of segs) {
     const r = classifyAction({ ok: true, segments: [seg] });
     if (!r || !GOVERNED_ACTIONS.has(r.action)) continue;
-    const decision = gateSegment(seg, r.action, deps);
+    const decision = gateSegment(seg, r.action, deps, { sessionId });
     if (decision) return decision; // the first unmet requirement denies
   }
 
@@ -1112,6 +1242,10 @@ function runReviewArtifactGate(stdinString, deps = {}) {
       }
     }
     if (!resolved.readBodyFile) resolved.readBodyFile = readBodyFileLive;
+    // Step 8a: independent of the worktree root — the recorder log is user-level.
+    if (!resolved.readToolLog) {
+      resolved.readToolLog = (sid) => readSessionRecords(sid, { env: process.env });
+    }
 
     return gate(stdinString, resolved);
   }, ctx);
@@ -1300,6 +1434,8 @@ module.exports = {
   requireArtifact,
   verifyMergePreconditions,
   verifyTreadmill,
+  verifyMemtraceEvidence,
+  memtraceShortfall,
   parseArtifact,
   reviewSlug,
   normalizeOid,
@@ -1334,6 +1470,9 @@ module.exports = {
   TREADMILL_MAX_POSTS_PER_OID,
   CI_GREEN_CONCLUSIONS,
   FINDING_SEVERITIES,
+  MEMTRACE_TOOL_PREFIX,
+  MEMTRACE_REQUIRED_ALL,
+  MEMTRACE_REQUIRED_ANY,
   // isNonEmpty is re-exported so a caller/test can see that ENF-20 shares ENF-19's
   // predicate vocabulary rather than carrying a second copy of it (CTK-ADR-0004 §Decision.1).
   isNonEmpty,
