@@ -25,15 +25,23 @@
  *      (gsd-test-detect `startDirFor`: `cd`, `env -C`, `sudo -D`) with each git `-C` statically
  *      expanded and folded on (37-02; either unresolvable -> FailClosed before any I/O); not a
  *      gsd-core checkout -> skipped;
- *   4. freshness, once per root: bounded fetch of origin next; `origin/next` must resolve. A
- *      `origin/next` base is then current -> allow. A local `next` base: equal -> allow; a strict
- *      ancestor held by no worktree -> CAS `update-ref refs/heads/next <remote> <local>` -> allow;
+ *   4. freshness, once per root: a HEAD base (omitted, `HEAD`, `@`) is the trunk only when the
+ *      tree's current branch is `next` (read BEFORE any fetch; otherwise skipped with no fetch).
+ *      Then a bounded fetch of origin next; `origin/next` must resolve. A `origin/next` base is then
+ *      current -> allow. A local `next` base (or HEAD on next): equal -> allow; a strict ancestor
+ *      held by a worktree -> POLICY deny with `git -C <holder> merge --ff-only origin/next`; held
+ *      by none -> CAS `update-ref refs/heads/next <remote> <local>` -> allow; AHEAD (origin/next is
+ *      an ancestor of local next; flagged planner refinement, CTK-ADR-0009) -> allow, nothing
+ *      moved; diverged (neither is an ancestor) -> POLICY deny naming the divergence;
  *   5. first deny wins; otherwise allow.
  *
- * 37-01 tracer slice — KNOWN STUBS (unregistered hook): a HEAD base, a held next and a diverged
- * next allow (37-03 fills the denies); a failed CAS and a missing origin/next are thrown (37-03 /
- * 37-04 refine them); an unreachable origin throws FetchUnavailable, which denies until 37-04
+ * KNOWN STUBS (unregistered hook): a failed CAS and a missing origin/next are thrown (37-03 Task 2
+ * / 37-04 refine them); an unreachable origin throws FetchUnavailable, which denies until 37-04
  * maps it to `ask` (CTK-ADR-0007).
+ *
+ * The gate's own git argv is limited to: fetch (via coreutils timeout), rev-parse, symbolic-ref,
+ * merge-base --is-ancestor, worktree list --porcelain and update-ref. The fix commands it names
+ * in deny reasons are text for the operator; the gate never runs them.
  *
  * A returned deny is a POLICY deny: GSD_CONTRIB_OVERRIDE rescues THROWN errors only and never
  * flips it. Every git call is a spawnSync argv array (never a shell) with a bounded timeout and an
@@ -49,7 +57,7 @@
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { runGate, readHookInput, allow, emit, safeCommand, FailClosed } = require('./lib/failclosed.cjs');
+const { runGate, readHookInput, allow, deny, emit, safeCommand, FailClosed } = require('./lib/failclosed.cjs');
 const { resolveGsdCoreRoot, ScriptResolveError } = require('./lib/resolve.cjs');
 const { startDirFor, expandStatic } = require('./lib/gsd-test-detect.cjs');
 const { findWorktreeAdds } = require('./lib/worktree-add-detect.cjs');
@@ -102,6 +110,7 @@ class FetchUnavailable extends Error {
  * @param {string} deps.homedir home directory for `~` expansion
  * @param {(dir:string)=>(string|null)} deps.resolveTreeRoot gsd-core root, or null
  * @param {(root:string)=>void} deps.fetchOrigin bounded fetch; throws FetchUnavailable
+ * @param {(root:string)=>(string|null)} deps.currentBranch branch name, or null when detached
  * @param {(root:string, ref:string)=>(string|null)} deps.revParse commit sha or null
  * @param {(root:string, a:string, b:string)=>boolean} deps.isAncestor
  * @param {(root:string, ref:string)=>string[]} deps.worktreesHolding worktree paths holding ref
@@ -175,12 +184,70 @@ function targetDir(e, deps) {
   return running;
 }
 
+/** Short sha for reason text. */
+function short(sha) {
+  return String(sha).slice(0, 10);
+}
+
+/** A path as a shell word: bare when it has only safe characters, else single-quoted. */
+function shellWord(p) {
+  const s = String(p);
+  if (/^[A-Za-z0-9_\/.,:@%+=-]+$/.test(s)) return s;
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+/** The origin/next-based alternative every policy deny offers (already current after the fetch). */
+const ORIGIN_ALTERNATIVE = '  git worktree add -b <branch> <path> origin/next';
+
+/**
+ * POLICY deny: local next is a strict ancestor of origin/next but checked out in a worktree, so the
+ * gate will not move it. The fix fast-forwards it in the holder tree (`merge --ff-only` refuses
+ * rather than rewrites when the holder has conflicting changes).
+ */
+function heldReason(holders, local, remote) {
+  const listed = holders.slice(0, 3).map((h) => (h === '' ? '<unknown worktree>' : h));
+  const more = holders.length > 3 ? ' (and ' + (holders.length - 3) + ' more)' : '';
+  const first = holders[0] ? shellWord(holders[0]) : '<the worktree holding next>';
+  return (
+    'ENF-25 worktree fresh-base gate: local `next` (' + short(local) + ') is behind origin/next (' +
+    short(remote) + ', just fetched by this gate) and is checked out in ' + listed.join(', ') + more +
+    ', so the gate will not move it. A worktree cut from it now would start from a stale trunk.\n' +
+    'Fast-forward the checked-out trunk first, then re-issue your command:\n' +
+    '  git -C ' + first + ' merge --ff-only origin/next\n' +
+    'If that working tree has uncommitted changes, park them first with `git stash push -m <msg>` ' +
+    '(recoverable), then fast-forward.\n' +
+    'Or base the worktree on the remote ref, which is already current:\n' +
+    ORIGIN_ALTERNATIVE
+  );
+}
+
+/** POLICY deny: neither sha contains the other. Names the divergence; suggests nothing that rewrites. */
+function divergedReason(local, remote) {
+  return (
+    'ENF-25 worktree fresh-base gate: local `next` (' + short(local) + ') and origin/next (' + short(remote) +
+    ', just fetched by this gate) have diverged: neither contains the other, so local next cannot be ' +
+    'fast-forwarded and a worktree cut from it would not start from the current trunk. Leave local next ' +
+    'as it is and base the worktree on the remote ref instead:\n' +
+    ORIGIN_ALTERNATIVE
+  );
+}
+
 /**
  * Freshness for one trunk-naming cut in one gsd-core root: a deny decision, or null (passes).
+ *
+ *   head   -> the trunk only when the tree's current branch is `next` (read BEFORE any fetch);
+ *             otherwise null with no fetch. On `next` it is judged as a local `next` base.
+ *   remote -> current after the fetch.
+ *   local  -> equal: null. Strict ancestor: held by a worktree -> deny(held), else CAS. origin/next
+ *             an ancestor of local (AHEAD, flagged planner refinement, CTK-ADR-0009): null, nothing
+ *             moved. Neither: deny(diverged).
  */
 function checkCut(e, root, deps, fetched) {
-  // 37-03 fills the HEAD-on-next case.
-  if (e.baseKind === 'head') return null;
+  let kind = e.baseKind;
+  if (kind === 'head') {
+    if (deps.currentBranch(root) !== 'next') return null;
+    kind = 'local';
+  }
 
   if (!fetched.has(root)) {
     deps.fetchOrigin(root);
@@ -194,21 +261,23 @@ function checkCut(e, root, deps, fetched) {
         'Check the `origin` remote, then run `git fetch origin next`.'
     );
   }
-  if (e.baseKind === 'remote') return null; // the fetch made it current
+  if (kind === 'remote') return null; // the fetch made it current
 
   const local = deps.revParse(root, NEXT_REF);
   if (local === null || local === undefined || local === remote) return null;
 
-  if (deps.isAncestor(root, local, remote) && deps.worktreesHolding(root, NEXT_REF).length === 0) {
+  if (deps.isAncestor(root, local, remote)) {
+    const holders = deps.worktreesHolding(root, NEXT_REF);
+    if (holders.length > 0) return deny(heldReason(holders, local, remote));
     if (deps.casUpdateRef(root, NEXT_REF, remote, local)) return null;
-    // 37-03 makes this a policy deny with the fix.
+    // 37-03 Task 2 makes this a policy deny with the fix.
     throw new FailClosed(
       'ENF-25 worktree fresh-base gate: local next moved while it was being fast-forwarded to ' +
         'origin/next (compare-and-swap refused) — failing closed. Re-run the command.'
     );
   }
-  // KNOWN STUB (37-01 tracer, unregistered): stale-and-held or diverged next allows; 37-03 denies.
-  return null;
+  if (deps.isAncestor(root, remote, local)) return null; // ahead: not stale, nothing to move
+  return deny(divergedReason(local, remote));
 }
 
 /** A copy of process.env without the variables that would redirect git to another repo. */
@@ -259,6 +328,23 @@ function defaultRevParse(dir, ref) {
   }
   if (r.status === 1) return null;
   throw unexpected('rev-parse', r);
+}
+
+/**
+ * The tree's current branch name, or null when HEAD is detached. Reads the FULL ref
+ * (`symbolic-ref --quiet HEAD`) and strips `refs/heads/` itself: `--short` prints the shortest
+ * unambiguous name, so a tag named `next` would turn the branch into `heads/next` and the HEAD-on-next
+ * check would silently allow. exit 0 -> name (a non-branch symref is returned whole), 1 -> null,
+ * else FailClosed.
+ */
+function defaultCurrentBranch(dir) {
+  const r = runGit(dir, ['symbolic-ref', '--quiet', 'HEAD'], 'symbolic-ref');
+  if (r.status === 0) {
+    const ref = String(r.stdout || '').trim();
+    return ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref;
+  }
+  if (r.status === 1) return null;
+  throw unexpected('symbolic-ref', r);
 }
 
 /** exit 0 -> true, 1 -> false, else FailClosed. */
@@ -364,6 +450,7 @@ function runWorktreeFreshBaseGate(stdinString, deps = {}) {
     }
     if (!resolved.fetchOrigin) resolved.fetchOrigin = defaultFetchOrigin;
     if (!resolved.revParse) resolved.revParse = defaultRevParse;
+    if (!resolved.currentBranch) resolved.currentBranch = defaultCurrentBranch;
     if (!resolved.isAncestor) resolved.isAncestor = defaultIsAncestor;
     if (!resolved.worktreesHolding) resolved.worktreesHolding = defaultWorktreesHolding;
     if (!resolved.casUpdateRef) resolved.casUpdateRef = defaultCasUpdateRef;

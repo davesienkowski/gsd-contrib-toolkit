@@ -736,7 +736,7 @@ function commitOnLocalNext(fx) {
   return sha;
 }
 
-test('ENF-25 WTREE-03 e2e: A on next, origin advanced -> deny naming A and merge --ff-only; next unchanged, origin/next fetched', () => {
+test('ENF-25 WTREE-03: e2e: A on next, origin advanced -> deny naming A and merge --ff-only; next unchanged, origin/next fetched', () => {
   const fx = makeFixture({ park: false });
   try {
     const tip = fx.advanceOrigin();
@@ -750,7 +750,7 @@ test('ENF-25 WTREE-03 e2e: A on next, origin advanced -> deny naming A and merge
   }
 });
 
-test('ENF-25 WTREE-03 e2e: A on work, next held by a linked worktree <tmp>/lt -> deny naming <tmp>/lt; next unchanged', () => {
+test('ENF-25 WTREE-03: e2e: A on work, next held by a linked worktree <tmp>/lt -> deny naming <tmp>/lt; next unchanged', () => {
   const fx = makeFixture();
   try {
     const lt = path.join(fx.root, 'lt');
@@ -765,7 +765,7 @@ test('ENF-25 WTREE-03 e2e: A on work, next held by a linked worktree <tmp>/lt ->
   }
 });
 
-test('ENF-25 WTREE-03 e2e: A on work, local next and origin/next diverged -> deny naming the divergence; next unchanged', () => {
+test('ENF-25 WTREE-03: e2e: A on work, local next and origin/next diverged -> deny naming the divergence; next unchanged', () => {
   const fx = makeFixture();
   try {
     const localSha = commitOnLocalNext(fx);
@@ -780,7 +780,7 @@ test('ENF-25 WTREE-03 e2e: A on work, local next and origin/next diverged -> den
   }
 });
 
-test('ENF-25 WTREE-03 e2e: A on work, local next AHEAD of an unmoved origin -> allow; next unchanged', () => {
+test('ENF-25 WTREE-03: e2e: A on work, local next AHEAD of an unmoved origin -> allow; next unchanged', () => {
   const fx = makeFixture();
   try {
     const localSha = commitOnLocalNext(fx);
@@ -792,7 +792,7 @@ test('ENF-25 WTREE-03 e2e: A on work, local next AHEAD of an unmoved origin -> a
   }
 });
 
-test('ENF-25 WTREE-03 e2e: A on next, origin advanced, base omitted -> deny with merge --ff-only origin/next', () => {
+test('ENF-25 WTREE-03: e2e: A on next, origin advanced, base omitted -> deny with merge --ff-only origin/next', () => {
   const fx = makeFixture({ park: false });
   try {
     fx.advanceOrigin();
@@ -805,7 +805,7 @@ test('ENF-25 WTREE-03 e2e: A on next, origin advanced, base omitted -> deny with
   }
 });
 
-test('ENF-25 WTREE-03 e2e: A on work, origin advanced, base omitted -> allow and no fetch', () => {
+test('ENF-25 WTREE-03: e2e: A on work, origin advanced, base omitted -> allow and no fetch', () => {
   const fx = makeFixture();
   try {
     fx.advanceOrigin();
