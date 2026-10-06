@@ -291,6 +291,9 @@ function leadingSubcommand(after) {
 function isInformational(flags, subcommand) {
   for (const f of INFORMATIONAL_FLAGS) {
     if (subcommand !== null && f === 'version') continue; // not a subcommand flag
+    // N-03: no gsd-test flagset defines h/help, so Go's flag package returns ErrHelp for them
+    // before reading any value: `-h=0` prints usage and runs nothing.
+    if ((f === 'h' || f === 'help') && flags[f] !== undefined) return true;
     if (flags[f] !== undefined && flags[f] !== false) return true;
   }
   return false;
@@ -905,6 +908,7 @@ function setPipefailChange(tokens, idx) {
   let change = null;
   for (let k = idx + 1; k < tokens.length - 1; k++) {
     const t = tokens[k];
+    if (t === '--') break; // N-02: `set -- -o pipefail` sets positional parameters
     if (!/^[-+][^-+]/.test(t) || !t.slice(1).includes('o')) continue;
     if (tokens[k + 1] === 'pipefail') change = t[0] === '-';
   }
@@ -922,6 +926,10 @@ function attributePipe(segments, profile, index) {
   let inStatement = true;
   for (let k = index; k < segments.length; k++) {
     const after = profile[k].after;
+    const toks = segments[k].tokens || [];
+    // N-01: argv splits the noclobber redirect `>|` on its `|`; a segment ending in a bare `>`
+    // operator before a `|` is that redirect, and the statement continues in the next segment.
+    if (segments[k].nextOp === '|' && /^\d*>$/.test(toks[toks.length - 1] || '')) continue;
     const op = segments[k].nextOp;
     if (after > level) continue;
     if (after === level) {
@@ -1078,7 +1086,9 @@ function scanParsed(parsed, st) {
         // Only a top-level `set` persists; one inside `( ... )` does not reach later segments
         // (a `{ ...; }` one does, but ignoring it only ever keeps a pipe masked: fail-safe).
         const change = setPipefailChange(toks, r.idx);
-        if (change !== null) runningPipefail = change;
+        // N-02: after `&&` / `||` the `set` may not run; only a pipefail OFF is then assumed.
+        const conditional = i > 0 && (segments[i - 1].nextOp === '&&' || segments[i - 1].nextOp === '||');
+        if (change === false || (change === true && !conditional)) runningPipefail = change;
       }
     }
 
