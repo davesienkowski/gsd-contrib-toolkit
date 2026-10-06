@@ -976,3 +976,220 @@ test('38-01 MEMEV-03: the required memtrace set is exact, frozen, and phantom-fr
   );
   assert.strictEqual(reviewArtifact.MEMTRACE_TOOL_PREFIX, 'mcp__memtrace__');
 });
+
+// ── 38-02: cannot-observe is ASK; deny dominates ask ────────────────────────
+
+const R8A_ASK_PREFIX = 'ENF-20 R8a-memtrace (re-review step 8a) — ';
+
+/** Every R8a ask shares one shape: prefix, cannot-observe statement, human-decides note. */
+function assertR8aAsk(d) {
+  assert.strictEqual(d.permissionDecision, 'ask', d.permissionDecisionReason);
+  const why = d.permissionDecisionReason;
+  assert.ok(why.startsWith(R8A_ASK_PREFIX), 'the ask reason starts with the R8a prefix: ' + why);
+  assert.match(why, /could not observe/);
+  assert.match(why, /not a finding that memtrace did not run/);
+  assert.match(why, /human decides/i);
+  return why;
+}
+
+/** deps() whose readToolLog returns `result` (and records each call). */
+function depsWithLog(result, over = {}) {
+  const dp = deps(over);
+  dp.readToolLog = (sid) => {
+    dp._calls.readToolLog.push(sid);
+    return typeof result === 'function' ? result(sid) : result;
+  };
+  return dp;
+}
+
+const RECORDER_OFF = Object.freeze({ recorderOff: true, complete: false, records: [], problems: ['recorder off'] });
+
+test('38-02 R8a ask: a payload without session_id → ask naming session_id; the log is never read', () => {
+  const dp = deps();
+  const d = runReviewArtifactGate(input('gh pr review 42 --approve', null), dp);
+  const why = assertR8aAsk(d);
+  assert.match(why, /session_id/);
+  assert.deepStrictEqual(dp._calls.readToolLog, [], 'no session to scope → no read');
+});
+
+for (const [label, sid] of [["''", ''], ["'   '", '   '], ['42', 42]]) {
+  test('38-02 R8a ask: session_id ' + label + ' → ask', () => {
+    const dp = deps();
+    const d = runReviewArtifactGate(input('gh pr review 42 --approve', sid), dp);
+    const why = assertR8aAsk(d);
+    assert.match(why, /session_id/);
+    assert.deepStrictEqual(dp._calls.readToolLog, []);
+  });
+}
+
+test('38-02 R8a ask: readToolLog {recorderOff:true} → ask naming GSD_CONTRIB_RECORD=off', () => {
+  const d = runReviewArtifactGate(input('gh pr review 42 --approve'), depsWithLog(RECORDER_OFF));
+  const why = assertR8aAsk(d);
+  assert.match(why, /GSD_CONTRIB_RECORD=off/);
+});
+
+test('38-02 R8a ask: log absent (complete:false, no records) → ask carrying the reader problem', () => {
+  const problem = 'log absent: tool-log.jsonl, tool-log.1.jsonl';
+  const d = runReviewArtifactGate(
+    input('gh pr review 42 --approve'),
+    depsWithLog(toolLog([], { complete: false, problems: [problem] }))
+  );
+  const why = assertR8aAsk(d);
+  assert.ok(why.includes(problem), 'the ask carries the reader problem: ' + why);
+});
+
+test('38-02 R8a ask: complete:false with own ok rows lacking get_impact → ask (part of the log unread)', () => {
+  const d = runReviewArtifactGate(
+    input('gh pr review 42 --approve'),
+    depsWithLog(
+      toolLog(
+        [
+          { tool_name: MT + 'get_symbol_context', outcome: 'ok' },
+          { tool_name: MT + 'recall_decision', outcome: 'ok' },
+          { tool_name: 'Bash', outcome: 'ok' },
+        ],
+        { complete: false, problems: ['unreadable tool-log.1.jsonl: EACCES'] }
+      )
+    )
+  );
+  const why = assertR8aAsk(d);
+  assert.ok(why.includes('unreadable tool-log.1.jsonl: EACCES'));
+  assert.ok(why.includes(MT + 'get_impact'), 'the ask names the tool not seen');
+});
+
+test('38-02 R8a: complete:false with complete evidence → allow (evidence found is real)', () => {
+  const d = runReviewArtifactGate(
+    input('gh pr review 42 --approve'),
+    depsWithLog(toolLog(COMPLETE_EVIDENCE.slice(), { complete: false, problems: ['read budget exceeded'] }))
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
+
+test('38-02 R8a ask: complete:true with only outcome fail rows (incl. failed memtrace calls) → ask', () => {
+  const d = runReviewArtifactGate(
+    input('gh pr review 42 --approve'),
+    depsWithLog(
+      toolLog([
+        { tool_name: MT + 'get_impact', outcome: 'fail' },
+        { tool_name: MT + 'get_symbol_context', outcome: 'fail' },
+        { tool_name: MT + 'recall_decision', outcome: 'fail' },
+        { tool_name: 'Bash', outcome: 'fail' },
+      ])
+    )
+  );
+  const why = assertR8aAsk(d);
+  assert.match(why, /no successful/);
+});
+
+test('38-02 precedence: a recorder-off ask does not mask the R1 treadmill deny at the same head', () => {
+  const dp = depsWithLog(RECORDER_OFF, {
+    readPostedReviews: () => [
+      { commit_id: HEAD, state: 'CHANGES_REQUESTED', body: '## Re-Review — PR #42 · **1 BLOCKER(S) OPEN**' },
+    ],
+  });
+  const d = runReviewArtifactGate(input('gh pr review 42 --approve'), dp);
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-20 R1/);
+});
+
+test('38-02 precedence: `gh pr review 42 --approve && gh pr merge 42 --squash`, recorder off, no merge record → R13 deny', () => {
+  const dp = depsWithLog(RECORDER_OFF, { files: absent(R13) });
+  const d = runReviewArtifactGate(input('gh pr review 42 --approve && gh pr merge 42 --squash'), dp);
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /ENF-20 R13/);
+});
+
+test('38-02 precedence: an override never flips the R8a ask; no receipt is written', () => {
+  let receipt = null;
+  const d = runReviewArtifactGate(
+    input('gh pr review 42 --approve'),
+    depsWithLog(RECORDER_OFF, {
+      overrideImpl: {
+        checkOverride: () => ({ override: true, reason: 'memtrace down' }),
+        writeReceipt: (root, rec) => {
+          receipt = rec;
+        },
+      },
+    })
+  );
+  assertR8aAsk(d);
+  assert.strictEqual(receipt, null, 'an ask is a policy decision, not an error: no receipt');
+});
+
+test('38-02 contract: readToolLog throws → deny', () => {
+  const d = runReviewArtifactGate(
+    input('gh pr review 42 --approve'),
+    depsWithLog(() => {
+      throw new Error('reader exploded');
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assert.match(d.permissionDecisionReason, /reader exploded/);
+});
+
+test('38-02 contract: readToolLog throws with override:true → allow and a review-artifact receipt (HARD-03 parity)', () => {
+  let receipt = null;
+  const d = runReviewArtifactGate(
+    input('gh pr review 42 --approve'),
+    depsWithLog(
+      () => {
+        throw new Error('reader exploded');
+      },
+      {
+        overrideImpl: {
+          checkOverride: () => ({ override: true, reason: 'recorder log on a dead disk' }),
+          writeReceipt: (root, rec) => {
+            receipt = rec;
+          },
+        },
+      }
+    )
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.ok(receipt, 'a bypass must leave a receipt');
+  assert.strictEqual(receipt.action, 'review-artifact');
+});
+
+for (const [label, value] of [['null', null], ['{}', {}], ["'x'", 'x']]) {
+  test('38-02 contract: readToolLog returns ' + label + ' → deny (contract bug)', () => {
+    const d = runReviewArtifactGate(input('gh pr review 42 --approve'), depsWithLog(value));
+    assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+    assert.match(d.permissionDecisionReason, /ENF-20 contract bug: readToolLog/);
+  });
+}
+
+test('38-02 budget: READ_BUDGET_MS × 3 fits inside the review-artifact hook timeout in settings.snippet.json', () => {
+  const { READ_BUDGET_MS } = require('./lib/tool-log-reader.cjs');
+  const settings = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'settings.snippet.json'), 'utf8'));
+  const timeouts = [];
+  (function walk(node) {
+    if (Array.isArray(node)) return node.forEach(walk);
+    if (node && typeof node === 'object') {
+      if (typeof node.command === 'string' && node.command.includes('review-artifact.cjs')) {
+        timeouts.push(node.timeout);
+      }
+      Object.values(node).forEach(walk);
+    }
+  })(settings);
+  assert.strictEqual(timeouts.length, 1, 'exactly one review-artifact hook is registered');
+  assert.ok(Number.isFinite(timeouts[0]) && timeouts[0] > 0, 'it carries a numeric timeout');
+  assert.ok(Number.isInteger(READ_BUDGET_MS) && READ_BUDGET_MS > 0);
+  assert.ok(READ_BUDGET_MS * 3 <= timeouts[0] * 1000, READ_BUDGET_MS + ' ms × 3 vs ' + timeouts[0] + ' s');
+});
+
+test('38-02 R8a ask (real reader): GSD_CONTRIB_RECORD=off in process.env, default readToolLog → ask', () => {
+  const had = Object.prototype.hasOwnProperty.call(process.env, 'GSD_CONTRIB_RECORD');
+  const prev = process.env.GSD_CONTRIB_RECORD;
+  process.env.GSD_CONTRIB_RECORD = 'off';
+  try {
+    appendRecorderRows('sess-38-02-off', [MT + 'get_impact']);
+    const dp = deps();
+    delete dp.readToolLog;
+    const d = runReviewArtifactGate(input('gh pr review 42 --approve', 'sess-38-02-off'), dp);
+    const why = assertR8aAsk(d);
+    assert.match(why, /GSD_CONTRIB_RECORD=off/);
+  } finally {
+    if (had) process.env.GSD_CONTRIB_RECORD = prev;
+    else delete process.env.GSD_CONTRIB_RECORD;
+  }
+});
