@@ -534,12 +534,16 @@ function usableCache(entry, nowMs) {
 /**
  * Read the upstream-tip cache. A cache MISS or a corrupt cache is null, never an error — the
  * cache is a latency optimization plus an outage cushion, not a source of authority.
+ * The default reader is the shared bounded, regular-file-only reader (W5), so a cache path that
+ * is a FIFO, socket, device or directory (or a symlink to one), or is over the 1 MiB read cap, is
+ * a miss at once rather than a read that blocks the hook past its harness timeout.
  *
  * @param {{readFileSync?:Function, cachePath?:string, env?:Object}} [deps]
  * @returns {Object|null}
  */
 function readCacheLive(deps = {}) {
-  const readFileSync = deps.readFileSync || nodeFs.readFileSync;
+  // The default drops the encoding argument: the shared reader's second parameter is its byte cap.
+  const readFileSync = deps.readFileSync || ((p) => readRegularFileBounded(p));
   const file = deps.cachePath || cachePath(deps.env);
   try {
     return JSON.parse(String(readFileSync(file, 'utf8')));
