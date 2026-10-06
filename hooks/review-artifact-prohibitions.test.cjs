@@ -13,7 +13,7 @@
  *   P2 (MEMEV-02 safety)       foreign / verdict-row / failed / misnamed / malformed / body evidence never counts
  *   P3 (MEMEV-04 safety)       R8a-memtrace.json never allows; its scaffold pre-fills nothing
  *   P4 (MEMEV-02 privacy)      a decision reason never echoes recorder log content
- *   P5 (MEMEV-02 transparency) the ADR stays Proposed and says the evidence is not proof of targeting
+ *   P5 (MEMEV-02 transparency) the ADR records Dave's dated acceptance and says the evidence is not proof of targeting
  *
  * Every gate call goes through `S.reviewArtifact.runReviewArtifactGate`, with `readToolLog`
  * ALWAYS injected (the gate's own default binds the shipped reader at import, which a subject
@@ -388,7 +388,7 @@ test('38-05 P4 privacy (real file, ask): own rows with markers, all failed → t
   assertNoMarkers(d.permissionDecisionReason, own);
 });
 
-// ── P5 (MEMEV-02 transparency): the ADR stays Proposed and limits its claim ─
+// -- P5 (MEMEV-02 transparency): the ADR records Dave's acceptance and limits its claim --
 
 function statusParagraph(adr) {
   const lines = adr.split('\n');
@@ -401,11 +401,13 @@ function statusParagraph(adr) {
   return { line: lines[i], para: para.join(' ') };
 }
 
-test('38-05 P5 transparency: the step-8a ADR Status line is Proposed and its status paragraph never claims acceptance or approval', () => {
+test('38-05 P5 transparency: the step-8a ADR Status line is Accepted and its status paragraph records the sign-off, never the pending wording', () => {
   const { line, para } = statusParagraph(S.adrText());
-  assert.match(line, /^- \*\*Status:\*\* Proposed/, line);
-  assert.doesNotMatch(line, /^- \*\*Status:\*\*\s*Accepted/, line);
-  assert.doesNotMatch(para, /\b(is|was|been|now)\s+(accepted|approved)\b/i, para);
+  assert.match(line, /^- \*\*Status:\*\* Accepted/, line);
+  assert.doesNotMatch(line, /^- \*\*Status:\*\*\s*Proposed/, line);
+  const text = para.replace(/\s+/g, ' ');
+  assert.ok(text.includes('Dave has approved this record'), text);
+  assert.doesNotMatch(text, /has not approved/i, text);
 });
 
 test('38-05 P5 transparency: the ADR says the recorder evidence is `not proof` of what was analysed', () => {

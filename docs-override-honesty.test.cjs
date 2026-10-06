@@ -117,8 +117,8 @@ test('docs-honesty: CTK-ADR-0010 override-note residual records the correction',
   assert.ok(!b.includes('left unchanged'), 'the bullet no longer says the note was left unchanged:\n' + b);
 });
 
-test('docs-honesty: ADR-0010 Status line unchanged', () => {
+test('docs-honesty: ADR-0010 Status line pins the accepted sign-off wording', () => {
   const line = fs.readFileSync(adrFile(10), 'utf8').split('\n').find((l) => l.startsWith('- **Status:**'));
   assert.ok(line, 'CTK-ADR-0010 has a Status line');
-  assert.match(line, /^- \*\*Status:\*\* Proposed\./);
+  assert.match(line, /^- \*\*Status:\*\* Accepted \(2026-10-06, by Dave's explicit sign-off\)\./);
 });

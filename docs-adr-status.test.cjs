@@ -4,15 +4,16 @@
  * docs-adr-status.test.cjs — lock tests for the Phase 36 documentation prohibitions
  * (36-VERIFICATION "Prohibitions": 36-05b, 36-06a, 36-06c).
  *
- *   (a) CTK-ADR-0008 is Proposed (Dave has not approved it) and its Status line never says Accepted.
- *   (b) docs/adr/README.md lists CTK-ADR-0008 as Proposed.
+ *   (a) CTK-ADR-0008 is Accepted: its Status line reads `Accepted (2026-10-06, by Dave's explicit sign-off).`
+ *       and never starts with Proposed.
+ *   (b) docs/adr/README.md lists CTK-ADR-0008 as Accepted.
  *   (c) CTK-ADR-0001..0007 still say Accepted (no silent status edit of an Accepted record).
  *   (d) README.md's gsd-test-viability (ENF-24) row describes the docker timeout as `ask`, never deny.
- *   (e) Phase 37 (37-08): CTK-ADR-0009 is Proposed (Dave has not approved it), its Status line never
- *       says Accepted, and docs/adr/README.md lists it as Proposed.
+ *   (e) Phase 37 (37-08): CTK-ADR-0009 is Accepted with the dated Status line
+ *       `Accepted (2026-10-06, by Dave's explicit sign-off).`, and docs/adr/README.md lists it as Accepted.
  *   (f) Phase 38 (38-04): CTK-ADR-0010 (ENF-20 step 8a memtrace review evidence, amending CTK-ADR-0006
- *       Decision 4) is Proposed (Dave has not approved it), its Status line never says Accepted, and
- *       docs/adr/README.md lists it as Proposed.
+ *       Decision 4) is Accepted with the dated Status line `Accepted (2026-10-06, by Dave's explicit
+ *       sign-off).`, and docs/adr/README.md lists it as Accepted.
  *
  *   (g) Phase 38 (38-04): README.md's review-artifact.cjs (ENF-20) row names step 8a, memtrace and `ask`,
  *       and no longer says "four mechanizable".
@@ -33,9 +34,9 @@
  *       hooks/lib/regular-file.cjs), and exactly one "W5 residual" bullet names the same-class
  *       opens W5 left unchanged.
  *
- * Approving ADR-0008 is Dave's call: when he does, update (a) and (b) here deliberately.
- * Approving ADR-0009 is also Dave's call: when he does, update (e) here deliberately.
- * Approving ADR-0010 is Dave's call: when he does, update (f) here deliberately.
+ * Dave accepted CTK-ADR-0008, CTK-ADR-0009 and CTK-ADR-0010 on 2026-10-06 by explicit sign-off (quick
+ * 261006-p4t); (a), (b), (e) and (f) pin that acceptance. A later change of decision is a superseding or
+ * amending CTK-ADR, not an edit to these rows.
  */
 
 const test = require('node:test');
@@ -65,58 +66,62 @@ function readmeRow(id) {
   return row;
 }
 
-test('36-06a: CTK-ADR-0008 Status line says Proposed and not Accepted', () => {
+test('36-06a: CTK-ADR-0008 Status line says Accepted with the dated sign-off and not Proposed', () => {
   const line = statusLine(adrFile(8));
-  assert.match(line, /^- \*\*Status:\*\*\s*Proposed/, line);
-  assert.doesNotMatch(line, /^- \*\*Status:\*\*\s*Accepted/, line);
-  // The status paragraph may say "It becomes Accepted ... only when Dave approves" (conditional);
-  // it must never claim the record IS accepted or approved.
+  assert.match(line, /^- \*\*Status:\*\* Accepted \(2026-10-06, by Dave's explicit sign-off\)\./, line);
+  assert.doesNotMatch(line, /^- \*\*Status:\*\*\s*Proposed/, line);
+  // The status paragraph records Dave's sign-off and never the pending wording.
   const lines = fs.readFileSync(adrFile(8), 'utf8').split('\n');
   const para = [];
   for (let i = lines.findIndex((l) => l === line); i < lines.length && lines[i].trim() !== ''; i++) para.push(lines[i]);
-  assert.doesNotMatch(para.join(' '), /\b(is|was|been|now) (accepted|approved)\b/i, para.join(' '));
+  const text = para.join(' ').replace(/\s+/g, ' ');
+  assert.ok(text.includes('Dave has approved this record'), text);
+  assert.doesNotMatch(text, /has not approved/i, text);
+  assert.ok(text.includes('The sign-off covers the whole record, including the orchestrator-amended Decision 3 (36-REVIEW M-01).'), text);
 });
 
-test('36-06a: docs/adr/README.md row for CTK-ADR-0008 says Proposed (not Accepted)', () => {
+test('36-06a: docs/adr/README.md row for CTK-ADR-0008 says Accepted (not Proposed)', () => {
   const cells = readmeRow('CTK-ADR-0008').split('|').map((c) => c.trim());
-  assert.ok(cells.includes('Proposed'), `status cell is Proposed: ${JSON.stringify(cells)}`);
-  assert.ok(!cells.includes('Accepted'), 'status cell is not Accepted');
+  assert.ok(cells.includes('Accepted'), `status cell is Accepted: ${JSON.stringify(cells)}`);
+  assert.ok(!cells.includes('Proposed'), 'status cell is not Proposed');
 });
 
-test('37-08: CTK-ADR-0009 Status line says Proposed and not Accepted', () => {
+test('37-08: CTK-ADR-0009 Status line says Accepted with the dated sign-off and not Proposed', () => {
   const line = statusLine(adrFile(9));
-  assert.match(line, /^- \*\*Status:\*\*\s*Proposed/, line);
-  assert.doesNotMatch(line, /^- \*\*Status:\*\*\s*Accepted/, line);
-  // The status paragraph may say "It becomes Accepted ... only when Dave approves" (conditional);
-  // it must never claim the record IS accepted or approved.
+  assert.match(line, /^- \*\*Status:\*\* Accepted \(2026-10-06, by Dave's explicit sign-off\)\./, line);
+  assert.doesNotMatch(line, /^- \*\*Status:\*\*\s*Proposed/, line);
+  // The status paragraph records Dave's sign-off and never the pending wording.
   const lines = fs.readFileSync(adrFile(9), 'utf8').split('\n');
   const para = [];
   for (let i = lines.findIndex((l) => l === line); i < lines.length && lines[i].trim() !== ''; i++) para.push(lines[i]);
-  assert.doesNotMatch(para.join(' '), /\b(is|was|been|now) (accepted|approved)\b/i, para.join(' '));
+  const text = para.join(' ').replace(/\s+/g, ' ');
+  assert.ok(text.includes('Dave has approved this record'), text);
+  assert.doesNotMatch(text, /has not approved/i, text);
 });
 
-test('37-08: CTK-ADR-0009 docs/adr/README.md row says Proposed (not Accepted)', () => {
+test('37-08: CTK-ADR-0009 docs/adr/README.md row says Accepted (not Proposed)', () => {
   const cells = readmeRow('CTK-ADR-0009').split('|').map((c) => c.trim());
-  assert.ok(cells.includes('Proposed'), `status cell is Proposed: ${JSON.stringify(cells)}`);
-  assert.ok(!cells.includes('Accepted'), 'status cell is not Accepted');
+  assert.ok(cells.includes('Accepted'), `status cell is Accepted: ${JSON.stringify(cells)}`);
+  assert.ok(!cells.includes('Proposed'), 'status cell is not Proposed');
 });
 
-test('38-04: CTK-ADR-0010 Status line says Proposed and not Accepted', () => {
+test('38-04: CTK-ADR-0010 Status line says Accepted with the dated sign-off and not Proposed', () => {
   const line = statusLine(adrFile(10));
-  assert.match(line, /^- \*\*Status:\*\*\s*Proposed/, line);
-  assert.doesNotMatch(line, /^- \*\*Status:\*\*\s*Accepted/, line);
-  // The status paragraph may say "It becomes Accepted ... only when Dave approves" (conditional);
-  // it must never claim the record IS accepted or approved.
+  assert.match(line, /^- \*\*Status:\*\* Accepted \(2026-10-06, by Dave's explicit sign-off\)\./, line);
+  assert.doesNotMatch(line, /^- \*\*Status:\*\*\s*Proposed/, line);
+  // The status paragraph records Dave's sign-off and never the pending wording.
   const lines = fs.readFileSync(adrFile(10), 'utf8').split('\n');
   const para = [];
   for (let i = lines.findIndex((l) => l === line); i < lines.length && lines[i].trim() !== ''; i++) para.push(lines[i]);
-  assert.doesNotMatch(para.join(' '), /\b(is|was|been|now) (accepted|approved)\b/i, para.join(' '));
+  const text = para.join(' ').replace(/\s+/g, ' ');
+  assert.ok(text.includes('Dave has approved this record'), text);
+  assert.doesNotMatch(text, /has not approved/i, text);
 });
 
-test('38-04: CTK-ADR-0010 docs/adr/README.md row says Proposed (not Accepted)', () => {
+test('38-04: CTK-ADR-0010 docs/adr/README.md row says Accepted (not Proposed)', () => {
   const cells = readmeRow('CTK-ADR-0010').split('|').map((c) => c.trim());
-  assert.ok(cells.includes('Proposed'), `status cell is Proposed: ${JSON.stringify(cells)}`);
-  assert.ok(!cells.includes('Accepted'), 'status cell is not Accepted');
+  assert.ok(cells.includes('Accepted'), `status cell is Accepted: ${JSON.stringify(cells)}`);
+  assert.ok(!cells.includes('Proposed'), 'status cell is not Proposed');
 });
 
 for (let n = 1; n <= 7; n++) {
