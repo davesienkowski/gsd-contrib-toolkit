@@ -2412,3 +2412,37 @@ for (const cmd of [
     assertJsmR8aDeny(cmd);
   });
 }
+
+// -- 261006-jsm Task 2c: gh -R before the review verb reaches R8a; prSelector reads across -R ------
+
+for (const cmd of ['gh -R o/r pr review 42 -a', 'gh pr -R o/r review 42 -a']) {
+  test('261006-jsm gate gh -R: `' + cmd + '` with only Bash rows -> DENY R8a-memtrace', () => {
+    assertJsmR8aDeny(cmd);
+  });
+}
+
+for (const cmd of [
+  'gh pr -R o/r review 42 -a',
+  'gh pr --repo o/r review 42 -a',
+  'gh pr -Ro/r review 42 -a',
+  'gh pr --repo=o/r review 42 -a',
+]) {
+  test('261006-jsm prSelector: `' + cmd + '` -> selector 42 and repo o/r', () => {
+    const seg = parseCommand(cmd).segments[0];
+    assert.strictEqual(prSelector(seg), '42', cmd);
+    assert.strictEqual(reviewArtifact.repoSpecOf(seg), 'o/r', cmd);
+  });
+}
+
+test('261006-jsm gate gh -R: `gh pr -R o/r review 42 -a` keys the PR lookup to 42 in o/r', () => {
+  const seen = [];
+  const dp = deps();
+  const base = dp.resolvePr;
+  dp.resolvePr = (sel, repo) => {
+    seen.push([sel, repo]);
+    return base(sel, repo);
+  };
+  const d = runReviewArtifactGate(input('gh pr -R o/r review 42 -a'), dp);
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  assert.deepStrictEqual(seen, [['42', 'o/r']]);
+});

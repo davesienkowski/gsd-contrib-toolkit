@@ -1976,3 +1976,33 @@ for (const cmd of ['eval "echo hi"', "eval ''", 'eval ""', 'eval', 'eval "git pu
 }
 
 jsmD2Rows('eval', 'eval "gh pr review 42 -a"');
+
+// ---------------------------------------------------------------------------
+// 261006-jsm Task 2c: gh -R / --repo before the review verb. gh accepts `-R <o/r>` before the
+// `pr` area and between `pr` and the verb (RESEARCH section 2); the shared walk reads `-R`'s value
+// as the area or verb. The outer segment itself is the verdict segment (D3).
+// ---------------------------------------------------------------------------
+
+for (const cmd of ['gh -R o/r pr review 42 -a', 'gh pr -R o/r review 42 -a']) {
+  test('261006-jsm gh -R: `' + cmd + '` -> recovered pr-review, via gh-repo-flag, the outer segment', () => {
+    assertPrefixReview(cmd, 'gh-repo-flag', cmd.split(' '));
+  });
+}
+
+for (const cmd of ['gh -Ro/r pr review 42 -a', 'gh --repo o/r pr review 42 -a', 'gh --repo=o/r pr review 42 -a']) {
+  test('261006-jsm gh -R regression (green before the fix): `' + cmd + '` stays the native pr-review', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'pr-review', route: 'native' }, cmd);
+  });
+}
+
+for (const [cmd, action] of [
+  ['gh -R o/r pr merge 42', 'pr-merge'],
+  ['gh -R o/r pr create --title x', 'pr-create'],
+]) {
+  test('261006-jsm gh -R lock (D1 residual): `' + cmd + '` stays other and ' + action + ' gates do not start firing', () => {
+    assert.deepStrictEqual(cls(cmd), { action: 'other' }, cmd);
+    assert.strictEqual(hasGovernedSegment(parseCommand(cmd), [action]), false, cmd);
+  });
+}
+
+jsmD2Rows('gh -R', 'gh -R o/r pr review 42 -a');
