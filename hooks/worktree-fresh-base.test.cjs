@@ -387,3 +387,182 @@ test('ENF-25 tracer e2e: a stale next CHECKED OUT in A is never moved (real work
     fx.dispose();
   }
 });
+
+// ───────────────────────── 37-02 targeting (injected deps) ─────────────────────────
+//
+// The target repo is the start dir (shared walk: `cd`, `env -C`, `sudo -D`, statically expanded)
+// with each git `-C` applied in order, each statically expanded (`~`, leading `$HOME`) and resolved
+// against the running dir. An unexpandable start dir or `-C` fails closed BEFORE any resolve,
+// fetch or git call; `-C ""` is a no-op as in git.
+
+test('ENF-25 targeting: `cd "$X" && git worktree add p next` (X unset) denies with ZERO resolve and fetch', () => {
+  const { deps, calls } = scenario({ env: {} });
+  const d = runWorktreeFreshBaseGate(input('cd "$X" && git worktree add p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /ENF-25/);
+  assert.strictEqual(calls.resolveTreeRoot, 0);
+  assert.strictEqual(calls.fetchOrigin, 0);
+});
+
+test('ENF-25 targeting: `env -C "$X" git worktree add p next` (wrapper chdir unresolvable) denies with ZERO resolve', () => {
+  const { deps, calls } = scenario({ env: {} });
+  const d = runWorktreeFreshBaseGate(input('env -C "$X" git worktree add p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(calls.resolveTreeRoot, 0);
+  assert.strictEqual(calls.fetchOrigin, 0);
+});
+
+test('ENF-25 targeting: `git -C "$Y" worktree add p next` denies naming -C, with ZERO resolve and fetch', () => {
+  const { deps, calls } = scenario({ env: {} });
+  const d = runWorktreeFreshBaseGate(input('git -C "$Y" worktree add p next'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /ENF-25/);
+  assert.match(d.permissionDecisionReason, /-C/);
+  assert.strictEqual(calls.resolveTreeRoot, 0);
+  assert.strictEqual(calls.fetchOrigin, 0);
+});
+
+test('ENF-25 targeting: `git -C ~/r worktree add p next` with homedir /h resolves /h/r', () => {
+  const { deps, calls } = scenario({ env: {}, homedir: '/h' });
+  runWorktreeFreshBaseGate(input('git -C ~/r worktree add p next'), deps);
+  assert.deepStrictEqual(calls.dirs, ['/h/r']);
+});
+
+test('ENF-25 targeting: `git -C "$HOME/r" worktree add p next` expands HOME from the env', () => {
+  const { deps, calls } = scenario({ env: { HOME: '/h2' }, homedir: '/h' });
+  runWorktreeFreshBaseGate(input('git -C "$HOME/r" worktree add p next'), deps);
+  assert.deepStrictEqual(calls.dirs, ['/h2/r']);
+});
+
+test('ENF-25 targeting: `git -C "" worktree add p next` from /w targets /w (an empty -C is a no-op)', () => {
+  const { deps, calls } = scenario({ cwd: '/w' });
+  runWorktreeFreshBaseGate(input('git -C "" worktree add p next'), deps);
+  assert.deepStrictEqual(calls.dirs, ['/w']);
+});
+
+test('ENF-25 targeting: `cd /w2 && git -C r worktree add p next` resolves /w2/r', () => {
+  const { deps, calls } = scenario();
+  runWorktreeFreshBaseGate(input('cd /w2 && git -C r worktree add p next'), deps);
+  assert.deepStrictEqual(calls.dirs, ['/w2/r']);
+});
+
+test('ENF-25 targeting: wrapped forms target the -C dir (`FOO=1 git -C /a`, `sudo git -C /a`, `timeout 5 git -C rel`)', () => {
+  for (const [cmd, want] of [
+    ['FOO=1 git -C /a worktree add p next', '/a'],
+    ['sudo git -C /a worktree add p next', '/a'],
+    ['timeout 5 git -C rel worktree add p next', path.join(FAKE_CWD, 'rel')],
+    ['sudo -D /s git worktree add p next', '/s'],
+    ['bash -c "cd /b && git worktree add p next"', '/b'],
+  ]) {
+    const { deps, calls } = scenario();
+    runWorktreeFreshBaseGate(input(cmd), deps);
+    assert.deepStrictEqual(calls.dirs, [want], cmd);
+  }
+});
+
+test('ENF-25 targeting: `git worktree add "x` denies naming ENF-25, path-free, with ZERO resolve', () => {
+  const { deps, calls } = scenario();
+  const d = runWorktreeFreshBaseGate(input('git worktree add "x'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /ENF-25/);
+  assert.ok(!d.permissionDecisionReason.includes('/'), 'no path in the reason: ' + d.permissionDecisionReason);
+  assert.strictEqual(calls.resolveTreeRoot, 0);
+  assert.strictEqual(calls.fetchOrigin, 0);
+});
+
+test('ENF-25 targeting: every uncertain cut denies with the SAME constant reason (no detector detail, no path)', () => {
+  const reasons = new Set();
+  for (const cmd of [
+    'git worktree add "x',
+    'git --git-dir=/x/y worktree add p next',
+    'GIT_DIR=/x/y git worktree add p next',
+    'git worktree add p $B',
+  ]) {
+    const { deps, calls } = scenario();
+    const d = runWorktreeFreshBaseGate(input(cmd), deps);
+    assert.strictEqual(d.permissionDecision, 'deny', cmd);
+    assert.ok(!d.permissionDecisionReason.includes('/'), cmd + ': ' + d.permissionDecisionReason);
+    assert.strictEqual(calls.resolveTreeRoot, 0, cmd);
+    reasons.add(d.permissionDecisionReason);
+  }
+  assert.strictEqual(reasons.size, 1, 'one constant reason, got ' + JSON.stringify([...reasons]));
+});
+
+test('ENF-25 targeting: the uncertain deny is THROWN (override-escapable) and writes exactly one receipt', () => {
+  const receipts = [];
+  const { deps } = scenario({
+    overrideImpl: {
+      checkOverride: () => ({ override: true, reason: 'test override' }),
+      writeReceipt: (_root, rec) => receipts.push(rec),
+    },
+  });
+  const d = runWorktreeFreshBaseGate(input('git worktree add "x'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(receipts.length, 1);
+  assert.strictEqual(receipts[0].action, 'worktree-fresh-base');
+});
+
+test('ENF-25 targeting: two trunk cuts of the same root fetch ONCE (per-root cache)', () => {
+  const { deps, calls } = scenario();
+  const d = runWorktreeFreshBaseGate(input('git worktree add -b a p next; git worktree add -b b q next'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.fetchOrigin, 1);
+});
+
+// ───────────────────────── 37-02 targeting e2e (spawned hook, real fixture) ─────────────────────────
+
+function plainCwd() {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'wtfb-cwd-'));
+  for (let x = d; ; x = path.dirname(x)) {
+    assert.strictEqual(hasSentinel(x), false, 'unexpected gsd-core sentinel at ' + x);
+    if (path.dirname(x) === x) break;
+  }
+  return d;
+}
+
+for (const form of ['cd', '-C', 'env-prefixed -C']) {
+  test(`ENF-25 targeting e2e: from a non-gsd-core cwd, the ${form} form fast-forwards A's stale next`, () => {
+    const fx = makeFixture();
+    const cwd = plainCwd();
+    try {
+      const tip = fx.advanceOrigin();
+      const wt = path.join(fx.root, 'wt');
+      const cmd = {
+        cd: `cd ${fx.A} && git worktree add -b f ${wt} next`,
+        '-C': `git -C ${fx.A} worktree add -b f ${wt} next`,
+        'env-prefixed -C': `FOO=1 git -C ${fx.A} worktree add -b f ${wt} next`,
+      }[form];
+      const r = spawnIn(cwd, cmd);
+      assert.strictEqual(r.decision, 'allow', r.reason);
+      assert.strictEqual(refOf(fx.A, 'refs/heads/next'), tip, 'A next fast-forwarded to the origin tip');
+    } finally {
+      fx.dispose();
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+}
+
+test('ENF-25 targeting e2e: `git worktree add "x` from A denies naming ENF-25 and does not fetch', () => {
+  const fx = makeFixture();
+  try {
+    fx.advanceOrigin();
+    const r = spawnIn(fx.A, 'git worktree add "x');
+    assert.strictEqual(r.decision, 'deny');
+    assert.match(r.reason, /ENF-25/);
+    assert.strictEqual(refOf(fx.A, 'refs/remotes/origin/next'), fx.initial);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ENF-25 targeting e2e: a heredoc body mentioning `git worktree add p next` allows and does not fetch', () => {
+  const fx = makeFixture();
+  try {
+    fx.advanceOrigin();
+    const r = spawnIn(fx.A, "cat <<'EOF' > notes.md\ngit worktree add p next\nEOF");
+    assert.strictEqual(r.decision, 'allow', r.reason);
+    assert.strictEqual(refOf(fx.A, 'refs/remotes/origin/next'), fx.initial, 'origin/next unchanged');
+  } finally {
+    fx.dispose();
+  }
+});
