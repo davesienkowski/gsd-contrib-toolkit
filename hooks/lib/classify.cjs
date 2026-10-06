@@ -564,6 +564,7 @@ const VERDICT_ROUTE_FORMS = Object.freeze({
   nohup: 'a review command run through nohup',
   setsid: 'a review command run through setsid',
   time: 'a review command run through time',
+  eval: 'a review command inside an eval payload',
 });
 
 /**
@@ -626,6 +627,8 @@ function recoverVerdictRoute(seg, state) {
   if (word.length > 1 && word[0] === '(') {
     return recoverStripped(withoutClosingParen([word.slice(1), ...after]), 'subshell', state);
   }
+  // Task 2b: eval re-reads its arguments, joined with one space, as a command line (a payload).
+  if (prog === 'eval') return recoverPayload(after.join(' '), 'eval', state);
   if (prog === 'nohup') return recoverStripped(after[0] === '--' ? after.slice(1) : after, 'nohup', state);
   if (prog === 'setsid') return recoverStripped(afterSetsidOptions(after), 'setsid', state);
   if (prog === 'time') return recoverStripped(afterTimeOptions(after), 'time', state);
@@ -830,7 +833,7 @@ function recoverShellCommandString(seg, prog, state) {
 }
 
 /**
- * Re-parse a payload (a shell -c command string) with argv.parseCommand and collect EVERY inner
+ * Re-parse a payload (a shell -c command string or an eval argument line) with argv.parseCommand and collect EVERY inner
  * pr-review segment, in order (D3), so a leading `--comment` cannot hide a later approve.
  *
  * @param {string} payload
