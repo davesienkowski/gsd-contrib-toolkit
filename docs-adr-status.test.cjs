@@ -22,6 +22,11 @@
  *       ENF-20-wide pre-existing gap, the sparse-extend scan-cap downgrade, the no-newline scan cost,
  *       the over-gating verdict forms and the live-slot FIFO that still blocks the verdict writer.
  *
+ *   (i) W5 (quick 261006-jts): CTK-ADR-0010's Decision 7 table carries exactly one W5 row (the
+ *       gate hot-path state files outside ENF-20, read and written as regular files only through
+ *       hooks/lib/regular-file.cjs), and exactly one "W5 residual" bullet names the same-class
+ *       opens W5 left unchanged.
+ *
  * Approving ADR-0008 is Dave's call: when he does, update (a) and (b) here deliberately.
  * Approving ADR-0009 is also Dave's call: when he does, update (e) here deliberately.
  * Approving ADR-0010 is Dave's call: when he does, update (f) here deliberately.
@@ -207,4 +212,37 @@ test('38 verifier: the live-slot FIFO residual says it hangs every gate and poin
   const b = adr10Bullet(/live slot/i);
   assert.match(b, /every gate/);
   assert.ok(b.includes('SEED-live-tool-log-fifo-hangs-all-gates'), b);
+});
+
+// -- W5 (quick 261006-jts): the gate-path hardening row and its out-of-scope residual --
+
+test('W5: CTK-ADR-0010 has exactly one W5 severity-map row naming every hardened gate-path file and the shared lib', () => {
+  const rows = fs
+    .readFileSync(adrFile(10), 'utf8')
+    .split('\n')
+    .filter((l) => l.trimStart().startsWith('|'))
+    .filter((l) => l.includes('W5 (quick 261006-jts)'));
+  assert.strictEqual(rows.length, 1, 'exactly one table row cites W5 (quick 261006-jts): ' + rows.length);
+  for (const name of ['runtime-stamp.json', 'upstream-tip-cache.json', 'override-receipts.log', 'ENF-19', 'hooks/lib/regular-file.cjs']) {
+    assert.ok(rows[0].includes(name), 'the W5 row names ' + name + ': ' + rows[0]);
+  }
+});
+
+test('W5: CTK-ADR-0010 has exactly one W5 residual bullet naming every same-class open W5 left unchanged', () => {
+  const b = adr10Bullet(/W5 residual/);
+  for (const site of [
+    'gh-edit',
+    'gh-pr-create',
+    'gh-issue-create',
+    'issue-dedupe',
+    'git-commit-convention',
+    'gsd-test-viability',
+    'worktree-fresh-base',
+    'binlib-edit',
+    'runtimeDigest',
+    'writeStamp',
+    'bin/contrib-capability.cjs',
+  ]) {
+    assert.ok(b.includes(site), 'the W5 residual names ' + site + ': ' + b);
+  }
 });
