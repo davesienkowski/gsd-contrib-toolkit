@@ -39,10 +39,10 @@ tests/foo.test.cjs" node scripts/pr-template-policy.cjs
 # PASS: {"valid":true,"action":"pass","template":"fix",...}
 
 # full lint (NOT just eslint) — run on the branch after build:lib
-npm run lint:ci   # composes eslint + ~9 project linters; must exit 0
+npm run lint:ci   # composes eslint + dozens of project linters; must exit 0
 ```
 
-`### GSD Version` value for engine-internal findings: **`1.6.0-rc.1 (next @ <8-char-sha>)`** (sha = current `origin/next`).
+`### GSD Version` value for engine-internal findings: **`<version> (next @ <8-char-sha>)`** (version = `package.json` on `origin/next`; sha = current `origin/next`).
 
 ## Issue types (all six) (KNOW-04)
 
@@ -330,7 +330,7 @@ RED-before-GREEN when the fix is already written: `git stash push src/<file>.cts
 ```markdown
 ### GSD Version
 
-1.6.0-rc.1 (next @ <sha>)
+<version from origin/next package.json> (next @ <sha>)
 
 ### Runtime
 

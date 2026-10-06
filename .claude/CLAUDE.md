@@ -78,3 +78,29 @@ Do not make direct repo edits outside a GSD workflow unless the user explicitly 
 > Profile not yet configured. Run `/gsd-profile-user` to generate your developer profile.
 > This section is managed by `generate-claude-profile` -- do not edit manually.
 <!-- GSD:profile-end -->
+
+## Dave's conventions (discovered 2026-08-12)
+
+Canonical rules live in docs/guides/contributor-guide.md, README.md, and
+.planning/spikes/CONVENTIONS.md; the items below are Dave's operating preferences for this repo.
+
+- Do not oversell determinism or overstate guarantees; an overselling claim is treated as a real
+  defect. State honestly what is enforced versus advisory. See README.md ("an overselling claim is
+  a real defect").
+- Verify a finding by reproducing the actual mechanism on live source before filing. Operating
+  note: stated audit/review mechanisms are wrong about a third of the time, so reproduce, do not
+  trust the description. See contributor-guide.md P1 ("Verify the finding").
+- Escape valves (skip flags) are deliberate, logged, reason-carrying acts requiring a non-empty
+  reason string; never a way to dodge a real failure or a fail-closed gate. See contributor-guide.md
+  (GSD_CONTRIB_OVERRIDE) and README.md (reason-carrying escape valve).
+- Reuse live upstream policy scripts rather than reimplementing or vendoring policy. See README.md
+  ("Gate -> LIVE-script reuse", "no vendored fallback").
+- Spikes: Node.js/bash `.cjs` scripts only, no package installs, no build step. See
+  .planning/spikes/CONVENTIONS.md ("Node.js / bash only").
+- Gates fail closed (exit 1 = refuse on absence or malformation); a skipped load-bearing proof is a
+  failure, not a silent pass; require two independent signals before calling a claim validated. See
+  README.md (EXEC-01, fail-closed) and .planning/spikes/CONVENTIONS.md ("Two independent signals per
+  claim").
+- TDD RED-first with a proven fail-first, non-vacuous regression test; edit the source, never the
+  generated `bin/lib/*.cjs`. See contributor-guide.md P3 ("written first and watched FAIL"), "No
+  vacuous tests", and the `binlib-edit` gate.
