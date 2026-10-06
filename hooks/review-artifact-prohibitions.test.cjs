@@ -13,7 +13,7 @@
  *   P2 (MEMEV-02 safety)       foreign / verdict-row / failed / misnamed / malformed / body evidence never counts
  *   P3 (MEMEV-04 safety)       R8a-memtrace.json never allows; its scaffold pre-fills nothing
  *   P4 (MEMEV-02 privacy)      a decision reason never echoes recorder log content
- *   P5 (MEMEV-02 transparency) the ADR records Dave's dated acceptance and says the evidence is not proof of targeting
+ *   P5 (MEMEV-02 transparency) the ADR records Dave's acceptance and says the evidence is not proof of targeting
  *
  * Every gate call goes through `S.reviewArtifact.runReviewArtifactGate`, with `readToolLog`
  * ALWAYS injected (the gate's own default binds the shipped reader at import, which a subject
@@ -407,7 +407,7 @@ test('38-05 P5 transparency: the step-8a ADR Status line is Accepted and its sta
   assert.doesNotMatch(line, /^- \*\*Status:\*\*\s*Proposed/, line);
   const text = para.replace(/\s+/g, ' ');
   assert.ok(text.includes('Dave has approved this record'), text);
-  assert.doesNotMatch(text, /has not approved/i, text);
+  assert.doesNotMatch(text, /has not approved|becomes Accepted, or is superseded|until then|not an approved one|awaits? Dave/i, text);
 });
 
 test('38-05 P5 transparency: the ADR says the recorder evidence is `not proof` of what was analysed', () => {

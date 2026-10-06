@@ -60,6 +60,9 @@ function statusLine(file) {
   return line;
 }
 
+// The pre-acceptance wording of the Status bullet; none of it may return once a record is Accepted.
+const PENDING_WORDING = /has not approved|becomes Accepted, or is superseded|until then|not an approved one|awaits? Dave/i;
+
 function readmeRow(id) {
   const row = fs.readFileSync(path.join(ADR_DIR, 'README.md'), 'utf8').split('\n').find((l) => l.includes(`[${id}]`));
   assert.ok(row, `docs/adr/README.md has a row for ${id}`);
@@ -73,10 +76,12 @@ test('36-06a: CTK-ADR-0008 Status line says Accepted with the dated sign-off and
   // The status paragraph records Dave's sign-off and never the pending wording.
   const lines = fs.readFileSync(adrFile(8), 'utf8').split('\n');
   const para = [];
-  for (let i = lines.findIndex((l) => l === line); i < lines.length && lines[i].trim() !== ''; i++) para.push(lines[i]);
+  const start = lines.findIndex((l) => l === line);
+  // Stop at the next header bullet so the sign-off must sit in the Status bullet itself.
+  for (let i = start; i < lines.length && lines[i].trim() !== '' && (i === start || !/^- \*\*/.test(lines[i])); i++) para.push(lines[i]);
   const text = para.join(' ').replace(/\s+/g, ' ');
   assert.ok(text.includes('Dave has approved this record'), text);
-  assert.doesNotMatch(text, /has not approved/i, text);
+  assert.doesNotMatch(text, PENDING_WORDING, text);
   assert.ok(text.includes('The sign-off covers the whole record, including the orchestrator-amended Decision 3 (36-REVIEW M-01).'), text);
 });
 
@@ -93,10 +98,12 @@ test('37-08: CTK-ADR-0009 Status line says Accepted with the dated sign-off and 
   // The status paragraph records Dave's sign-off and never the pending wording.
   const lines = fs.readFileSync(adrFile(9), 'utf8').split('\n');
   const para = [];
-  for (let i = lines.findIndex((l) => l === line); i < lines.length && lines[i].trim() !== ''; i++) para.push(lines[i]);
+  const start = lines.findIndex((l) => l === line);
+  // Stop at the next header bullet so the sign-off must sit in the Status bullet itself.
+  for (let i = start; i < lines.length && lines[i].trim() !== '' && (i === start || !/^- \*\*/.test(lines[i])); i++) para.push(lines[i]);
   const text = para.join(' ').replace(/\s+/g, ' ');
   assert.ok(text.includes('Dave has approved this record'), text);
-  assert.doesNotMatch(text, /has not approved/i, text);
+  assert.doesNotMatch(text, PENDING_WORDING, text);
 });
 
 test('37-08: CTK-ADR-0009 docs/adr/README.md row says Accepted (not Proposed)', () => {
@@ -112,10 +119,12 @@ test('38-04: CTK-ADR-0010 Status line says Accepted with the dated sign-off and 
   // The status paragraph records Dave's sign-off and never the pending wording.
   const lines = fs.readFileSync(adrFile(10), 'utf8').split('\n');
   const para = [];
-  for (let i = lines.findIndex((l) => l === line); i < lines.length && lines[i].trim() !== ''; i++) para.push(lines[i]);
+  const start = lines.findIndex((l) => l === line);
+  // Stop at the next header bullet so the sign-off must sit in the Status bullet itself.
+  for (let i = start; i < lines.length && lines[i].trim() !== '' && (i === start || !/^- \*\*/.test(lines[i])); i++) para.push(lines[i]);
   const text = para.join(' ').replace(/\s+/g, ' ');
   assert.ok(text.includes('Dave has approved this record'), text);
-  assert.doesNotMatch(text, /has not approved/i, text);
+  assert.doesNotMatch(text, PENDING_WORDING, text);
 });
 
 test('38-04: CTK-ADR-0010 docs/adr/README.md row says Accepted (not Proposed)', () => {
