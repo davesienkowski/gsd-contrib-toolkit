@@ -6,8 +6,9 @@
  *
  * The mechanism (hooks/lib/failclosed.cjs runGateInner): a gate that RETURNS deny gets deny back
  * with no override check; only a THROWN gate error reaches the catch, which consults
- * override.checkOverride() and, when set, writes a receipt and allows. So the override rescues
- * thrown gate errors only and never lifts a returned policy deny.
+ * override.checkOverride() and, when set, writes a receipt and allows. So runGate rescues thrown
+ * gate errors only and never lifts a returned policy deny (ENF-07 containment alone consults the
+ * override inside its own policy path, and its deny says so).
  *
  * D1: override semantics are unchanged; the `semantics:` tests below pass before AND after the fix.
  * D2: scope is every policy deny whose text claimed the override bypasses it: ENF-20 OVERRIDE_NOTE
@@ -318,6 +319,54 @@ test('semantics: ENF-20 spawned policy family (P1) is not lifted by the override
     assert.strictEqual(a.decision, 'deny', a.reason);
     assert.strictEqual(b.decision, 'deny', b.reason);
     assert.ok(!fs.existsSync(a.receiptPath), 'a policy deny writes no override receipt');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// -- review round 3: the R8a deny/ask notes and the unresolved-verdict ask -------------------
+//
+// These three already said the override does not lift / answer them (true), but closed with the
+// GLOBAL "it rescues thrown gate errors only", which ENF-07 contradicts (hooks/containment.cjs
+// honors the override in its own policy path). They now use the per-gate form. No off switch is
+// added to them: they are not part of the OVERRIDE_NOTE family (CONTEXT D2), only the scope clause.
+
+const R8A = reviewArtifact.GATES_BY_ID['R8a-memtrace'];
+const R8A_CTX = { sessionId: SID, dir: ART_DIR, headOid: HEAD, number: 42 };
+
+function assertPerGateScope(label, reason, keep) {
+  assert.ok(reason.includes(keep), label + ' keeps "' + keep + '":\n' + reason);
+  assert.ok(!reason.includes('it rescues thrown gate errors only'), label + ' states the global rule:\n' + reason);
+  assert.ok(reason.includes('this gate honors it only for a thrown gate error'), label + ' lacks the per-gate scope:\n' + reason);
+}
+
+test('truthful: R8a missing-evidence deny scopes the override to this gate', () => {
+  const d = reviewArtifact.verifyMemtraceEvidence(R8A, R8A_CTX, {
+    readToolLog: () => ({ complete: true, recorderOff: false, records: [{ tool_name: 'Bash', outcome: 'ok' }], problems: [] }),
+    artifactExists: () => false,
+    writeScaffold: () => ({ written: true }),
+  });
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  assertPerGateScope('R8a deny', d.permissionDecisionReason, 'does not lift this deny');
+});
+
+test('truthful: R8a cannot-observe ask scopes the override to this gate', () => {
+  const d = reviewArtifact.verifyMemtraceEvidence(R8A, R8A_CTX, {
+    readToolLog: () => ({ complete: true, recorderOff: true, records: [], problems: [] }),
+  });
+  assert.strictEqual(d.permissionDecision, 'ask', d.permissionDecisionReason);
+  assertPerGateScope('R8a ask', d.permissionDecisionReason, 'does not answer this prompt');
+});
+
+test('truthful: unresolved-verdict ask (spawned) scopes the override to this gate', { skip: NO_SH }, () => {
+  const root = makeRoot();
+  try {
+    const t = (o) => JSON.stringify(o, null, 2) + '\n';
+    fs.writeFileSync(path.join(root, ART_DIR, 'R8-code-review.json'), t({ schema: 1, pass: 'code-review', head_oid: HEAD, command: '/code-review', verdict: 'PASS', findings: [] }));
+    fs.writeFileSync(path.join(root, ART_DIR, 'R8-security-review.json'), t({ schema: 1, pass: 'security-review', head_oid: HEAD, command: '/security-review', verdict: 'PASS - no code surface', findings: [] }));
+    const r = spawnReviewHook({ cmd: 'gh api -X POST repos/o/r/pulls/42/reviews --input review.json', override: false, root });
+    assert.strictEqual(r.decision, 'ask', r.reason);
+    assertPerGateScope('unresolved-verdict ask', r.reason, 'does not answer this prompt');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
