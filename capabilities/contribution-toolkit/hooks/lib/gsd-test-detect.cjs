@@ -429,7 +429,7 @@ function maskQuoted(str) {
 function maskedSegmentTokens(parsed) {
   if (!parsed || typeof parsed.raw !== 'string') return { tokens: null, ambiguous: true };
   const m = maskQuoted(parsed.raw);
-  const mp = parseCommand(m.masked);
+  const mp = parseCommand(m.masked, parsed.parseOpts);
   if (!mp.ok || mp.segments.length !== parsed.segments.length) return { tokens: null, ambiguous: true };
   const out = [];
   for (let i = 0; i < parsed.segments.length; i++) {
@@ -1219,7 +1219,27 @@ function findProgramEntries(command, matcher, opts) {
         ? [{ kind: 'uncertain', reason: `unparseable command names ${m.label} (${parsed.reason})` }]
         : [];
     }
-    return scanParsed(parsed, st);
+    const entries = scanParsed(parsed, st);
+    // quick-261007-ji5 round 3 (re-review R2-CR-01): ALSO scan the parse that splits an unquoted
+    // newline and a lone `&` (the default split, Addendum 3, keeps both inside one segment, so
+    // `echo hi<newline>gsd-test ...` was invisible). Additive: default entries first, then any
+    // entry from the second parse whose dispatched segment the default scan did not already yield.
+    const alt = parseCommand(command, { cwdSeparators: true });
+    if (alt.ok && alt.segments.length !== parsed.segments.length) {
+      alt.parseOpts = { cwdSeparators: true };
+      // An alt entry duplicates a default one when the default dispatch segment STARTS with the
+      // alt segment's tokens (the default keeps `& wait` / the next line inside the same segment).
+      const toks = (e) => (e.seg && Array.isArray(e.seg.tokens) ? e.seg.tokens : null);
+      const dup = (e) => entries.some((d) => {
+        if (d.kind !== e.kind) return false;
+        const a = toks(d);
+        const b = toks(e);
+        if (!a || !b) return (d.reason || '') === (e.reason || '') && a === b;
+        return b.length <= a.length && b.every((t, i) => t === a[i]);
+      });
+      for (const e of scanParsed(alt, st)) if (!dup(e)) entries.push(e);
+    }
+    return entries;
   } catch (err) {
     // Defensive: the detector must never throw into a gate.
     return m.word.test(command)

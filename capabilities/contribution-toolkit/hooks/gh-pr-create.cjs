@@ -46,7 +46,7 @@
  */
 
 const path = require('node:path');
-const { parseCommand } = require('./lib/argv.cjs');
+const { parseCommandForGates } = require('./lib/argv.cjs');
 const {
   classifyAction, findActionSegment, isNonGovernedCommand, hasGovernedSegment, hasFailClosedSegment,
 } = require('./lib/classify.cjs');
@@ -494,7 +494,7 @@ function gate(stdinString, deps) {
   const input = readHookInput(stdinString);
   const command = (input.tool_input && input.tool_input.command) || '';
 
-  const parsed = parseCommand(command);
+  const parsed = parseCommandForGates(command);
   if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
 
   // CF-07 (← CR-01): decide gate/no-gate from the ALL-segments logic CF-05 introduced for
@@ -940,7 +940,7 @@ function runPrGate(stdinString, deps = {}) {
     // correctness improvement, not just a cost saving). Governed pr-create (HARD-02),
     // unparseable (HARD-04), and ENF-15 synonyms all return false here and fall through
     // unchanged to the resolve+gate path below.
-    if (isNonGovernedCommand(parseCommand(ctx.command), ['pr-create'])) {
+    if (isNonGovernedCommand(parseCommandForGates(ctx.command), ['pr-create'])) {
       return allow();
     }
 
@@ -951,7 +951,7 @@ function runPrGate(stdinString, deps = {}) {
     // back to the worktree origin (unchanged). An explicit target that parseOwnerRepo cannot
     // resolve THROWS FailClosed here → runGate fail-closed deny (no silent origin-fallback ALLOW).
     if (resolved.targetRepo === undefined) {
-      resolved.targetRepo = resolveExplicitTarget(parseCommand(ctx.command));
+      resolved.targetRepo = resolveExplicitTarget(parseCommandForGates(ctx.command));
     }
     // Resolve the root from the command's OWN cwd (it may `cd` into a worktree), not the
     // session cwd. null = the command does not target a gsd-core checkout → allow. The
@@ -967,7 +967,7 @@ function runPrGate(stdinString, deps = {}) {
         // action we cannot verify without a checkout → fail closed (HARD-02). NOTE: this is the
         // runPrGate null-root seam ONLY; the ENF-18 first-create / check-run logic in gate() is
         // owned by ROB-02 (plan 25-02) and is deliberately untouched here.
-        if (commandTargetsGsdCore(parseCommand(ctx.command))) {
+        if (commandTargetsGsdCore(parseCommandForGates(ctx.command))) {
           throw new FailClosed(
             'out-of-tree command targets upstream open-gsd/gsd-core (-R/--repo / gh-api / curl) ' +
               'but no local gsd-core checkout is reachable from its cwd — cannot load the LIVE ' +
@@ -1566,7 +1566,7 @@ function ownerRepoFromRemote(url) {
  * program) exactly like commandTargetsGsdCore — so a post-program `-f title=x` field is never
  * mistaken for an env assignment (HARD-04).
  *
- * @param {{ok?:boolean, segments?:Array}} parsed result of parseCommand(command)
+ * @param {{ok?:boolean, segments?:Array}} parsed result of parseCommandForGates(command)
  * @returns {{owner:string, repo:string}|null}
  */
 function resolveExplicitTarget(parsed) {

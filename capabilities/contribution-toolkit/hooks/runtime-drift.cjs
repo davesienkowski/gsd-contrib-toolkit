@@ -68,10 +68,10 @@
  * @module hooks/runtime-drift
  */
 
-const { parseCommand } = require('./lib/argv.cjs');
+const { parseCommandForGates } = require('./lib/argv.cjs');
 const { hasGovernedSegment, isNonGovernedCommand, classifyAction } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, ask, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
-const { resolveRootForCommand, commandTargetsGsdCore, segmentRepoTarget } = require('./lib/resolve.cjs');
+const { resolveRootForCommand, commandTargetsGsdCore, segmentRepoTarget, ghRepoBySegment } = require('./lib/resolve.cjs');
 const runtimeStamp = require('./lib/runtime-stamp.cjs');
 
 const { UpstreamUnavailable, REMEDIATION_COMMAND } = runtimeStamp;
@@ -113,7 +113,7 @@ function gate(stdinString, deps) {
   const input = readHookInput(stdinString);
   const command = (input.tool_input && input.tool_input.command) || '';
 
-  const parsed = parseCommand(command);
+  const parsed = parseCommandForGates(command);
   if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
 
   // (3) RES-01 action-first short-circuit. This MUST stay above every digest, stamp read,
@@ -132,10 +132,12 @@ function gate(stdinString, deps) {
   // gsd-core root or otherwise names upstream gsd-core.
   let root;
   let armed = false;
-  for (const seg of parsed.segments) {
+  const ghRepos = ghRepoBySegment(parsed.segments); // R2-WR-05: env / earlier-export GH_REPO
+  for (let si = 0; si < parsed.segments.length; si++) {
+    const seg = parsed.segments[si];
     const action = classifyAction({ ok: true, segments: [seg] }).action;
     if (!GOVERNED_ACTIONS.includes(action)) continue;
-    const target = segmentRepoTarget(seg);
+    const target = segmentRepoTarget(seg, ghRepos[si]);
     if (target === 'gsd-core') { armed = true; break; }
     if (target === 'other') continue;
     if (root === undefined) root = deps.resolveRoot(command);

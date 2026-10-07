@@ -62,7 +62,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { parseCommand } = require('./lib/argv.cjs');
+const { parseCommandForGates } = require('./lib/argv.cjs');
 const { classifyAction, isNonGovernedCommand } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand, isContribBranch } = require('./lib/resolve.cjs');
@@ -838,7 +838,7 @@ function gate(stdinString, deps) {
   const input = readHookInput(stdinString);
   const command = (input.tool_input && input.tool_input.command) || '';
 
-  const parsed = parseCommand(command);
+  const parsed = parseCommandForGates(command);
   if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
 
   const action = classifyAction(parsed);
@@ -921,7 +921,7 @@ function runProtocolArtifactGate(stdinString, deps = {}) {
   return runGate(() => {
     // RES-01 (D-07 uniformity): short-circuit a confidently non-governed command BEFORE any
     // filesystem walk. Unparseable / failClosed / governed commands fall through unchanged.
-    if (isNonGovernedCommand(parseCommand(ctx.command), GOVERNED_ACTIONS)) return allow();
+    if (isNonGovernedCommand(parseCommandForGates(ctx.command), GOVERNED_ACTIONS)) return allow();
 
     const resolved = Object.assign({}, deps);
     const needsRoot =

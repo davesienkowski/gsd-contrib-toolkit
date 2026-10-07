@@ -27,7 +27,7 @@
  * @module hooks/scan-gate
  */
 
-const { parseCommand } = require('./lib/argv.cjs');
+const { parseCommandForGates } = require('./lib/argv.cjs');
 const { hasGovernedSegment, isNonGovernedCommand } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand } = require('./lib/resolve.cjs');
@@ -164,7 +164,7 @@ function gate(stdinString, deps) {
   const input = readHookInput(stdinString);
   const command = (input.tool_input && input.tool_input.command) || '';
 
-  const parsed = parseCommand(command);
+  const parsed = parseCommandForGates(command);
   if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
 
   // CF-05: trigger on ANY governed segment in the chain, not just the first actionable one.
@@ -215,7 +215,7 @@ function runScanGate(stdinString, deps = {}) {
     // resolveRootForCommand walks the tree — a non-push command no longer pays a filesystem
     // walk. isNonGovernedCommand narrows-not-weakens: unparseable/failClosed/`push` fall
     // through to the unchanged resolve→gate path below.
-    if (isNonGovernedCommand(parseCommand(ctx.command), TRIGGER_ACTIONS)) return allow();
+    if (isNonGovernedCommand(parseCommandForGates(ctx.command), TRIGGER_ACTIONS)) return allow();
 
     const resolved = Object.assign({}, deps);
     if (!resolved.gsdCoreRoot) {

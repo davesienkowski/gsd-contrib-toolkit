@@ -34,7 +34,7 @@
  * @module hooks/containment
  */
 
-const { parseCommand } = require('./lib/argv.cjs');
+const { parseCommandForGates } = require('./lib/argv.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveGsdCoreRootForCommand, ScriptResolveError, parseOwnerRepo } = require('./lib/resolve.cjs');
 const { resolveProgram } = require('./lib/classify.cjs');
@@ -501,7 +501,7 @@ function gate(stdinString, deps) {
   const input = readHookInput(stdinString);
   const command = (input.tool_input && input.tool_input.command) || '';
 
-  const parsed = parseCommand(command);
+  const parsed = parseCommandForGates(command);
   if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
 
   const actions = detectGit(parsed);
@@ -560,7 +560,7 @@ function runContainmentGate(stdinString, deps = {}) {
     // to allow() before any tree walk. narrows-not-weakens: an unparseable command (!parsed.ok)
     // is NOT short-circuited — it falls through to gate() which throws FailClosed → DENY (HARD-04);
     // and detectGit's empty-array no-op mirrors gate()'s own `actions.length === 0` allow exactly.
-    const preParsed = parseCommand(ctx.command);
+    const preParsed = parseCommandForGates(ctx.command);
     if (preParsed.ok && detectGit(preParsed).length === 0) return allow();
 
     const resolved = Object.assign({}, deps);

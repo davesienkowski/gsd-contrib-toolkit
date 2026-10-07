@@ -25,7 +25,7 @@
  * @module hooks/policy-invariants
  */
 
-const { parseCommand } = require('./lib/argv.cjs');
+const { parseCommandForGates } = require('./lib/argv.cjs');
 const { classifyAction, isNonGovernedCommand } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveGsdCoreRootForCommand, ScriptResolveError } = require('./lib/resolve.cjs');
@@ -162,7 +162,7 @@ function gate(stdinString, deps) {
   const input = readHookInput(stdinString);
   const command = (input.tool_input && input.tool_input.command) || '';
 
-  const parsed = parseCommand(command);
+  const parsed = parseCommandForGates(command);
   if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
 
   const action = classifyAction(parsed);
@@ -219,7 +219,7 @@ function runPolicyGate(stdinString, deps = {}) {
     // resolveGsdCoreRoot walks the tree — a non-commit/non-pr-create command no longer pays a
     // filesystem walk. isNonGovernedCommand narrows-not-weakens: unparseable/failClosed and the
     // governed commit/pr-create fall through to the unchanged resolve→gate path below.
-    if (isNonGovernedCommand(parseCommand(ctx.command), TRIGGER_ACTIONS)) return allow();
+    if (isNonGovernedCommand(parseCommandForGates(ctx.command), TRIGGER_ACTIONS)) return allow();
 
     const resolved = Object.assign({}, deps);
     if (!resolved.gsdCoreRoot) {

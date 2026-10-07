@@ -100,14 +100,21 @@ function stripTaskNotifications(prompt) {
   let out = '';
   let last = 0;
   let m;
+  // Both searches only move forward (round 3, re-review R2-WR-04): the next close tag and the next
+  // line-start opening tag are cached and re-searched only once the scan has passed them, so many
+  // opening tags sharing one late close tag cost one pass, not one pass each.
+  let close = -2; // not searched yet
+  let nextOpen = null; // cached match of the next opening tag after the current one
   while ((m = open.exec(prompt)) !== null) {
     const bodyFrom = m.index + m[0].length;
-    const close = prompt.indexOf(TASK_NOTIFICATION_CLOSE, bodyFrom);
+    if (close !== -1 && close < bodyFrom) close = prompt.indexOf(TASK_NOTIFICATION_CLOSE, bodyFrom);
     if (close === -1) break; // no later close tag: this and every later opening tag is unterminated
-    next.lastIndex = bodyFrom;
-    const n = next.exec(prompt);
-    if (n && n.index < close) {
-      open.lastIndex = n.index; // another block opens first: this one is unterminated, keep it
+    if (nextOpen === null || nextOpen.index < bodyFrom) {
+      next.lastIndex = bodyFrom;
+      nextOpen = next.exec(prompt) || { index: Infinity };
+    }
+    if (nextOpen.index < close) {
+      open.lastIndex = nextOpen.index; // another block opens first: this one is unterminated, keep it
       continue;
     }
     out += prompt.slice(last, m.index + m[1].length);

@@ -104,7 +104,7 @@
  */
 
 const path = require('node:path');
-const { parseCommand } = require('./lib/argv.cjs');
+const { parseCommandForGates } = require('./lib/argv.cjs');
 const {
   classifyAction, findActionSegment, isNonGovernedCommand,
   // ENF-22: the merge path must trigger on the CF-05 all-segments chokepoint, not on
@@ -410,7 +410,7 @@ function gate(stdinString, deps) {
   const input = readHookInput(stdinString); // throws on malformed → fail closed
   const command = (input.tool_input && input.tool_input.command) || '';
 
-  const parsed = parseCommand(command);
+  const parsed = parseCommandForGates(command);
   if (!parsed.ok) {
     // Unparseable → cannot confidently classify → fail closed (HARD-04).
     throw new FailClosed('unparseable command: ' + parsed.reason);
@@ -480,7 +480,7 @@ function runCommitConventionGate(stdinString, deps = {}) {
     // walk, and a missing LIVE script under a resolved root cannot collateral-deny it. The
     // shared isNonGovernedCommand narrows-not-weakens: unparseable/failClosed/`commit`
     // fall through to the unchanged resolve→gate path below (a governed commit still DENIES).
-    if (isNonGovernedCommand(parseCommand(ctx.command), TRIGGER_ACTIONS)) return allow();
+    if (isNonGovernedCommand(parseCommandForGates(ctx.command), TRIGGER_ACTIONS)) return allow();
 
     const resolved = Object.assign({}, deps);
 

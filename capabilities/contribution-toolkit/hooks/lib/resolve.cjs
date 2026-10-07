@@ -325,10 +325,25 @@ const WRAPPER_WORDS = new Set(['sudo', 'env', 'command', 'builtin', 'exec', 'noh
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
 const OPAQUE_PROGRAMS = new Set(['source', '.', 'eval']);
 
-/** The effective program of a segment past `(`, `{`, `!`, `NAME=v` and wrapper words. */
+// Wrapper flags that take a VALUE (so the value is never mistaken for the program), and the ones
+// that change directory for the wrapped command (round 3, re-review R2-WR-02).
+const WRAPPER_VALUE_FLAGS = {
+  env: new Set(['-u', '--unset', '-C', '--chdir', '-S', '--split-string']),
+  sudo: new Set(['-u', '--user', '-g', '--group', '-C', '--close-from', '-D', '--chdir', '-h', '--host',
+    '-p', '--prompt', '-r', '--role', '-t', '--type', '-T', '--command-timeout', '-U', '--other-user']),
+};
+const WRAPPER_CHDIR_FLAGS = { env: new Set(['-C', '--chdir']), sudo: new Set(['-D', '--chdir']) };
+
+/**
+ * The effective program of a segment past `(`, `{`, `!`, `NAME=v` and wrapper words, as a BASENAME
+ * like the classifier (`/usr/bin/git` is git). `chdirs` collects `env -C/--chdir` and
+ * `sudo -D/--chdir` directories, which apply to this segment only; `prefixLen` is the index of the
+ * program token (everything before it is a scoped prefix).
+ */
 function effectiveProgram(seg) {
   const tokens = Array.isArray(seg && seg.tokens) ? seg.tokens.map(String) : [];
   let subshell = false;
+  const chdirs = [];
   let i = 0;
   while (i < tokens.length) {
     let t = tokens[i];
@@ -339,14 +354,36 @@ function effectiveProgram(seg) {
       tokens[i] = t;
     }
     if (t === '{' || t === '!' || ASSIGNMENT_RE.test(t)) { i += 1; continue; }
-    if (WRAPPER_WORDS.has(t)) {
+    const w = path.basename(t);
+    if (WRAPPER_WORDS.has(w)) {
       i += 1;
-      while (i < tokens.length && (tokens[i].startsWith('-') || /^\d+(?:\.\d+)?[smhd]?$/.test(tokens[i]) || ASSIGNMENT_RE.test(tokens[i]))) i += 1;
+      const valueFlags = WRAPPER_VALUE_FLAGS[w];
+      const chdirFlags = WRAPPER_CHDIR_FLAGS[w];
+      while (i < tokens.length) {
+        const f = tokens[i];
+        if (ASSIGNMENT_RE.test(f) || /^\d+(?:\.\d+)?[smhd]?$/.test(f)) { i += 1; continue; }
+        if (!f.startsWith('-')) break;
+        const eq = f.startsWith('--') ? f.indexOf('=') : -1;
+        const name = eq > 0 ? f.slice(0, eq) : f;
+        if (valueFlags && valueFlags.has(name)) {
+          const v = eq > 0 ? f.slice(eq + 1) : tokens[i + 1];
+          if (chdirFlags && chdirFlags.has(name) && typeof v === 'string') chdirs.push(v);
+          i += eq > 0 ? 1 : 2;
+          continue;
+        }
+        if (chdirFlags && chdirFlags.has(f.slice(0, 2)) && f.length > 2 && !f.startsWith('--')) {
+          chdirs.push(f.slice(2)); // attached short form: -C<dir> / -D<dir>
+          i += 1;
+          continue;
+        }
+        i += 1;
+      }
       continue;
     }
     break;
   }
-  return { program: tokens[i] || '', rest: tokens.slice(i), subshell };
+  const word = tokens[i] || '';
+  return { program: word ? path.basename(word) : '', rest: tokens.slice(i), subshell, chdirs, prefixLen: i };
 }
 
 /**
@@ -382,7 +419,12 @@ function cdTarget(rest) {
 function commandMayReassignHomeVar(segs) {
   for (const s of segs) {
     if (OPAQUE_PROGRAMS.has(s.program)) return true;
-    for (const t of s.allTokens) {
+    // A `HOME=v` PREFIX on a command other than cd / pushd / popd is scoped to that command and
+    // cannot move a later cd (round 3, re-review R2-IN-05: `HOME=/tmp npm test` over-gated).
+    const scopedPrefix = s.program !== '' && !CD_PROGRAMS.has(s.program) && s.program !== 'popd';
+    for (let k = 0; k < s.allTokens.length; k++) {
+      const t = s.allTokens[k];
+      if (scopedPrefix && k < s.prefixLen && /^HOME\+?=/.test(t)) continue;
       if (/(^|=)HOME(\+?=|$)/.test(t) || /\$\{HOME:?=/.test(t)) return true;
     }
   }
@@ -496,10 +538,13 @@ function commandCandidateDirs(command, baseCwd, opts) {
   // a gate can govern), so a read-only `git log` / `git status` in the session cwd does not gate a
   // commit or push that runs elsewhere. None of those -> every git / gh segment; none at all ->
   // the end state. classify.cjs is required lazily (it does not require this module).
+  // If no git / gh segment is recognised but the classifier still names an action somewhere (a
+  // wrapper form this walk does not model), every segment and the end state are relevant.
   const gitOrGh = [];
   segs.forEach((s, j) => { if (s.program === 'git' || s.program === 'gh') gitOrGh.push(j); });
   let relevant = gitOrGh.filter((j) => segmentIsGovernable(segs[j]));
   if (relevant.length === 0) relevant = gitOrGh;
+  if (relevant.length === 0 && segs.some((s) => segmentIsGovernable(s))) relevant = segs.map((_, j) => j).concat([segs.length]);
   if (relevant.length === 0) relevant = [segs.length];
 
   const out = [];
@@ -509,9 +554,18 @@ function commandCandidateDirs(command, baseCwd, opts) {
     for (let i = 0; i < j; i++) {
       const s = segs[i];
       if (!CD_PROGRAMS.has(s.program) && s.program !== 'popd') continue;
+      // Round 3 (re-review R2-WR-01): a cd that is a PIPELINE STAGE (`a | cd X`, `cd X | b`) runs in
+      // a subshell and never moves the parent: no candidate changes.
+      if ((i > 0 && segs[i - 1].nextOp === '|') || s.nextOp === '|') continue;
       let bypass = cdFunction || s.subshell;
-      // The operators between the cd and segment j; the end of the command (null) is not one.
-      for (let k = i; k < j && !bypass; k++) if (segs[k].nextOp !== '&&' && segs[k].nextOp !== null) bypass = true;
+      // The operators between the cd and segment j that let j run after a FAILED cd: `;`, `||`, a
+      // lone `&` and a newline. `&&` short-circuits, a later `|` only joins a pipeline that is itself
+      // behind the cd (`cd X && a | b && git commit` runs git only in X), and the end of the command
+      // (null) is no operator.
+      for (let k = i; k < j && !bypass; k++) {
+        const op = segs[k].nextOp;
+        if (op === ';' || op === '||' || op === '&' || op === '\n') bypass = true;
+      }
       const t = s.program === 'popd' ? '-' : cdTarget(s.rest);
       let next;
       if (t === '-' || (s.program === 'pushd' && t === null)) {
@@ -523,8 +577,15 @@ function commandCandidateDirs(command, baseCwd, opts) {
       cands = next;
       pushUnique(seen, cands);
     }
+    // `env -C <dir>` / `sudo -D <dir>` move this segment only (round 3, R2-WR-02).
+    if (j < segs.length) {
+      for (const d of segs[j].chdirs) {
+        const moved = applyTarget(cands, String(d), homes);
+        if (moved.length > 0) cands = moved;
+      }
+    }
     if (j < segs.length && followGitC && segs[j].program === 'git') {
-      for (const d of gitGlobalChdirs({ tokens: segs[j].rest })) {
+      for (const d of gitGlobalChdirs({ tokens: ['git'].concat(segs[j].rest.slice(1)) })) {
         const moved = applyTarget(cands, String(d), homes);
         if (moved.length > 0) cands = moved;
       }
@@ -788,6 +849,64 @@ function tokenApiRepo(token) {
 }
 
 /**
+ * The leading `NAME=value` assignments of a segment's tokens, also after an `env` wrapper and its
+ * flags (round 3, re-review R2-WR-05: `env GH_REPO=x gh ...`).
+ * @param {string[]} tokens
+ * @returns {{vars:Object<string,string>, programIndex:number}}
+ */
+function leadingEnvAssignments(tokens) {
+  const vars = {};
+  let i = 0;
+  while (i < tokens.length) {
+    const t = String(tokens[i]);
+    const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(t);
+    if (m) { vars[m[1]] = m[2]; i += 1; continue; }
+    if (path.basename(t) === 'env') {
+      i += 1;
+      while (i < tokens.length) {
+        const f = String(tokens[i]);
+        if (!f.startsWith('-') || /^[A-Za-z_]/.test(f)) break;
+        i += ['-u', '--unset', '-C', '--chdir', '-S', '--split-string'].includes(f) ? 2 : 1;
+      }
+      continue;
+    }
+    break;
+  }
+  return { vars, programIndex: i };
+}
+
+/**
+ * GH_REPO in effect for each segment (round 3, R2-WR-05): a segment's own leading / `env`
+ * assignment, else the value carried from an earlier `export GH_REPO=v` (or `declare -x`,
+ * `typeset`, `readonly`, `local`) or bare `GH_REPO=v` segment; `unset GH_REPO` clears it.
+ * A bare (unexported) assignment is counted too: fail-closed. A carried value is reported only for
+ * gh segments.
+ * @param {Array} segments parsed segments
+ * @returns {Array<string|null>}
+ */
+function ghRepoBySegment(segments) {
+  let carried = null;
+  const per = [];
+  for (const seg of segments) {
+    const toks = Array.isArray(seg && seg.tokens) ? seg.tokens.map(String) : [];
+    const { vars, programIndex } = leadingEnvAssignments(toks);
+    const has = Object.prototype.hasOwnProperty.call(vars, 'GH_REPO');
+    const prog = toks[programIndex] ? path.basename(toks[programIndex]) : '';
+    // A carried value only matters to a gh segment (the only consumer of GH_REPO).
+    per.push(has ? vars.GH_REPO : (prog === 'gh' ? carried : null));
+    if (prog === '' && has) carried = vars.GH_REPO;
+    if (['export', 'declare', 'typeset', 'readonly', 'local'].includes(prog)) {
+      for (const t of toks.slice(programIndex + 1)) {
+        const m = /^GH_REPO=([\s\S]*)$/.exec(t);
+        if (m) carried = m[1];
+      }
+    }
+    if (prog === 'unset' && toks.slice(programIndex + 1).includes('GH_REPO')) carried = null;
+  }
+  return per;
+}
+
+/**
  * Per-SEGMENT explicit repo target (quick-261007-ji5 F8): 'gsd-core' when an explicit spec
  * (`--repo` / `-R` / a leading `GH_REPO=`) or a gh-api / curl `repos/<owner>/<repo>` token names
  * open-gsd/gsd-core, or an explicit spec is unparseable (fail-closed); 'other' when every explicit
@@ -796,7 +915,7 @@ function tokenApiRepo(token) {
  * @param {Object} seg one parsed segment
  * @returns {'gsd-core'|'other'|null}
  */
-function segmentRepoTarget(seg) {
+function segmentRepoTarget(seg, ghRepo) {
   if (!seg || typeof seg !== 'object') return null;
   const flags = seg.flags || {};
   const shortFlags = seg.shortFlags || {};
@@ -805,12 +924,10 @@ function segmentRepoTarget(seg) {
   const specs = [];
   if (typeof flags.repo === 'string') specs.push(flags.repo);
   if (typeof shortFlags.R === 'string') specs.push(shortFlags.R);
-  for (const tok of tokens) {
-    if (typeof tok !== 'string') break;
-    const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(tok);
-    if (!m) break;
-    if (m[1] === 'GH_REPO') specs.push(m[2]);
-  }
+  // GH_REPO: the caller's per-segment value (ghRepoBySegment, which carries earlier exports), else
+  // this segment's own leading / `env` assignment.
+  const envRepo = ghRepo !== undefined ? ghRepo : (leadingEnvAssignments(tokens).vars.GH_REPO);
+  if (typeof envRepo === 'string') specs.push(envRepo);
   for (const spec of specs) {
     const r = parseOwnerRepo(spec);
     if (!r) return 'gsd-core'; // explicit but unparseable → fail-closed
@@ -859,7 +976,9 @@ function segmentRepoTarget(seg) {
  */
 function commandTargetsGsdCore(parsed) {
   if (!parsed || parsed.ok !== true || !Array.isArray(parsed.segments)) return false;
-  for (const seg of parsed.segments) {
+  const ghRepos = ghRepoBySegment(parsed.segments);
+  for (let si = 0; si < parsed.segments.length; si++) {
+    const seg = parsed.segments[si];
     if (!seg) continue;
     const flags = seg.flags || {};
     const shortFlags = seg.shortFlags || {};
@@ -871,17 +990,11 @@ function commandTargetsGsdCore(parsed) {
     if (typeof flags.repo === 'string') explicitSpecs.push(flags.repo);
     if (typeof shortFlags.R === 'string') explicitSpecs.push(shortFlags.R);
 
-    // Scan the LEADING run of `NAME=VALUE` env-assignment tokens (they precede the program
-    // per argv's normalization). Stop at the first non-assignment token (the program) so a
-    // post-program `title=x` / `--flag=value` is never read as an env assignment.
-    for (const tok of tokens) {
-      if (typeof tok !== 'string') break;
-      const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(tok);
-      if (!m) break; // first non-assignment token = the program → stop scanning
-      if (m[1] === 'GH_REPO') explicitSpecs.push(m[2]);
-      // GH_HOST is recognized as part of the env-target shape but the gate keys on
-      // owner/repo (host is advisory), so its value does not itself drive classification.
-    }
+    // GH_REPO in effect for this segment: its LEADING `NAME=VALUE` tokens (also after an `env`
+    // wrapper), else a value carried from an earlier `export GH_REPO=` / bare assignment
+    // (round 3, R2-WR-05). A post-program `title=x` / `--flag=value` is never read as one.
+    // GH_HOST is recognized as part of the env-target shape but the gate keys on owner/repo.
+    if (typeof ghRepos[si] === 'string') explicitSpecs.push(ghRepos[si]);
 
     // Three-way over each explicit repo-spec source.
     for (const spec of explicitSpecs) {
@@ -961,6 +1074,7 @@ module.exports = {
   resolveRootForCommand,
   commandTargetsGsdCore,
   segmentRepoTarget,
+  ghRepoBySegment,
   // ENF-21: exported so `runtime-stamp.cjs` builds the upstream `ls-remote` URL from the SAME
   // owner/repo every gate already adjudicates against, rather than introducing a second source of
   // truth for "which repo is upstream". They were module-private until 260730-0ov.

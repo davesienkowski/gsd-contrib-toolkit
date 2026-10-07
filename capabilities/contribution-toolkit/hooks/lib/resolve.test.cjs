@@ -924,7 +924,7 @@ function oracleDirs(L, cmd, base) {
     .filter((l) => l === L.tmp || l.startsWith(L.tmp + '/'));
 }
 
-const fill = (L, s) => s.split('{GSD}').join(L.GSD).split('{H}').join(L.H);
+const fill = (L, s) => s.split('{GSD}').join(L.GSD).split('{H}').join(L.H).split('{BIN}').join(L.BIN);
 const inside = (dir, root) => dir === root || dir.startsWith(root + '/');
 
 // [label, command, base ('gsd' | 'neutral'), expect ('gated' | 'null')]
@@ -972,6 +972,20 @@ const ORACLE_ROWS = [
   ['converse trailing git log line', 'cd "$HOME/repos/gsd-contrib-toolkit" && git commit -m x\ngit log --oneline -1', 'gsd', 'null'],
   ['converse git status first', 'git status && cd "$HOME/repos/gsd-contrib-toolkit" && git push', 'gsd', 'null'],
   ['subshell push then a commit elsewhere', '(cd "$HOME/repos/gsd-core" && git push); cd "$HOME/repos/gsd-contrib-toolkit" && git commit -m x', 'neutral', 'gated'],
+  // Round 3 (re-review R2-WR-01): a cd inside a pipeline stage runs in a subshell and never moves
+  // the parent; a pipeline AFTER a cd (`cd X && a | b && git commit`) does not bypass that cd.
+  ['R2-WR-01 cd as the last pipeline stage', 'true | cd "$HOME/repos/gsd-contrib-toolkit" && git push', 'gsd', 'gated'],
+  ['R2-WR-01 cd as the first pipeline stage', 'cd "$HOME/repos/gsd-contrib-toolkit" | true && git push', 'gsd', 'gated'],
+  ['R2-WR-01 converse test | tail then commit', 'cd "$HOME/repos/gsd-contrib-toolkit" && node -e 0 2>&1 | tail -5 && git commit -m x', 'gsd', 'null'],
+  ['R2-WR-01 converse status | head then commit', 'cd "$HOME/repos/gsd-contrib-toolkit" && git status --short | head && git commit -m x', 'gsd', 'null'],
+  // Round 3 (R2-WR-02): git called by path; env -C as a cd for its own segment.
+  ['R2-WR-02 git by path, then cd away', 'cd "$HOME/repos/gsd-core" && {BIN}/git push && cd /tmp', 'neutral', 'gated'],
+  ['R2-WR-02 git by path from gsd-core', 'cd "$HOME/repos/gsd-core" && {BIN}/git push && cd /tmp', 'gsd', 'gated'],
+  ['R2-WR-02 env -C', 'env -C "$HOME/repos/gsd-core" git push', 'neutral', 'gated'],
+  ['R2-WR-02 env --chdir=', 'env --chdir="$HOME/repos/gsd-core" git push', 'neutral', 'gated'],
+  ['R2-WR-02 converse env -C elsewhere', 'env -C "$HOME/repos/gsd-contrib-toolkit" git push', 'gsd', 'null'],
+  // Round 3 (R2-IN-05): a HOME= prefix scoped to an unrelated command cannot move a later cd.
+  ['R2-IN-05 converse HOME= prefix on another command', 'cd "$HOME/repos/gsd-contrib-toolkit" && HOME=/tmp true && git commit -m x', 'gsd', 'null'],
 ];
 
 for (const [label, rawCmd, baseKind, expect] of ORACLE_ROWS) {
@@ -1003,4 +1017,18 @@ test('F3 union: no git/gh segment -> the end state only; a cd before && is not b
     // A trailing lone & backgrounds the cd: the shell's own cwd never moves.
     assert.deepStrictEqual(res.commandCandidateDirs('cd /tmp &', BASE), ['/tmp', BASE]);
   });
+});
+
+// ── quick-261007-ji5 round 3 (R2-WR-05): commandTargetsGsdCore sees GH_REPO via env / export ──
+test('R2-WR-05: commandTargetsGsdCore reads GH_REPO after `env` and from an earlier export or assignment', () => {
+  for (const cmd of [
+    'env GH_REPO=open-gsd/gsd-core gh issue create --title x',
+    'export GH_REPO=open-gsd/gsd-core; gh issue create --title x',
+    'export GH_REPO=open-gsd/gsd-core && gh pr create --title x',
+    'GH_REPO=open-gsd/gsd-core; gh issue create --title x',
+  ]) {
+    assert.strictEqual(res.commandTargetsGsdCore(parseCommand(cmd)), true, cmd);
+  }
+  assert.strictEqual(res.commandTargetsGsdCore(parseCommand('export GH_REPO=dave/fork && gh pr create --title x')), false);
+  assert.strictEqual(res.commandTargetsGsdCore(parseCommand('export GH_REPO=open-gsd/gsd-core; unset GH_REPO; gh pr create --title x')), false);
 });

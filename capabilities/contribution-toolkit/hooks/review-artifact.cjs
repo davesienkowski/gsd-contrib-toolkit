@@ -86,7 +86,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { parseCommand } = require('./lib/argv.cjs');
+const { parseCommandForGates } = require('./lib/argv.cjs');
 const {
   classifyAction,
   hasGovernedSegment,
@@ -1903,7 +1903,7 @@ function gate(stdinString, deps) {
   // Step 8a scopes its evidence to the payload's session; threaded down, never guessed.
   const sessionId = typeof input.session_id === 'string' ? input.session_id : null;
 
-  const parsed = parseCommand(command);
+  const parsed = parseCommandForGates(command);
   if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
 
   // ENF-15 / CF-07: a failClosed synonym ANYWHERE in the chain fails closed, regardless of
@@ -2012,7 +2012,7 @@ function runReviewArtifactGate(stdinString, deps = {}) {
   return runGate(() => {
     // RES-01 (D-07 uniformity): short-circuit a confidently non-governed command BEFORE any
     // filesystem walk. Unparseable / failClosed / governed commands fall through unchanged.
-    if (isNonGovernedCommand(parseCommand(ctx.command), GOVERNED_ACTIONS)) return allow();
+    if (isNonGovernedCommand(parseCommandForGates(ctx.command), GOVERNED_ACTIONS)) return allow();
 
     const resolved = Object.assign({}, deps);
     const needsRoot =
