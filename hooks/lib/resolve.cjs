@@ -486,7 +486,8 @@ function commandCandidateDirs(command, baseCwd, opts) {
       const s = segs[i];
       if (!CD_PROGRAMS.has(s.program) && s.program !== 'popd') continue;
       let bypass = cdFunction || s.subshell;
-      for (let k = i; k < j && !bypass; k++) if (segs[k].nextOp !== '&&') bypass = true;
+      // The operators between the cd and segment j; the end of the command (null) is not one.
+      for (let k = i; k < j && !bypass; k++) if (segs[k].nextOp !== '&&' && segs[k].nextOp !== null) bypass = true;
       const t = s.program === 'popd' ? '-' : cdTarget(s.rest);
       let next;
       if (t === '-' || (s.program === 'pushd' && t === null)) {
