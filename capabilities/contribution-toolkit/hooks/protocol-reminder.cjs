@@ -22,6 +22,15 @@
  *   CONTEXT (UserPromptSubmit's `additionalContext` shape) — NOT a permissionDecision (this
  *   event has no allow/deny). An unrelated prompt injects nothing.
  *
+ *   Background-task notifications arrive as the prompt text too (UserPromptSubmit input carries
+ *   no provenance field), as a `<task-notification>` block whose `<result>` holds a subagent's
+ *   prose; 72 of 1386 historical notifications (5.2%) tripped the signals that way
+ *   (quick-261007-ji5 F4). So line-start `<task-notification>` blocks (an unterminated one runs
+ *   to the end) are dropped before matching, and only the user's own words are judged. A tag a
+ *   user quotes mid-line is kept. Assumption A1: the hook sees the same text the transcript
+ *   records as the queued command (only that form was observed). Open question:
+ *   `<cross-session-message>` / `<agent-message>` prompts are still matched.
+ *
  * The P0–P6 steps mirror the core-contribution skill's Execution Protocol (the canonical
  * source). Wording is Claude's discretion per 03-CONTEXT.md; the contract is only that it
  * enumerates P0 through P6.
@@ -46,13 +55,24 @@ const CONTRIBUTION_SIGNALS = [
 ];
 
 /**
- * Does this prompt look like a gsd-core contribution?
+ * A background-task notification block (quick-261007-ji5 F4): the exact lower-case tag, only when
+ * it starts the prompt or a line (after optional spaces or tabs), non-greedy to the first close
+ * tag; an unterminated block runs to the end of the string. Line-start anchoring (not
+ * strip-anywhere) keeps a user who quotes the tag mid-sentence judged on all their words.
+ */
+const TASK_NOTIFICATION_BLOCK = /(^|\n)[ \t]*<task-notification>[\s\S]*?(?:<\/task-notification>|$)/g;
+
+/**
+ * Does this prompt look like a gsd-core contribution? `<task-notification>` blocks are dropped
+ * first, so only the user's own words are matched.
  * @param {*} prompt the user's prompt text
  * @returns {boolean}
  */
 function isContributionPrompt(prompt) {
   if (typeof prompt !== 'string' || prompt.length === 0) return false;
-  return CONTRIBUTION_SIGNALS.some((re) => re.test(prompt));
+  const own = prompt.replace(TASK_NOTIFICATION_BLOCK, '$1');
+  if (own.trim() === '') return false;
+  return CONTRIBUTION_SIGNALS.some((re) => re.test(own));
 }
 
 /**
