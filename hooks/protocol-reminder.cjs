@@ -25,8 +25,8 @@
  *   Background-task notifications arrive as the prompt text too (UserPromptSubmit input carries
  *   no provenance field), as a `<task-notification>` block whose `<result>` holds a subagent's
  *   prose; 72 of 1386 historical notifications (5.2%) tripped the signals that way
- *   (quick-261007-ji5 F4). So line-start `<task-notification>` blocks (an unterminated one runs
- *   to the end) are dropped before matching, and only the user's own words are judged. A tag a
+ *   (quick-261007-ji5 F4). So terminated, line-start `<task-notification>` blocks are dropped
+ *   before matching (an unterminated one strips nothing), and only the user's own words are judged. A tag a
  *   user quotes mid-line is kept. Assumption A1: the hook sees the same text the transcript
  *   records as the queued command (only that form was observed). Open question:
  *   `<cross-session-message>` / `<agent-message>` prompts are still matched.
@@ -49,18 +49,73 @@ const CONTRIBUTION_SIGNALS = [
   /\b(?:create|submit|raise|report) (?:an? )?(?:issue|pr|pull request|bug)\b/i,
   /\bcontribut(?:e|ing|ion)\b/i,
   /\bgh (?:issue|pr) (?:create|edit)\b/i,
-  /\bgsd-?core\b.*\b(?:issue|pr|pull request|contribut|bug|fix|patch)\b/i,
-  /\b(?:issue|pr|pull request|contribut|bug|fix|patch)\b.*\bgsd-?core\b/i,
-  /\bupstream\b.*\b(?:issue|pr|pull request|bug|fix|contribut)\b/i,
 ];
+
+// The three PAIRED signals (quick-261007-ji5 review WR-06). They were written as
+// `/\bgsd-?core\b.*\bX\b/i`, `/\bX\b.*\bgsd-?core\b/i` and `/\bupstream\b.*\bY\b/i`, which
+// backtrack `.*` once per anchor occurrence: a 400 KB pasted line took 16-25 s and UserPromptSubmit
+// blocks until the hook returns. Same semantics, linear time, evaluated per LINE (`.` never crossed
+// a line terminator): the gsd-core pair matches in either order (the two old regexes together),
+// and the upstream pair needs Y after the FIRST `upstream` on the line (the earliest anchor is the
+// best one). A 3000-prompt corpus test pins the equivalence to the original regexes.
+const GSD_CORE_WORD = /\bgsd-?core\b/i;
+const GSD_CORE_PAIR = /\b(?:issue|pr|pull request|contribut|bug|fix|patch)\b/i;
+const UPSTREAM_WORD = /\bupstream\b/i;
+const UPSTREAM_PAIR = /\b(?:issue|pr|pull request|bug|fix|contribut)\b/i;
+const LINE_TERMINATORS = /[\n\r\u2028\u2029]/;
+
+/**
+ * The paired signals, linear in the prompt length.
+ * @param {string} text
+ * @returns {boolean}
+ */
+function pairedSignal(text) {
+  for (const line of text.split(LINE_TERMINATORS)) {
+    if (GSD_CORE_WORD.test(line) && GSD_CORE_PAIR.test(line)) return true;
+    const m = UPSTREAM_WORD.exec(line);
+    if (m && UPSTREAM_PAIR.test(line.slice(m.index + m[0].length))) return true;
+  }
+  return false;
+}
 
 /**
  * A background-task notification block (quick-261007-ji5 F4): the exact lower-case tag, only when
- * it starts the prompt or a line (after optional spaces or tabs), non-greedy to the first close
- * tag; an unterminated block runs to the end of the string. Line-start anchoring (not
- * strip-anywhere) keeps a user who quotes the tag mid-sentence judged on all their words.
+ * it starts the prompt or a line (after optional spaces or tabs). Only a TERMINATED block is
+ * dropped (review WR-05): an opening tag with no close tag before the next line-start opening tag
+ * (truncated or partially pasted) strips NOTHING, so the advisory reminder errs toward firing
+ * rather than swallowing the user's request. Line-start anchoring (not strip-anywhere) keeps a user
+ * who quotes the tag mid-sentence judged on all their words. Linear: each scan only moves forward.
  */
-const TASK_NOTIFICATION_BLOCK = /(^|\n)[ \t]*<task-notification>[\s\S]*?(?:<\/task-notification>|$)/g;
+const TASK_NOTIFICATION_OPEN = /(^|\n)[ \t]*<task-notification>/g;
+const TASK_NOTIFICATION_CLOSE = '</task-notification>';
+
+/**
+ * Drop every terminated, line-start `<task-notification>` block (the leading newline is kept).
+ * @param {string} prompt
+ * @returns {string}
+ */
+function stripTaskNotifications(prompt) {
+  const open = new RegExp(TASK_NOTIFICATION_OPEN.source, 'g');
+  const next = new RegExp(TASK_NOTIFICATION_OPEN.source, 'g');
+  let out = '';
+  let last = 0;
+  let m;
+  while ((m = open.exec(prompt)) !== null) {
+    const bodyFrom = m.index + m[0].length;
+    const close = prompt.indexOf(TASK_NOTIFICATION_CLOSE, bodyFrom);
+    if (close === -1) break; // no later close tag: this and every later opening tag is unterminated
+    next.lastIndex = bodyFrom;
+    const n = next.exec(prompt);
+    if (n && n.index < close) {
+      open.lastIndex = n.index; // another block opens first: this one is unterminated, keep it
+      continue;
+    }
+    out += prompt.slice(last, m.index + m[1].length);
+    last = close + TASK_NOTIFICATION_CLOSE.length;
+    open.lastIndex = last;
+  }
+  return out + prompt.slice(last);
+}
 
 /**
  * Does this prompt look like a gsd-core contribution? `<task-notification>` blocks are dropped
@@ -70,9 +125,9 @@ const TASK_NOTIFICATION_BLOCK = /(^|\n)[ \t]*<task-notification>[\s\S]*?(?:<\/ta
  */
 function isContributionPrompt(prompt) {
   if (typeof prompt !== 'string' || prompt.length === 0) return false;
-  const own = prompt.replace(TASK_NOTIFICATION_BLOCK, '$1');
+  const own = stripTaskNotifications(prompt);
   if (own.trim() === '') return false;
-  return CONTRIBUTION_SIGNALS.some((re) => re.test(own));
+  return CONTRIBUTION_SIGNALS.some((re) => re.test(own)) || pairedSignal(own);
 }
 
 /**
