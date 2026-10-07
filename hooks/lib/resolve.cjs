@@ -849,6 +849,64 @@ function tokenApiRepo(token) {
 }
 
 /**
+ * The leading `NAME=value` assignments of a segment's tokens, also after an `env` wrapper and its
+ * flags (round 3, re-review R2-WR-05: `env GH_REPO=x gh ...`).
+ * @param {string[]} tokens
+ * @returns {{vars:Object<string,string>, programIndex:number}}
+ */
+function leadingEnvAssignments(tokens) {
+  const vars = {};
+  let i = 0;
+  while (i < tokens.length) {
+    const t = String(tokens[i]);
+    const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(t);
+    if (m) { vars[m[1]] = m[2]; i += 1; continue; }
+    if (path.basename(t) === 'env') {
+      i += 1;
+      while (i < tokens.length) {
+        const f = String(tokens[i]);
+        if (!f.startsWith('-') || /^[A-Za-z_]/.test(f)) break;
+        i += ['-u', '--unset', '-C', '--chdir', '-S', '--split-string'].includes(f) ? 2 : 1;
+      }
+      continue;
+    }
+    break;
+  }
+  return { vars, programIndex: i };
+}
+
+/**
+ * GH_REPO in effect for each segment (round 3, R2-WR-05): a segment's own leading / `env`
+ * assignment, else the value carried from an earlier `export GH_REPO=v` (or `declare -x`,
+ * `typeset`, `readonly`, `local`) or bare `GH_REPO=v` segment; `unset GH_REPO` clears it.
+ * A bare (unexported) assignment is counted too: fail-closed. A carried value is reported only for
+ * gh segments.
+ * @param {Array} segments parsed segments
+ * @returns {Array<string|null>}
+ */
+function ghRepoBySegment(segments) {
+  let carried = null;
+  const per = [];
+  for (const seg of segments) {
+    const toks = Array.isArray(seg && seg.tokens) ? seg.tokens.map(String) : [];
+    const { vars, programIndex } = leadingEnvAssignments(toks);
+    const has = Object.prototype.hasOwnProperty.call(vars, 'GH_REPO');
+    const prog = toks[programIndex] ? path.basename(toks[programIndex]) : '';
+    // A carried value only matters to a gh segment (the only consumer of GH_REPO).
+    per.push(has ? vars.GH_REPO : (prog === 'gh' ? carried : null));
+    if (prog === '' && has) carried = vars.GH_REPO;
+    if (['export', 'declare', 'typeset', 'readonly', 'local'].includes(prog)) {
+      for (const t of toks.slice(programIndex + 1)) {
+        const m = /^GH_REPO=([\s\S]*)$/.exec(t);
+        if (m) carried = m[1];
+      }
+    }
+    if (prog === 'unset' && toks.slice(programIndex + 1).includes('GH_REPO')) carried = null;
+  }
+  return per;
+}
+
+/**
  * Per-SEGMENT explicit repo target (quick-261007-ji5 F8): 'gsd-core' when an explicit spec
  * (`--repo` / `-R` / a leading `GH_REPO=`) or a gh-api / curl `repos/<owner>/<repo>` token names
  * open-gsd/gsd-core, or an explicit spec is unparseable (fail-closed); 'other' when every explicit
@@ -857,7 +915,7 @@ function tokenApiRepo(token) {
  * @param {Object} seg one parsed segment
  * @returns {'gsd-core'|'other'|null}
  */
-function segmentRepoTarget(seg) {
+function segmentRepoTarget(seg, ghRepo) {
   if (!seg || typeof seg !== 'object') return null;
   const flags = seg.flags || {};
   const shortFlags = seg.shortFlags || {};
@@ -866,12 +924,10 @@ function segmentRepoTarget(seg) {
   const specs = [];
   if (typeof flags.repo === 'string') specs.push(flags.repo);
   if (typeof shortFlags.R === 'string') specs.push(shortFlags.R);
-  for (const tok of tokens) {
-    if (typeof tok !== 'string') break;
-    const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(tok);
-    if (!m) break;
-    if (m[1] === 'GH_REPO') specs.push(m[2]);
-  }
+  // GH_REPO: the caller's per-segment value (ghRepoBySegment, which carries earlier exports), else
+  // this segment's own leading / `env` assignment.
+  const envRepo = ghRepo !== undefined ? ghRepo : (leadingEnvAssignments(tokens).vars.GH_REPO);
+  if (typeof envRepo === 'string') specs.push(envRepo);
   for (const spec of specs) {
     const r = parseOwnerRepo(spec);
     if (!r) return 'gsd-core'; // explicit but unparseable → fail-closed
@@ -920,7 +976,9 @@ function segmentRepoTarget(seg) {
  */
 function commandTargetsGsdCore(parsed) {
   if (!parsed || parsed.ok !== true || !Array.isArray(parsed.segments)) return false;
-  for (const seg of parsed.segments) {
+  const ghRepos = ghRepoBySegment(parsed.segments);
+  for (let si = 0; si < parsed.segments.length; si++) {
+    const seg = parsed.segments[si];
     if (!seg) continue;
     const flags = seg.flags || {};
     const shortFlags = seg.shortFlags || {};
@@ -932,17 +990,11 @@ function commandTargetsGsdCore(parsed) {
     if (typeof flags.repo === 'string') explicitSpecs.push(flags.repo);
     if (typeof shortFlags.R === 'string') explicitSpecs.push(shortFlags.R);
 
-    // Scan the LEADING run of `NAME=VALUE` env-assignment tokens (they precede the program
-    // per argv's normalization). Stop at the first non-assignment token (the program) so a
-    // post-program `title=x` / `--flag=value` is never read as an env assignment.
-    for (const tok of tokens) {
-      if (typeof tok !== 'string') break;
-      const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(tok);
-      if (!m) break; // first non-assignment token = the program → stop scanning
-      if (m[1] === 'GH_REPO') explicitSpecs.push(m[2]);
-      // GH_HOST is recognized as part of the env-target shape but the gate keys on
-      // owner/repo (host is advisory), so its value does not itself drive classification.
-    }
+    // GH_REPO in effect for this segment: its LEADING `NAME=VALUE` tokens (also after an `env`
+    // wrapper), else a value carried from an earlier `export GH_REPO=` / bare assignment
+    // (round 3, R2-WR-05). A post-program `title=x` / `--flag=value` is never read as one.
+    // GH_HOST is recognized as part of the env-target shape but the gate keys on owner/repo.
+    if (typeof ghRepos[si] === 'string') explicitSpecs.push(ghRepos[si]);
 
     // Three-way over each explicit repo-spec source.
     for (const spec of explicitSpecs) {
@@ -1022,6 +1074,7 @@ module.exports = {
   resolveRootForCommand,
   commandTargetsGsdCore,
   segmentRepoTarget,
+  ghRepoBySegment,
   // ENF-21: exported so `runtime-stamp.cjs` builds the upstream `ls-remote` URL from the SAME
   // owner/repo every gate already adjudicates against, rather than introducing a second source of
   // truth for "which repo is upstream". They were module-private until 260730-0ov.
