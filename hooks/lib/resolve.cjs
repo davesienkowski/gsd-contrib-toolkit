@@ -489,6 +489,61 @@ function tokenTargetsGsdCoreApi(token) {
 }
 
 /**
+ * The `owner/repo` a gh-api / curl REST token names (`repos/<owner>/<repo>/...`), or null.
+ * @param {string} token
+ * @returns {{owner:string, repo:string}|null}
+ */
+function tokenApiRepo(token) {
+  if (typeof token !== 'string' || token.length === 0) return null;
+  let s = token.trim();
+  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+  s = s.replace(/^api\.github\.com(?::\d+)?/i, '');
+  s = s.replace(/^\/+/, '');
+  const m = /^repos\/(.+)$/i.exec(s);
+  if (!m) return null;
+  const after = m[1].split('/').filter((x) => x.length > 0);
+  if (after.length < 2) return null;
+  return parseOwnerRepo(after[0] + '/' + after[1]);
+}
+
+/**
+ * Per-SEGMENT explicit repo target (quick-261007-ji5 F8): 'gsd-core' when an explicit spec
+ * (`--repo` / `-R` / a leading `GH_REPO=`) or a gh-api / curl `repos/<owner>/<repo>` token names
+ * open-gsd/gsd-core, or an explicit spec is unparseable (fail-closed); 'other' when every explicit
+ * target parses and names some other repo; null when the segment names no explicit target (the
+ * caller then falls back to the cwd). Structured argv only, like commandTargetsGsdCore.
+ * @param {Object} seg one parsed segment
+ * @returns {'gsd-core'|'other'|null}
+ */
+function segmentRepoTarget(seg) {
+  if (!seg || typeof seg !== 'object') return null;
+  const flags = seg.flags || {};
+  const shortFlags = seg.shortFlags || {};
+  const tokens = Array.isArray(seg.tokens) ? seg.tokens : [];
+  const targets = [];
+  const specs = [];
+  if (typeof flags.repo === 'string') specs.push(flags.repo);
+  if (typeof shortFlags.R === 'string') specs.push(shortFlags.R);
+  for (const tok of tokens) {
+    if (typeof tok !== 'string') break;
+    const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(tok);
+    if (!m) break;
+    if (m[1] === 'GH_REPO') specs.push(m[2]);
+  }
+  for (const spec of specs) {
+    const r = parseOwnerRepo(spec);
+    if (!r) return 'gsd-core'; // explicit but unparseable → fail-closed
+    targets.push(r);
+  }
+  for (const tok of tokens) {
+    const r = tokenApiRepo(tok);
+    if (r) targets.push(r);
+  }
+  if (targets.length === 0) return null;
+  return targets.some((r) => r.owner === GSD_CORE_OWNER && r.repo === GSD_CORE_REPO) ? 'gsd-core' : 'other';
+}
+
+/**
  * Pure discriminator: does a PARSED command explicitly target the UPSTREAM
  * open-gsd/gsd-core repo, regardless of the command's cwd?
  *
@@ -622,6 +677,7 @@ module.exports = {
   expandHome,
   resolveRootForCommand,
   commandTargetsGsdCore,
+  segmentRepoTarget,
   // ENF-21: exported so `runtime-stamp.cjs` builds the upstream `ls-remote` URL from the SAME
   // owner/repo every gate already adjudicates against, rather than introducing a second source of
   // truth for "which repo is upstream". They were module-private until 260730-0ov.
