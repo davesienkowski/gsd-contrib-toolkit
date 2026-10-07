@@ -236,11 +236,18 @@ const SEGMENT_SEPARATORS = [';', '&&', '||', '|'];
  * its own op with it and leaves the previous kept segment's op unchanged, so
  * `a |` yields one segment whose nextOp is '|'.
  *
+ * quick-261007-ji5 (F3 redesign): `opts.cwdSeparators` is an OPT-IN used only by the resolver's
+ * cwd-candidate walk. It additionally splits on an unquoted newline (nextOp '\n', including the
+ * line that follows a heredoc terminator) and on a lone `&` (nextOp '&'; never `&&`, `2>&1`, `&>`,
+ * `>&`, `<&` or `|&`). The DEFAULT split is unchanged.
+ *
  * @param {string} str
+ * @param {{cwdSeparators?: boolean}} [opts]
  * @returns {Array<{text:string, nextOp:(string|null)}>}
  * @throws {Error} on unbalanced quote / dangling escape
  */
-function splitSegmentsWithOps(str) {
+function splitSegmentsWithOps(str, opts) {
+  const cwdSeparators = !!(opts && opts.cwdSeparators === true);
   const segments = [];
   let cur = '';
   let inSingle = false;
@@ -305,6 +312,16 @@ function splitSegmentsWithOps(str) {
       }
       pendingHeredocs.length = 0;
       i = bodyStart - 1; // resume after the last terminator (loop i++)
+      if (cwdSeparators && bodyStart < str.length && str[bodyStart - 1] === '\n') {
+        segments.push({ text: cur, nextOp: '\n' }); // the next line is a new command
+        cur = '';
+      }
+      continue;
+    }
+
+    if (cwdSeparators && ch === '\n') {
+      segments.push({ text: cur, nextOp: '\n' });
+      cur = '';
       continue;
     }
 
@@ -321,6 +338,15 @@ function splitSegmentsWithOps(str) {
       segments.push({ text: cur, nextOp: ch });
       cur = '';
       continue;
+    }
+    if (cwdSeparators && ch === '&') {
+      const prev = i > 0 ? str[i - 1] : '';
+      const next = str[i + 1];
+      if (prev !== '>' && prev !== '<' && prev !== '|' && next !== '>') {
+        segments.push({ text: cur, nextOp: '&' }); // a lone `&`: background the preceding command
+        cur = '';
+        continue;
+      }
     }
 
     cur += ch;
@@ -466,9 +492,10 @@ function classifyTokens(tokens) {
  * partial `ok:true`. This is the HARD-04 fail-closed contract every gate relies on.
  *
  * @param {string} str raw `tool_input.command`
+ * @param {{cwdSeparators?: boolean}} [opts] opt-in extra separators (see splitSegmentsWithOps); default unchanged
  * @returns {{ok:true, program:string, subcommands:string[], flags:Object, shortFlags:Object, positionals:string[], tokens:string[], segments:Object[], raw:string}|{ok:false, reason:string}}
  */
-function parseCommand(str) {
+function parseCommand(str, opts) {
   try {
     if (typeof str !== 'string') {
       return { ok: false, reason: 'command is not a string' };
@@ -483,7 +510,7 @@ function parseCommand(str) {
       return { ok: false, reason: 'whitespace-only command' };
     }
 
-    const rawSegments = splitSegmentsWithOps(str);
+    const rawSegments = splitSegmentsWithOps(str, opts);
     if (rawSegments.length === 0) {
       return { ok: false, reason: 'no command after segment split' };
     }

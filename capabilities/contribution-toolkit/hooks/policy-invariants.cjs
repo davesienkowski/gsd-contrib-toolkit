@@ -28,7 +28,7 @@
 const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction, isNonGovernedCommand } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
-const { resolveGsdCoreRoot, commandStartDir, ScriptResolveError } = require('./lib/resolve.cjs');
+const { resolveGsdCoreRootForCommand, ScriptResolveError } = require('./lib/resolve.cjs');
 const {
   readTreeShaLive,
   readWorkingTreeStatusLive,
@@ -224,7 +224,7 @@ function runPolicyGate(stdinString, deps = {}) {
     const resolved = Object.assign({}, deps);
     if (!resolved.gsdCoreRoot) {
       try {
-        resolved.gsdCoreRoot = resolveGsdCoreRoot(commandStartDir(parseCommand(ctx.command), process.cwd()));
+        resolved.gsdCoreRoot = resolveGsdCoreRootForCommand(ctx.command, process.cwd());
       } catch (err) {
         // The command does not run in a gsd-core checkout (e.g. a commit in another
         // repo). It is not a gsd-core contribution, so this gate has nothing to add —

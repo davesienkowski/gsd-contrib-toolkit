@@ -69,9 +69,9 @@
  */
 
 const { parseCommand } = require('./lib/argv.cjs');
-const { hasGovernedSegment, isNonGovernedCommand } = require('./lib/classify.cjs');
+const { hasGovernedSegment, isNonGovernedCommand, classifyAction } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, ask, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
-const { resolveRootForCommand, commandTargetsGsdCore } = require('./lib/resolve.cjs');
+const { resolveRootForCommand, commandTargetsGsdCore, segmentRepoTarget } = require('./lib/resolve.cjs');
 const runtimeStamp = require('./lib/runtime-stamp.cjs');
 
 const { UpstreamUnavailable, REMEDIATION_COMMAND } = runtimeStamp;
@@ -124,10 +124,24 @@ function gate(stdinString, deps) {
   // gates' concern, and a command this gate does not govern is not this gate's to block.
   if (!hasGovernedSegment(parsed, GOVERNED_ACTIONS)) return allow();
 
-  // (5) ROB-01 arming (D-07). A governed action in an unrelated repo, not naming upstream
-  // gsd-core, is not a gsd-core contribution.
-  const root = deps.resolveRoot(command);
-  if (root === null && commandTargetsGsdCore(parsed) !== true) return allow();
+  // (5) ROB-01 arming (D-07), per governed SEGMENT (quick-261007-ji5 F8). A segment with an
+  // EXPLICIT repo target (`--repo`/`-R`/`GH_REPO=`/gh-api `repos/<o>/<r>`) is armed only when that
+  // target is open-gsd/gsd-core (an unparseable explicit spec counts as gsd-core, fail-closed): a
+  // `gh issue create --repo open-gsd/gsd-graph` from a gsd-core cwd is not a gsd-core filing. A
+  // segment with NO explicit target keeps the old rule: armed when the command resolves to a
+  // gsd-core root or otherwise names upstream gsd-core.
+  let root;
+  let armed = false;
+  for (const seg of parsed.segments) {
+    const action = classifyAction({ ok: true, segments: [seg] }).action;
+    if (!GOVERNED_ACTIONS.includes(action)) continue;
+    const target = segmentRepoTarget(seg);
+    if (target === 'gsd-core') { armed = true; break; }
+    if (target === 'other') continue;
+    if (root === undefined) root = deps.resolveRoot(command);
+    if (root !== null || commandTargetsGsdCore(parsed) === true) { armed = true; break; }
+  }
+  if (!armed) return allow();
 
   // (6) The oracle. Each of these may THROW; every throw except UpstreamUnavailable reaches
   // runGate and DENIES (HARD-01).

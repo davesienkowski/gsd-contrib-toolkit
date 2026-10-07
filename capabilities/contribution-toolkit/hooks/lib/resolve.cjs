@@ -169,13 +169,11 @@ const HOME_REASSIGNING_PROGRAMS = new Set([
 ]);
 
 /**
- * True when a parsed command may reassign HOME before its `cd` / `git -C` runs, so the hook
- * process HOME must NOT be trusted for a `$HOME` target (quick-261007-ji5 F3). Fail-closed and
- * token-textual: any segment whose program is in HOME_REASSIGNING_PROGRAMS, or any token that is
- * exactly `HOME`, starts with `HOME=`, or contains `${HOME=` / `${HOME:=`. Over-triggers by design
- * (`echo HOME && cd "$HOME/x"` keeps the literal, gated resolution). Known residual: an indirect
- * assignment through a builtin NOT on the list and with no HOME-shaped token (for example
- * `h=HOME; let ...` or `mapfile` / `readarray` with an indirect name) is not detected.
+ * True when a parsed command may reassign HOME before its `cd` / `git -C` runs (quick-261007-ji5
+ * F3). Used ONLY by commandStartDir's single best-guess cwd, which keeps a `$HOME` target literal
+ * then. This is NOT the gates' fail-closed mechanism: every gate resolves through
+ * resolveGsdCoreRootForCommand (the candidate union below), which considers the expanded AND the
+ * prior/start directories, so neither interpretation can switch a gate off (review WR-01).
  * @param {{ok:boolean, segments:Array}} parsed
  * @returns {boolean}
  */
@@ -259,6 +257,10 @@ function gitGlobalChdirs(seg) {
 // The ONE opt-OUT is `{followGitC:false}`: the ENF-16 commit-convention gate DELIBERATELY
 // over-denies `git -C <path> commit -m "<bad msg>"` (CR-01 anti-bypass — a bad-message commit must
 // not escape via a global opt), so it must keep resolving the session cwd, not the `-C` target.
+//
+// quick-261007-ji5 review: commandStartDir is a SINGLE best guess (every cd succeeds, `cd` is the
+// builtin). The gates no longer decide on it; they use resolveGsdCoreRootForCommand. Its remaining
+// caller is gsd-test-detect.cjs (which pre-expands `$HOME` itself), so its behaviour is unchanged.
 function commandStartDir(parsed, baseCwd, opts) {
   const followGitC = !(opts && opts.followGitC === false);
   let cwd = path.resolve(baseCwd == null ? process.cwd() : String(baseCwd));
@@ -289,22 +291,301 @@ function commandStartDir(parsed, baseCwd, opts) {
   return cwd;
 }
 
+// ── Candidate-union resolution (quick-261007-ji5 review WR-01..WR-04, WR-07) ─────────────────
+//
+// A gate must not bet on ONE reading of a command's cwd. commandCandidateDirs returns EVERY
+// directory a `git` / `gh` segment can plausibly run in, and resolveGsdCoreRootForCommand treats
+// the command as gsd-core when ANY of them is a gsd-core checkout (fail-closed, CTK-ADR-0001).
+// That makes `$HOME` expansion safe to do unconditionally: a wrong expansion can only ADD a
+// candidate, never remove the one that gates.
+//
+// Candidates per relevant segment j (program `git` or `gh`, past `NAME=v`, `(`, `{`, `!` and
+// wrapper words; when there is none, the state after the last segment):
+//   - each `cd` / `pushd` / `builtin cd` / `command cd` target before j, resolved from every
+//     current candidate, with `$HOME` / `${HOME}` / `~` expanded against every possible HOME. The
+//     LITERAL form (`<cwd>/$HOME/...`, the single-quoted case) is kept only when that directory
+//     really exists: otherwise that `cd` fails, and a failed cd is handled by the next rule;
+//   - the prior candidates, kept, whenever that cd can fail or be bypassed before j: an operator
+//     between them that is not `&&` (`;`, `||`, `|`, a lone `&`, a newline), a subshell `(cd ...`,
+//     or a `cd` / `pushd` / `popd` function defined in the command;
+//   - every directory seen so far, for `cd -`, `popd` and argument-less `pushd`;
+//   - for `git`, its global `-C` targets applied to j only (shell semantics: `-C` never persists);
+//   - when the command may reassign HOME (a token naming HOME such as `HOME=v`, `h=HOME`,
+//     `read HOME`, `${HOME:=v}`, or an opaque `source` / `.` / `eval`): the start cwd, plus `/`
+//     (an unset HOME) and each assigned value as extra possible HOMEs, plus any absolute-path
+//     token as a possible HOME (covers `readarray -t $h <<< /dir`).
+//   - when the command defines a cd function: every absolute or HOME-prefixed path token too.
+// Residuals (recorded): an indirection that never spells HOME (`h=HO; h+=ME; unset $h`), a script
+// run by name that changes directory, an alias, and a literal `$HOME` directory created by the
+// same command. A symlinked HOME with `..` in a `-C` path (IN-04) is not modelled.
+
+const CD_PROGRAMS = new Set(['cd', 'pushd']);
+const CD_FLAG_RE = /^-[LPe@]+$/;
+const WRAPPER_WORDS = new Set(['sudo', 'env', 'command', 'builtin', 'exec', 'nohup', 'time', 'nice', 'timeout']);
+const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
+const OPAQUE_PROGRAMS = new Set(['source', '.', 'eval']);
+
+/** The effective program of a segment past `(`, `{`, `!`, `NAME=v` and wrapper words. */
+function effectiveProgram(seg) {
+  const tokens = Array.isArray(seg && seg.tokens) ? seg.tokens.map(String) : [];
+  let subshell = false;
+  let i = 0;
+  while (i < tokens.length) {
+    let t = tokens[i];
+    if (t.startsWith('(')) {
+      subshell = true;
+      t = t.replace(/^\(+/, '');
+      if (t === '') { i += 1; continue; }
+      tokens[i] = t;
+    }
+    if (t === '{' || t === '!' || ASSIGNMENT_RE.test(t)) { i += 1; continue; }
+    if (WRAPPER_WORDS.has(t)) {
+      i += 1;
+      while (i < tokens.length && (tokens[i].startsWith('-') || /^\d+(?:\.\d+)?[smhd]?$/.test(tokens[i]) || ASSIGNMENT_RE.test(tokens[i]))) i += 1;
+      continue;
+    }
+    break;
+  }
+  return { program: tokens[i] || '', rest: tokens.slice(i), subshell };
+}
+
 /**
- * Resolve the gsd-core root a raw command will actually run in, or null if that cwd is
- * not a gsd-core checkout.
+ * True when the shared classifier names an action for this segment (anything but 'other'). The
+ * segment is re-classified from its tokens with a subshell `(` / `)` stripped, so `git push)` in
+ * `(cd x && git push)` is still seen as a push. Fail-closed: a classifier error counts as governable.
+ */
+function segmentIsGovernable(s) {
+  try {
+    const { classifyAction } = require('./classify.cjs');
+    const { classifyTokens } = require('./argv.cjs');
+    const toks = s.allTokens.map((t) => t.replace(/^\(+/, '').replace(/\)+$/, '')).filter((t) => t !== '');
+    if (toks.length === 0) return false;
+    const r = classifyAction({ ok: true, segments: [classifyTokens(toks)] });
+    return !(r && r.action === 'other');
+  } catch (_) {
+    return true;
+  }
+}
+
+/** A cd/pushd target: the first argument that is not a flag, `--` or a redirection; or null. */
+function cdTarget(rest) {
+  for (let k = 1; k < rest.length; k++) {
+    const t = rest[k];
+    if (t === '--' || CD_FLAG_RE.test(t)) continue;
+    if (/^\d*[<>]/.test(t) || t === '&>' || t.startsWith('&>')) { if (/^\d*[<>]+&?$/.test(t)) k += 1; continue; }
+    return t.replace(/\)+$/, '');
+  }
+  return null;
+}
+
+/** True when any token names HOME as a variable being (possibly) assigned, or the command is opaque. */
+function commandMayReassignHomeVar(segs) {
+  for (const s of segs) {
+    if (OPAQUE_PROGRAMS.has(s.program)) return true;
+    for (const t of s.allTokens) {
+      if (/(^|=)HOME(\+?=|$)/.test(t) || /\$\{HOME:?=/.test(t)) return true;
+    }
+  }
+  return false;
+}
+
+/** True when the command defines a cd / pushd / popd shell function. */
+function definesCdFunction(segs) {
+  for (const s of segs) {
+    const t = s.allTokens;
+    for (let k = 0; k < t.length; k++) {
+      if (/^(?:cd|pushd|popd)\(\)/.test(t[k])) return true;
+      if (t[k] === 'function' && /^(?:cd|pushd|popd)(?:\(\))?$/.test(t[k + 1] || '')) return true;
+    }
+  }
+  return false;
+}
+
+/** Absolute-path tokens (also after `NAME=` or a redirection operator). */
+function absolutePathTokens(segs) {
+  const out = [];
+  for (const s of segs) {
+    for (const t of s.allTokens) {
+      const m = /^(?:[A-Za-z_][A-Za-z0-9_]*\+?=|\d*[<>]+)?(\/.*)$/.exec(t);
+      if (m) out.push(m[1].replace(/[;)]+$/, ''));
+    }
+  }
+  return out;
+}
+
+/**
+ * The interpretations of a cd / -C target: [{p, mustExist}]. `$HOME`, `${HOME}` and `~` expand
+ * against every possible HOME; their literal form is kept but only counts when it exists.
+ */
+function targetInterpretations(t, homes) {
+  const m = HOME_VAR_RE.exec(t);
+  let rest = null;
+  if (m) rest = t.slice(m[0].length);
+  else if (t === '~') rest = '';
+  else if (t.startsWith('~/')) rest = t.slice(1);
+  if (rest === null) return [{ p: t, mustExist: false }];
+  const out = homes.map((h) => ({ p: path.join(h, rest), mustExist: false }));
+  out.push({ p: t, mustExist: true });
+  return out;
+}
+
+function isDir(p) {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch (_) {
+    return false;
+  }
+}
+
+function pushUnique(list, items) {
+  for (const it of items) if (!list.includes(it)) list.push(it);
+  return list;
+}
+
+/** Resolve target interpretations from every current candidate. */
+function applyTarget(cands, t, homes) {
+  const out = [];
+  for (const c of cands) {
+    for (const it of targetInterpretations(t, homes)) {
+      const abs = path.resolve(c, it.p);
+      if (it.mustExist && !isDir(abs)) continue;
+      pushUnique(out, [abs]);
+    }
+  }
+  return out;
+}
+
+/**
+ * Every directory a raw command's git / gh segments can plausibly run in (see the block comment
+ * above). The first entry is the intended target; retained prior directories come after.
+ * @param {string} command raw tool_input.command
+ * @param {string} [baseCwd] the hook's process.cwd()
+ * @param {{followGitC?: boolean}} [opts]
+ * @returns {string[]} absolute directories, never empty
+ */
+function commandCandidateDirs(command, baseCwd, opts) {
+  const followGitC = !(opts && opts.followGitC === false);
+  const base = path.resolve(baseCwd == null ? process.cwd() : String(baseCwd));
+  let parsed = parseCommand(command, { cwdSeparators: true });
+  if (!parsed || parsed.ok !== true) parsed = parseCommand(command);
+  if (!parsed || parsed.ok !== true || !Array.isArray(parsed.segments)) return [base];
+
+  const segs = parsed.segments.map((seg) => {
+    const e = effectiveProgram(seg);
+    return Object.assign(e, {
+      nextOp: seg.nextOp == null ? null : seg.nextOp,
+      allTokens: Array.isArray(seg.tokens) ? seg.tokens.map(String) : [],
+    });
+  });
+
+  const reassign = commandMayReassignHomeVar(segs);
+  const cdFunction = definesCdFunction(segs);
+  const homes = [os.homedir()];
+  if (reassign) {
+    pushUnique(homes, ['/']);
+    for (const s of segs) {
+      for (const t of s.allTokens) {
+        const m = /^HOME\+?=(.+)$/.exec(t);
+        if (m) pushUnique(homes, [path.resolve(base, m[1])]);
+      }
+    }
+    pushUnique(homes, absolutePathTokens(segs));
+  }
+
+  // Relevant segments: git / gh segments the shared classifier names an action for (the only ones
+  // a gate can govern), so a read-only `git log` / `git status` in the session cwd does not gate a
+  // commit or push that runs elsewhere. None of those -> every git / gh segment; none at all ->
+  // the end state. classify.cjs is required lazily (it does not require this module).
+  const gitOrGh = [];
+  segs.forEach((s, j) => { if (s.program === 'git' || s.program === 'gh') gitOrGh.push(j); });
+  let relevant = gitOrGh.filter((j) => segmentIsGovernable(segs[j]));
+  if (relevant.length === 0) relevant = gitOrGh;
+  if (relevant.length === 0) relevant = [segs.length];
+
+  const out = [];
+  for (const j of relevant) {
+    let cands = [base];
+    const seen = [base];
+    for (let i = 0; i < j; i++) {
+      const s = segs[i];
+      if (!CD_PROGRAMS.has(s.program) && s.program !== 'popd') continue;
+      let bypass = cdFunction || s.subshell;
+      // The operators between the cd and segment j; the end of the command (null) is not one.
+      for (let k = i; k < j && !bypass; k++) if (segs[k].nextOp !== '&&' && segs[k].nextOp !== null) bypass = true;
+      const t = s.program === 'popd' ? '-' : cdTarget(s.rest);
+      let next;
+      if (t === '-' || (s.program === 'pushd' && t === null)) {
+        next = pushUnique(cands.slice(), seen);
+      } else {
+        next = t === null ? applyTarget(cands, '~', homes) : applyTarget(cands, t, homes);
+        if (bypass || next.length === 0) pushUnique(next, cands);
+      }
+      cands = next;
+      pushUnique(seen, cands);
+    }
+    if (j < segs.length && followGitC && segs[j].program === 'git') {
+      for (const d of gitGlobalChdirs({ tokens: segs[j].rest })) {
+        const moved = applyTarget(cands, String(d), homes);
+        if (moved.length > 0) cands = moved;
+      }
+    }
+    pushUnique(out, cands);
+  }
+  if (reassign) pushUnique(out, [base]);
+  if (cdFunction) {
+    for (const t of new Set(absolutePathTokens(segs).concat(
+      [].concat(...segs.map((s) => s.allTokens)).filter((x) => HOME_VAR_RE.test(x) || x === '~' || x.startsWith('~/'))
+    ))) {
+      for (const it of targetInterpretations(t.replace(/[;)]+$/, ''), homes)) {
+        if (!it.mustExist) pushUnique(out, [path.resolve(base, it.p)]);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The gsd-core root a raw command can run in: the first candidate (commandCandidateDirs) whose
+ * sentinel walk finds a gsd-core checkout. Throws ScriptResolveError when NO candidate is one, so
+ * it is a drop-in for `resolveGsdCoreRoot(commandStartDir(parseCommand(cmd), cwd, opts))`.
+ * @param {string} command raw tool_input.command
+ * @param {string} [baseCwd]
+ * @param {{followGitC?: boolean}} [opts]
+ * @returns {string}
+ * @throws {ScriptResolveError}
+ */
+function resolveGsdCoreRootForCommand(command, baseCwd, opts) {
+  const cands = commandCandidateDirs(command, baseCwd, opts);
+  for (const dir of cands) {
+    try {
+      return resolveGsdCoreRoot(dir);
+    } catch (err) {
+      if (!(err instanceof ScriptResolveError)) throw err;
+    }
+  }
+  throw new ScriptResolveError(
+    'resolveGsdCoreRootForCommand: no candidate directory of the command is a gsd-core checkout (' +
+      cands.join(', ') + ')',
+    { attemptedPath: cands[0] }
+  );
+}
+
+/**
+ * Resolve the gsd-core root a raw command can run in, or null when none of its candidate
+ * directories (commandCandidateDirs) is a gsd-core checkout.
  *
- * Combines the command's effective cwd (commandStartDir — follows `cd`) with the sentinel
- * walk (resolveGsdCoreRoot). Returns null on a clean "no gsd-core here" miss
- * (ScriptResolveError) so a gate can ALLOW commands that don't target gsd-core (a commit
- * in another repo is not a gsd-core contribution). Any other error propagates.
+ * Returns null on a clean "no gsd-core here" miss (ScriptResolveError) so a gate can ALLOW
+ * commands that don't target gsd-core (a commit in another repo is not a gsd-core contribution).
+ * Any other error propagates.
  *
  * @param {string} command raw tool_input.command
  * @param {string} [baseCwd] the hook's process.cwd()
- * @returns {string|null} absolute gsd-core root, or null if the command's cwd is not one
+ * @param {{followGitC?: boolean}} [opts]
+ * @returns {string|null} absolute gsd-core root, or null if no candidate is one
  */
 function resolveRootForCommand(command, baseCwd, opts) {
   try {
-    return resolveGsdCoreRoot(commandStartDir(parseCommand(command), baseCwd, opts));
+    return resolveGsdCoreRootForCommand(command, baseCwd, opts);
   } catch (err) {
     if (err instanceof ScriptResolveError) return null;
     throw err;
@@ -489,6 +770,61 @@ function tokenTargetsGsdCoreApi(token) {
 }
 
 /**
+ * The `owner/repo` a gh-api / curl REST token names (`repos/<owner>/<repo>/...`), or null.
+ * @param {string} token
+ * @returns {{owner:string, repo:string}|null}
+ */
+function tokenApiRepo(token) {
+  if (typeof token !== 'string' || token.length === 0) return null;
+  let s = token.trim();
+  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+  s = s.replace(/^api\.github\.com(?::\d+)?/i, '');
+  s = s.replace(/^\/+/, '');
+  const m = /^repos\/(.+)$/i.exec(s);
+  if (!m) return null;
+  const after = m[1].split('/').filter((x) => x.length > 0);
+  if (after.length < 2) return null;
+  return parseOwnerRepo(after[0] + '/' + after[1]);
+}
+
+/**
+ * Per-SEGMENT explicit repo target (quick-261007-ji5 F8): 'gsd-core' when an explicit spec
+ * (`--repo` / `-R` / a leading `GH_REPO=`) or a gh-api / curl `repos/<owner>/<repo>` token names
+ * open-gsd/gsd-core, or an explicit spec is unparseable (fail-closed); 'other' when every explicit
+ * target parses and names some other repo; null when the segment names no explicit target (the
+ * caller then falls back to the cwd). Structured argv only, like commandTargetsGsdCore.
+ * @param {Object} seg one parsed segment
+ * @returns {'gsd-core'|'other'|null}
+ */
+function segmentRepoTarget(seg) {
+  if (!seg || typeof seg !== 'object') return null;
+  const flags = seg.flags || {};
+  const shortFlags = seg.shortFlags || {};
+  const tokens = Array.isArray(seg.tokens) ? seg.tokens : [];
+  const targets = [];
+  const specs = [];
+  if (typeof flags.repo === 'string') specs.push(flags.repo);
+  if (typeof shortFlags.R === 'string') specs.push(shortFlags.R);
+  for (const tok of tokens) {
+    if (typeof tok !== 'string') break;
+    const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(tok);
+    if (!m) break;
+    if (m[1] === 'GH_REPO') specs.push(m[2]);
+  }
+  for (const spec of specs) {
+    const r = parseOwnerRepo(spec);
+    if (!r) return 'gsd-core'; // explicit but unparseable → fail-closed
+    targets.push(r);
+  }
+  for (const tok of tokens) {
+    const r = tokenApiRepo(tok);
+    if (r) targets.push(r);
+  }
+  if (targets.length === 0) return null;
+  return targets.some((r) => r.owner === GSD_CORE_OWNER && r.repo === GSD_CORE_REPO) ? 'gsd-core' : 'other';
+}
+
+/**
  * Pure discriminator: does a PARSED command explicitly target the UPSTREAM
  * open-gsd/gsd-core repo, regardless of the command's cwd?
  *
@@ -619,9 +955,12 @@ module.exports = {
   hasSentinel,
   GSD_CORE_IDENTITY_SCRIPTS,
   commandStartDir,
+  commandCandidateDirs,
   expandHome,
+  resolveGsdCoreRootForCommand,
   resolveRootForCommand,
   commandTargetsGsdCore,
+  segmentRepoTarget,
   // ENF-21: exported so `runtime-stamp.cjs` builds the upstream `ls-remote` URL from the SAME
   // owner/repo every gate already adjudicates against, rather than introducing a second source of
   // truth for "which repo is upstream". They were module-private until 260730-0ov.
