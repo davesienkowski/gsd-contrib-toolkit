@@ -217,3 +217,15 @@ test('WR-06 guard: rewritten signals agree with the original regexes on a 3000-p
     assert.equal(isContributionPrompt(p), expected, JSON.stringify(p));
   }
 });
+
+// ── quick-261007-ji5 round 3 (re-review R2-WR-04): the strip is linear even when tens of thousands
+// of line-start opening tags share ONE late close tag (each indexOf used to rescan to the end).
+test('R2-WR-04: 40k line-start opening tags sharing one late close tag (800 KB) is judged in under 200 ms', () => {
+  const prompt = '<task-notification>\n'.repeat(40000) + '</task-notification>\nplease file an issue on gsd-core';
+  assert.ok(prompt.length > 800000);
+  const t0 = process.hrtime.bigint();
+  const got = isContributionPrompt(prompt);
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert.ok(ms < 200, 'took ' + ms.toFixed(1) + ' ms');
+  assert.equal(got, true, 'the user request after the only terminated block is still judged');
+});
