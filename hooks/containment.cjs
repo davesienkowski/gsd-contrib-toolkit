@@ -36,7 +36,7 @@
 
 const { parseCommand } = require('./lib/argv.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
-const { resolveGsdCoreRoot, commandStartDir, ScriptResolveError, parseOwnerRepo } = require('./lib/resolve.cjs');
+const { resolveGsdCoreRootForCommand, ScriptResolveError, parseOwnerRepo } = require('./lib/resolve.cjs');
 const { resolveProgram } = require('./lib/classify.cjs');
 
 // FailClosed/safeCommand: shared IN-03 helpers from failclosed.cjs.
@@ -566,7 +566,7 @@ function runContainmentGate(stdinString, deps = {}) {
     const resolved = Object.assign({}, deps);
     if (!resolved.gsdCoreRoot) {
       try {
-        resolved.gsdCoreRoot = resolveGsdCoreRoot(commandStartDir(parseCommand(ctx.command), process.cwd()));
+        resolved.gsdCoreRoot = resolveGsdCoreRootForCommand(ctx.command, process.cwd());
       } catch (err) {
         // Not a gsd-core checkout (e.g. a commit in another repo) → not this gate's
         // concern; allow. A broken gsd-core checkout still fails closed downstream.

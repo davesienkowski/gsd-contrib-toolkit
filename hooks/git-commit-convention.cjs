@@ -113,7 +113,7 @@ const {
   hasGovernedSegment, resolveProgram, MERGE_SIDE_ACTIONS,
 } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, ask, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
-const { resolveGsdCoreRoot, commandStartDir, ScriptResolveError } = require('./lib/resolve.cjs');
+const { resolveGsdCoreRootForCommand, ScriptResolveError } = require('./lib/resolve.cjs');
 
 // FailClosed/safeCommand are the shared IN-03 helpers from failclosed.cjs (runGate's
 // catch turns any throw into a DENY unless a logged override is present).
@@ -493,9 +493,9 @@ function runCommitConventionGate(stdinString, deps = {}) {
     // cwd and be gated, not escape via a global opt. Every OTHER gate follows `-C` by default.
     if (!resolved.worktreeRoot) {
       try {
-        resolved.worktreeRoot = resolveGsdCoreRoot(
-          commandStartDir(parseCommand(ctx.command), process.cwd(), { followGitC: false })
-        );
+        // quick-261007-ji5: candidate union (gates when ANY plausible cwd is gsd-core), still
+        // {followGitC:false} (CR-01 anti-bypass: a `git -C` target never moves this gate).
+        resolved.worktreeRoot = resolveGsdCoreRootForCommand(ctx.command, process.cwd(), { followGitC: false });
       } catch (err) {
         if (err instanceof ScriptResolveError) return allow();
         throw err;

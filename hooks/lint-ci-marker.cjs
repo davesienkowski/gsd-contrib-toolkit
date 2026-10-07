@@ -49,8 +49,7 @@ const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction, isNonGovernedCommand, hasGovernedSegment } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const {
-  resolveGsdCoreRoot,
-  commandStartDir,
+  resolveGsdCoreRootForCommand,
   requireLiveScript,
   ScriptResolveError,
 } = require('./lib/resolve.cjs');
@@ -196,12 +195,11 @@ function runLintCiMarkerGate(stdinString, deps = {}) {
       !resolved.runAffectedTier;
     if (needsRoot && !resolved.worktreeRoot) {
       try {
-        // Follows `git -C <dir>` by default (see commandStartDir): resolve the tree the push
-        // actually runs in, not the session cwd, so a `git -C <other-repo> push` is not gated
-        // against the session's marker (ENF-05 narrowing). Only push/pr-create reach here.
-        resolved.worktreeRoot = resolveGsdCoreRoot(
-          commandStartDir(parseCommand(ctx.command), process.cwd())
-        );
+        // Follows `git -C <dir>` by default: resolve the tree the push actually runs in, not
+        // the session cwd, so a `git -C <other-repo> push` is not gated against the session's
+        // marker (ENF-05 narrowing). Only push/pr-create reach here. quick-261007-ji5: the
+        // candidate union (resolveGsdCoreRootForCommand) gates when ANY plausible cwd is gsd-core.
+        resolved.worktreeRoot = resolveGsdCoreRootForCommand(ctx.command, process.cwd());
       } catch (err) {
         // Not a gsd-core checkout (e.g. a commit in another repo) → not this gate's
         // concern; allow. A broken gsd-core checkout still fails closed downstream.
