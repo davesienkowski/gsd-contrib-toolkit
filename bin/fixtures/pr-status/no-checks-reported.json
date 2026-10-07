@@ -1,0 +1,61 @@
+{
+  "provenance": {
+    "source": "synthetic from cr-captured.json",
+    "edits": "checks: removed (no stdout); gh exit 1 with the no-checks stderr line",
+    "checksExit": 1,
+    "expected": {
+      "owner": "author",
+      "login": "trek-e"
+    },
+    "checksStderr": "no checks reported on the 'feat/4916-plugin-port' branch"
+  },
+  "view": {
+    "number": 900016,
+    "state": "OPEN",
+    "isDraft": false,
+    "author": {
+      "login": "lipeeh"
+    },
+    "headRefOid": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690",
+    "baseRefName": "next",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "BEHIND",
+    "reviewDecision": "CHANGES_REQUESTED",
+    "reviewRequests": [
+      {
+        "__typename": "User",
+        "login": "Solvely-Colin"
+      },
+      {
+        "__typename": "User",
+        "login": "jeremymcs"
+      },
+      {
+        "__typename": "User",
+        "login": "davesienkowski"
+      }
+    ],
+    "commits": [
+      {
+        "oid": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690",
+        "committedDate": "2026-10-06T15:59:40Z",
+        "messageHeadline": "chore(#4916): add changeset fragment for the v2 plugin port"
+      }
+    ],
+    "updatedAt": "2026-10-07T01:15:25Z"
+  },
+  "reviews": [
+    [
+      {
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-07T01:15:23Z",
+        "commit_id": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690"
+      }
+    ]
+  ],
+  "checks": null
+}

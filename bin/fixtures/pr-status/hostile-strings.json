@@ -1,0 +1,325 @@
+{
+  "provenance": {
+    "source": "synthetic from failing-checks-captured.json",
+    "edits": "checks: first failing check name wrapped in ESC color sequences; last commit headline given an em dash and an accented letter",
+    "checksExit": 0,
+    "expected": {
+      "owner": "author",
+      "login": "trek-e"
+    }
+  },
+  "view": {
+    "number": 900018,
+    "state": "OPEN",
+    "isDraft": false,
+    "author": {
+      "login": "agammann"
+    },
+    "headRefOid": "6e4b4ec3d32c9ef03680e834ebc398f4a7805924",
+    "baseRefName": "next",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "BEHIND",
+    "reviewDecision": "CHANGES_REQUESTED",
+    "reviewRequests": [
+      {
+        "__typename": "User",
+        "login": "Solvely-Colin"
+      },
+      {
+        "__typename": "User",
+        "login": "jeremymcs"
+      },
+      {
+        "__typename": "User",
+        "login": "davesienkowski"
+      }
+    ],
+    "commits": [
+      {
+        "oid": "6e4b4ec3d32c9ef03680e834ebc398f4a7805924",
+        "committedDate": "2026-10-05T05:34:45Z",
+        "messageHeadline": "fix: café — headline"
+      }
+    ],
+    "updatedAt": "2026-10-07T01:19:09Z"
+  },
+  "reviews": [
+    [
+      {
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-02T14:15:48Z",
+        "commit_id": "326fb2a28a4ad0a0b88dd215604d6089b21cfdef"
+      },
+      {
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-02T23:44:51Z",
+        "commit_id": "f4ac0eeddb313fb4f1601e405db710d3c19a6a01"
+      },
+      {
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-07T01:19:07Z",
+        "commit_id": "6e4b4ec3d32c9ef03680e834ebc398f4a7805924"
+      }
+    ]
+  ],
+  "checks": [
+    {
+      "name": "docs-lint",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Docs Required"
+    },
+    {
+      "name": "changeset-lint",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Changeset Required"
+    },
+    {
+      "name": "PR mergeability / mergeability",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Docs Required"
+    },
+    {
+      "name": "PR mergeability / mergeability",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Changeset Required"
+    },
+    {
+      "name": "dismiss-unauthorized-approval",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Dismiss Unauthorized PR Approvals"
+    },
+    {
+      "name": "\u001b[31mRequired tests\u001b[0m\u0007",
+      "state": "FAILURE",
+      "bucket": "fail",
+      "workflow": "Tests"
+    },
+    {
+      "name": "Coverage gate (merged shards)",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Tests"
+    },
+    {
+      "name": "Publish emitted-baseline artifact",
+      "state": "SKIPPED",
+      "bucket": "skipping",
+      "workflow": "Tests"
+    },
+    {
+      "name": "conformance test (macos-latest, 24)",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Tests"
+    },
+    {
+      "name": "test (ubuntu-latest, 24)",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Tests"
+    },
+    {
+      "name": "conformance test (windows-latest, 24, shard 2/3)",
+      "state": "FAILURE",
+      "bucket": "fail",
+      "workflow": "Tests"
+    },
+    {
+      "name": "smoke (macos-latest, 24, true, zsh {0})",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Install Smoke"
+    },
+    {
+      "name": "conformance test (windows-latest, 24, shard 1/3)",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Tests"
+    },
+    {
+      "name": "QA loop walk (smell ratchet)",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Tests"
+    },
+    {
+      "name": "test (ubuntu-latest, 24, shard 3/3)",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Tests"
+    },
+    {
+      "name": "test (ubuntu-latest, 24, shard 1/3)",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Tests"
+    },
+    {
+      "name": "conformance test (windows-latest, 24, shard 3/3)",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Tests"
+    },
+    {
+      "name": "test (ubuntu-latest, 24, shard 2/3)",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Tests"
+    },
+    {
+      "name": "test (inert CI)",
+      "state": "SKIPPED",
+      "bucket": "skipping",
+      "workflow": "Tests"
+    },
+    {
+      "name": "smoke (ubuntu-latest, 24, false, bash)",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Install Smoke"
+    },
+    {
+      "name": "lint-tests",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Tests"
+    },
+    {
+      "name": "plugin-validate",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Tests"
+    },
+    {
+      "name": "Socket Security: Pull Request Alerts",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": ""
+    },
+    {
+      "name": "check-branch",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Validate Branch Name"
+    },
+    {
+      "name": "smoke-unpacked",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Install Smoke"
+    },
+    {
+      "name": "security",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Security Scan"
+    },
+    {
+      "name": "default-flip-documentation",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Default Flip Documentation"
+    },
+    {
+      "name": "PR mergeability / mergeability",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Tests"
+    },
+    {
+      "name": "Detect test scope",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Tests"
+    },
+    {
+      "name": "PR mergeability / mergeability",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Validate Branch Name"
+    },
+    {
+      "name": "Base branch health",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Tests"
+    },
+    {
+      "name": "PR mergeability / mergeability",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Security Scan"
+    },
+    {
+      "name": "PR mergeability / mergeability",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Install Smoke"
+    },
+    {
+      "name": "PR mergeability / mergeability",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Default Flip Documentation"
+    },
+    {
+      "name": "Issue link required",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Require Issue Link"
+    },
+    {
+      "name": "validate-title",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "PR Title Validator"
+    },
+    {
+      "name": "Pull request template format",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "PR Template Format"
+    },
+    {
+      "name": "validate-target",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "PR Target Validator"
+    },
+    {
+      "name": "auto-merge",
+      "state": "SKIPPED",
+      "bucket": "skipping",
+      "workflow": "Dependabot Auto-Merge"
+    },
+    {
+      "name": "GitGuardian Security Checks",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": ""
+    },
+    {
+      "name": "Socket Security: Project Report",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": ""
+    }
+  ]
+}

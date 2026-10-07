@@ -1,0 +1,142 @@
+{
+  "provenance": {
+    "source": "synthetic from cr-captured.json",
+    "edits": "reviews: appended later reviews that must not decide the ball: the PR author APPROVED, a Bot APPROVED, trek-e COMMENTED on an older commit, jeremymcs PENDING",
+    "checksExit": 0,
+    "expected": {
+      "owner": "author",
+      "login": "trek-e"
+    },
+    "expectedReviewers": [
+      "trek-e"
+    ]
+  },
+  "view": {
+    "number": 900008,
+    "state": "OPEN",
+    "isDraft": false,
+    "author": {
+      "login": "lipeeh"
+    },
+    "headRefOid": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690",
+    "baseRefName": "next",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "BEHIND",
+    "reviewDecision": "CHANGES_REQUESTED",
+    "reviewRequests": [
+      {
+        "__typename": "User",
+        "login": "Solvely-Colin"
+      },
+      {
+        "__typename": "User",
+        "login": "jeremymcs"
+      },
+      {
+        "__typename": "User",
+        "login": "davesienkowski"
+      }
+    ],
+    "commits": [
+      {
+        "oid": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690",
+        "committedDate": "2026-10-06T15:59:40Z",
+        "messageHeadline": "chore(#4916): add changeset fragment for the v2 plugin port"
+      }
+    ],
+    "updatedAt": "2026-10-07T01:15:25Z"
+  },
+  "reviews": [
+    [
+      {
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-07T01:15:23Z",
+        "commit_id": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690"
+      },
+      {
+        "user": {
+          "login": "lipeeh",
+          "type": "User"
+        },
+        "state": "APPROVED",
+        "submitted_at": "2026-10-07T02:00:00Z",
+        "commit_id": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690"
+      },
+      {
+        "user": {
+          "login": "gsd-review-bot[bot]",
+          "type": "Bot"
+        },
+        "state": "APPROVED",
+        "submitted_at": "2026-10-07T02:01:00Z",
+        "commit_id": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690"
+      },
+      {
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "COMMENTED",
+        "submitted_at": "2026-10-07T02:02:00Z",
+        "commit_id": "f5ae1591f9e4b1c3d7a0e6b2c9d8e7f6a5b4c3d2"
+      },
+      {
+        "user": {
+          "login": "jeremymcs",
+          "type": "User"
+        },
+        "state": "PENDING",
+        "submitted_at": "2026-10-07T02:03:00Z",
+        "commit_id": "f5ae1591f9e4b1c3d7a0e6b2c9d8e7f6a5b4c3d2"
+      }
+    ]
+  ],
+  "checks": [
+    {
+      "name": "Socket Security: Pull Request Alerts",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": ""
+    },
+    {
+      "name": "Issue link required",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Require Issue Link"
+    },
+    {
+      "name": "Pull request template format",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "PR Template Format"
+    },
+    {
+      "name": "validate-target",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "PR Target Validator"
+    },
+    {
+      "name": "validate-title",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "PR Title Validator"
+    },
+    {
+      "name": "Socket Security: Project Report",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": ""
+    },
+    {
+      "name": "GitGuardian Security Checks",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": ""
+    }
+  ]
+}
