@@ -106,6 +106,57 @@ function sha(p) {
 
 // ───────────────────────── Task 1: sandbox builder unit cases ─────────────────────────
 
+// quick-261007-ji5 CR-01: the sandbox's transitive LOAD-time requires are DERIVED from the source
+// checkout, not listed by hand. Upstream gsd-core added two (scripts/pr-template-policy.cjs ->
+// ./pr-changed-files.cjs, scripts/lib/cli-exit.cjs -> ./exit-code-registry.cjs) and the hand list
+// silently dropped them, turning the HARD-02 control red. Hermetic: a fake source checkout.
+
+/** A fake gsd-core source: sentinel layout + a stub for every SANDBOX_SCRIPT (+ old hand-list deps). */
+function makeFakeSource(firstScriptBody, extra) {
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'ji5-fake-src-'));
+  fs.mkdirSync(path.join(src, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(src, 'gsd-core', 'bin', 'lib'), { recursive: true });
+  const write = (rel, body) => {
+    fs.mkdirSync(path.dirname(path.join(src, rel)), { recursive: true });
+    fs.writeFileSync(path.join(src, rel), body);
+  };
+  SANDBOX_SCRIPTS.forEach((rel, i) => write(rel, i === 0 ? firstScriptBody : 'module.exports = {};\n'));
+  for (const rel of ['gsd-core/bin/lib/package-identity.cjs', 'scripts/lib/cli-exit.cjs', 'scripts/run-tests.cjs']) {
+    if (!fs.existsSync(path.join(src, rel))) write(rel, 'module.exports = {};\n');
+  }
+  for (const [rel, body] of Object.entries(extra || {})) write(rel, body);
+  return src;
+}
+
+test('makeSandbox: copies the DERIVED transitive load-time requires of each shape-checked script', () => {
+  const first = SANDBOX_SCRIPTS[0];
+  const depA = path.posix.join(path.posix.dirname(first), 'ji5-dep-a.cjs');
+  const depB = path.posix.join(path.posix.dirname(first), 'lib', 'ji5-dep-b.cjs');
+  const src = makeFakeSource("require('./ji5-dep-a.cjs');\nmodule.exports = {};\n", {
+    [depA]: "require('./lib/ji5-dep-b.cjs');\nmodule.exports = { a: 1 };\n",
+    [depB]: 'module.exports = { b: 2 };\n',
+  });
+  let sb;
+  try {
+    sb = makeSandbox({ sourceRoot: src });
+    assert.strictEqual(fs.existsSync(path.join(sb.root, depA)), true, 'direct load-time dep copied');
+    assert.strictEqual(fs.existsSync(path.join(sb.root, depB)), true, 'second-level load-time dep copied');
+    assert.doesNotThrow(() => require(path.join(sb.root, first)), 'the copied script loads inside the sandbox');
+  } finally {
+    if (sb) sb.dispose();
+    fs.rmSync(src, { recursive: true, force: true });
+  }
+});
+
+test('makeSandbox: a shape-checked script whose load-time require is MISSING fails LOUDLY (never a silent drop)', () => {
+  const src = makeFakeSource("require('./ji5-not-there.cjs');\nmodule.exports = {};\n");
+  try {
+    assert.throws(() => makeSandbox({ sourceRoot: src }), /failed to load/);
+  } finally {
+    fs.rmSync(src, { recursive: true, force: true });
+  }
+});
+
 test('makeSandbox: root is under os.tmpdir() and reproduces the sentinel layout', { skip: SOURCE_ROOT ? false : SKIP_NOTE }, () => {
   const sb = makeSandbox({ sourceRoot: SOURCE_ROOT });
   try {
