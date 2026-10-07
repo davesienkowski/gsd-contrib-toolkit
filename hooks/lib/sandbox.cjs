@@ -77,21 +77,36 @@ const LOAD_CLOSURE_PROBE = [
 
 const closureCache = new Map();
 
+/** Default bound on the load probe (round 3, re-review R2-IN-02): a script that hangs at load. */
+const LOAD_PROBE_TIMEOUT_MS = 30000;
+
 /**
  * The repo-relative files (under sourceRoot) that loading every SANDBOX_SCRIPT pulls in.
+ * The root is REAL-pathed first (round 3, re-review R2-IN-01): require.cache keys are real paths,
+ * so a symlinked root used to filter every file out and return an empty closure silently. The
+ * result must list every SANDBOX_SCRIPT, or this throws.
  * @param {string} sourceRoot
+ * @param {{timeoutMs?: number}} [opts]
  * @returns {string[]}
- * @throws {Error} when a script fails to load in the source checkout or the probe yields no result.
+ * @throws {Error} when a script fails to load, the probe times out or yields no result, or the
+ *   closure misses a shape-checked script.
  */
-function deriveLoadClosure(sourceRoot) {
-  const root = path.resolve(sourceRoot);
+function deriveLoadClosure(sourceRoot, opts) {
+  const root = fs.realpathSync(path.resolve(sourceRoot));
   if (closureCache.has(root)) return closureCache.get(root);
+  const timeoutMs = opts && Number.isInteger(opts.timeoutMs) ? opts.timeoutMs : LOAD_PROBE_TIMEOUT_MS;
   const files = SANDBOX_SCRIPTS.map((rel) => path.join(root, rel));
   const r = spawnSync(process.execPath, ['-e', LOAD_CLOSURE_PROBE, JSON.stringify(files)], {
     cwd: root,
     encoding: 'utf8',
     env: process.env,
+    timeout: timeoutMs,
+    killSignal: 'SIGKILL',
   });
+  if (r && r.error && /ETIMEDOUT/.test(String(r.error.code || r.error.message))) {
+    throw new Error('sandbox: the load-closure probe timed out after ' + timeoutMs + ' ms for ' + root +
+      ' (a shape-checked LIVE script hangs at load)');
+  }
   const out = String((r && r.stdout) || '');
   const at = out.lastIndexOf('@@SANDBOX-CLOSURE@@');
   if (at === -1) {
@@ -121,6 +136,11 @@ function deriveLoadClosure(sourceRoot) {
     }
   }
   const closure = Object.freeze(Array.from(new Set(rels)).sort());
+  const missing = SANDBOX_SCRIPTS.filter((rel) => !closure.includes(rel));
+  if (missing.length > 0) {
+    throw new Error('sandbox: the derived load closure for ' + root + ' misses shape-checked script(s): ' +
+      missing.join(', ') + ' (never an empty or partial closure)');
+  }
   closureCache.set(root, closure);
   return closure;
 }
