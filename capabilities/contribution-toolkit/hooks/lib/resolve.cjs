@@ -130,17 +130,67 @@ function resolveGsdCoreRoot(startDir) {
   );
 }
 
+// A leading `$HOME` or `${HOME}` followed by `/` or end of token (quick-261007-ji5 F3). Same shape
+// as the `$HOME` matcher in gsd-test-detect.cjs, COPIED rather than imported because
+// gsd-test-detect.cjs requires this module (a circular require). Case-sensitive and anchored:
+// `$HOMEX`, `$home`, `${HOME:-x}`, `${HOME}x`, `$FOO` and a mid-path `/a/$HOME/b` never match.
+const HOME_VAR_RE = /^(?:\$HOME|\$\{HOME\})(?=\/|$)/;
+
 /**
- * Expand a leading `~` / `~/...` to the user's home directory. The shell expands
- * `~` before exec, but a parsed positional retains the literal `~`, so the resolver
- * must expand it too.
+ * Expand a leading `~` / `~/...`, and a leading `$HOME` / `${HOME}` (followed by `/` or end), to
+ * the user's home directory. The shell expands both before exec, but a parsed positional retains
+ * the literal text, so the resolver must expand it too.
+ *
+ * The `$HOME` branch reads os.homedir() (the HOOK process HOME) at call time, with no cache. The
+ * argv tokenizer drops quotes, so `'$HOME/x'` (single-quoted, which a shell would NOT expand) also
+ * expands: an accepted over-expansion, since a literal directory named `$HOME` essentially never
+ * exists. Every other variable, default form (`${HOME:-x}`) or substitution stays literal: a guessed
+ * expansion could resolve a gsd-core command to a non-gsd-core root and switch its gates off
+ * (fail-open under CTK-ADR-0001). Pass `{ homeVar: false }` to skip the `$HOME` branch (the caller
+ * does so when the command may reassign HOME); the `~` branch is unaffected by it.
  * @param {string} p
+ * @param {{homeVar?: boolean}} [opts]
  * @returns {string}
  */
-function expandHome(p) {
+function expandHome(p, opts) {
   if (p === '~') return os.homedir();
   if (p.startsWith('~/') || p.startsWith('~\\')) return path.join(os.homedir(), p.slice(2));
+  if (!(opts && opts.homeVar === false)) {
+    const m = HOME_VAR_RE.exec(p);
+    if (m) return path.join(os.homedir(), p.slice(m[0].length));
+  }
   return p;
+}
+
+// Programs that can assign a variable named by a later (possibly indirect) token, or run code that
+// can: `export $X=/y` assigns HOME when X=HOME, with no HOME-shaped token in its own segment.
+const HOME_REASSIGNING_PROGRAMS = new Set([
+  'export', 'declare', 'typeset', 'printf', 'read', 'local', 'readonly', 'source', '.', 'eval',
+]);
+
+/**
+ * True when a parsed command may reassign HOME before its `cd` / `git -C` runs, so the hook
+ * process HOME must NOT be trusted for a `$HOME` target (quick-261007-ji5 F3). Fail-closed and
+ * token-textual: any segment whose program is in HOME_REASSIGNING_PROGRAMS, or any token that is
+ * exactly `HOME`, starts with `HOME=`, or contains `${HOME=` / `${HOME:=`. Over-triggers by design
+ * (`echo HOME && cd "$HOME/x"` keeps the literal, gated resolution). Known residual: an indirect
+ * assignment through a builtin NOT on the list and with no HOME-shaped token (for example
+ * `h=HOME; let ...` or `mapfile` / `readarray` with an indirect name) is not detected.
+ * @param {{ok:boolean, segments:Array}} parsed
+ * @returns {boolean}
+ */
+function commandMayReassignHome(parsed) {
+  if (!parsed || !Array.isArray(parsed.segments)) return false;
+  for (const seg of parsed.segments) {
+    if (!seg) continue;
+    if (HOME_REASSIGNING_PROGRAMS.has(seg.program)) return true;
+    const tokens = Array.isArray(seg.tokens) ? seg.tokens : [];
+    for (const raw of tokens) {
+      const tok = String(raw);
+      if (tok === 'HOME' || tok.startsWith('HOME=') || /\$\{HOME:?=/.test(tok)) return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -213,6 +263,8 @@ function commandStartDir(parsed, baseCwd, opts) {
   const followGitC = !(opts && opts.followGitC === false);
   let cwd = path.resolve(baseCwd == null ? process.cwd() : String(baseCwd));
   if (!parsed || parsed.ok !== true || !Array.isArray(parsed.segments)) return cwd;
+  // F3: a command that may reassign HOME keeps `$HOME` literal (today's gated resolution).
+  const homeOpts = { homeVar: !commandMayReassignHome(parsed) };
   for (const seg of parsed.segments) {
     if (!seg) continue;
     if (seg.program === 'cd') {
@@ -222,7 +274,7 @@ function commandStartDir(parsed, baseCwd, opts) {
         (Array.isArray(seg.positionals) && seg.positionals[0]) ||
         (Array.isArray(seg.tokens) && seg.tokens[1]) ||
         '';
-      if (target) cwd = path.resolve(cwd, expandHome(String(target)));
+      if (target) cwd = path.resolve(cwd, expandHome(String(target), homeOpts));
       continue;
     }
     if (followGitC && seg.program === 'git') {
@@ -230,7 +282,7 @@ function commandStartDir(parsed, baseCwd, opts) {
       // or a `git -C <other-repo> push` from a gsd-core session cwd false-resolves to the session
       // tree and gates a non-gsd-core push (the ENF-21 false positive this fixes).
       for (const dir of gitGlobalChdirs(seg)) {
-        cwd = path.resolve(cwd, expandHome(String(dir)));
+        cwd = path.resolve(cwd, expandHome(String(dir), homeOpts));
       }
     }
   }

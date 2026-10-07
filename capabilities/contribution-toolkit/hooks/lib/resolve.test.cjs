@@ -192,6 +192,137 @@ test('commandStartDir: expands a leading ~ in the cd target', () => {
   );
 });
 
+// --- quick-261007-ji5 F3: a leading $HOME / ${HOME} in a cd / git -C target ---
+//
+// The argv tokenizer drops quotes, so `cd "$HOME/x"` reaches the resolver as the token `$HOME/x`.
+// Before F3 it resolved under the session cwd (`<base>/$HOME/x`), so `cd "$HOME/repos/<other>" &&
+// git commit` from a gsd-core session tripped the gsd-core gates. Every fixture below is a
+// single-quoted JS string: a template literal holding `${HOME}` would throw ReferenceError.
+
+/**
+ * Run `body(home)` with process.env.HOME pointed at a fresh temp dir; restore HOME (delete it if it
+ * was unset) and remove the temp dir in `finally`, so no test leaks a changed HOME.
+ */
+function withTempHome(body) {
+  const had = Object.prototype.hasOwnProperty.call(process.env, 'HOME');
+  const old = process.env.HOME;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ji5-home-'));
+  try {
+    process.env.HOME = home;
+    return body(os.homedir());
+  } finally {
+    if (had) process.env.HOME = old;
+    else delete process.env.HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
+test('F3: cd "$HOME/repos/x" (double-quoted) resolves under os.homedir()', () => {
+  withTempHome((home) => {
+    const parsed = parseCommand('cd "$HOME/repos/x" && git commit -m "x"');
+    assert.strictEqual(res.commandStartDir(parsed, BASE), path.join(home, 'repos', 'x'));
+  });
+});
+
+test('F3: cd $HOME/repos/x (unquoted) resolves under os.homedir()', () => {
+  withTempHome((home) => {
+    const parsed = parseCommand('cd $HOME/repos/x && git commit -m "x"');
+    assert.strictEqual(res.commandStartDir(parsed, BASE), path.join(home, 'repos', 'x'));
+  });
+});
+
+test('F3: cd ${HOME}/repos/x (braced) resolves under os.homedir()', () => {
+  withTempHome((home) => {
+    const parsed = parseCommand('cd ${HOME}/repos/x && git commit -m "x"');
+    assert.strictEqual(res.commandStartDir(parsed, BASE), path.join(home, 'repos', 'x'));
+  });
+});
+
+test('F3: bare cd "$HOME" resolves to exactly os.homedir()', () => {
+  withTempHome((home) => {
+    const parsed = parseCommand('cd "$HOME" && git status');
+    assert.strictEqual(res.commandStartDir(parsed, BASE), home);
+  });
+});
+
+test('F3: bare cd ${HOME} resolves to exactly os.homedir()', () => {
+  withTempHome((home) => {
+    const parsed = parseCommand('cd ${HOME} && git status');
+    assert.strictEqual(res.commandStartDir(parsed, BASE), home);
+  });
+});
+
+test('F3: git -C "$HOME/repos/x" commit follows the expanded -C target by default', () => {
+  withTempHome((home) => {
+    const parsed = parseCommand('git -C "$HOME/repos/x" commit -m "x"');
+    assert.strictEqual(res.commandStartDir(parsed, BASE), path.join(home, 'repos', 'x'));
+  });
+});
+
+test('F3 guard: git -C "$HOME/repos/x" commit with {followGitC:false} stays the base cwd', () => {
+  withTempHome(() => {
+    const parsed = parseCommand('git -C "$HOME/repos/x" commit -m "x"');
+    assert.strictEqual(res.commandStartDir(parsed, BASE, { followGitC: false }), BASE);
+  });
+});
+
+test('F3 guard: an empty cd target leaves the start directory unchanged', () => {
+  withTempHome(() => {
+    const parsed = parseCommand('cd "" && git status');
+    assert.strictEqual(res.commandStartDir(parsed, BASE), BASE);
+  });
+});
+
+// Negative pins: only the anchored, case-sensitive $HOME / ${HOME} followed by `/` or end expands.
+for (const lit of ['$HOMEX/a', '${HOME:-/x}/a', '${HOME}x/a', '$FOO/a', '$home/a']) {
+  test('F3 guard: cd "' + lit + '" stays literal (resolved under the start directory)', () => {
+    withTempHome(() => {
+      const parsed = parseCommand('cd "' + lit + '" && git status');
+      assert.strictEqual(res.commandStartDir(parsed, BASE), path.resolve(BASE, lit));
+    });
+  });
+}
+
+test('F3 guard: a mid-path cd "/a/$HOME/b" stays literal', () => {
+  withTempHome(() => {
+    const parsed = parseCommand('cd "/a/$HOME/b" && git status');
+    assert.strictEqual(res.commandStartDir(parsed, BASE), '/a/$HOME/b');
+  });
+});
+
+// Reassignment guard: a command that may reassign HOME (or sources / evals code that could) keeps
+// today's literal, gated resolution; otherwise the hook process HOME would be trusted for a HOME
+// the command itself changed (fail-open under CTK-ADR-0001).
+const REASSIGN_CASES = [
+  ['export HOME=/x && cd "$HOME" && git commit -m "x"', '$HOME'],
+  ['HOME=/x; cd $HOME', '$HOME'],
+  ['unset HOME; cd $HOME', '$HOME'],
+  ['read HOME; cd $HOME', '$HOME'],
+  [': ${HOME:=/x}; cd "$HOME/r"', '$HOME/r'],
+  ['source ./e.sh && cd "$HOME/r"', '$HOME/r'],
+  ['. ./e.sh && cd "$HOME/r"', '$HOME/r'],
+  ['eval x && cd "$HOME/r"', '$HOME/r'],
+  // Indirect assignment through a builtin (no HOME-shaped token in the export segment).
+  ['X=HOME; export $X=/y && cd "$HOME/r"', '$HOME/r'],
+  ['declare -x HOME=/x; cd $HOME', '$HOME'],
+  // Fail-closed over-trigger: a bare HOME word anywhere disables expansion (literal, gated).
+  ['echo HOME && cd "$HOME/x"', '$HOME/x'],
+];
+for (const [cmd, lit] of REASSIGN_CASES) {
+  test('F3 guard (HOME reassignment): ' + cmd + ' keeps the literal target', () => {
+    withTempHome(() => {
+      assert.strictEqual(res.commandStartDir(parseCommand(cmd), BASE), path.resolve(BASE, lit));
+    });
+  });
+}
+
+test('F3 guard (HOME reassignment): export HOME=/x && git -C "$HOME" commit keeps the literal -C target', () => {
+  withTempHome(() => {
+    const parsed = parseCommand('export HOME=/x && git -C "$HOME" commit -m "x"');
+    assert.strictEqual(res.commandStartDir(parsed, BASE), path.resolve(BASE, '$HOME'));
+  });
+});
+
 test('commandStartDir: multiple cd segments → the last one wins', () => {
   const parsed = parseCommand('cd /tmp && cd /home/dave/repos/gsd-core-1549-pr-title && git commit');
   assert.strictEqual(
@@ -286,6 +417,34 @@ test('resolveRootForCommand {followGitC:false}: `git -C <non-gsd-core>` still re
   );
   fs.rmSync(other, { recursive: true, force: true });
   fs.rmSync(gsdRoot, { recursive: true, force: true });
+});
+
+test('F3: resolveRootForCommand(cd "$HOME/repos/toolkit" && git commit) from a gsd-core cwd → null when the target is not gsd-core', () => {
+  const gsdRoot = makeFixtureRoot();
+  try {
+    withTempHome((home) => {
+      fs.mkdirSync(path.join(home, 'repos', 'toolkit'), { recursive: true });
+      // Before F3 this resolved `<gsdRoot>/$HOME/repos/toolkit`, climbed to gsdRoot and gated the commit.
+      assert.strictEqual(res.resolveRootForCommand('cd "$HOME/repos/toolkit" && git commit -m x', gsdRoot), null);
+    });
+  } finally {
+    fs.rmSync(gsdRoot, { recursive: true, force: true });
+  }
+});
+
+test('F3: resolveRootForCommand(cd "$HOME/repos/gsdcore" && git commit) → THAT gsd-core root (gates stay armed)', () => {
+  const gsdRoot = makeFixtureRoot();
+  try {
+    withTempHome((home) => {
+      const second = path.join(home, 'repos', 'gsdcore');
+      fs.mkdirSync(path.join(second, 'scripts'), { recursive: true });
+      fs.mkdirSync(path.join(second, 'gsd-core', 'bin', 'lib'), { recursive: true });
+      fs.writeFileSync(path.join(second, 'scripts', 'pr-target-policy.cjs'), 'module.exports = {};\n');
+      assert.strictEqual(res.resolveRootForCommand('cd "$HOME/repos/gsdcore" && git commit -m x', gsdRoot), second);
+    });
+  } finally {
+    fs.rmSync(gsdRoot, { recursive: true, force: true });
+  }
 });
 
 // --- resolveRootForCommand: root-or-null for a parsed command's effective cwd ---
