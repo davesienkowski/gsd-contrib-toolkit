@@ -400,3 +400,16 @@ test('cwdSeparators: a heredoc body stays one opaque segment; quoted newlines ne
   const q = parseCommand('git commit -m "a\nb" && git push', { cwdSeparators: true });
   assert.deepStrictEqual(q.segments.map((s) => s.program), ['git', 'git']);
 });
+
+// ── quick-261007-ji5 round 3: parseCommandForGates is additive over the default parse ──
+test('parseCommandForGates: default segments first and unchanged; newline / lone & segments appended', () => {
+  const { parseCommandForGates } = require('./argv.cjs');
+  const cmd = 'echo hi\ngit commit -m "a; b" && true & git push';
+  const def = parseCommand(cmd);
+  const g = parseCommandForGates(cmd);
+  assert.deepStrictEqual(g.segments.slice(0, def.segments.length), def.segments, 'default segments are a prefix');
+  assert.ok(g.segments.some((s) => s.program === 'git' && s.tokens[1] === 'commit'), 'the hidden commit is a segment');
+  assert.ok(g.segments.some((s) => s.program === 'git' && s.tokens[1] === 'push'), 'the backgrounded-after push is a segment');
+  assert.strictEqual(parseCommandForGates('git status').segments.length, 1, 'no extra segments when nothing differs');
+  assert.strictEqual(parseCommandForGates('git commit -m "x').ok, false, 'an unparseable command stays a failed parse');
+});

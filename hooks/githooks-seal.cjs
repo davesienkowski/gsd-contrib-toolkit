@@ -32,7 +32,7 @@
  * @module hooks/githooks-seal
  */
 
-const { parseCommand } = require('./lib/argv.cjs');
+const { parseCommandForGates } = require('./lib/argv.cjs');
 const { classifyAction, isNonGovernedCommand } = require('./lib/classify.cjs');
 const { hasFlag } = require('./lib/flags.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
@@ -92,7 +92,7 @@ function gate(stdinString, deps) {
   const input = readHookInput(stdinString);
   const command = (input.tool_input && input.tool_input.command) || '';
 
-  const parsed = parseCommand(command);
+  const parsed = parseCommandForGates(command);
   if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
 
   const action = classifyAction(parsed);
@@ -156,7 +156,7 @@ function runGithooksGate(stdinString, deps = {}) {
     // filesystem walk. The governed set is SEALED_ACTIONS (commit/push); isNonGovernedCommand
     // narrows-not-weakens: unparseable/failClosed/commit/push fall through to the unchanged
     // resolve→gate path below (a governed commit/push still runs the ENF-12/ENF-13 seal).
-    if (isNonGovernedCommand(parseCommand(ctx.command), SEALED_ACTIONS)) return allow();
+    if (isNonGovernedCommand(parseCommandForGates(ctx.command), SEALED_ACTIONS)) return allow();
 
     const resolved = Object.assign({}, deps);
     if (!resolved.readHooksPath) {

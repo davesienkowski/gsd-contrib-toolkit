@@ -551,9 +551,36 @@ function parseCommand(str, opts) {
 // parseHeredocOperator / findHeredocBodyEnd are exported (36-03, additive) so the gsd-test
 // detector's quote mask skips heredoc bodies exactly as splitSegmentsWithOps does, instead of
 // carrying a second copy of the heredoc rules.
+/**
+ * The parse every Bash GATE classifies (quick-261007-ji5 round 3, re-review R2-CR-01).
+ *
+ * The default split keeps an unquoted newline and a lone `&` inside one segment (Addendum 3: the
+ * splitting rules stay unchanged), so `echo hi<newline>git commit ...` classified as `echo` and
+ * every gate allowed it. This returns the DEFAULT parse with every segment of the
+ * `{ cwdSeparators: true }` parse that the default does not already contain APPENDED after the
+ * default segments. Purely additive: the default segments (and so every first-segment result and
+ * every existing per-segment verdict) are unchanged; the extra segments can only add a governed
+ * action. A failed default parse is returned as-is (fail-closed paths unchanged); a failed
+ * cwdSeparators parse adds nothing.
+ *
+ * @param {string} str raw `tool_input.command`
+ * @returns {Object} parseCommand-shaped result; `altSegments` counts the appended segments
+ */
+function parseCommandForGates(str) {
+  const base = parseCommand(str);
+  if (!base.ok) return base;
+  const alt = parseCommand(str, { cwdSeparators: true });
+  if (!alt.ok || alt.segments.length === base.segments.length) return base;
+  const seen = new Set(base.segments.map((s) => JSON.stringify(s.tokens)));
+  const extra = alt.segments.filter((s) => !seen.has(JSON.stringify(s.tokens)));
+  if (extra.length === 0) return base;
+  return Object.assign({}, base, { segments: base.segments.concat(extra), altSegments: extra.length });
+}
+
 module.exports = {
   tokenize,
   parseCommand,
+  parseCommandForGates,
   splitSegments,
   splitSegmentsWithOps,
   classifyTokens,

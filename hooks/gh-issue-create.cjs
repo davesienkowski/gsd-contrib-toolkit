@@ -37,7 +37,7 @@
  */
 
 const path = require('node:path');
-const { parseCommand } = require('./lib/argv.cjs');
+const { parseCommandForGates } = require('./lib/argv.cjs');
 const {
   classifyAction, findActionSegment, isNonGovernedCommand, hasGovernedSegment, hasFailClosedSegment,
 } = require('./lib/classify.cjs');
@@ -293,7 +293,7 @@ function gate(stdinString, deps) {
   const input = readHookInput(stdinString); // throws on malformed → fail closed
   const command = (input.tool_input && input.tool_input.command) || '';
 
-  const parsed = parseCommand(command);
+  const parsed = parseCommandForGates(command);
   if (!parsed.ok) {
     // Unparseable → cannot confidently classify → fail closed (HARD-04).
     throw new FailClosed('unparseable command: ' + parsed.reason);
@@ -360,7 +360,7 @@ function runIssueGate(stdinString, deps = {}) {
     // when the command is NOT issue-create AND parses AND is not failClosed — so governed
     // create (HARD-02), unparseable (HARD-04), and ENF-15 synonyms all fall through
     // untouched to the unchanged resolve+gate path below.
-    if (isNonGovernedCommand(parseCommand(ctx.command), ['issue-create'])) {
+    if (isNonGovernedCommand(parseCommandForGates(ctx.command), ['issue-create'])) {
       return allow();
     }
 
@@ -374,7 +374,7 @@ function runIssueGate(stdinString, deps = {}) {
         // real contribution action we cannot verify without a checkout → fail closed
         // (HARD-02: never reach for a possibly-stale runtime root). The throw is still
         // escapable by a deliberate, logged override (acceptable maintainer behavior).
-        if (commandTargetsGsdCore(parseCommand(ctx.command))) {
+        if (commandTargetsGsdCore(parseCommandForGates(ctx.command))) {
           throw new FailClosed(
             'out-of-tree command targets upstream open-gsd/gsd-core (-R/--repo / gh-api / curl) ' +
               'but no local gsd-core checkout is reachable from its cwd — cannot load the LIVE ' +

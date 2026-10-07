@@ -45,7 +45,7 @@
  * @module hooks/lint-ci-marker
  */
 
-const { parseCommand } = require('./lib/argv.cjs');
+const { parseCommandForGates } = require('./lib/argv.cjs');
 const { classifyAction, isNonGovernedCommand, hasGovernedSegment } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const {
@@ -88,7 +88,7 @@ function gate(stdinString, deps) {
   const input = readHookInput(stdinString);
   const command = (input.tool_input && input.tool_input.command) || '';
 
-  const parsed = parseCommand(command);
+  const parsed = parseCommandForGates(command);
   if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
 
   const action = classifyAction(parsed);
@@ -179,7 +179,7 @@ function runLintCiMarkerGate(stdinString, deps = {}) {
     // resolved root can never collateral-deny an unrelated `ls`/`grep`/`git status`. The
     // shared isNonGovernedCommand narrows-not-weakens: an unparseable/failClosed/governed
     // command returns false and falls through to the unchanged resolve→gate path below.
-    if (isNonGovernedCommand(parseCommand(ctx.command), TRIGGER_ACTIONS)) return allow();
+    if (isNonGovernedCommand(parseCommandForGates(ctx.command), TRIGGER_ACTIONS)) return allow();
 
     const resolved = Object.assign({}, deps);
     // WR-05: needsRoot must cover EVERY LIVE-backed dep that defaults to a root-bound wrapper.

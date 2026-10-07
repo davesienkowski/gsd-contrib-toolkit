@@ -29,7 +29,7 @@
  */
 
 const path = require('node:path');
-const { parseCommand } = require('./lib/argv.cjs');
+const { parseCommandForGates } = require('./lib/argv.cjs');
 const {
   classifyAction, isNonGovernedCommand, hasGovernedSegment, hasFailClosedSegment,
 } = require('./lib/classify.cjs');
@@ -216,7 +216,7 @@ function gate(stdinString, deps) {
   const input = readHookInput(stdinString);
   const command = (input.tool_input && input.tool_input.command) || '';
 
-  const parsed = parseCommand(command);
+  const parsed = parseCommandForGates(command);
   if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
 
   // CF-07 (← CR-01): decide gate/no-gate from the ALL-segments logic — a governed edit
@@ -295,7 +295,7 @@ function runEditGate(stdinString, deps = {}) {
     // pr-template policy (no collateral deny when a script is missing). EDIT_ACTIONS
     // (issue-edit / pr-edit) governed edits (HARD-02), unparseable (HARD-04), and ENF-15
     // synonyms all return false here and fall through unchanged to the resolve+gate path.
-    if (isNonGovernedCommand(parseCommand(ctx.command), EDIT_ACTIONS)) {
+    if (isNonGovernedCommand(parseCommandForGates(ctx.command), EDIT_ACTIONS)) {
       return allow();
     }
 
@@ -312,7 +312,7 @@ function runEditGate(stdinString, deps = {}) {
         // target it is a real body rewrite we cannot verify without a checkout → fail closed
         // (HARD-02: never reach for a possibly-stale runtime root). The throw is still escapable
         // by a deliberate, logged override (acceptable maintainer behavior).
-        if (commandTargetsGsdCore(parseCommand(ctx.command))) {
+        if (commandTargetsGsdCore(parseCommandForGates(ctx.command))) {
           throw new FailClosed(
             'out-of-tree command targets upstream open-gsd/gsd-core (-R/--repo / gh-api / curl) ' +
               'but no local gsd-core checkout is reachable from its cwd — cannot load the LIVE ' +

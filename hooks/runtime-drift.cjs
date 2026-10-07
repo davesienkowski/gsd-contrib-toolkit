@@ -68,7 +68,7 @@
  * @module hooks/runtime-drift
  */
 
-const { parseCommand } = require('./lib/argv.cjs');
+const { parseCommandForGates } = require('./lib/argv.cjs');
 const { hasGovernedSegment, isNonGovernedCommand, classifyAction } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, ask, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand, commandTargetsGsdCore, segmentRepoTarget } = require('./lib/resolve.cjs');
@@ -113,7 +113,7 @@ function gate(stdinString, deps) {
   const input = readHookInput(stdinString);
   const command = (input.tool_input && input.tool_input.command) || '';
 
-  const parsed = parseCommand(command);
+  const parsed = parseCommandForGates(command);
   if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
 
   // (3) RES-01 action-first short-circuit. This MUST stay above every digest, stamp read,

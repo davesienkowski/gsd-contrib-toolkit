@@ -55,7 +55,7 @@
  * @module hooks/issue-dedupe
  */
 
-const { parseCommand } = require('./lib/argv.cjs');
+const { parseCommandForGates } = require('./lib/argv.cjs');
 const { classifyAction, findActionSegment, isNonGovernedCommand } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, ask, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand, requireLiveScript } = require('./lib/resolve.cjs');
@@ -402,7 +402,7 @@ function gate(stdinString, deps) {
   const input = readHookInput(stdinString); // throws on malformed → fail closed
   const command = (input.tool_input && input.tool_input.command) || '';
 
-  const parsed = parseCommand(command);
+  const parsed = parseCommandForGates(command);
   if (!parsed.ok) {
     throw new FailClosed('unparseable command: ' + parsed.reason);
   }
@@ -542,7 +542,7 @@ function runDedupeGate(stdinString, deps = {}) {
     // confidently non-governed command allows without loading the LIVE dedupe scorer (no
     // collateral deny when that script is missing). Governed create (HARD-02), unparseable
     // (HARD-04), and ENF-15 synonyms all return false here and fall through unchanged.
-    if (isNonGovernedCommand(parseCommand(ctx.command), ['issue-create'])) {
+    if (isNonGovernedCommand(parseCommandForGates(ctx.command), ['issue-create'])) {
       return allow();
     }
 
