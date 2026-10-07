@@ -584,6 +584,33 @@ test('PROOF F3 guard: git-commit-convention still DENIES cd "$HOME/repos/gsdcore
   });
 });
 
+// Review redesign (candidate union): the commit-convention gate now resolves through
+// resolveGsdCoreRootForCommand, so an unrelated export no longer reopens the F3 false deny, and a
+// cd that can fail before `;` keeps the gsd-core session gated.
+test('PROOF F3 union: git-commit-convention ALLOWS export FOO=1 && cd "$HOME/repos/toolkit" && a non-conventional commit', () => {
+  withF3Env(({ session, home }) => {
+    fs.mkdirSync(path.join(home, 'repos', 'toolkit'), { recursive: true });
+    const r = spawnHook(abs('git-commit-convention'), {
+      stdin: bash('export FOO=1 && cd "$HOME/repos/toolkit" && git commit -m "docs fix thing"'),
+      cwd: session,
+    });
+    assert.equal(r.conclusive, true, `inconclusive: ${r.reason}\nstderr: ${r.rawStderr}`);
+    assert.equal(r.decision, 'allow', `an unrelated export must not re-gate a toolkit commit\nstdout: ${r.rawStdout}`);
+  });
+});
+
+test('PROOF F3 union: git-commit-convention DENIES cd "$HOME/repos/typo"; a non-conventional commit (the cd can fail)', () => {
+  withF3Env(({ session }) => {
+    const r = spawnHook(abs('git-commit-convention'), {
+      stdin: bash('cd "$HOME/repos/typo"; git commit -m "docs fix thing"'),
+      cwd: session,
+    });
+    assert.equal(r.conclusive, true, `inconclusive: ${r.reason}\nstderr: ${r.rawStderr}`);
+    assert.equal(r.decision, 'deny', `a failing cd before ; leaves git in the gsd-core session\nstdout: ${r.rawStdout}`);
+    assert.match(r.rawStdout, /conventional-commit prefix/);
+  });
+});
+
 test('PROOF advisory: preflight-shipped-paths surfaces vs reports clean, NEVER a permissionDecision', { skip: GSD_CORE_CWD ? false : 'no gsd-core checkout reachable (env limit)' }, () => {
   // preflight reads the REAL working-tree diff at cwd (model-driven companion; no stdin payload).
   const r = spawnHook(abs('preflight-shipped-paths'), { cwd: GSD_CORE_CWD });

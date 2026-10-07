@@ -860,3 +860,127 @@ test('branch policy: the two gates now agree — contrib ⊆ conventional, no ga
     }
   }
 });
+
+// ── quick-261007-ji5 F3 redesign (review WR-01..WR-04, WR-07): candidate union, fail-closed ──
+//
+// resolveRootForCommand now considers EVERY plausible directory a git / gh segment can run in: each
+// cd / pushd / git -C target with HOME expanded (and the literal form only when such a directory
+// really exists), plus the prior cwd whenever a cd can fail or be bypassed before that segment
+// (a non-&& operator, a newline, a lone &, cd -, popd, a subshell, a cd function), plus the start
+// cwd and every assigned HOME value when the command reassigns HOME. If ANY candidate is a gsd-core
+// checkout the command resolves as gsd-core (gates on).
+//
+// ORACLE: each row also runs in real bash with a fake `git` first on PATH that applies its -C
+// pairs and prints `pwd -P`, so the table records where git ACTUALLY runs. Property: bash ran git
+// in gsd-core => the resolver returns the gsd-core root. Converse rows: git ran only in the other
+// repo => the resolver returns null (no false deny).
+
+const { spawnSync } = require('node:child_process');
+const HAVE_BASH = spawnSync('bash', ['-c', 'exit 0']).status === 0;
+
+function withOracleLayout(body) {
+  const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ji5-oracle-')));
+  const H = path.join(tmp, 'home');
+  const GSD = path.join(H, 'repos', 'gsd-core');
+  const OTHER = path.join(H, 'repos', 'gsd-contrib-toolkit');
+  const NEUTRAL = path.join(tmp, 'neutral');
+  const BIN = path.join(tmp, 'bin');
+  fs.mkdirSync(path.join(GSD, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(GSD, 'gsd-core', 'bin', 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(GSD, 'scripts', 'pr-target-policy.cjs'), 'module.exports = {};\n');
+  fs.mkdirSync(OTHER, { recursive: true });
+  fs.mkdirSync(NEUTRAL, { recursive: true });
+  fs.mkdirSync(BIN, { recursive: true });
+  fs.writeFileSync(
+    path.join(BIN, 'git'),
+    '#!/bin/bash\nwhile [ "$1" = "-C" ]; do cd "$2" || exit 1; shift 2; done\npwd -P\ncat >/dev/null 2>&1\nexit 0\n',
+    { mode: 0o755 }
+  );
+  const had = Object.prototype.hasOwnProperty.call(process.env, 'HOME');
+  const old = process.env.HOME;
+  try {
+    process.env.HOME = H;
+    return body({ tmp, H, GSD, OTHER, NEUTRAL, BIN });
+  } finally {
+    if (had) process.env.HOME = old;
+    else delete process.env.HOME;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+/** Where bash really runs git for `cmd` (realpaths printed by the fake git), from cwd `base`. */
+function oracleDirs(L, cmd, base) {
+  const r = spawnSync('bash', ['-c', cmd], {
+    cwd: base,
+    input: '',
+    encoding: 'utf8',
+    env: Object.assign({}, process.env, { HOME: L.H, PATH: L.BIN + path.delimiter + process.env.PATH }),
+  });
+  // path.resolve normalizes a POSIX `//` prefix (bash keeps it after `cd "$HOME/abs"` with HOME=/).
+  return String(r.stdout || '').split('\n').filter((l) => l.startsWith('/')).map((l) => path.resolve(l))
+    .filter((l) => l === L.tmp || l.startsWith(L.tmp + '/'));
+}
+
+const fill = (L, s) => s.split('{GSD}').join(L.GSD).split('{H}').join(L.H);
+const inside = (dir, root) => dir === root || dir.startsWith(root + '/');
+
+// [label, command, base ('gsd' | 'neutral'), expect ('gated' | 'null')]
+const ORACLE_ROWS = [
+  // WR-01: an unrelated export / source / printf / bare HOME word must not suppress the expansion.
+  ['WR-01 export', 'export GIT_TRACE=0 && cd "$HOME/repos/gsd-core" && git push', 'neutral', 'gated'],
+  ['WR-01 source', 'source /dev/null && cd "$HOME/repos/gsd-core" && git push', 'neutral', 'gated'],
+  ['WR-01 printf + git -C', 'printf "x\\n" >/dev/null; git -C "$HOME/repos/gsd-core" push', 'neutral', 'gated'],
+  ['WR-01 echo HOME', 'echo HOME; cd "$HOME/repos/gsd-core" && git push', 'neutral', 'gated'],
+  // WR-02: indirect HOME reassignment.
+  ['WR-02 unset indirect', 'h=HOME; unset $h; cd "$HOME{GSD}" && git push', 'gsd', 'gated'],
+  ['WR-02 mapfile indirect', 'h=HOME; mapfile -t $h <<< /; cd "$HOME{GSD}" && git push', 'gsd', 'gated'],
+  ['WR-02 readarray indirect', 'h=HOME; readarray -t $h <<< {H}/repos; cd "$HOME/gsd-core" && git push', 'gsd', 'gated'],
+  ['WR-02 getopts indirect', 'h=HOME; getopts x: $h -x /; cd "$HOME{GSD}" ; git push', 'gsd', 'gated'],
+  // WR-03: a cd that can fail before ; or ||, a literal single-quoted HOME, cd -.
+  ['WR-03 failed cd then ;', 'cd "$HOME/repos/typo"; git push', 'gsd', 'gated'],
+  ['WR-03 failed cd then ||', 'cd "$HOME/repos/typo" || git push', 'gsd', 'gated'],
+  ['WR-03 single-quoted literal', "cd '$HOME/repos/gsd-contrib-toolkit'; git push", 'gsd', 'gated'],
+  ['WR-03 cd -', 'cd "$HOME/repos/gsd-contrib-toolkit" && cd - >/dev/null && git push', 'gsd', 'gated'],
+  // WR-04: ~ after a HOME reassignment.
+  ['WR-04 export HOME then ~', 'export HOME={H}/repos; cd ~/gsd-core && git push', 'neutral', 'gated'],
+  ['WR-04 bare HOME= then ~', 'HOME={H}/repos; cd ~/gsd-core && git push', 'neutral', 'gated'],
+  ['WR-04 export HOME then git -C ~', 'export HOME={H}/repos && git -C ~/gsd-core push', 'neutral', 'gated'],
+  // WR-07: cd -P / --, pushd, subshell, newline, a cd function, a backgrounded cd.
+  ['WR-07 cd -P', 'cd -P "$HOME/repos/gsd-core" && git push', 'neutral', 'gated'],
+  ['WR-07 cd --', 'cd -- "$HOME/repos/gsd-core" && git push', 'neutral', 'gated'],
+  ['WR-07 pushd', 'pushd "$HOME/repos/gsd-core" && git push', 'neutral', 'gated'],
+  ['WR-07 subshell', '(cd "$HOME/repos/gsd-core" && git push)', 'neutral', 'gated'],
+  ['WR-07 newline', 'cd "$HOME/repos/gsd-core"\ngit push', 'neutral', 'gated'],
+  ['WR-07 cd function', 'cd() { builtin cd "$HOME/repos/gsd-core"; }; cd "$HOME/repos/gsd-contrib-toolkit" && git push', 'neutral', 'gated'],
+  ['WR-07 backgrounded cd', 'cd "$HOME/repos/gsd-contrib-toolkit" & git push', 'gsd', 'gated'],
+  ['gsd-core under HOME stays gated', 'cd "$HOME/repos/gsd-core" && git push', 'gsd', 'gated'],
+  // Converse: nothing can fail or be bypassed, git runs only in the other repo -> not gated.
+  ['converse cd HOME && commit', 'cd "$HOME/repos/gsd-contrib-toolkit" && git commit -m x', 'gsd', 'null'],
+  ['converse braced', 'cd ${HOME}/repos/gsd-contrib-toolkit && git push', 'gsd', 'null'],
+  ['converse tilde', 'cd ~/repos/gsd-contrib-toolkit && git push', 'gsd', 'null'],
+  ['converse git -C HOME', 'git -C "$HOME/repos/gsd-contrib-toolkit" push', 'gsd', 'null'],
+  ['converse add && commit', 'cd "$HOME/repos/gsd-contrib-toolkit" && git add -A && git commit -m x', 'gsd', 'null'],
+  ['converse heredoc commit', "cd \"$HOME/repos/gsd-contrib-toolkit\" && git commit -F - <<'EOF'\nfix: don't stop\nEOF", 'gsd', 'null'],
+  ['converse unrelated export', 'export FOO=1 && cd "$HOME/repos/gsd-contrib-toolkit" && git commit -m x', 'gsd', 'null'],
+  ['converse trailing printf', 'cd "$HOME/repos/gsd-contrib-toolkit" && git commit -m x && printf done', 'gsd', 'null'],
+  ['converse cd -P', 'cd -P "$HOME/repos/gsd-contrib-toolkit" && git push', 'gsd', 'null'],
+];
+
+for (const [label, rawCmd, baseKind, expect] of ORACLE_ROWS) {
+  test('F3 oracle: ' + label + ' -> ' + expect, { skip: HAVE_BASH ? false : 'bash not available' }, () => {
+    withOracleLayout((L) => {
+      const cmd = fill(L, rawCmd);
+      const base = baseKind === 'gsd' ? L.GSD : L.NEUTRAL;
+      const ran = oracleDirs(L, cmd, base);
+      const gsdHit = ran.some((d) => inside(d, L.GSD));
+      const got = res.resolveRootForCommand(cmd, base);
+      if (expect === 'gated') {
+        assert.ok(gsdHit, 'oracle sanity: bash must run git in gsd-core for ' + JSON.stringify(cmd) + ' (ran: ' + ran.join(', ') + ')');
+        assert.ok(got !== null && inside(fs.realpathSync(got), L.GSD), 'git really runs in gsd-core, resolver returned ' + got);
+      } else {
+        assert.ok(!gsdHit && ran.some((d) => inside(d, L.OTHER)), 'oracle sanity: git runs only in the other repo (ran: ' + ran.join(', ') + ')');
+        assert.strictEqual(got, null, 'nothing can fail: must resolve away from gsd-core');
+      }
+    });
+  });
+}

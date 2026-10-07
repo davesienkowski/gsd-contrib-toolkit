@@ -374,3 +374,29 @@ test('36-01 lock: splitSegments keeps an unquoted newline inside ONE segment (SE
 test('36-01 lock: parseCommand("echo a\\ngsd-test x") has exactly one segment (documented newline residual)', () => {
   assert.strictEqual(parseCommand('echo a\ngsd-test x').segments.length, 1);
 });
+
+// ── quick-261007-ji5 F3 redesign: opt-in cwd separators (newline, lone &) ──
+// The DEFAULT split is unchanged (newline / lone & are NOT separators: every gate's classification
+// depends on that, 36-CONTEXT Addendum 3). The resolver's cwd-candidate walk opts in, because a
+// `cd` on one line does not guard a `git` on the next, and a backgrounded `cd x &` never moves
+// the shell that runs the following command.
+
+test('cwdSeparators: an unquoted newline splits with nextOp "\\n"; the default does not', () => {
+  const opt = parseCommand('cd /a\ngit push', { cwdSeparators: true });
+  assert.deepStrictEqual(opt.segments.map((s) => [s.program, s.nextOp]), [['cd', '\n'], ['git', null]]);
+  const def = parseCommand('cd /a\ngit push');
+  assert.strictEqual(def.segments.length, 1);
+});
+
+test('cwdSeparators: a lone & splits with nextOp "&"; && , 2>&1 , &> and >& do not', () => {
+  const opt = parseCommand('cd /a & git push 2>&1 && echo x &>/dev/null', { cwdSeparators: true });
+  assert.deepStrictEqual(opt.segments.map((s) => [s.program, s.nextOp]), [['cd', '&'], ['git', '&&'], ['echo', null]]);
+  assert.strictEqual(parseCommand('cd /a & git push').segments.length, 1, 'default unchanged');
+});
+
+test('cwdSeparators: a heredoc body stays one opaque segment; quoted newlines never split', () => {
+  const p = parseCommand("cd /a && git commit -F - <<'EOF'\nfix: don't stop; really\nEOF", { cwdSeparators: true });
+  assert.deepStrictEqual(p.segments.map((s) => s.program), ['cd', 'git']);
+  const q = parseCommand('git commit -m "a\nb" && git push', { cwdSeparators: true });
+  assert.deepStrictEqual(q.segments.map((s) => s.program), ['git', 'git']);
+});
