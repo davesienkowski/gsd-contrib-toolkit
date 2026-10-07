@@ -23,10 +23,9 @@ name: verify
 # execute. Adding it would make people disable EXEC-01 to get green, which is the exact defect
 # this whole workflow exists to prevent.
 #
-# No `npm ci` anywhere: this repo has no package.json, and every file the fault-injection sandbox
-# copies is TRACKED in gsd-core (all four SHAPE_CHECKS scripts, affected-tests-lib.cjs, and the
-# transitive scripts/lib/cli-exit.cjs, scripts/run-tests.cjs, gsd-core/bin/lib/package-identity.cjs).
-# A shallow clone is sufficient — verified 2026-07-30 with `git ls-files --error-unmatch`.
+# Installs: this repo has no package.json and the `verify` job installs nothing. The `compat` job
+# installs and builds its gsd-core checkout (`npm ci --ignore-scripts` + `npm run build:lib`),
+# because gsd-core emits gsd-core/bin/lib/*.cjs from src/*.cts and gitignores most of that output.
 
 on:
   push:
@@ -87,20 +86,19 @@ jobs:
   compat:
     name: compat (real gsd-core — HARD-01/HARD-02 execute)
     runs-on: ubuntu-latest
-    # DELIBERATELY no `GSD_CORE_ROOT` here. Setting it looked right and was measured wrong: it makes
-    # the capability-LIFECYCLE tests (install/off/on/remove, contrib-capability.test.cjs) treat this
-    # shallow clone as a usable engine, and they need a BUILT gsd-core — `gsd-core/bin/lib/` ships 17
-    # tracked files but a built checkout has ~166. Result was 21 failures for a purely environmental
-    # reason. Measured locally 2026-07-30 before pushing a second red.
+    # DELIBERATELY no job-wide `GSD_CORE_ROOT`. The capability-LIFECYCLE tests (install/off/on/remove,
+    # contrib-capability.test.cjs) treat a GSD_CORE_ROOT engine as installable, and they were never
+    # measured against this job (2026-07-30 they failed 21 cases against the then-unbuilt clone). It
+    # is set only on the verify-hooks and verify-capability steps below, which need it.
     #
-    # This job does not need it: fault-injection resolves gsd-core from CWD, and every step below
-    # runs with `working-directory: gsd-core`, so the HARD-01/HARD-02 proofs execute (verified: "8
-    # case(s) executed, 0 skipped") off the sentinel + the 5 SHAPE_CHECKS scripts alone.
+    # Fault-injection resolves gsd-core from CWD, and the gsd-core-side steps run with
+    # `working-directory: gsd-core`, so the HARD-01/HARD-02 proofs execute (measured 2026-10-07:
+    # "6 case(s) executed, 0 skipped").
     #
     # Consequence, stated rather than hidden: the LIVE-backed hook suites (gh-pr-create, gh-edit,
-    # gh-issue-create, issue-dedupe) still SKIP in CI. They skip honestly now instead of crashing on
-    # a hardcoded path, but running them for real needs a built-engine job — logged as follow-up,
-    # not silently pretended.
+    # gh-issue-create, issue-dedupe) still SKIP in CI. They skip honestly instead of crashing on a
+    # hardcoded path; running them for real against this built checkout is a logged follow-up, out
+    # of scope here, not silently pretended.
     steps:
       - name: Check out the toolkit
         uses: actions/checkout@v4
@@ -118,7 +116,18 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
+
+      # gsd-core emits gsd-core/bin/lib/*.cjs from src/*.cts and gitignores most of them
+      # (text-lines.cjs since gsd-core #3420, 2026-08-13), which is why compat failed
+      # `live-validators-load` on every run from 2026-08-17. `--ignore-scripts` keeps third-party
+      # install scripts from running; `build:lib` is gsd-core's own emit step. Node 24 because
+      # gsd-core's engines is >=24 (this step must run after setup-node). No cache: about 20 s.
+      - name: Build gsd-core (emitted bin/lib is gitignored)
+        working-directory: gsd-core
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build:lib
 
       # Fail EARLY and legibly if the sentinel layout is absent, rather than letting every
       # downstream proof silently skip and report green. This assertion is the honest-green
