@@ -14,7 +14,7 @@ name: verify
 # Why this job split is load-bearing, not cosmetic: hooks/fault-injection.test.cjs resolves its
 # source via resolveGsdCoreRoot(process.cwd()), which needs the sentinel layout (scripts/ +
 # gsd-core/bin/lib/ + an identity script). Without a real checkout its 8 HARD-01/HARD-02 cases
-# SKIP (its 2 hermetic sandbox-derivation cases still run: 10 cases in all, re-measured
+# SKIP (its 4 hermetic sandbox cases still run: 12 cases in all, re-measured
 # 2026-10-07). Until 2026-07-30 that skip read as PASS; EXEC-01 (bin/self-test.cjs) now makes an
 # unexecuted, skipped OR FAILED load-bearing proof a FAILURE (failed cases since 2026-10-07: a
 # stale sandbox had 2 of the 8 HARD-02 cases failing under a printed PASS), and `compat` is what supplies the checkout so they
@@ -51,6 +51,9 @@ jobs:
   verify:
     name: verify (node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    # Bounded (re-review R2-IN-02): a hang anywhere (e.g. a LIVE script that hangs at load) fails
+    # in 20 minutes instead of the 360-minute default.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -92,6 +95,9 @@ jobs:
   compat:
     name: compat (real gsd-core — HARD-01/HARD-02 execute)
     runs-on: ubuntu-latest
+    # Bounded (re-review R2-IN-02): a hang anywhere (e.g. a LIVE script that hangs at load) fails
+    # in 20 minutes instead of the 360-minute default.
+    timeout-minutes: 20
     # DELIBERATELY no job-wide `GSD_CORE_ROOT`. The capability-LIFECYCLE tests (install/off/on/remove,
     # contrib-capability.test.cjs) treat a GSD_CORE_ROOT engine as installable, and they were never
     # measured against this job (2026-07-30 they failed 21 cases against the then-unbuilt clone). It
@@ -99,8 +105,8 @@ jobs:
     #
     # Fault-injection resolves gsd-core from CWD, and the gsd-core-side steps run with
     # `working-directory: gsd-core`, so the HARD-01/HARD-02 proofs execute. Measured 2026-10-07
-    # against a built next: "10 of 10 case(s) executed and passed, 0 failed, 0 skipped" (8
-    # HARD-01/HARD-02 + 2 hermetic sandbox cases). The earlier "6 case(s) executed" figure was 2
+    # against a built next: "12 of 12 case(s) executed and passed, 0 failed, 0 skipped" (8
+    # HARD-01/HARD-02 + 4 hermetic sandbox cases). The earlier "6 case(s) executed" figure was 2
     # FAILING HARD-02 cases masked by EXEC-01; the sandbox now derives its load-time requires.
     #
     # Consequence, stated rather than hidden: the LIVE-backed hook suites (gh-pr-create, gh-edit,
