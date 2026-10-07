@@ -376,6 +376,8 @@ function buildArtifact(hook, kase, fixture, expected, cap, verdict, note) {
  * @param {Array}  [opts.table] the proof table (default PROOF_TABLE) — injected by the test.
  * @param {Function} [opts.spawnHook] the (absPath, {stdin,cwd}) capture fn (default the live harness).
  * @param {string|null} [opts.liveCwd] cwd for needsLive cases (default resolveGsdCoreCwd()); null => SKIP.
+ * @param {boolean} [opts.requireExecuted=false] quick-261007-ji5 WR-08: when true, ANY skipped case
+ *   (or zero cases) makes ok false, so a job that must execute every proof cannot pass vacuously.
  * @returns {{ok:boolean, results:Array<{hook,case,verdict,...}>}}
  */
 function runVerify(opts = {}) {
@@ -480,18 +482,35 @@ function runVerify(opts = {}) {
     }
   }
 
-  // ok is true ONLY if every NON-skipped case is a pass. A skipped case does not flip ok.
-  const ok = results.every((r) => r.verdict === 'pass' || r.verdict === 'skipped');
+  // ok is true ONLY if every NON-skipped case is a pass. A skipped case does not flip ok, unless
+  // requireExecuted (WR-08): then every case must have executed and at least one must exist.
+  const requireExecuted = opts.requireExecuted === true;
+  const ok = requireExecuted
+    ? results.length > 0 && results.every((r) => r.verdict === 'pass')
+    : results.every((r) => r.verdict === 'pass' || r.verdict === 'skipped');
   return { ok, results };
 }
 
 /**
+ * Parse CLI flags. `--require-executed` (quick-261007-ji5 WR-08, used by the CI compat job) makes a
+ * skipped case a failure.
+ * @param {string[]} argv process.argv.slice(2)
+ * @returns {{requireExecuted:boolean}}
+ */
+function parseCliArgs(argv) {
+  return { requireExecuted: Array.isArray(argv) && argv.includes('--require-executed') };
+}
+
+/**
  * CLI entry: run every proof, write artifacts, print PASS/FAIL lines (mirrors doctor.cjs), and
- * return the exit code (0 = every reachable proof passed; 1 = any non-pass non-skip).
+ * return the exit code (0 = every reachable proof passed; 1 = any non-pass non-skip, or under
+ * --require-executed any skip or zero cases).
+ * @param {string[]} [argv]
  * @returns {number}
  */
-function runCli() {
-  const { ok, results } = runVerify({ write: true });
+function runCli(argv) {
+  const { requireExecuted } = parseCliArgs(argv || process.argv.slice(2));
+  const { ok, results } = runVerify({ write: true, requireExecuted });
   process.stdout.write('verify-hooks — re-runnable deny/allow proof capture (TEST-01/TEST-02)\n');
   process.stdout.write('  proofs: ' + PROOFS_DIR + '\n\n');
   let pass = 0; let fail = 0; let skip = 0;
@@ -505,7 +524,10 @@ function runCli() {
   }
   process.stdout.write('\n');
   process.stdout.write(pass + ' pass, ' + fail + ' fail, ' + skip + ' skip across ' + results.length + ' proof cases.\n');
-  if (!ok) {
+  if (!ok && requireExecuted && fail === 0) {
+    process.stdout.write('VERIFY FAILED — --require-executed: ' + skip + ' of ' + results.length +
+      ' proof case(s) SKIPPED (or none ran). Every proof must execute here; check GSD_CORE_ROOT.\n');
+  } else if (!ok) {
     process.stdout.write('VERIFY FAILED — a hook proof was inconclusive or contradicted its expected verdict. ' +
       'A crash/empty capture is NEVER a pass (05-01 invariant). Inspect proofs/ for the captured evidence.\n');
   } else {
@@ -518,4 +540,4 @@ if (require.main === module) {
   process.exit(runCli());
 }
 
-module.exports = { runVerify, runCli, resolveGsdCoreCwd, PROOF_TABLE };
+module.exports = { runVerify, runCli, parseCliArgs, resolveGsdCoreCwd, PROOF_TABLE };
