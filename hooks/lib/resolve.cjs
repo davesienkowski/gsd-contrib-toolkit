@@ -349,6 +349,24 @@ function effectiveProgram(seg) {
   return { program: tokens[i] || '', rest: tokens.slice(i), subshell };
 }
 
+/**
+ * True when the shared classifier names an action for this segment (anything but 'other'). The
+ * segment is re-classified from its tokens with a subshell `(` / `)` stripped, so `git push)` in
+ * `(cd x && git push)` is still seen as a push. Fail-closed: a classifier error counts as governable.
+ */
+function segmentIsGovernable(s) {
+  try {
+    const { classifyAction } = require('./classify.cjs');
+    const { classifyTokens } = require('./argv.cjs');
+    const toks = s.allTokens.map((t) => t.replace(/^\(+/, '').replace(/\)+$/, '')).filter((t) => t !== '');
+    if (toks.length === 0) return false;
+    const r = classifyAction({ ok: true, segments: [classifyTokens(toks)] });
+    return !(r && r.action === 'other');
+  } catch (_) {
+    return true;
+  }
+}
+
 /** A cd/pushd target: the first argument that is not a flag, `--` or a redirection; or null. */
 function cdTarget(rest) {
   for (let k = 1; k < rest.length; k++) {
@@ -474,8 +492,14 @@ function commandCandidateDirs(command, baseCwd, opts) {
     pushUnique(homes, absolutePathTokens(segs));
   }
 
-  let relevant = [];
-  segs.forEach((s, j) => { if (s.program === 'git' || s.program === 'gh') relevant.push(j); });
+  // Relevant segments: git / gh segments the shared classifier names an action for (the only ones
+  // a gate can govern), so a read-only `git log` / `git status` in the session cwd does not gate a
+  // commit or push that runs elsewhere. None of those -> every git / gh segment; none at all ->
+  // the end state. classify.cjs is required lazily (it does not require this module).
+  const gitOrGh = [];
+  segs.forEach((s, j) => { if (s.program === 'git' || s.program === 'gh') gitOrGh.push(j); });
+  let relevant = gitOrGh.filter((j) => segmentIsGovernable(segs[j]));
+  if (relevant.length === 0) relevant = gitOrGh;
   if (relevant.length === 0) relevant = [segs.length];
 
   const out = [];
