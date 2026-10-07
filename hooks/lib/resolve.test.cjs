@@ -893,7 +893,10 @@ function withOracleLayout(body) {
   fs.mkdirSync(BIN, { recursive: true });
   fs.writeFileSync(
     path.join(BIN, 'git'),
-    '#!/bin/bash\nwhile [ "$1" = "-C" ]; do cd "$2" || exit 1; shift 2; done\npwd -P\ncat >/dev/null 2>&1\nexit 0\n',
+    // Read-only verbs print nothing: no gate governs them, so the oracle reports only where a
+    // GOVERNABLE git command (commit, push, merge, ...) runs.
+    '#!/bin/bash\nwhile [ "$1" = "-C" ]; do cd "$2" || exit 1; shift 2; done\n' +
+      'case "$1" in log|status|rev-parse|fetch|show|diff) ;; *) pwd -P ;; esac\ncat >/dev/null 2>&1\nexit 0\n',
     { mode: 0o755 }
   );
   const had = Object.prototype.hasOwnProperty.call(process.env, 'HOME');
@@ -964,6 +967,11 @@ const ORACLE_ROWS = [
   ['converse unrelated export', 'export FOO=1 && cd "$HOME/repos/gsd-contrib-toolkit" && git commit -m x', 'gsd', 'null'],
   ['converse trailing printf', 'cd "$HOME/repos/gsd-contrib-toolkit" && git commit -m x && printf done', 'gsd', 'null'],
   ['converse cd -P', 'cd -P "$HOME/repos/gsd-contrib-toolkit" && git push', 'gsd', 'null'],
+  // Only segments a gate can govern (the shared classifier names an action) are relevant: a
+  // read-only git in the session cwd does not gate a commit or push that runs elsewhere.
+  ['converse trailing git log line', 'cd "$HOME/repos/gsd-contrib-toolkit" && git commit -m x\ngit log --oneline -1', 'gsd', 'null'],
+  ['converse git status first', 'git status && cd "$HOME/repos/gsd-contrib-toolkit" && git push', 'gsd', 'null'],
+  ['subshell push then a commit elsewhere', '(cd "$HOME/repos/gsd-core" && git push); cd "$HOME/repos/gsd-contrib-toolkit" && git commit -m x', 'neutral', 'gated'],
 ];
 
 for (const [label, rawCmd, baseKind, expect] of ORACLE_ROWS) {
