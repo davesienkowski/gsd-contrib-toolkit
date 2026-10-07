@@ -984,3 +984,15 @@ for (const [label, rawCmd, baseKind, expect] of ORACLE_ROWS) {
     });
   });
 }
+
+// With no git / gh segment the candidates are the END state: the end of the command is not an
+// operator that can bypass a cd (found after the redesign: the final segment's null nextOp was
+// read as a bypass, so `cd X && npm test` kept the session cwd).
+test('F3 union: no git/gh segment -> the end state only; a cd before && is not bypassed by the end of the command', () => {
+  withTempHome((home) => {
+    assert.deepStrictEqual(res.commandCandidateDirs('cd "$HOME/repos/x" && npm test', BASE), [path.join(home, 'repos', 'x')]);
+    assert.deepStrictEqual(res.commandCandidateDirs('cd /tmp', BASE), ['/tmp']);
+    // A trailing lone & backgrounds the cd: the shell's own cwd never moves.
+    assert.deepStrictEqual(res.commandCandidateDirs('cd /tmp &', BASE), ['/tmp', BASE]);
+  });
+});
