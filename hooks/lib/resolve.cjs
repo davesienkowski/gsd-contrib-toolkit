@@ -325,10 +325,25 @@ const WRAPPER_WORDS = new Set(['sudo', 'env', 'command', 'builtin', 'exec', 'noh
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
 const OPAQUE_PROGRAMS = new Set(['source', '.', 'eval']);
 
-/** The effective program of a segment past `(`, `{`, `!`, `NAME=v` and wrapper words. */
+// Wrapper flags that take a VALUE (so the value is never mistaken for the program), and the ones
+// that change directory for the wrapped command (round 3, re-review R2-WR-02).
+const WRAPPER_VALUE_FLAGS = {
+  env: new Set(['-u', '--unset', '-C', '--chdir', '-S', '--split-string']),
+  sudo: new Set(['-u', '--user', '-g', '--group', '-C', '--close-from', '-D', '--chdir', '-h', '--host',
+    '-p', '--prompt', '-r', '--role', '-t', '--type', '-T', '--command-timeout', '-U', '--other-user']),
+};
+const WRAPPER_CHDIR_FLAGS = { env: new Set(['-C', '--chdir']), sudo: new Set(['-D', '--chdir']) };
+
+/**
+ * The effective program of a segment past `(`, `{`, `!`, `NAME=v` and wrapper words, as a BASENAME
+ * like the classifier (`/usr/bin/git` is git). `chdirs` collects `env -C/--chdir` and
+ * `sudo -D/--chdir` directories, which apply to this segment only; `prefixLen` is the index of the
+ * program token (everything before it is a scoped prefix).
+ */
 function effectiveProgram(seg) {
   const tokens = Array.isArray(seg && seg.tokens) ? seg.tokens.map(String) : [];
   let subshell = false;
+  const chdirs = [];
   let i = 0;
   while (i < tokens.length) {
     let t = tokens[i];
@@ -339,14 +354,36 @@ function effectiveProgram(seg) {
       tokens[i] = t;
     }
     if (t === '{' || t === '!' || ASSIGNMENT_RE.test(t)) { i += 1; continue; }
-    if (WRAPPER_WORDS.has(t)) {
+    const w = path.basename(t);
+    if (WRAPPER_WORDS.has(w)) {
       i += 1;
-      while (i < tokens.length && (tokens[i].startsWith('-') || /^\d+(?:\.\d+)?[smhd]?$/.test(tokens[i]) || ASSIGNMENT_RE.test(tokens[i]))) i += 1;
+      const valueFlags = WRAPPER_VALUE_FLAGS[w];
+      const chdirFlags = WRAPPER_CHDIR_FLAGS[w];
+      while (i < tokens.length) {
+        const f = tokens[i];
+        if (ASSIGNMENT_RE.test(f) || /^\d+(?:\.\d+)?[smhd]?$/.test(f)) { i += 1; continue; }
+        if (!f.startsWith('-')) break;
+        const eq = f.startsWith('--') ? f.indexOf('=') : -1;
+        const name = eq > 0 ? f.slice(0, eq) : f;
+        if (valueFlags && valueFlags.has(name)) {
+          const v = eq > 0 ? f.slice(eq + 1) : tokens[i + 1];
+          if (chdirFlags && chdirFlags.has(name) && typeof v === 'string') chdirs.push(v);
+          i += eq > 0 ? 1 : 2;
+          continue;
+        }
+        if (chdirFlags && chdirFlags.has(f.slice(0, 2)) && f.length > 2 && !f.startsWith('--')) {
+          chdirs.push(f.slice(2)); // attached short form: -C<dir> / -D<dir>
+          i += 1;
+          continue;
+        }
+        i += 1;
+      }
       continue;
     }
     break;
   }
-  return { program: tokens[i] || '', rest: tokens.slice(i), subshell };
+  const word = tokens[i] || '';
+  return { program: word ? path.basename(word) : '', rest: tokens.slice(i), subshell, chdirs, prefixLen: i };
 }
 
 /**
@@ -382,7 +419,12 @@ function cdTarget(rest) {
 function commandMayReassignHomeVar(segs) {
   for (const s of segs) {
     if (OPAQUE_PROGRAMS.has(s.program)) return true;
-    for (const t of s.allTokens) {
+    // A `HOME=v` PREFIX on a command other than cd / pushd / popd is scoped to that command and
+    // cannot move a later cd (round 3, re-review R2-IN-05: `HOME=/tmp npm test` over-gated).
+    const scopedPrefix = s.program !== '' && !CD_PROGRAMS.has(s.program) && s.program !== 'popd';
+    for (let k = 0; k < s.allTokens.length; k++) {
+      const t = s.allTokens[k];
+      if (scopedPrefix && k < s.prefixLen && /^HOME\+?=/.test(t)) continue;
       if (/(^|=)HOME(\+?=|$)/.test(t) || /\$\{HOME:?=/.test(t)) return true;
     }
   }
@@ -496,10 +538,13 @@ function commandCandidateDirs(command, baseCwd, opts) {
   // a gate can govern), so a read-only `git log` / `git status` in the session cwd does not gate a
   // commit or push that runs elsewhere. None of those -> every git / gh segment; none at all ->
   // the end state. classify.cjs is required lazily (it does not require this module).
+  // If no git / gh segment is recognised but the classifier still names an action somewhere (a
+  // wrapper form this walk does not model), every segment and the end state are relevant.
   const gitOrGh = [];
   segs.forEach((s, j) => { if (s.program === 'git' || s.program === 'gh') gitOrGh.push(j); });
   let relevant = gitOrGh.filter((j) => segmentIsGovernable(segs[j]));
   if (relevant.length === 0) relevant = gitOrGh;
+  if (relevant.length === 0 && segs.some((s) => segmentIsGovernable(s))) relevant = segs.map((_, j) => j).concat([segs.length]);
   if (relevant.length === 0) relevant = [segs.length];
 
   const out = [];
@@ -509,9 +554,18 @@ function commandCandidateDirs(command, baseCwd, opts) {
     for (let i = 0; i < j; i++) {
       const s = segs[i];
       if (!CD_PROGRAMS.has(s.program) && s.program !== 'popd') continue;
+      // Round 3 (re-review R2-WR-01): a cd that is a PIPELINE STAGE (`a | cd X`, `cd X | b`) runs in
+      // a subshell and never moves the parent: no candidate changes.
+      if ((i > 0 && segs[i - 1].nextOp === '|') || s.nextOp === '|') continue;
       let bypass = cdFunction || s.subshell;
-      // The operators between the cd and segment j; the end of the command (null) is not one.
-      for (let k = i; k < j && !bypass; k++) if (segs[k].nextOp !== '&&' && segs[k].nextOp !== null) bypass = true;
+      // The operators between the cd and segment j that let j run after a FAILED cd: `;`, `||`, a
+      // lone `&` and a newline. `&&` short-circuits, a later `|` only joins a pipeline that is itself
+      // behind the cd (`cd X && a | b && git commit` runs git only in X), and the end of the command
+      // (null) is no operator.
+      for (let k = i; k < j && !bypass; k++) {
+        const op = segs[k].nextOp;
+        if (op === ';' || op === '||' || op === '&' || op === '\n') bypass = true;
+      }
       const t = s.program === 'popd' ? '-' : cdTarget(s.rest);
       let next;
       if (t === '-' || (s.program === 'pushd' && t === null)) {
@@ -523,8 +577,15 @@ function commandCandidateDirs(command, baseCwd, opts) {
       cands = next;
       pushUnique(seen, cands);
     }
+    // `env -C <dir>` / `sudo -D <dir>` move this segment only (round 3, R2-WR-02).
+    if (j < segs.length) {
+      for (const d of segs[j].chdirs) {
+        const moved = applyTarget(cands, String(d), homes);
+        if (moved.length > 0) cands = moved;
+      }
+    }
     if (j < segs.length && followGitC && segs[j].program === 'git') {
-      for (const d of gitGlobalChdirs({ tokens: segs[j].rest })) {
+      for (const d of gitGlobalChdirs({ tokens: ['git'].concat(segs[j].rest.slice(1)) })) {
         const moved = applyTarget(cands, String(d), homes);
         if (moved.length > 0) cands = moved;
       }
