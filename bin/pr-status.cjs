@@ -15,11 +15,14 @@
  * Text output is plain ASCII (every GitHub-sourced string has C0 controls and DEL dropped and any
  * other non-ASCII character replaced by ?), PR blocks print in argv order and end with one footer:
  * the three reads per PR are not atomic, so the snapshot is point-in-time. `--json` prints an array
- * of derive() results in the same order. A PR whose read fails prints `#N ERROR: <first stderr line>`
- * and the exit code is 1; usage errors exit 2. mergeable UNKNOWN (GitHub still computing) is re-read
- * once after 2 s.
+ * of derive() results (each with `repo`) in the same order. Every block header names the repo it read
+ * (`owner/name#N`), so a sweep of another repo cannot silently read open-gsd/gsd-core. A PR whose read
+ * fails prints `owner/name#N ERROR: <first stderr line>` and the exit code is 1; usage errors (including
+ * PR number 0) exit 2; leading zeros are dropped before any gh call. mergeable UNKNOWN (GitHub still
+ * computing) is re-read once after 2 s.
  *
- * CONTRACT — READ-ONLY gh only. Per PR exactly three reads, every one carrying the repo:
+ * CONTRACT — READ-ONLY gh only. Per PR three reads (four when mergeable is UNKNOWN: the view is read
+ * twice), every one carrying the repo:
  *   1. gh pr view N --repo R --json <twelve fields>
  *   2. gh api --paginate --slurp "repos/R/pulls/N/reviews?per_page=100"   (REST GET; carries commit_id)
  *   3. gh pr checks N --repo R --json name,state,bucket,workflow,completedAt,link
@@ -29,11 +32,19 @@
  *
  * BALL RULE: each reviewer's latest review by submitted_at (stable, so an equal timestamp keeps the
  * API order and the later-listed review wins), ignoring COMMENTED and PENDING reviews, the PR author
- * and bots. The newest CHANGES_REQUESTED among those decides: its commit_id equal to headRefOid (exact
- * 40-hex string) -> the author owes changes; any other commit -> that reviewer owes a re-review,
- * flagged NOT RE-REQUESTED when they are absent from reviewRequests (login compared case-insensitively,
- * a team request by slug). No change request: an approval -> maintainer; pending requests -> reviewer;
- * else none. A draft or non-OPEN PR gets no ball.
+ * and bots. A DISMISSED review stays that reviewer's latest state but counts as no verdict.
+ *   - The newest CHANGES_REQUESTED decides first. Its commit_id equal to headRefOid (exact 40-hex
+ *     string) -> the author owes changes, unless that reviewer is back in reviewRequests (re-requested
+ *     without a new commit) -> the reviewer owes. Any other commit -> that reviewer owes a re-review,
+ *     flagged NOT RE-REQUESTED when absent from reviewRequests (login compared case-insensitively); when
+ *     any team is requested membership cannot be resolved, so the flag is dropped and the team named.
+ *   - An approval is MAINTAINER ready only when one approval is on the head, nobody is still requested,
+ *     no check fails or is pending and mergeStateStatus is not DIRTY or BEHIND; otherwise the blockers
+ *     are named and the ball goes to the author (failing checks, DIRTY, BEHIND), else the requested
+ *     reviewers, else the maintainer (approval on an older commit, checks pending).
+ *   - Only dismissed reviews and nobody requested -> maintainer, re-approval needed. Pending requests
+ *     -> reviewer. Else none. A draft or non-OPEN PR gets no ball.
+ * reviewDecision is a cross-check: when GitHub's value disagrees with this reading a note line says so.
  *
  * No shell: execFileSync with argv arrays; PR numbers are validated as digits. Node built-ins only.
  *
@@ -52,7 +63,9 @@ const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const USAGE = 'usage: pr-status [--json] [--repo owner/name] <pr-number...>  (default repo ' + DEFAULT_REPO + ')';
 const FOOTER =
   'Snapshot is point-in-time (three separate gh reads per PR); re-run before any write. ' +
-  'A change request answered without a new commit (retitle, comment) still reads as author owes: check the timeline.';
+  'A change request answered without a new commit (retitle, comment) still reads as author owes unless ' +
+  'the reviewer was re-requested: check the timeline.';
+const MAX_BUFFER = 64 * 1024 * 1024; // review listings carry full bodies; 1 MiB (the default) is not enough
 const UNKNOWN_RETRY_MS = 2000;
 
 /** The three read-only argv arrays for one PR. */
@@ -66,7 +79,12 @@ function ghArgs(number, repo) {
 
 /** Default gh runner: no shell, stdout parsed as JSON; a non-zero exit throws the execFileSync error. */
 function defaultGh(args) {
-  const out = execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60000 });
+  const out = execFileSync('gh', args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 60000,
+    maxBuffer: MAX_BUFFER,
+  });
   return JSON.parse(out);
 }
 
@@ -123,9 +141,18 @@ function lower(s) {
   return String(s == null ? '' : s).toLowerCase();
 }
 
-function requestName(r) {
-  if (!r) return '';
-  return r.login || r.slug || r.name || '';
+function isTeam(r) {
+  return Boolean(r) && (r.__typename === 'Team' || (!r.login && Boolean(r.slug || r.name)));
+}
+
+/** A review request as { kind: 'user'|'team', name } (a team by slug, else name, else login). */
+function requestEntry(r) {
+  if (!r) return null;
+  if (isTeam(r)) {
+    const name = r.slug || r.name || r.login || '';
+    return name ? { kind: 'team', name: String(name) } : null;
+  }
+  return r.login ? { kind: 'user', name: String(r.login) } : null;
 }
 
 function summarizeChecks(checks) {
@@ -155,8 +182,14 @@ function derive({ view, reviews, checks }) {
   const authorLogin = lower(v.author && v.author.login);
   const commits = Array.isArray(v.commits) ? v.commits : [];
   const last = commits.length ? commits[commits.length - 1] : null;
-  const requested = (Array.isArray(v.reviewRequests) ? v.reviewRequests : []).map(requestName).filter(Boolean);
-  const requestedLower = new Set(requested.map(lower));
+  const entries = (Array.isArray(v.reviewRequests) ? v.reviewRequests : []).map(requestEntry).filter(Boolean);
+  const requested = entries.map((e) => (e.kind === 'team' ? `team ${e.name}` : e.name));
+  const req = {
+    users: new Set(entries.filter((e) => e.kind === 'user').map((e) => lower(e.name))),
+    teams: entries.filter((e) => e.kind === 'team').map((e) => e.name),
+    all: requested,
+  };
+  const checkSummary = summarizeChecks(checks);
 
   const flat = (Array.isArray(reviews) ? reviews : []).flat();
   const counted = flat
@@ -186,7 +219,7 @@ function derive({ view, reviews, checks }) {
     }))
     .sort((a, b) => (a.login < b.login ? -1 : a.login > b.login ? 1 : 0));
 
-  const ball = decideBall(v, latest, requested, requestedLower, head);
+  const ball = decideBall(v, latest, req, head, checkSummary);
 
   return {
     number: v.number,
@@ -199,38 +232,71 @@ function derive({ view, reviews, checks }) {
     lastCommit: last
       ? { oid: String(last.oid || ''), committedDate: String(last.committedDate || ''), headline: String(last.messageHeadline || '') }
       : null,
-    checks: summarizeChecks(checks),
+    checks: checkSummary,
     reviewers,
     requested,
     ball,
+    reviewDecision: v.reviewDecision == null ? null : String(v.reviewDecision),
+    decisionNote: decisionNote(v.reviewDecision, latest),
   };
 }
 
-function decideBall(v, latest, requested, requestedLower, head) {
-  if (v.state !== 'OPEN') return { owner: 'n/a', login: null, reRequested: null, reason: `state ${v.state}` };
-  if (v.isDraft) return { owner: 'n/a', login: null, reRequested: null, reason: 'draft' };
+/** GitHub's reviewDecision versus this reading; a note string when they disagree, else null. */
+function decisionNote(reviewDecision, latest) {
+  const decision = String(reviewDecision || '');
+  if (!decision) return null;
+  const states = [...latest.values()].map((e) => e.r.state);
+  const reading = states.includes('CHANGES_REQUESTED') ? 'CHANGES_REQUESTED' : states.includes('APPROVED') ? 'APPROVED' : 'REVIEW_REQUIRED';
+  return decision === reading ? null : `GitHub reviewDecision is ${decision}; pr-status reads ${reading}`;
+}
+
+function ballOf(owner, fields) {
+  return Object.assign({ owner, login: null, reRequested: null, reason: '', ready: false, blockers: [] }, fields);
+}
+
+function decideBall(v, latest, req, head, checks) {
+  if (v.state !== 'OPEN') return ballOf('n/a', { reason: `state ${v.state}` });
+  if (v.isDraft) return ballOf('n/a', { reason: 'draft' });
+  const entries = [...latest.values()];
 
   let newestCr = null;
-  for (const entry of latest.values()) {
+  for (const entry of entries) {
     if (entry.r.state !== 'CHANGES_REQUESTED') continue;
     if (!newestCr || entry.order > newestCr.order) newestCr = entry;
   }
   if (newestCr) {
     const login = String(newestCr.r.user.login);
+    const byLogin = req.users.has(lower(login));
     if (head !== '' && String(newestCr.r.commit_id || '') === head) {
-      return { owner: 'author', login, reRequested: null, reason: 'newest change request is on the head' };
+      if (byLogin) return ballOf('reviewer', { login, reRequested: true, reason: 're-requested without a new commit' });
+      return ballOf('author', { login, reason: 'newest change request is on the head' });
     }
-    return {
-      owner: 'reviewer',
-      login,
-      reRequested: requestedLower.has(lower(login)),
-      reason: 'the head moved after the change request',
-    };
+    const reRequested = byLogin ? true : req.teams.length ? 'unknown' : false;
+    return ballOf('reviewer', { login, reRequested, reason: 'the head moved after the change request' });
   }
-  const approvers = [...latest.values()].filter((e) => e.r.state === 'APPROVED').map((e) => String(e.r.user.login)).sort();
-  if (approvers.length) return { owner: 'maintainer', login: null, reRequested: null, reason: 'ready for maintainer' };
-  if (requested.length) return { owner: 'reviewer', login: null, reRequested: true, reason: 'requests pending' };
-  return { owner: 'none', login: null, reRequested: null, reason: 'no change request, approval or review request' };
+
+  const approvals = entries.filter((e) => e.r.state === 'APPROVED');
+  if (approvals.length) {
+    const blockers = [];
+    if (!approvals.some((e) => head !== '' && String(e.r.commit_id || '') === head)) blockers.push('approval on an older commit');
+    if (req.all.length) blockers.push(`review requests pending (${req.all.join(', ')})`);
+    if (checks.counts.fail > 0) blockers.push('checks failing');
+    if (checks.counts.pending > 0) blockers.push('checks pending');
+    if (v.mergeStateStatus === 'DIRTY') blockers.push('DIRTY (merge conflicts)');
+    if (v.mergeStateStatus === 'BEHIND') blockers.push('BEHIND (base moved)');
+    if (blockers.length === 0) return ballOf('maintainer', { ready: true, reason: 'ready for maintainer' });
+    const authorOwes = checks.counts.fail > 0 || v.mergeStateStatus === 'DIRTY' || v.mergeStateStatus === 'BEHIND';
+    const owner = authorOwes ? 'author' : req.all.length ? 'reviewer' : 'maintainer';
+    return ballOf(owner, { blockers, reason: 'approved but blocked' });
+  }
+
+  const dismissed = entries.filter((e) => e.r.state === 'DISMISSED');
+  if (req.all.length) return ballOf('reviewer', { reRequested: true, reason: 'requests pending' });
+  if (dismissed.length) {
+    const login = String(dismissed.sort((a, b) => b.order - a.order)[0].r.user.login);
+    return ballOf('maintainer', { login, reason: 're-approval needed (review dismissed)' });
+  }
+  return ballOf('none', { reason: 'no change request, approval or review request' });
 }
 
 /** ASCII-only rendering of a GitHub-sourced string: drop C0 controls and DEL, other non-ASCII -> ?. */
@@ -246,13 +312,24 @@ function short(sha, n) {
 
 function ballLine(d) {
   const b = d.ball;
+  const blocked = () => `(approved but blocked: ${b.blockers.map(clean).join(', ')})`;
+  if (b.owner === 'author' && b.blockers.length) return `  ball: AUTHOR owes fixes ${blocked()}`;
   if (b.owner === 'author') return `  ball: AUTHOR owes changes (newest CHANGES_REQUESTED by ${clean(b.login)} is on the head)`;
+  if (b.owner === 'reviewer' && b.blockers.length) return `  ball: REVIEWER owes a review ${blocked()}`;
+  if (b.owner === 'reviewer' && b.login && b.reason === 're-requested without a new commit') {
+    return `  ball: REVIEWER ${clean(b.login)} owes a re-review (re-requested without a new commit)`;
+  }
   if (b.owner === 'reviewer' && b.login) {
-    return `  ball: REVIEWER ${clean(b.login)} owes a re-review (the head moved after the change request)` +
-      (b.reRequested ? '' : ' NOT RE-REQUESTED');
+    const base = `  ball: REVIEWER ${clean(b.login)} owes a re-review (the head moved after the change request)`;
+    if (b.reRequested === 'unknown') return `${base}; team requested: ${d.requested.filter((r) => r.startsWith('team ')).map((r) => clean(r.slice(5))).join(', ')}`;
+    return base + (b.reRequested ? '' : ' NOT RE-REQUESTED');
   }
   if (b.owner === 'reviewer') return `  ball: REVIEWER owes a first review (requests pending: ${d.requested.map(clean).join(', ')})`;
-  if (b.owner === 'maintainer') return '  ball: MAINTAINER (ready for maintainer: approved, no open change request)';
+  if (b.owner === 'maintainer' && b.ready) {
+    return '  ball: MAINTAINER ready (approved on the head, no change request, no pending requests, checks green, not DIRTY or BEHIND)';
+  }
+  if (b.owner === 'maintainer' && b.blockers.length) return `  ball: MAINTAINER not ready ${blocked()}`;
+  if (b.owner === 'maintainer') return `  ball: MAINTAINER re-approval needed (latest review by ${clean(b.login)} was dismissed; no review requested)`;
   if (b.owner === 'none') return '  ball: none (no change request, approval or pending review request)';
   return null; // n/a: draft or not OPEN prints its state and no ball
 }
@@ -266,7 +343,8 @@ function ballLine(d) {
 function formatText(d) {
   const lines = [];
   const draft = d.isDraft ? ' DRAFT' : '';
-  lines.push(`#${clean(d.number)} ${clean(d.state)}${draft} head ${clean(short(d.head, 12))} base ${clean(d.base)}`);
+  const repo = d.repo ? clean(d.repo) : '';
+  lines.push(`${repo}#${clean(d.number)} ${clean(d.state)}${draft} head ${clean(short(d.head, 12))} base ${clean(d.base)}`);
   if (d.lastCommit) {
     const lc = d.lastCommit;
     lines.push(`  last commit: ${clean(short(lc.oid, 7))} ${clean(lc.committedDate)} ${clean(lc.headline)}`);
@@ -288,6 +366,7 @@ function formatText(d) {
   lines.push(`  requested: ${d.requested.length ? d.requested.map(clean).join(', ') : 'none'}`);
   const bl = ballLine(d);
   if (bl) lines.push(bl);
+  if (d.decisionNote) lines.push(`  note: ${clean(d.decisionNote)}`);
   return lines.join('\n');
 }
 
@@ -310,7 +389,11 @@ function parseArgs(argv) {
       const value = a === '--repo' ? list[++i] : a.slice('--repo='.length);
       if (value == null || !REPO_PATTERN.test(String(value))) return { usageError: `bad --repo value: ${clean(value)}` };
       repo = String(value);
-    } else if (/^[0-9]+$/.test(a)) numbers.push(a);
+    } else if (/^[0-9]+$/.test(a)) {
+      const n = a.replace(/^0+/, '');
+      if (n === '') return { usageError: `PR number must be 1 or more: ${a}` };
+      numbers.push(n);
+    }
     else return { usageError: `not a PR number or flag: ${clean(a)}` };
   }
   if (numbers.length === 0) return { usageError: 'no PR number given' };
@@ -335,10 +418,10 @@ function runCli(argv, deps = {}) {
   let failed = false;
   const results = args.numbers.map((n) => {
     try {
-      return derive(fetchPr(n, args.repo, deps));
+      return { repo: args.repo, ...derive(fetchPr(n, args.repo, deps)) };
     } catch (err) {
       failed = true;
-      return { number: Number(n), error: firstErrorLine(err) };
+      return { repo: args.repo, number: Number(n), error: firstErrorLine(err) };
     }
   });
   if (args.json) {
@@ -346,7 +429,7 @@ function runCli(argv, deps = {}) {
     const ascii = JSON.stringify(results, null, 2).replace(/[\u007f-\uffff]/g, (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
     out.write(ascii + '\n');
   } else {
-    const blocks = results.map((d) => (d.error ? `#${clean(d.number)} ERROR: ${clean(d.error)}` : formatText(d)));
+    const blocks = results.map((d) => (d.error ? `${clean(d.repo)}#${clean(d.number)} ERROR: ${clean(d.error)}` : formatText(d)));
     out.write(blocks.join('\n\n') + '\n\n' + FOOTER + '\n');
   }
   return failed ? 1 : 0;
