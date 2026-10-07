@@ -509,6 +509,62 @@ test('PROOF advisory: protocol-reminder emits NOTHING on a clean prompt (no inje
   assert.doesNotMatch(r.rawStdout, /permissionDecision/, 'never a permissionDecision');
 });
 
+// ── quick-261007-ji5 F3: a leading $HOME in a cd target resolves to the real home, through the real
+// git-commit-convention entrypoint. Hermetic: own sentinel fixture as the session cwd, own temp HOME
+// (spawnHook passes process.env), GSD_CONTRIB_OVERRIDE removed; every env change restored in finally.
+
+function makeSentinelRoot(dir) {
+  fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'gsd-core', 'bin', 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'scripts', 'pr-target-policy.cjs'), 'module.exports = {};\n');
+  return dir;
+}
+
+function withF3Env(body) {
+  const session = makeSentinelRoot(fs.mkdtempSync(path.join(os.tmpdir(), 'ji5-session-')));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ji5-home-'));
+  const hadHome = Object.prototype.hasOwnProperty.call(process.env, 'HOME');
+  const oldHome = process.env.HOME;
+  const hadOverride = Object.prototype.hasOwnProperty.call(process.env, 'GSD_CONTRIB_OVERRIDE');
+  const oldOverride = process.env.GSD_CONTRIB_OVERRIDE;
+  try {
+    process.env.HOME = home;
+    delete process.env.GSD_CONTRIB_OVERRIDE;
+    return body({ session, home });
+  } finally {
+    if (hadHome) process.env.HOME = oldHome;
+    else delete process.env.HOME;
+    if (hadOverride) process.env.GSD_CONTRIB_OVERRIDE = oldOverride;
+    fs.rmSync(session, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
+test('PROOF F3: git-commit-convention ALLOWS cd "$HOME/repos/toolkit" && a non-conventional commit from a gsd-core cwd', () => {
+  withF3Env(({ session, home }) => {
+    fs.mkdirSync(path.join(home, 'repos', 'toolkit'), { recursive: true });
+    const r = spawnHook(abs('git-commit-convention'), {
+      stdin: bash('cd "$HOME/repos/toolkit" && git commit -m "docs fix thing"'),
+      cwd: session,
+    });
+    assert.equal(r.conclusive, true, `inconclusive: ${r.reason}\nstderr: ${r.rawStderr}`);
+    assert.equal(r.decision, 'allow', `a commit in a non-gsd-core HOME repo must not be gated\nstdout: ${r.rawStdout}`);
+  });
+});
+
+test('PROOF F3 guard: git-commit-convention still DENIES cd "$HOME/repos/gsdcore" && a non-conventional commit', () => {
+  withF3Env(({ session, home }) => {
+    makeSentinelRoot(path.join(home, 'repos', 'gsdcore'));
+    const r = spawnHook(abs('git-commit-convention'), {
+      stdin: bash('cd "$HOME/repos/gsdcore" && git commit -m "docs fix thing"'),
+      cwd: session,
+    });
+    assert.equal(r.conclusive, true, `inconclusive: ${r.reason}\nstderr: ${r.rawStderr}`);
+    assert.equal(r.decision, 'deny', `a gsd-core checkout under HOME stays gated\nstdout: ${r.rawStdout}`);
+    assert.match(r.rawStdout, /conventional-commit prefix/, "the deny carries the ENF-16 prefix reason");
+  });
+});
+
 test('PROOF advisory: preflight-shipped-paths surfaces vs reports clean, NEVER a permissionDecision', { skip: GSD_CORE_CWD ? false : 'no gsd-core checkout reachable (env limit)' }, () => {
   // preflight reads the REAL working-tree diff at cwd (model-driven companion; no stdin payload).
   const r = spawnHook(abs('preflight-shipped-paths'), { cwd: GSD_CORE_CWD });
