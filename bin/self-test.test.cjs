@@ -151,6 +151,43 @@ test('executedTestsCheck: ok:true when every case actually executed', () => {
   assert.equal(r.executed[0].pass, 8);
 });
 
+// quick-261007-ji5 CR-01: a load-bearing proof that ran and FAILED cases is not a passing proof.
+// Measured 2026-10-07 against a built gsd-core next: fault-injection reported 6 pass / 2 fail /
+// 0 skipped, and EXEC-01 printed PASS ("6 case(s) executed, 0 skipped").
+test('executedTestsCheck: ok:false when a mustExecute proof ran but FAILED cases ({pass:6, fail:2})', () => {
+  const r = executedTestsCheck({
+    repoRoot: '/repo',
+    covered: MUST,
+    spawn: makeExecSpawn({
+      '/repo/hooks/fault-injection.test.cjs': { status: 1, stdout: '# tests 8\n# pass 6\n# fail 2\n# skipped 0\n' },
+    }),
+  });
+  assert.equal(r.ok, false, 'a proof with failing cases must NOT read as executed-and-green');
+  assert.equal(r.executed.length, 0);
+  assert.equal(r.unproven.length, 1);
+  assert.match(r.unproven[0].reason, /2 case\(s\) FAILED/);
+});
+
+test('executedTestsCheck: ok:false when the probe exits non-zero even with fail 0 (crash after counters)', () => {
+  const r = executedTestsCheck({
+    repoRoot: '/repo',
+    covered: MUST,
+    spawn: makeExecSpawn({
+      '/repo/hooks/fault-injection.test.cjs': { status: 1, stdout: '# tests 8\n# pass 8\n# fail 0\n# skipped 0\n' },
+    }),
+  });
+  assert.equal(r.ok, false, 'a non-zero probe exit is never a pass');
+  assert.match(r.unproven[0].reason, /exited 1/);
+});
+
+test('runSelfTest CLI line: an executed proof reports pass/total and the fail count', () => {
+  const { formatExecutedLine } = require('./self-test.cjs');
+  assert.equal(
+    formatExecutedLine({ path: 'hooks/fault-injection.test.cjs', pass: 8, fail: 0, skipped: 0 }),
+    'hooks/fault-injection.test.cjs — 8 of 8 case(s) executed and passed, 0 failed, 0 skipped'
+  );
+});
+
 test('executedTestsCheck: entries WITHOUT mustExecute are not probed (no extra spawns)', () => {
   const spawned = [];
   const r = executedTestsCheck({
