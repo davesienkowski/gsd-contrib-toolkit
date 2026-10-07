@@ -363,3 +363,10 @@ test('determinism: two runs against the same stubbed state print byte-identical 
     assert.ok(['pr view', 'pr checks'].includes(call.slice(0, 2).join(' ')) || call[0] === 'api', `read-only verb: ${l}`);
   }
 });
+
+test('end to end: --json output is ASCII too (non-ASCII escaped, round-trips through JSON.parse)', (t) => {
+  const r = runThroughStub(t, ['--json', '900018']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(isPrintableAscii(r.stdout), 'ASCII only');
+  assert.equal(JSON.parse(r.stdout)[0].lastCommit.headline, 'fix: café — headline');
+});
