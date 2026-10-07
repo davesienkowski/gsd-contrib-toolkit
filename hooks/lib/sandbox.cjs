@@ -28,6 +28,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 
 const { resolveGsdCoreRoot } = require('./resolve.cjs');
 
@@ -52,21 +53,77 @@ const SANDBOX_SCRIPTS = Object.freeze(
 );
 
 /**
- * Transitive requires that a copied script needs to LOAD (require-time only — a lazy require
- * inside a function body is not needed here). Without these, requireLiveScript would throw for a
- * DEPENDENCY miss, muddying a clean-sandbox proof.
+ * Transitive requires a copied script needs to LOAD are DERIVED, not listed (quick-261007-ji5
+ * CR-01). The hand list this replaced (package-identity, cli-exit, run-tests) went stale when
+ * upstream gsd-core added `scripts/pr-changed-files.cjs` (required by pr-template-policy) and
+ * `scripts/lib/exit-code-registry.cjs` (required by cli-exit): the sandbox silently dropped them
+ * and 2 of the 8 HARD-02 proofs failed for a sandbox reason.
  *
- *   - issue-version-gate  → `../gsd-core/bin/lib/package-identity.cjs`
- *   - affected-tests-lib  → `./lib/cli-exit.cjs` and `./run-tests.cjs` (DI-32-01). run-tests
- *     additionally requires `./build-hooks.js`, but LAZILY at call time inside a function, so it
- *     is deliberately NOT copied — the doctor only loads the module and calls the pure
- *     `resolveRunPlan`.
+ * Derivation: a child node process requires every SANDBOX_SCRIPT from the SOURCE checkout and
+ * reports `require.cache`, which is exactly the load-time closure (a lazy require inside a
+ * function body, such as run-tests' `./build-hooks.js`, is correctly NOT included). Any load error
+ * in the source checkout FAILS LOUDLY here instead of producing a sandbox that is missing a file.
+ * Cached per source root (one probe spawn per test process).
  */
-const SANDBOX_TRANSITIVE = Object.freeze([
-  'gsd-core/bin/lib/package-identity.cjs',
-  'scripts/lib/cli-exit.cjs',
-  'scripts/run-tests.cjs',
-]);
+const LOAD_CLOSURE_PROBE = [
+  "'use strict';",
+  'const files = JSON.parse(process.argv[1]);',
+  'const errors = [];',
+  'for (const f of files) {',
+  '  try { require(f); } catch (e) { errors.push(f + ": " + (e && e.message ? e.message.split("\\n")[0] : String(e))); }',
+  '}',
+  "process.stdout.write('\\n@@SANDBOX-CLOSURE@@' + JSON.stringify({ loaded: Object.keys(require.cache), errors }));",
+].join('\n');
+
+const closureCache = new Map();
+
+/**
+ * The repo-relative files (under sourceRoot) that loading every SANDBOX_SCRIPT pulls in.
+ * @param {string} sourceRoot
+ * @returns {string[]}
+ * @throws {Error} when a script fails to load in the source checkout or the probe yields no result.
+ */
+function deriveLoadClosure(sourceRoot) {
+  const root = path.resolve(sourceRoot);
+  if (closureCache.has(root)) return closureCache.get(root);
+  const files = SANDBOX_SCRIPTS.map((rel) => path.join(root, rel));
+  const r = spawnSync(process.execPath, ['-e', LOAD_CLOSURE_PROBE, JSON.stringify(files)], {
+    cwd: root,
+    encoding: 'utf8',
+    env: process.env,
+  });
+  const out = String((r && r.stdout) || '');
+  const at = out.lastIndexOf('@@SANDBOX-CLOSURE@@');
+  if (at === -1) {
+    throw new Error(
+      'sandbox: the load-closure probe produced no result for ' + root + ' (status ' + (r && r.status) +
+        '): ' + String((r && r.stderr) || '').slice(0, 500)
+    );
+  }
+  const res = JSON.parse(out.slice(at + '@@SANDBOX-CLOSURE@@'.length));
+  if (res.errors.length > 0) {
+    throw new Error(
+      'sandbox: a shape-checked LIVE script failed to load in the source checkout ' + root +
+        ' (a required file is missing or broken), so a faithful sandbox cannot be built: ' +
+        res.errors.join('; ')
+    );
+  }
+  const rels = [];
+  for (const abs of res.loaded) {
+    if (!abs.startsWith(root + path.sep)) continue;
+    rels.push(path.relative(root, abs));
+    // A load-time npm dependency needs its package.json files to resolve inside the sandbox.
+    const nm = path.join(root, 'node_modules') + path.sep;
+    if (abs.startsWith(nm)) {
+      for (let d = path.dirname(abs); d.startsWith(nm); d = path.dirname(d)) {
+        if (fs.existsSync(path.join(d, 'package.json'))) rels.push(path.relative(root, path.join(d, 'package.json')));
+      }
+    }
+  }
+  const closure = Object.freeze(Array.from(new Set(rels)).sort());
+  closureCache.set(root, closure);
+  return closure;
+}
 
 /**
  * Resolve `rel` against `root` and assert it stays strictly inside the sandbox. Rejects `../`
@@ -127,8 +184,8 @@ function makeSandbox(opts = {}) {
   fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
   fs.mkdirSync(path.join(root, 'gsd-core', 'bin', 'lib'), { recursive: true });
 
-  // Copy the LIVE shape-checked scripts + their transitive lib dep from the real checkout.
-  for (const rel of [...SANDBOX_SCRIPTS, ...SANDBOX_TRANSITIVE]) {
+  // Copy the LIVE shape-checked scripts + their DERIVED load-time closure from the real checkout.
+  for (const rel of new Set([...SANDBOX_SCRIPTS, ...deriveLoadClosure(sourceRoot)])) {
     const srcAbs = path.join(sourceRoot, rel);
     const destAbs = safeJoin(root, rel);
     copyInto(srcAbs, destAbs);
@@ -186,5 +243,6 @@ module.exports = {
   removeScript,
   driftScriptShape,
   SANDBOX_SCRIPTS,
+  deriveLoadClosure,
   safeJoin,
 };
