@@ -451,6 +451,49 @@ const DENY_GATES = [
   },
 ];
 
+// ── quick-261007-ji5 round 3 (re-review R2-CR-01): a newline or a lone `&` before the governed
+// command must not hide it from the gate. The default argv split (Addendum 3) keeps both inside one
+// segment, so `echo hi<newline>git commit ...` classified as `echo` and every gate allowed it. Each
+// gate now classifies from BOTH parses. Every DENY_GATES bad fixture, prefixed with `echo hi` + a
+// newline and with `true & `, must still deny wherever the single-line fixture denies.
+const R3_WRAPS = [
+  ['newline', (c) => 'echo hi\n' + c],
+  ['lone &', (c) => 'true & ' + c],
+];
+for (const g of DENY_GATES) {
+  const cwd = g.cwd || (g.needsLive ? GSD_CORE_CWD : process.cwd());
+  const skip =
+    g.needsLive && !GSD_CORE_CWD
+      ? 'no gsd-core checkout reachable (set GSD_CORE_ROOT) — LIVE-resolving case skipped (env limit)'
+      : false;
+  const command = JSON.parse(g.bad).tool_input.command;
+  for (const [label, wrap] of R3_WRAPS) {
+    test(`PROOF R3 ${label}: ${g.name} still denies its bad fixture behind ${label}`, { skip }, () => {
+      const r = spawnHook(abs(g.hook || g.name), { stdin: bash(wrap(command)), cwd });
+      assert.equal(r.conclusive, true, `inconclusive for ${g.name}: ${r.reason}\nstderr: ${r.rawStderr}`);
+      assert.equal(r.decision, 'deny', `${g.name} must deny ${JSON.stringify(wrap(command))}\nstdout: ${r.rawStdout}`);
+    });
+  }
+}
+
+// The re-review's three named fixtures, each against the gate that denies its single-line form.
+for (const [hook, single, wrapped] of [
+  ['git-commit-convention', 'git commit -m "bad message"', 'echo hi\ngit commit -m "bad message"'],
+  ['lint-ci-marker', 'git push origin x', 'true\ngit push origin x'],
+  ['containment', 'git push origin HEAD:next', 'echo hi & git push origin HEAD:next'],
+]) {
+  test(`PROOF R3: ${hook} denies ${JSON.stringify(wrapped)} exactly when it denies ${JSON.stringify(single)}`,
+    { skip: GSD_CORE_CWD ? false : 'no gsd-core checkout reachable (env limit)' }, (t) => {
+      const one = spawnHook(abs(hook), { stdin: bash(single), cwd: GSD_CORE_CWD });
+      if (one.decision !== 'deny') {
+        t.skip('single-line form is not denied in this environment (' + one.decision + ')');
+        return;
+      }
+      const r = spawnHook(abs(hook), { stdin: bash(wrapped), cwd: GSD_CORE_CWD });
+      assert.equal(r.decision, 'deny', `wrapped form must deny like the single-line form\nstdout: ${r.rawStdout}`);
+    });
+}
+
 for (const g of DENY_GATES) {
   const cwd = g.cwd || (g.needsLive ? GSD_CORE_CWD : process.cwd());
   const skip =
