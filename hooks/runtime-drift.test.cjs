@@ -340,3 +340,31 @@ for (const cmd of [
     assert.ok(calls.runtimeDigest > 0, 'the gate must reach the oracle');
   });
 }
+
+// ── quick-261007-ji5 round 3 (re-review R2-WR-05): GH_REPO through `env` or an earlier export ──
+for (const cmd of [
+  'env GH_REPO=open-gsd/gsd-core gh issue create --title x --body y',
+  'env -u FOO GH_REPO=open-gsd/gsd-core gh issue create --title x --body y',
+  'export GH_REPO=open-gsd/gsd-core; gh issue create --title x --body y',
+  'export GH_REPO=open-gsd/gsd-core && gh issue create --title x --body y',
+  'GH_REPO=open-gsd/gsd-core; gh issue create --title x --body y',
+]) {
+  test('R2-WR-05: `' + cmd + '` from a NON-gsd-core cwd ENGAGES (GH_REPO names gsd-core)', () => {
+    const { deps, calls } = scenario({ resolveRoot: () => null, readStamp: () => null });
+    const d = runRuntimeDriftGate(input(cmd), deps);
+    assert.strictEqual(d.permissionDecision, 'deny', cmd);
+    assert.ok(calls.runtimeDigest > 0, 'the gate must reach the oracle');
+  });
+}
+
+for (const cmd of [
+  'env GH_REPO=open-gsd/gsd-graph gh issue create --title x --body y',
+  'export GH_REPO=open-gsd/gsd-graph && gh issue create --title x --body y',
+]) {
+  test('R2-WR-05 other repo: `' + cmd + '` from a gsd-core cwd → allow (GH_REPO names another repo)', () => {
+    const { deps, calls } = scenario({ readStamp: () => null });
+    const d = runRuntimeDriftGate(input(cmd), deps);
+    assert.strictEqual(d.permissionDecision, 'allow', cmd);
+    assert.strictEqual(oracleCalls(calls), 0);
+  });
+}

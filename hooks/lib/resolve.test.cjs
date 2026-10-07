@@ -1018,3 +1018,17 @@ test('F3 union: no git/gh segment -> the end state only; a cd before && is not b
     assert.deepStrictEqual(res.commandCandidateDirs('cd /tmp &', BASE), ['/tmp', BASE]);
   });
 });
+
+// ── quick-261007-ji5 round 3 (R2-WR-05): commandTargetsGsdCore sees GH_REPO via env / export ──
+test('R2-WR-05: commandTargetsGsdCore reads GH_REPO after `env` and from an earlier export or assignment', () => {
+  for (const cmd of [
+    'env GH_REPO=open-gsd/gsd-core gh issue create --title x',
+    'export GH_REPO=open-gsd/gsd-core; gh issue create --title x',
+    'export GH_REPO=open-gsd/gsd-core && gh pr create --title x',
+    'GH_REPO=open-gsd/gsd-core; gh issue create --title x',
+  ]) {
+    assert.strictEqual(res.commandTargetsGsdCore(parseCommand(cmd)), true, cmd);
+  }
+  assert.strictEqual(res.commandTargetsGsdCore(parseCommand('export GH_REPO=dave/fork && gh pr create --title x')), false);
+  assert.strictEqual(res.commandTargetsGsdCore(parseCommand('export GH_REPO=open-gsd/gsd-core; unset GH_REPO; gh pr create --title x')), false);
+});
