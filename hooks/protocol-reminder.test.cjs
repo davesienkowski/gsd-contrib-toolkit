@@ -122,7 +122,6 @@ const ENVELOPE = [
 const F4_RED = [
   ['a bare envelope', ENVELOPE],
   ['an envelope followed by a whitespace-only remainder', ENVELOPE + '\n   \n'],
-  ['an unterminated envelope', '<task-notification>\n<task-id>x</task-id>\n<result>ready to contribute upstream'],
   ['two envelopes', ENVELOPE + '\n' + ENVELOPE],
   ['an envelope after leading whitespace', '  \n' + ENVELOPE],
   ['an envelope wrapped in a system-reminder line pair', '<system-reminder>\n' + ENVELOPE + '\n</system-reminder>'],
@@ -150,3 +149,71 @@ for (const [label, prompt] of F4_GUARDS) {
     assert.equal(isContributionPrompt(prompt), true, `should detect: ${JSON.stringify(prompt)}`);
   });
 }
+
+// ── quick-261007-ji5 review WR-05: only TERMINATED blocks are stripped ──
+// An unterminated (truncated, partially pasted) block strips NOTHING, so the advisory reminder errs
+// toward firing instead of swallowing the user's request that follows it. This REPLACES the earlier
+// "an unterminated envelope is NOT a contribution prompt" case (locked review decision 4).
+
+const WR05_GUARDS = [
+  ['an unterminated envelope (judged on all its words)', '<task-notification>\n<task-id>x</task-id>\n<result>ready to contribute upstream'],
+  ['an unterminated block followed by the user request',
+    '<task-notification>\n<result>done</result>\nplease file an issue on gsd-core for this'],
+  ['a closed block then an unterminated block carrying the user request',
+    '<task-notification>\n<result>x</result>\n</task-notification>\n<task-notification>\n<result>y</result>\nplease file an issue on gsd-core'],
+  ['user text on the unterminated tag line', '  <task-notification> please file an issue on gsd-core'],
+  ['an unterminated block, the user request, then a closed block',
+    '<task-notification>\n<result>a</result>\nplease file an issue on gsd-core\n' + ENVELOPE],
+];
+for (const [label, prompt] of WR05_GUARDS) {
+  test('WR-05: ' + label + ' IS a contribution prompt', () => {
+    assert.equal(isContributionPrompt(prompt), true, `should detect: ${JSON.stringify(prompt)}`);
+  });
+}
+
+// ── quick-261007-ji5 review WR-06: matching is linear, a large pasted prompt never stalls submission ──
+
+const BIG = 400 * 1024;
+const fill = (unit) => unit.repeat(Math.ceil(BIG / unit.length)).slice(0, BIG);
+for (const [label, prompt] of [
+  ['repeated gsdcore', fill('gsdcore ')],
+  ['repeated upstream', fill('upstream ')],
+  ['repeated issue', fill('issue ')],
+  ['repeated unterminated tags', fill('<task-notification>\n')],
+  ['repeated closed tags', fill('</task-notification>\n')],
+]) {
+  test('WR-06: a 400 KB prompt (' + label + ') is judged in under 200 ms', () => {
+    const t0 = process.hrtime.bigint();
+    isContributionPrompt(prompt);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.ok(ms < 200, label + ' took ' + ms.toFixed(1) + ' ms');
+  });
+}
+
+// The rewritten paired signals must agree with the ORIGINAL regexes on every short line (a guard:
+// passes before and after the rewrite). Deterministic word salad over the signal vocabulary.
+test('WR-06 guard: rewritten signals agree with the original regexes on a 3000-prompt corpus', () => {
+  const ORIGINAL = [
+    /\bfile (?:an? )?(?:issue|bug)\b/i,
+    /\bopen (?:a )?(?:pr|pull request|issue)\b/i,
+    /\b(?:create|submit|raise|report) (?:an? )?(?:issue|pr|pull request|bug)\b/i,
+    /\bcontribut(?:e|ing|ion)\b/i,
+    /\bgh (?:issue|pr) (?:create|edit)\b/i,
+    /\bgsd-?core\b.*\b(?:issue|pr|pull request|contribut|bug|fix|patch)\b/i,
+    /\b(?:issue|pr|pull request|contribut|bug|fix|patch)\b.*\bgsd-?core\b/i,
+    /\bupstream\b.*\b(?:issue|pr|pull request|bug|fix|contribut)\b/i,
+  ];
+  const WORDS = ['gsd-core', 'GSDcore', 'gsdcores', 'upstream', 'upstreams', 'issue', 'PR', 'pull request',
+    'contribut', 'contribute', 'bug', 'fix', 'fixes', 'patch', 'the', 'a', 'file', 'open', 'gh', 'create',
+    '\n', '\r', 'x-fix', 'pr.', '(bug)'];
+  let seed = 7;
+  const rnd = (n) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  for (let i = 0; i < 3000; i++) {
+    const n = 1 + rnd(8);
+    const parts = [];
+    for (let k = 0; k < n; k++) parts.push(WORDS[rnd(WORDS.length)]);
+    const p = parts.join(rnd(3) === 0 ? '' : ' ');
+    const expected = ORIGINAL.some((re) => re.test(p));
+    assert.equal(isContributionPrompt(p), expected, JSON.stringify(p));
+  }
+});
