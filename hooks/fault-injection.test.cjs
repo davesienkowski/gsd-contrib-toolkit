@@ -148,6 +148,43 @@ test('makeSandbox: copies the DERIVED transitive load-time requires of each shap
   }
 });
 
+// Round 3 (re-review R2-IN-01): a SYMLINKED source root used to yield an EMPTY closure silently
+// (require.cache keys are real paths); R2-IN-02: a script that hangs at load must not hang the
+// sandbox build forever.
+test('R2-IN-01: a symlinked source root still derives the full closure (every shape-checked script + its deps)', () => {
+  const { deriveLoadClosure } = require('./lib/sandbox.cjs');
+  const first = SANDBOX_SCRIPTS[0];
+  const depA = path.posix.join(path.posix.dirname(first), 'ji5-dep-a.cjs');
+  const src = makeFakeSource("require('./ji5-dep-a.cjs');\nmodule.exports = {};\n", { [depA]: 'module.exports = {};\n' });
+  const linkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ji5-link-'));
+  const link = path.join(linkDir, 'src');
+  fs.symlinkSync(src, link);
+  let sb;
+  try {
+    const closure = deriveLoadClosure(link);
+    for (const rel of SANDBOX_SCRIPTS) assert.ok(closure.includes(rel), 'closure lists ' + rel);
+    assert.ok(closure.includes(depA), 'closure lists the dependency');
+    sb = makeSandbox({ sourceRoot: link });
+    assert.strictEqual(fs.existsSync(path.join(sb.root, depA)), true, 'dependency copied through the symlinked root');
+  } finally {
+    if (sb) sb.dispose();
+    fs.rmSync(linkDir, { recursive: true, force: true });
+    fs.rmSync(src, { recursive: true, force: true });
+  }
+});
+
+test('R2-IN-02: a shape-checked script that HANGS at load fails the closure probe loudly after its timeout', () => {
+  const { deriveLoadClosure } = require('./lib/sandbox.cjs');
+  const src = makeFakeSource('setInterval(() => {}, 1000);\nmodule.exports = {};\n');
+  try {
+    const t0 = Date.now();
+    assert.throws(() => deriveLoadClosure(src, { timeoutMs: 1000 }), /no result|timed out|ETIMEDOUT/);
+    assert.ok(Date.now() - t0 < 10000, 'the probe was bounded by its timeout');
+  } finally {
+    fs.rmSync(src, { recursive: true, force: true });
+  }
+});
+
 test('makeSandbox: a shape-checked script whose load-time require is MISSING fails LOUDLY (never a silent drop)', () => {
   const src = makeFakeSource("require('./ji5-not-there.cjs');\nmodule.exports = {};\n");
   try {

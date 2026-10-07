@@ -215,7 +215,7 @@ test('runSelfTest: an all-skipped mustExecute proof flips overall ok:false', () 
   const r = runSelfTest(
     baseDeps({
       covered: MUST,
-      spawn: (cmd, args) => {
+      spawn: (_cmd, args) => {
         if (args[0] === '--check') return { status: 0, stderr: '' };
         if (args.includes('--test') && args.some((a) => !a.startsWith('--'))) {
           return { status: 0, stdout: '# tests 8\n# pass 0\n# fail 0\n# skipped 8\n' };
