@@ -207,3 +207,41 @@ test('WR-02: a paired advisory entry (inject surfaces, none quiet) still passes 
   assert.equal(none.verdict, 'pass', 'none stays quiet => pass');
   assert.equal(r.ok, true);
 });
+
+// ── quick-261007-ji5 WR-08: --require-executed — the compat job must not pass vacuously ──
+// Without it, a GSD_CORE_ROOT resolution regression degrades verify-hooks to "10 pass, 46 skip"
+// and the step still exits 0.
+
+test('requireExecuted: every case skipped => ok:false (a vacuous run is not a pass)', () => {
+  const liveGate = [{ name: 'livegate', kind: 'deny', bad: 'BAD', clean: 'CLEAN', needsLive: true }];
+  const spawn = () => { throw new Error('spawn must NOT be called for a skipped live case'); };
+  const r = runVerify({ write: false, spawnHook: spawn, table: liveGate, liveCwd: null, requireExecuted: true });
+  assert.equal(r.ok, false, 'all-skipped must fail under requireExecuted');
+});
+
+test('requireExecuted: a mix of passes and one skipped case => ok:false', () => {
+  const table = [
+    ...oneDenyGate,
+    { name: 'livegate', kind: 'deny', bad: 'BAD', clean: 'CLEAN', needsLive: true },
+  ];
+  const spawn = (_p, opts) => (opts.stdin === 'BAD' ? denyCap() : allowCap());
+  const r = runVerify({ write: false, spawnHook: spawn, table, liveCwd: null, requireExecuted: true });
+  assert.equal(r.ok, false, 'any skipped case fails under requireExecuted');
+});
+
+test('requireExecuted: every case executed and passed => ok:true', () => {
+  const spawn = (_p, opts) => (opts.stdin === 'BAD' ? denyCap() : allowCap());
+  const r = runVerify({ write: false, spawnHook: spawn, table: oneDenyGate, requireExecuted: true });
+  assert.equal(r.ok, true);
+});
+
+test('requireExecuted: an empty proof table => ok:false (zero executed cases)', () => {
+  const r = runVerify({ write: false, spawnHook: () => allowCap(), table: [], requireExecuted: true });
+  assert.equal(r.ok, false);
+});
+
+test('parseCliArgs: --require-executed sets requireExecuted; no flag leaves it off', () => {
+  const { parseCliArgs } = require('./verify-hooks.cjs');
+  assert.deepEqual(parseCliArgs(['--require-executed']), { requireExecuted: true });
+  assert.deepEqual(parseCliArgs([]), { requireExecuted: false });
+});
