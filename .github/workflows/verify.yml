@@ -14,8 +14,10 @@ name: verify
 # Why this job split is load-bearing, not cosmetic: hooks/fault-injection.test.cjs resolves its
 # source via resolveGsdCoreRoot(process.cwd()), which needs the sentinel layout (scripts/ +
 # gsd-core/bin/lib/ + an identity script). Without a real checkout its 8 HARD-01/HARD-02 cases
-# SKIP. Until 2026-07-30 that skip read as PASS; EXEC-01 (bin/self-test.cjs) now makes an
-# unexecuted load-bearing proof a FAILURE, and `compat` is what supplies the checkout so they
+# SKIP (its 2 hermetic sandbox-derivation cases still run: 10 cases in all, re-measured
+# 2026-10-07). Until 2026-07-30 that skip read as PASS; EXEC-01 (bin/self-test.cjs) now makes an
+# unexecuted, skipped OR FAILED load-bearing proof a FAILURE (failed cases since 2026-10-07: a
+# stale sandbox had 2 of the 8 HARD-02 cases failing under a printed PASS), and `compat` is what supplies the checkout so they
 # genuinely run. That combination is the honest-green requirement for this workflow.
 #
 # DO NOT add `self-test` to the `verify` job "for coverage" — it has no gsd-core checkout, so it
@@ -54,23 +56,27 @@ jobs:
       matrix:
         node: ['22', '24']
     steps:
+      # persist-credentials: false on every checkout: no job here pushes, so the job token never
+      # needs to sit in .git/config while the suite and (in compat) registry packages run.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
 
-      # The suite. The 8 fault-injection cases SKIP here (no gsd-core checkout) — expected and
-      # tolerated; `compat` below is where they must execute.
+      # The suite. The 8 checkout-backed fault-injection cases SKIP here (no gsd-core checkout) —
+      # expected and tolerated; `compat` below is where they must execute.
       - name: node --test
         run: node --test
 
-      # NOTE: `verify-hooks` is NOT here either — measured 2026-07-30, without a gsd-core checkout
-      # it proves only 10 of 56 cases ("10 pass, 0 fail, 46 skip") and still exits 0, AND it
-      # OVERWRITES the committed proofs/ corpus with degraded `fixture: null` stubs as a side
-      # effect. A step that proves 10/56 and calls it green is the exact defect this repo exists to
-      # stop, so it runs in `compat` (56/56) instead. `node --test` above already covers the hook
-      # unit suites here.
+      # NOTE: `verify-hooks` is NOT here either — re-measured 2026-10-07, without a gsd-core
+      # checkout it proves only 14 of 62 cases ("14 pass, 0 fail, 48 skip") and exits 0 unless run
+      # with --require-executed, AND it OVERWRITES the committed proofs/ corpus with degraded
+      # `fixture: null` stubs as a side effect. A step that proves 14/62 and calls it green is the
+      # exact defect this repo exists to stop, so it runs in `compat` (62/62, --require-executed)
+      # instead. `node --test` above already covers the hook unit suites here.
 
       # NOTE: `verify-capability` is NOT here — it reuses the LIVE gen-capability-registry
       # validators and is deliberately fail-loud when no gsd-core checkout is reachable ("a check
@@ -92,8 +98,10 @@ jobs:
     # is set only on the verify-hooks and verify-capability steps below, which need it.
     #
     # Fault-injection resolves gsd-core from CWD, and the gsd-core-side steps run with
-    # `working-directory: gsd-core`, so the HARD-01/HARD-02 proofs execute (measured 2026-10-07:
-    # "6 case(s) executed, 0 skipped").
+    # `working-directory: gsd-core`, so the HARD-01/HARD-02 proofs execute. Measured 2026-10-07
+    # against a built next: "10 of 10 case(s) executed and passed, 0 failed, 0 skipped" (8
+    # HARD-01/HARD-02 + 2 hermetic sandbox cases). The earlier "6 case(s) executed" figure was 2
+    # FAILING HARD-02 cases masked by EXEC-01; the sandbox now derives its load-time requires.
     #
     # Consequence, stated rather than hidden: the LIVE-backed hook suites (gh-pr-create, gh-edit,
     # gh-issue-create, issue-dedupe) still SKIP in CI. They skip honestly instead of crashing on a
@@ -104,6 +112,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: toolkit
+          persist-credentials: false
 
       # `next` is gsd-core's upstream default branch (not `main`) — see the GSD ADR rule.
       - name: Check out open-gsd/gsd-core @ next
@@ -113,6 +122,7 @@ jobs:
           ref: next
           path: gsd-core
           fetch-depth: 1
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -150,14 +160,16 @@ jobs:
       # Both live here, not in `verify`, for the same reason: they reuse LIVE gsd-core scripts and
       # are only meaningful against a real checkout.
       #
-      # verify-hooks: 56/56 here vs 10/56 with 46 skips in a checkout-less job (measured).
+      # verify-hooks: 62/62 here vs 14/62 with 48 skips in a checkout-less job (measured
+      # 2026-10-07). --require-executed fails the step on ANY skipped case, so a GSD_CORE_ROOT
+      # resolution regression cannot pass vacuously.
       # verify-capability: fail-loud when no checkout is reachable ("a check that did not run is
       # NEVER reported conformant").
-      - name: verify-hooks (byte-stable deny/allow proofs — all 56 cases)
+      - name: verify-hooks (byte-stable deny/allow proofs — all 62 cases must execute)
         working-directory: toolkit
         env:
           GSD_CORE_ROOT: ${{ github.workspace }}/gsd-core
-        run: node bin/verify-hooks.cjs
+        run: node bin/verify-hooks.cjs --require-executed
 
       - name: verify-capability (declared == shipped, LIVE registry validators)
         working-directory: toolkit
