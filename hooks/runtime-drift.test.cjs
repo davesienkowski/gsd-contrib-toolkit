@@ -304,3 +304,39 @@ test('the pure gate() seam is exported and returns a decision object', () => {
   const d = gate(input('git status'), deps);
   assert.deepStrictEqual(d, { permissionDecision: 'allow' });
 });
+
+// ───────────── quick-261007-ji5 F8: key on the EXPLICIT repo target, not the session cwd ─────────────
+//
+// Observed 2026-10-07: `gh issue create --repo open-gsd/gsd-graph ...` run from a gsd-core session
+// cwd was blocked as a filing against open-gsd/gsd-core. An explicit `--repo/-R`, `GH_REPO=` or
+// gh-api `repos/<owner>/<repo>` target that is NOT open-gsd/gsd-core is not a gsd-core filing,
+// whatever the cwd. With no explicit target, the cwd (root) still arms the gate.
+
+for (const cmd of [
+  'gh issue create --repo open-gsd/gsd-graph --title x --body y',
+  'gh issue create -R open-gsd/gsd-graph --title x --body y',
+  'GH_REPO=open-gsd/gsd-graph gh issue create --title x --body y',
+  'gh pr create --repo davesienkowski/gsd-contrib-toolkit --title x --body y',
+  'gh api -X POST repos/open-gsd/gsd-graph/issues -f title=x',
+]) {
+  test('F8: `' + cmd + '` from a gsd-core cwd → allow (explicit non-gsd-core target), oracle untouched', () => {
+    const { deps, calls } = scenario({ readStamp: () => null }); // root = gsd-core; unstamped would deny
+    const d = runRuntimeDriftGate(input(cmd), deps);
+    assert.strictEqual(d.permissionDecision, 'allow', cmd);
+    assert.strictEqual(oracleCalls(calls), 0, 'a filing against another repo never measures the runtime');
+  });
+}
+
+for (const cmd of [
+  'gh issue create --repo open-gsd/gsd-core --title x --body y',
+  'gh issue create --title x --body y',
+  'gh api -X POST repos/open-gsd/gsd-core/issues -f title=x',
+  'gh issue create --repo open-gsd/gsd-graph --title x --body y && git push origin HEAD',
+]) {
+  test('F8 guard: `' + cmd + '` from a gsd-core cwd still ENGAGES (gsd-core target, or no explicit target)', () => {
+    const { deps, calls } = scenario({ readStamp: () => null });
+    const d = runRuntimeDriftGate(input(cmd), deps);
+    assert.strictEqual(d.permissionDecision, 'deny', cmd);
+    assert.ok(calls.runtimeDigest > 0, 'the gate must reach the oracle');
+  });
+}
