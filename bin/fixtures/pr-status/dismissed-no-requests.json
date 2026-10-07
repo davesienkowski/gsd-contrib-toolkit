@@ -1,19 +1,16 @@
 {
   "provenance": {
     "source": "synthetic from cr-captured.json",
-    "edits": "reviews: the only CHANGES_REQUESTED set to APPROVED",
+    "edits": "reviews: the only review set to DISMISSED; view.reviewRequests emptied",
     "checksExit": 0,
     "expected": {
-      "owner": "author",
-      "ready": false,
-      "blockers": [
-        "review requests pending (Solvely-Colin, jeremymcs, davesienkowski)",
-        "BEHIND (base moved)"
-      ]
+      "owner": "maintainer",
+      "login": "trek-e",
+      "ready": false
     }
   },
   "view": {
-    "number": 900003,
+    "number": 900027,
     "state": "OPEN",
     "isDraft": false,
     "author": {
@@ -24,20 +21,7 @@
     "mergeable": "MERGEABLE",
     "mergeStateStatus": "BEHIND",
     "reviewDecision": "CHANGES_REQUESTED",
-    "reviewRequests": [
-      {
-        "__typename": "User",
-        "login": "Solvely-Colin"
-      },
-      {
-        "__typename": "User",
-        "login": "jeremymcs"
-      },
-      {
-        "__typename": "User",
-        "login": "davesienkowski"
-      }
-    ],
+    "reviewRequests": [],
     "commits": [
       {
         "oid": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690",
@@ -54,7 +38,7 @@
           "login": "trek-e",
           "type": "User"
         },
-        "state": "APPROVED",
+        "state": "DISMISSED",
         "submitted_at": "2026-10-07T01:15:23Z",
         "commit_id": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690"
       }

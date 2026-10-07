@@ -1,7 +1,7 @@
 {
   "provenance": {
     "source": "synthetic from reviewer-rerequested-captured.json",
-    "edits": "view.reviewRequests: replaced by one Team entry (slug maintainers); team entry shape is synthetic, not captured from gh",
+    "edits": "view.reviewRequests: replaced by one Team entry carrying only name (Maintainers); team entry shape is synthetic, not captured from gh",
     "checksExit": 0,
     "expected": {
       "owner": "reviewer",
@@ -10,7 +10,7 @@
     }
   },
   "view": {
-    "number": 900012,
+    "number": 900029,
     "state": "OPEN",
     "isDraft": false,
     "author": {
@@ -24,7 +24,7 @@
     "reviewRequests": [
       {
         "__typename": "Team",
-        "slug": "maintainers"
+        "name": "Maintainers"
       }
     ],
     "commits": [

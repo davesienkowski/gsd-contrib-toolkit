@@ -1,19 +1,18 @@
 {
   "provenance": {
     "source": "synthetic from cr-captured.json",
-    "edits": "reviews: the only CHANGES_REQUESTED set to APPROVED",
+    "edits": "as approved-ready, but the approval commit_id set to an older (synthetic) sha",
     "checksExit": 0,
     "expected": {
-      "owner": "author",
+      "owner": "maintainer",
       "ready": false,
       "blockers": [
-        "review requests pending (Solvely-Colin, jeremymcs, davesienkowski)",
-        "BEHIND (base moved)"
+        "approval on an older commit"
       ]
     }
   },
   "view": {
-    "number": 900003,
+    "number": 900021,
     "state": "OPEN",
     "isDraft": false,
     "author": {
@@ -22,22 +21,9 @@
     "headRefOid": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690",
     "baseRefName": "next",
     "mergeable": "MERGEABLE",
-    "mergeStateStatus": "BEHIND",
-    "reviewDecision": "CHANGES_REQUESTED",
-    "reviewRequests": [
-      {
-        "__typename": "User",
-        "login": "Solvely-Colin"
-      },
-      {
-        "__typename": "User",
-        "login": "jeremymcs"
-      },
-      {
-        "__typename": "User",
-        "login": "davesienkowski"
-      }
-    ],
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "APPROVED",
+    "reviewRequests": [],
     "commits": [
       {
         "oid": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690",
@@ -56,7 +42,7 @@
         },
         "state": "APPROVED",
         "submitted_at": "2026-10-07T01:15:23Z",
-        "commit_id": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690"
+        "commit_id": "f5ae1591f9e4b1c3d7a0e6b2c9d8e7f6a5b4c3d2"
       }
     ]
   ],

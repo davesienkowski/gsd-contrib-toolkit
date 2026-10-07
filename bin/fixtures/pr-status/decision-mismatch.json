@@ -1,19 +1,15 @@
 {
   "provenance": {
     "source": "synthetic from cr-captured.json",
-    "edits": "reviews: the only CHANGES_REQUESTED set to APPROVED",
+    "edits": "as approved-ready, but reviewDecision REVIEW_REQUIRED (GitHub disagrees with the approval)",
     "checksExit": 0,
     "expected": {
-      "owner": "author",
-      "ready": false,
-      "blockers": [
-        "review requests pending (Solvely-Colin, jeremymcs, davesienkowski)",
-        "BEHIND (base moved)"
-      ]
+      "owner": "maintainer",
+      "ready": true
     }
   },
   "view": {
-    "number": 900003,
+    "number": 900026,
     "state": "OPEN",
     "isDraft": false,
     "author": {
@@ -22,22 +18,9 @@
     "headRefOid": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690",
     "baseRefName": "next",
     "mergeable": "MERGEABLE",
-    "mergeStateStatus": "BEHIND",
-    "reviewDecision": "CHANGES_REQUESTED",
-    "reviewRequests": [
-      {
-        "__typename": "User",
-        "login": "Solvely-Colin"
-      },
-      {
-        "__typename": "User",
-        "login": "jeremymcs"
-      },
-      {
-        "__typename": "User",
-        "login": "davesienkowski"
-      }
-    ],
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "reviewRequests": [],
     "commits": [
       {
         "oid": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690",

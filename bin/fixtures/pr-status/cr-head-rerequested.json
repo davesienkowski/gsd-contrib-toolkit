@@ -1,19 +1,16 @@
 {
   "provenance": {
     "source": "synthetic from cr-captured.json",
-    "edits": "reviews: the only CHANGES_REQUESTED set to APPROVED",
+    "edits": "view.reviewRequests: trek-e (whose CHANGES_REQUESTED is on the head) added back",
     "checksExit": 0,
     "expected": {
-      "owner": "author",
-      "ready": false,
-      "blockers": [
-        "review requests pending (Solvely-Colin, jeremymcs, davesienkowski)",
-        "BEHIND (base moved)"
-      ]
+      "owner": "reviewer",
+      "login": "trek-e",
+      "reRequested": true
     }
   },
   "view": {
-    "number": 900003,
+    "number": 900028,
     "state": "OPEN",
     "isDraft": false,
     "author": {
@@ -36,6 +33,10 @@
       {
         "__typename": "User",
         "login": "davesienkowski"
+      },
+      {
+        "__typename": "User",
+        "login": "trek-e"
       }
     ],
     "commits": [
@@ -54,7 +55,7 @@
           "login": "trek-e",
           "type": "User"
         },
-        "state": "APPROVED",
+        "state": "CHANGES_REQUESTED",
         "submitted_at": "2026-10-07T01:15:23Z",
         "commit_id": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690"
       }

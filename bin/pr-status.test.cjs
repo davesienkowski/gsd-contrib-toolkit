@@ -45,47 +45,8 @@ function assertBall(ball, expected, label) {
   }
 }
 
-// The stub gh: serves fixtures by PR number, logs argv, refuses anything that is not a known read.
-const STUB_SOURCE = `#!/usr/bin/env node
-'use strict';
-const fs = require('node:fs');
-const path = require('node:path');
-const argv = process.argv.slice(2);
-const log = process.env.PR_STATUS_STUB_LOG;
-const record = (line) => { if (log) fs.appendFileSync(log, line + '\\n'); };
-record(JSON.stringify(argv));
-const refuse = (why) => { record('REFUSED ' + why + ' ' + JSON.stringify(argv)); process.stderr.write('stub gh refused: ' + why + '\\n'); process.exit(99); };
-const BAD = new Set(['-X', '--method', '-f', '-F', '--field', '--raw-field', '--input']);
-for (const a of argv) {
-  if (BAD.has(a) || /^(-X|--method=|--field=|--raw-field=|--input=)/.test(a) || /graphql/i.test(a)) refuse('mutating-or-graphql-arg');
-}
-const fixtures = new Map();
-for (const f of fs.readdirSync(process.env.PR_STATUS_STUB_FIXTURES)) {
-  if (!f.endsWith('.json')) continue;
-  const fx = JSON.parse(fs.readFileSync(path.join(process.env.PR_STATUS_STUB_FIXTURES, f), 'utf8'));
-  if (fx && fx.view && fx.view.number != null) fixtures.set(String(fx.view.number), fx);
-}
-const notFound = (n) => { process.stderr.write('GraphQL: Could not resolve to a PullRequest with the number of ' + n + '. (repository.pullRequest)\\n'); process.exit(1); };
-if (argv[0] === 'pr' && (argv[1] === 'view' || argv[1] === 'checks')) {
-  const n = argv[2];
-  const fx = fixtures.get(n);
-  if (!fx) notFound(n);
-  if (argv[1] === 'view') { process.stdout.write(JSON.stringify(fx.view) + '\\n'); process.exit(0); }
-  const prov = fx.provenance || {};
-  if (prov.checksStderr) process.stderr.write(prov.checksStderr + '\\n');
-  if (fx.checks != null) process.stdout.write(JSON.stringify(fx.checks) + '\\n');
-  process.exit(prov.checksExit || 0);
-}
-if (argv[0] === 'api') {
-  const m = /^repos\\/[^/]+\\/[^/]+\\/pulls\\/(\\d+)\\/reviews(\\?.*)?$/.exec(argv.find((a) => a.startsWith('repos/')) || '');
-  if (!m) refuse('unknown-api-path');
-  const fx = fixtures.get(m[1]);
-  if (!fx) { process.stderr.write('gh: Not Found (HTTP 404)\\n'); process.exit(1); }
-  process.stdout.write(JSON.stringify(fx.reviews) + '\\n');
-  process.exit(0);
-}
-refuse('unknown-verb');
-`;
+// The stub gh (serves fixtures by PR number, logs argv, refuses anything that is not a known read).
+const STUB_FILE = path.join(FIXTURES_DIR, '..', 'pr-status-gh-stub.cjs');
 
 function makeStub(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-status-stub-'));
@@ -93,7 +54,7 @@ function makeStub(t) {
   const bin = path.join(dir, 'bin');
   fs.mkdirSync(bin);
   const gh = path.join(bin, 'gh');
-  fs.writeFileSync(gh, STUB_SOURCE, { mode: 0o755 });
+  fs.copyFileSync(STUB_FILE, gh);
   fs.chmodSync(gh, 0o755);
   const logFile = path.join(dir, 'argv.log');
   fs.writeFileSync(logFile, '');
@@ -112,7 +73,7 @@ function runThroughStub(t, args, opts = {}) {
   let stdout;
   let stderr = '';
   try {
-    stdout = execFileSync(process.execPath, [SCRIPT, ...args], { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    stdout = execFileSync(process.execPath, [opts.script || SCRIPT, ...args], { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (err) {
     status = err.status;
     stdout = err.stdout;
@@ -133,7 +94,7 @@ test('end to end: one captured change-requested PR through a stub gh that sees o
   const n = String(fx.view.number);
   const r = runThroughStub(t, [n]);
   assert.equal(r.status, 0, `exit status (stderr: ${r.stderr})`);
-  assert.match(r.stdout, new RegExp(`^#${n} OPEN head ${fx.view.headRefOid.slice(0, 12)} base `, 'm'));
+  assert.match(r.stdout, new RegExp(`^open-gsd/gsd-core#${n} OPEN head ${fx.view.headRefOid.slice(0, 12)} base `, 'm'));
   assert.match(r.stdout, /^ {2}merge: /m);
   assert.match(r.stdout, /^ {2}checks: /m);
   assert.match(r.stdout, /^ {2}review: trek-e CHANGES_REQUESTED on [0-9a-f]{7} \(head\) /m);
@@ -219,7 +180,7 @@ test('end to end: every scenario prints in argv order, footer once, ASCII only, 
   assert.equal(r.status, 0, `exit status (stderr: ${r.stderr})`);
   assert.ok(!/ERROR/.test(r.stdout), 'no ERROR block for failing, pending or absent checks');
   assert.ok(!r.log.some((l) => l.startsWith('REFUSED')), `stub refused a call: ${r.log.filter((l) => l.startsWith('REFUSED')).join(' | ')}`);
-  const heads = [...r.stdout.matchAll(/^#(\d+) /gm)].map((m) => m[1]);
+  const heads = [...r.stdout.matchAll(/^open-gsd\/gsd-core#(\d+) /gm)].map((m) => m[1]);
   assert.deepEqual(heads, numbers, 'PR blocks print in the order the numbers were given');
   assert.equal(r.stdout.split(FOOTER_START).length - 1, 1, 'footer appears exactly once');
   assert.ok(isPrintableAscii(r.stdout), 'text output is printable ASCII');
@@ -256,7 +217,7 @@ test('end to end: ball lines for reviewer, NOT RE-REQUESTED, maintainer, pending
   const cases = [
     ['reviewer-rerequested-captured.json', /^ {2}ball: REVIEWER trek-e owes a re-review \(the head moved after the change request\)$/m],
     ['not-rerequested.json', /^ {2}ball: REVIEWER trek-e owes a re-review \(the head moved after the change request\) NOT RE-REQUESTED$/m],
-    ['approved.json', /^ {2}ball: MAINTAINER \(ready for maintainer/m],
+    ['approved.json', /^ {2}ball: AUTHOR owes fixes \(approved but blocked: review requests pending \(Solvely-Colin, jeremymcs, davesienkowski\), BEHIND \(base moved\)\)$/m],
     ['no-reviews-requested.json', /^ {2}ball: REVIEWER owes a first review \(requests pending: /m],
     ['dismissed-cr.json', /^ {2}ball: REVIEWER owes a first review \(requests pending: /m],
     ['no-reviews-no-requests.json', /^ {2}ball: none /m],
@@ -266,7 +227,7 @@ test('end to end: ball lines for reviewer, NOT RE-REQUESTED, maintainer, pending
     assert.equal(r.status, 0, f);
     assert.match(r.stdout, re, f);
   }
-  for (const [f, re] of [['draft.json', /^#900006 OPEN DRAFT head /m], ['merged.json', /^#900007 MERGED head /m]]) {
+  for (const [f, re] of [['draft.json', /^open-gsd\/gsd-core#900006 OPEN DRAFT head /m], ['merged.json', /^open-gsd\/gsd-core#900007 MERGED head /m]]) {
     const r = runThroughStub(t, [String(loadFixture(f).view.number)]);
     assert.equal(r.status, 0, f);
     assert.match(r.stdout, re, f);
@@ -281,7 +242,7 @@ test('end to end: --json prints a JSON array of derive() results in argv order, 
   assert.ok(Array.isArray(arr));
   assert.deepEqual(arr.map((d) => d.number), [5079, 5235]);
   assert.deepEqual(arr[0].reviewers.map((x) => x.login), ['davesienkowski', 'trek-e']);
-  assert.deepEqual(arr[0], prStatus.derive(loadFixture('two-crs-captured.json')));
+  assert.deepEqual(arr[0], { repo: 'open-gsd/gsd-core', ...prStatus.derive(loadFixture('two-crs-captured.json')) });
 });
 
 test('end to end: --repo passes through to every gh call', (t) => {
@@ -293,6 +254,7 @@ test('end to end: --repo passes through to every gh call', (t) => {
     if (call[0] === 'pr') assert.equal(call[call.indexOf('--repo') + 1], 'other-org/other.repo');
     else assert.ok(call.includes('repos/other-org/other.repo/pulls/5235/reviews?per_page=100'));
   }
+  assert.match(r.stdout, /^other-org\/other\.repo#5235 OPEN head /m, 'the header names the repo it read');
 });
 
 test('usage: no number, a non-digit number or a malformed --repo exits 2 with a usage line and calls no gh', (t) => {
@@ -307,9 +269,9 @@ test('usage: no number, a non-digit number or a malformed --repo exits 2 with a 
 test('end to end: a PR whose read fails prints an ERROR block, the others still print, exit 1', (t) => {
   const r = runThroughStub(t, ['5235', '999999', '5234']);
   assert.equal(r.status, 1);
-  assert.match(r.stdout, /^#999999 ERROR: GraphQL: Could not resolve to a PullRequest with the number of 999999\./m);
-  assert.match(r.stdout, /^#5235 OPEN /m);
-  assert.match(r.stdout, /^#5234 OPEN /m);
+  assert.match(r.stdout, /^open-gsd\/gsd-core#999999 ERROR: GraphQL: Could not resolve to a PullRequest with the number of 999999\./m);
+  assert.match(r.stdout, /^open-gsd\/gsd-core#5235 OPEN /m);
+  assert.match(r.stdout, /^open-gsd\/gsd-core#5234 OPEN /m);
   const json = runThroughStub(t, ['--json', '999999', '5235']);
   assert.equal(json.status, 1);
   const arr = JSON.parse(json.stdout);
@@ -369,4 +331,101 @@ test('end to end: --json output is ASCII too (non-ASCII escaped, round-trips thr
   assert.equal(r.status, 0, r.stderr);
   assert.ok(isPrintableAscii(r.stdout), 'ASCII only');
   assert.equal(JSON.parse(r.stdout)[0].lastCommit.headline, 'fix: café — headline');
+});
+
+// --- review fixes (261007-fnu REVIEW.md WR-01..WR-06, IN-02) ---
+
+test('WR-01: a reviews payload over 1 MiB still prints a snapshot (execFileSync maxBuffer raised)', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-status-big-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const fx = loadFixture('cr-captured.json');
+  fx.reviews = [[Object.assign({ body: 'x'.repeat(2 * 1024 * 1024) }, fx.reviews[0][0])]];
+  fs.writeFileSync(path.join(dir, 'big.json'), JSON.stringify(fx));
+  const r = runThroughStub(t, ['5235'], { fixturesDir: dir });
+  assert.equal(r.status, 0, `exit (stdout: ${String(r.stdout).slice(0, 200)})`);
+  assert.match(r.stdout, /^ {2}ball: AUTHOR owes changes/m);
+});
+
+test('WR-02: every pr-status invocation in the sweep skill passes --repo explicitly', () => {
+  const dir = path.join(__dirname, '..', 'skills', 'maintainer-review-sweep');
+  let seen = 0;
+  for (const f of ['SKILL.md', 're-review.md']) {
+    const text = fs.readFileSync(path.join(dir, f), 'utf8');
+    for (const m of text.matchAll(/`(?:node \S*\/)?(?:bin\/)?pr-status(?:\.cjs)? [^`]*`/g)) {
+      seen += 1;
+      assert.match(m[0], /--repo <owner>\/<repo>/, `${f}: ${m[0]}`);
+    }
+  }
+  assert.ok(seen >= 3, `expected the intro, step 1 and step 13 invocations, saw ${seen}`);
+});
+
+test('WR-03: MAINTAINER ready only with an approval on the head, no requests, green checks and a clean merge state', () => {
+  for (const f of ['approved-ready.json', 'approved-older-commit.json', 'approved-requests-pending.json',
+    'approved-checks-failing.json', 'approved-checks-pending.json', 'approved-dirty.json', 'approved.json']) {
+    const fx = loadFixture(f);
+    assertBall(prStatus.derive(fx).ball, fx.provenance.expected, f);
+  }
+});
+
+test('WR-03: ball lines name what blocks an approved PR', (t) => {
+  const cases = [
+    ['approved-ready.json', /^ {2}ball: MAINTAINER ready \(approved on the head, no change request, no pending requests, checks green, not DIRTY or BEHIND\)$/m],
+    ['approved-older-commit.json', /^ {2}ball: MAINTAINER not ready \(approved but blocked: approval on an older commit\)$/m],
+    ['approved-requests-pending.json', /^ {2}ball: REVIEWER owes a review \(approved but blocked: review requests pending \(Solvely-Colin, jeremymcs, davesienkowski\)\)$/m],
+    ['approved-checks-failing.json', /^ {2}ball: AUTHOR owes fixes \(approved but blocked: checks failing\)$/m],
+    ['approved-checks-pending.json', /^ {2}ball: MAINTAINER not ready \(approved but blocked: checks pending\)$/m],
+    ['approved-dirty.json', /^ {2}ball: AUTHOR owes fixes \(approved but blocked: DIRTY \(merge conflicts\)\)$/m],
+  ];
+  for (const [f, re] of cases) {
+    const r = runThroughStub(t, [String(loadFixture(f).view.number)]);
+    assert.equal(r.status, 0, `${f}: ${r.stderr}`);
+    assert.match(r.stdout, re, f);
+  }
+});
+
+test('WR-03: a reviewDecision that disagrees with the reading prints a cross-check note; agreement prints none', (t) => {
+  const mismatch = runThroughStub(t, ['900026']);
+  assert.match(mismatch.stdout, /^ {2}note: GitHub reviewDecision is REVIEW_REQUIRED; pr-status reads APPROVED$/m);
+  const agree = runThroughStub(t, ['900020', '5235']);
+  assert.ok(!/note: GitHub reviewDecision/.test(agree.stdout), agree.stdout);
+});
+
+test('WR-04: a dismissed latest review with nobody requested puts the ball on the maintainer for re-approval', (t) => {
+  const fx = loadFixture('dismissed-no-requests.json');
+  assertBall(prStatus.derive(fx).ball, fx.provenance.expected, 'dismissed-no-requests');
+  const r = runThroughStub(t, ['900027']);
+  assert.match(r.stdout, /^ {2}ball: MAINTAINER re-approval needed \(latest review by trek-e was dismissed; no review requested\)$/m);
+});
+
+test('WR-05: the change-request reviewer back in the review requests owes a re-review (re-requested without a new commit)', (t) => {
+  const fx = loadFixture('cr-head-rerequested.json');
+  assertBall(prStatus.derive(fx).ball, fx.provenance.expected, 'cr-head-rerequested');
+  const r = runThroughStub(t, ['900028']);
+  assert.match(r.stdout, /^ {2}ball: REVIEWER trek-e owes a re-review \(re-requested without a new commit\)$/m);
+});
+
+test('WR-06: a team request (slug or name shape) counts as requested and drops NOT RE-REQUESTED', (t) => {
+  for (const [f, team] of [['team-request.json', 'maintainers'], ['team-request-name.json', 'Maintainers']]) {
+    const fx = loadFixture(f);
+    const d = prStatus.derive(fx);
+    assertBall(d.ball, fx.provenance.expected, f);
+    assert.deepEqual(d.requested, [`team ${team}`], `${f}: requested`);
+    const r = runThroughStub(t, [String(fx.view.number)]);
+    assert.match(r.stdout, new RegExp(`^ {2}ball: REVIEWER trek-e owes a re-review \\(the head moved after the change request\\); team requested: ${team}$`, 'm'), f);
+    assert.ok(!/NOT RE-REQUESTED/.test(r.stdout), `${f}: no NOT RE-REQUESTED flag`);
+  }
+});
+
+test('IN-02: PR number 0 is a usage error; leading zeros are normalised before any gh call', (t) => {
+  for (const args of [['0'], ['000']]) {
+    const r = runThroughStub(t, args);
+    assert.equal(r.status, 2, JSON.stringify(args));
+    assert.equal(r.log.length, 0);
+  }
+  const r = runThroughStub(t, ['05235']);
+  assert.equal(r.status, 0, r.stderr);
+  const calls = r.log.map((l) => JSON.parse(l));
+  assert.deepEqual(calls[0].slice(0, 3), ['pr', 'view', '5235']);
+  assert.ok(calls[1].includes('repos/open-gsd/gsd-core/pulls/5235/reviews?per_page=100'));
+  assert.match(r.stdout, /^open-gsd\/gsd-core#5235 OPEN /m);
 });
