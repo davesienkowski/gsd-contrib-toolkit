@@ -509,6 +509,25 @@ test('PROOF advisory: protocol-reminder emits NOTHING on a clean prompt (no inje
   assert.doesNotMatch(r.rawStdout, /permissionDecision/, 'never a permissionDecision');
 });
 
+test('PROOF advisory: protocol-reminder emits NOTHING on a task-notification envelope', () => {
+  // quick-261007-ji5 F4: a background-task notification whose <result> says "contribute".
+  const envelope = [
+    '<task-notification>',
+    '<task-id>a1b2c3d4e5f6a7b8c</task-id>',
+    '<output-file>/tmp/claude-1000/x/tasks/a1b2c3d4e5f6a7b8c.output</output-file>',
+    '<status>completed</status>',
+    '<summary>Agent "audit" finished</summary>',
+    '<result>This is ready to contribute upstream.</result>',
+    '</task-notification>',
+  ].join('\n');
+  const r = spawnHook(abs('protocol-reminder'), {
+    stdin: JSON.stringify({ prompt: envelope, hook_event_name: 'UserPromptSubmit' }),
+  });
+  assert.equal(r.status, 0, 'advisory hook exits 0');
+  assert.equal(r.rawStdout.trim(), '', 'an envelope injects nothing (empty stdout)');
+  assert.doesNotMatch(r.rawStdout, /permissionDecision/, 'never a permissionDecision');
+});
+
 // ── quick-261007-ji5 F3: a leading $HOME in a cd target resolves to the real home, through the real
 // git-commit-convention entrypoint. Hermetic: own sentinel fixture as the session cwd, own temp HOME
 // (spawnHook passes process.env), GSD_CONTRIB_OVERRIDE removed; every env change restored in finally.
