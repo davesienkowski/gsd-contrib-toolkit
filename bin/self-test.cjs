@@ -214,14 +214,36 @@ function executedTestsCheck(deps) {
       unproven.push({ ...entry, ...counts, reason: 'ZERO cases executed (' + counts.skipped + ' skipped)' });
       continue;
     }
+    // quick-261007-ji5 CR-01: a proof that ran and FAILED cases is not a passing proof. Measured
+    // 2026-10-07 against a built gsd-core next: 6 pass / 2 fail / 0 skipped printed PASS here.
+    if (counts.fail > 0) {
+      unproven.push({ ...entry, ...counts, reason: counts.fail + ' case(s) FAILED (' + counts.pass + ' passed)' });
+      continue;
+    }
     if (counts.skipped > 0) {
       unproven.push({ ...entry, ...counts, reason: counts.skipped + ' case(s) SKIPPED — partially unproven' });
+      continue;
+    }
+    if (r.status !== 0) {
+      unproven.push({ ...entry, ...counts, reason: 'the probe run exited ' + r.status + ' — not a clean pass' });
       continue;
     }
     executed.push({ ...entry, ...counts });
   }
 
   return { ok: unproven.length === 0, executed, unproven };
+}
+
+/**
+ * One EXEC-01 PASS line: pass/total, fail and skip counts, so a shrinking case count is visible
+ * (quick-261007-ji5 CR-01: the old line printed only the pass count).
+ * @param {{path:string, pass:number, fail:number, skipped:number}} e
+ * @returns {string}
+ */
+function formatExecutedLine(e) {
+  const total = e.pass + e.fail + e.skipped;
+  return e.path + ' — ' + e.pass + ' of ' + total + ' case(s) executed and passed, ' +
+    e.fail + ' failed, ' + e.skipped + ' skipped';
 }
 
 /**
@@ -308,7 +330,7 @@ function runCli(deps = {}) {
   if (et.ok) {
     process.stdout.write('  [PASS] executed proofs — ' + et.executed.length + ' load-bearing proof(s) actually ran:\n');
     for (const e of et.executed) {
-      process.stdout.write('         ' + e.path + ' — ' + e.pass + ' case(s) executed, 0 skipped\n');
+      process.stdout.write('         ' + formatExecutedLine(e) + '\n');
     }
   } else {
     process.stdout.write('  [FAIL] executed proofs — ' + et.unproven.length + ' load-bearing proof(s) did NOT run:\n');
@@ -347,4 +369,4 @@ if (require.main === module && !process.env.NODE_TEST_CONTEXT) {
   process.exit(runCli());
 }
 
-module.exports = { runSelfTest, nodeCheckAll, coveredTestsCheck, executedTestsCheck, parseTapCounts, runTestSuite, runCli, listCjsFiles, COVERED_TESTS };
+module.exports = { runSelfTest, nodeCheckAll, coveredTestsCheck, executedTestsCheck, formatExecutedLine, parseTapCounts, runTestSuite, runCli, listCjsFiles, COVERED_TESTS };
