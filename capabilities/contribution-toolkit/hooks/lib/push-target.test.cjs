@@ -548,9 +548,10 @@ for (const lit of [
   'https://github.com/open-gsd/gsd-core/../gsd-core',
   'https://github.com/open-gsd/gsd-core/./',
   'https://github.com/open-gsd/gsd-core/x/..',
-  'https://github.com/open-gsd//gsd-core',
+  // F9 R3 (item 4, REVIEW-R2 CR-02) FLIPPED `https://github.com/open-gsd//gsd-core` out of this
+  // list: `//` now collapses, so it is rule a (see the F9 R3 block).
 ]) {
-  test('F9 R2: literal `' + lit + '` -> rule c (dot, empty or encoded segment)', () => {
+  test('F9 R2: literal `' + lit + '` -> rule c (dot or encoded segment)', () => {
     assertUnresolved(classify('git push ' + lit + ' x', {}).r, lit);
   });
 }
@@ -862,3 +863,139 @@ test('F10: a throwing classifier or a throwing segmentDirs -> the same object, e
   assert.strictEqual(r2.out.parsed, r2.parsed);
   assert.strictEqual(r2.out.empty, false);
 });
+
+// ───────────── quick-261007-rni F9 R3: hardening round 3 (REVIEW-R2, ADVERSARIAL-R2) ─────────────
+//
+// Naming: `F9 R3: ` fails before the R3 fix and passes after; `F9 R3 guard: ` passes both.
+
+// ── item 1 (CR-01, ADVERSARIAL-R2 A): GitHub rename aliases of open-gsd/gsd-core are upstream ──
+const ALIAS_OPEN = 'https://github.com/open-gsd/get-shit-done-redux';
+const ALIAS_REDUX = 'https://github.com/GSD-redux/get-shit-done-redux.git';
+for (const cmd of [
+  'git push ' + ALIAS_OPEN + ' fix/x',
+  'git push ' + ALIAS_OPEN + '.git next',
+  'git push https://github.com/OPEN-GSD/GET-SHIT-DONE-REDUX next',
+  'git push ' + ALIAS_REDUX + ' fix/x 2>&1 | tail -5',
+  'git push git@github.com:open-gsd/get-shit-done-redux.git fix/x',
+  'git push git@github.com:GSD-redux/get-shit-done-redux.git fix/x',
+  'git push ssh://git@github.com/gsd-redux/get-shit-done-redux.git fix/x',
+  'git -C /r push ' + ALIAS_OPEN + ' x',
+]) {
+  test('F9 R3: literal alias `' + cmd + '` -> gsd-core (rule a), no lookup', () => {
+    const { r, log } = classify(cmd, { rewrites: () => { throw new Error('must not run'); } });
+    assert.deepStrictEqual(r, { target: 'gsd-core', unresolved: null });
+    assert.strictEqual(log.lookups.length, 0);
+  });
+}
+
+for (const u of [ALIAS_REDUX, ALIAS_OPEN + '.git', 'git@github.com:open-gsd/get-shit-done-redux.git']) {
+  test('F9 R3: named remote `legacy` resolving to the alias `' + u + '` -> gsd-core (rule a)', () => {
+    const r = classify('git push legacy fix/x', { lookup: () => [u] }).r;
+    assert.deepStrictEqual(r, { target: 'gsd-core', unresolved: null });
+  });
+}
+
+test('F9 R3: an alias among several pushurls of one remote -> gsd-core', () => {
+  assert.deepStrictEqual(classify('git push backup x', { lookup: () => [FORK, ALIAS_REDUX] }).r, { target: 'gsd-core', unresolved: null });
+});
+
+// ── item 1: any other repo under the open-gsd org can never earn rule b (an in-org rename) ──
+for (const cmd of ['git push https://github.com/open-gsd/gsd-test-runner.git x', 'git push git@github.com:open-gsd/some-new-name.git x']) {
+  test('F9 R3: literal open-gsd org URL `' + cmd + '` -> rule c (never other)', () => {
+    const r = classify(cmd, {}).r;
+    assertUnresolved(r, cmd);
+    assert.match(r.unresolved, /open-gsd/);
+  });
+}
+
+test('F9 R3: a named remote resolving into the open-gsd org -> rule c (never other)', () => {
+  const r = classify('git push origin x', { lookup: () => ['https://github.com/open-gsd/gsd-test-runner.git'] }).r;
+  assertUnresolved(r, 'org remote');
+  assert.match(r.unresolved, /open-gsd/);
+});
+
+test('F9 R3 guard: a same-name repo under another owner (davesienkowski/gsd-core) is still other', () => {
+  assert.deepStrictEqual(classify('git push fork x', { lookup: () => ['https://github.com/davesienkowski/gsd-core.git'] }).r, { target: 'other', unresolved: null });
+});
+
+// ── item 4 (CR-02): `//` and `%` userinfo reach upstream, so they are rule a ──
+for (const lit of [
+  'https://github.com/open-gsd//gsd-core',
+  'https://github.com/open-gsd//gsd-core.git',
+  'https://u%2Dx@github.com/open-gsd/gsd-core.git',
+]) {
+  test('F9 R3: literal `' + lit + '` -> gsd-core (rule a)', () => {
+    assert.deepStrictEqual(classify('git push ' + lit + ' x', {}).r, { target: 'gsd-core', unresolved: null });
+  });
+}
+
+test('F9 R3: a looked-up `//` upstream URL -> gsd-core (rule a)', () => {
+  assert.deepStrictEqual(classify('git push backup x', { lookup: () => ['https://github.com/open-gsd//gsd-core.git'] }).r, { target: 'gsd-core', unresolved: null });
+});
+
+// ── item 5 (WR-02): a dir the hook cannot see (OLDPWD, the inherited dir stack) never earns rule b ──
+for (const cmd of [
+  'cd - && git push backup x',
+  'cd -- - && git push backup x',
+  'cd -P - && git push backup x',
+  'popd && git push backup x',
+  'popd +1 && git push backup x',
+  'pushd && git push backup x',
+  'pushd +1 && git push backup x',
+  'pushd -1 && git push backup x',
+  'pushd -n /tmp && git push backup x',
+  'pushd - && git push backup x',
+]) {
+  test('F9 R3: ruleBAllowlistReason rejects `' + cmd + '` (a cd target outside the command text)', () => {
+    const why = pt.ruleBAllowlistReason(cmd, parseCommandForGates(cmd));
+    assert.ok(typeof why === 'string' && why.length > 0, cmd + ' -> ' + JSON.stringify(why));
+    assertUnresolved(classify(cmd, {}).r, cmd);
+  });
+}
+
+for (const cmd of ['cd /tmp && git push backup x', 'cd && git push backup x', 'pushd /tmp && git push backup x && popd', 'git push backup x && cd -']) {
+  test('F9 R3 guard: ruleBAllowlistReason accepts `' + cmd + '` (every cd target before the push is visible)', () => {
+    assert.strictEqual(pt.ruleBAllowlistReason(cmd, parseCommandForGates(cmd)), null);
+  });
+}
+
+// ── item 2: a segmentDirs throw (pushSegmentDirs' physical check) is rule c with its phrase ──
+test('F9 R3 guard: a segmentDirs throw naming a symlink divergence is rule c and carries the reason', () => {
+  const r = classify('git -C lnk/.. push backup x', { dirs: () => { throw new Error('lnk/.. resolves through a symlink'); } }).r;
+  assertUnresolved(r, 'symlink');
+  assert.match(r.unresolved, /symlink/);
+});
+
+// ── IN-02: a monotonic default clock, and a SIGKILL on timeout ──
+test('F9 R3: createLookupBudget() defaults to the monotonic performance.now clock', () => {
+  const before = performance.now();
+  const b = pt.createLookupBudget();
+  const after = performance.now();
+  assert.ok(b.deadline >= before + pt.LOOKUP_BUDGET_MS && b.deadline <= after + pt.LOOKUP_BUDGET_MS, String(b.deadline));
+});
+
+test('F9 R3: the live lookups kill a git that ignores SIGTERM at their timeout (SIGKILL)', () => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'f9r3-sigterm-'));
+  // A `git` that ignores SIGTERM and exits on its own after about 6 s (no runaway process).
+  fs.writeFileSync(path.join(bin, 'git'), "#!/bin/sh\ntrap '' TERM\nn=0\nwhile [ $n -lt 60 ]; do sleep 0.1; n=$((n+1)); done\n", { mode: 0o755 });
+  const savedPath = process.env.PATH;
+  process.env.PATH = bin + path.delimiter + savedPath;
+  try {
+    for (const run of [() => pt.resolvePushUrlsLive(bin, 'backup', 300), () => pt.urlRewritesLive(bin, 300)]) {
+      const t0 = Date.now();
+      assert.throws(run);
+      const spent = Date.now() - t0;
+      assert.ok(spent < 2500, 'a 300 ms lookup must end near its timeout, took ' + spent + ' ms');
+    }
+  } finally {
+    process.env.PATH = savedPath;
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+});
+
+// ── positive pins (item 3): the plain forms still earn rule b ──
+for (const cmd of ['git push backup fix/x', 'git push backup fix/x 2>&1 | tail -5', 'git -C /r push backup x']) {
+  test('F9 R3 guard: pin `' + cmd + '` with a fork lookup -> other', () => {
+    assert.deepStrictEqual(classify(cmd, {}).r, { target: 'other', unresolved: null });
+  });
+}

@@ -250,13 +250,14 @@ function gate(stdinString, deps) {
       '`origin/' + runtimeStamp.UPSTREAM_REF + '` only if it actually differs, and stamps the ' +
       'result. It never installs the PUBLISHED npm package, which can be far behind `' +
       runtimeStamp.UPSTREAM_REF + '`.)' +
-      // quick-261007-rni F9 (PD-4), R2 item 8 (WR-02): a rule-c arm says the target could not be
-      // resolved and that the gate fell back to the cwd rule (it did NOT decide the push goes upstream).
+      // quick-261007-rni F9 (PD-4), R2 item 8 (WR-02), R3 IN-01: a rule-c arm says the gate could not
+      // CONFIRM the target (true also when the remote resolved but the command failed the rule-(b)
+      // allowlist) and fell back to the cwd rule; it did NOT decide the push goes upstream. Only a
+      // rule-c arm carries a phrase (rules a and d set none), so the note never appears otherwise.
       (unresolvedPhrase
-        ? '\n\nNote: ENF-21 could not resolve where this push goes (' + unresolvedPhrase + '). ' +
-          'Its target could not be resolved, so the gate fell back to the gsd-core-checkout rule: this ' +
-          'command runs in a gsd-core checkout (or names open-gsd/gsd-core), so it is gated like any ' +
-          'push from there.'
+        ? '\n\nNote: ENF-21 could not confirm where this push goes (' + unresolvedPhrase + '), so the ' +
+          'gate fell back to the gsd-core-checkout rule: this command runs in a gsd-core checkout (or ' +
+          'names open-gsd/gsd-core), so it is gated like any push from there.'
         : '')
   );
 }

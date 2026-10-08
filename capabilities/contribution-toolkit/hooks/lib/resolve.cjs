@@ -484,13 +484,63 @@ function pushUnique(list, items) {
   return list;
 }
 
-/** Resolve target interpretations from every current candidate. */
-function applyTarget(cands, t, homes) {
+/**
+ * quick-261007-rni F9 R3 (item 2, REVIEW-R2 CR-03 / ADVERSARIAL-R2 B): the directory chdir(2)
+ * reaches from `from` through `target`, walked one component at a time the way the kernel does it
+ * (and `git -C`, `cd -P`): each name is resolved through any symlink BEFORE a later `..` is applied,
+ * so `lnk/..` is the symlink target's parent, not `from`. Throws when a component does not exist
+ * or the end is not a directory.
+ * @param {string} from an absolute (logical) directory
+ * @param {string} target the cd / pushd / -C argument (already HOME-expanded)
+ * @returns {string} the physical absolute directory
+ */
+function physicalChdir(from, target) {
+  const t = String(target);
+  let cur = fs.realpathSync(path.isAbsolute(t) ? path.parse(t).root : from);
+  for (const comp of t.split(/\/+/)) {
+    if (comp === '' || comp === '.') continue;
+    cur = comp === '..' ? path.dirname(cur) : fs.realpathSync(path.join(cur, comp));
+  }
+  if (!fs.statSync(cur).isDirectory()) throw new Error('not a directory');
+  return cur;
+}
+
+/** F9 R3 item 2: the error pushSegmentDirs throws when a derived dir cannot be trusted. */
+class PushDirError extends Error {}
+
+/**
+ * F9 R3 item 2: throw a PushDirError unless the logical (textual, `path.resolve`) and the physical
+ * (component-wise realpath) resolutions of `target` from `from` name the same existing directory.
+ */
+function assertLogicalIsPhysical(from, target) {
+  const shownT = JSON.stringify(String(target)).slice(0, 120);
+  let physical;
+  let logical;
+  try {
+    physical = physicalChdir(from, target);
+    logical = fs.realpathSync(path.resolve(from, target));
+  } catch (err) {
+    throw new PushDirError('the directory ' + shownT + ' does not resolve to an existing directory (' +
+      ((err && err.code) || 'not a directory') + ')');
+  }
+  if (physical !== logical) {
+    throw new PushDirError('the directory ' + shownT + ' resolves through a symlink to ' +
+      JSON.stringify(physical).slice(0, 120) + ' physically but ' + JSON.stringify(logical).slice(0, 120) +
+      ' textually (`git -C` and `cd -P` resolve `..` physically)');
+  }
+}
+
+/**
+ * Resolve target interpretations from every current candidate. With `physical` (pushSegmentDirs
+ * only, F9 R3 item 2) every interpretation it keeps must resolve the same logically and physically.
+ */
+function applyTarget(cands, t, homes, physical) {
   const out = [];
   for (const c of cands) {
     for (const it of targetInterpretations(t, homes)) {
       const abs = path.resolve(c, it.p);
       if (it.mustExist && !isDir(abs)) continue;
+      if (physical) assertLogicalIsPhysical(c, it.p);
       pushUnique(out, [abs]);
     }
   }
@@ -573,7 +623,7 @@ function candidateContext(command, base) {
  * cd walk before it, its own `env -C` / `sudo -D` chdirs and, for git, its global `-C` targets.
  * (quick-261007-rni F9: the per-segment body of commandCandidateDirs, extracted unchanged.)
  */
-function segmentCandidates(segs, j, { base, homes, cdFunction, followGitC }) {
+function segmentCandidates(segs, j, { base, homes, cdFunction, followGitC, physical }) {
   let cands = [base];
   const seen = [base];
   for (let i = 0; i < j; i++) {
@@ -596,7 +646,7 @@ function segmentCandidates(segs, j, { base, homes, cdFunction, followGitC }) {
     if (t === '-' || (s.program === 'pushd' && t === null)) {
       next = pushUnique(cands.slice(), seen);
     } else {
-      next = t === null ? applyTarget(cands, '~', homes) : applyTarget(cands, t, homes);
+      next = t === null ? applyTarget(cands, '~', homes, physical) : applyTarget(cands, t, homes, physical);
       if (bypass || next.length === 0) pushUnique(next, cands);
     }
     cands = next;
@@ -605,13 +655,13 @@ function segmentCandidates(segs, j, { base, homes, cdFunction, followGitC }) {
   // `env -C <dir>` / `sudo -D <dir>` move this segment only (round 3, R2-WR-02).
   if (j < segs.length) {
     for (const d of segs[j].chdirs) {
-      const moved = applyTarget(cands, String(d), homes);
+      const moved = applyTarget(cands, String(d), homes, physical);
       if (moved.length > 0) cands = moved;
     }
   }
   if (j < segs.length && followGitC && segs[j].program === 'git') {
     for (const d of gitGlobalChdirs({ tokens: ['git'].concat(segs[j].rest.slice(1)) })) {
-      const moved = applyTarget(cands, String(d), homes);
+      const moved = applyTarget(cands, String(d), homes, physical);
       if (moved.length > 0) cands = moved;
     }
   }
@@ -644,8 +694,13 @@ function appendCandidateExtras(out, ctx, base) {
  * @param {string} command raw tool_input.command
  * @param {string} [baseCwd] the hook's process.cwd()
  * @param {{tokens?: Array}} seg
+ * quick-261007-rni F9 R3 (item 2): every cd / pushd / env -C / git -C directory this walk derives
+ * must name the same existing directory logically (path.resolve) and physically (component-wise
+ * realpath, as chdir and `git -C` resolve it); otherwise it THROWS a PushDirError whose message the
+ * classifier puts in its rule-c phrase. commandCandidateDirs (the cwd rule) stays lexical.
  * @returns {string[]|null} absolute directories, or null when the command does not parse or no
  *   resolver segment carries these tokens (the caller fails closed to its cwd rule)
+ * @throws {PushDirError} a derived directory is missing or resolves differently through a symlink
  */
 function pushSegmentDirs(command, baseCwd, seg) {
   const base = path.resolve(baseCwd == null ? process.cwd() : String(baseCwd));
@@ -657,7 +712,7 @@ function pushSegmentDirs(command, baseCwd, seg) {
   ctx.segs.forEach((s, j) => {
     if (JSON.stringify(s.allTokens) !== key) return;
     matched = true;
-    pushUnique(out, segmentCandidates(ctx.segs, j, { base, homes: ctx.homes, cdFunction: ctx.cdFunction, followGitC: true }));
+    pushUnique(out, segmentCandidates(ctx.segs, j, { base, homes: ctx.homes, cdFunction: ctx.cdFunction, followGitC: true, physical: true }));
   });
   if (!matched) return null;
   return appendCandidateExtras(out, ctx, base);
@@ -715,6 +770,32 @@ function resolveRootForCommand(command, baseCwd, opts) {
 // `dave/gsd-core`) is NOT this target — only owner===open-gsd AND repo===gsd-core.
 const GSD_CORE_OWNER = 'open-gsd';
 const GSD_CORE_REPO = 'gsd-core';
+
+/**
+ * quick-261007-rni F9 R3 (item 1, REVIEW-R2 CR-01 / ADVERSARIAL-R2 A): historical owner/repo names
+ * that GitHub still REDIRECTS to open-gsd/gsd-core. GitHub forwards clone, fetch AND push through a
+ * rename redirect, so a push to one of these is a push to upstream. Lowercased (parseOwnerRepo
+ * lowercases before any comparison). Frozen: a future rename or transfer of gsd-core must be added
+ * here (recorded residual); any other repo under the open-gsd org is handled by push-target's org rule.
+ *
+ * Evidence, 2026-10-08T03:59Z, read-only, run from /home/dave/repos/gsd-contrib-toolkit.
+ * Candidates: gsd-core's package.json repository/homepage/bugs (all open-gsd/gsd-core), README /
+ * CHANGELOG / docs / .github links and `git log -p` of package.json + README.md, which name
+ * open-gsd/get-shit-done-redux, GSD-redux/get-shit-done-redux, gsd-build/get-shit-done and
+ * glittercowboy/get-shit-done; plus guesses for other renames.
+ *   $ gh api repos/<o>/<r> --jq '.full_name + " id=" + (.id|tostring)'
+ *   open-gsd/gsd-core              -> open-gsd/gsd-core id=1246625636   (the upstream itself)
+ *   open-gsd/get-shit-done-redux   -> open-gsd/gsd-core id=1246625636   INCLUDED
+ *   GSD-redux/get-shit-done-redux  -> open-gsd/gsd-core id=1246625636   INCLUDED
+ *   gsd-build/get-shit-done        -> gsd-build/get-shit-done id=1116260703  excluded (another repo)
+ *   glittercowboy/get-shit-done    -> gsd-build/get-shit-done id=1116260703  excluded (another repo)
+ *   open-gsd/get-shit-done, GSD-redux/gsd-core, gsd-build/gsd-core, glittercowboy/gsd-core,
+ *   open-gsd/gsd, GSD-redux/get-shit-done -> HTTP 404                        excluded
+ *   $ git ls-remote https://github.com/open-gsd/get-shit-done-redux refs/heads/next
+ *   $ git ls-remote https://github.com/GSD-redux/get-shit-done-redux.git refs/heads/next
+ *     both -> 83aba44627ba43aff77588894f7b81a9a7437e75 refs/heads/next (= open-gsd/gsd-core next)
+ */
+const UPSTREAM_ALIASES = Object.freeze(['open-gsd/get-shit-done-redux', 'gsd-redux/get-shit-done-redux']);
 
 // ─────────────────────── the branch-naming policy (ONE definition) ───────────────────────
 //
@@ -800,9 +881,11 @@ const OWNER_REPO_SEG = /^[A-Za-z0-9._-]+$/;
  * owner/repo case-insensitively — CR-01), or `null` when the input does not resolve to an
  * enumerated form / >=2 path segments / GitHub-safe owner+repo.
  *
- * quick-261007-rni F9 R2 (item 7, review CR-01): trailing slashes are stripped before AND after
- * the `.git` strip, so `.git/`, `/` and `.git//` normalize to the repo. Any path segment that
- * is empty, `.` or `..`, and any `%`, `?`, `#`, `\` or whitespace, returns null: git and curl
+ * quick-261007-rni F9 R2 (item 7, review CR-01) and R3 (item 4, REVIEW-R2 CR-02): trailing slashes
+ * are stripped before AND after the `.git` strip, so `.git/`, `/` and `.git//` normalize to the
+ * repo, and empty segments (`//`) collapse. Any PATH segment that is `.` or `..`, any `%`, `?`,
+ * `#` or `\` in the PATH (the part after scheme, user@ and host), and whitespace anywhere, returns
+ * null: git and curl
  * collapse dot segments and decode escapes, so `open-gsd/gsd-core/x/..` reaches upstream while a
  * last-two-segments reading would call it `x/..`. null is the fail-closed signal at every caller
  * (an unparseable explicit gh --repo arms; an unparseable push URL takes ENF-21 rule c). Pure (string in,
@@ -816,7 +899,7 @@ function parseOwnerRepo(urlOrSpec) {
   if (typeof urlOrSpec !== 'string') return null;
   const raw = urlOrSpec.trim();
   if (raw.length === 0) return null;
-  if (/[\s%?#\\]/.test(raw)) return null; // F9 R2: whitespace, escapes, query/fragment, backslash
+  if (/\s/.test(raw)) return null; // F9 R2: whitespace anywhere (R3 keeps this on the raw string)
 
   let host = null;
   let rest = raw;
@@ -843,10 +926,16 @@ function parseOwnerRepo(urlOrSpec) {
   }
   // else: bare `owner/repo` or `host/owner/repo` — host stays the github.com default.
 
+  // F9 R3 (item 4, REVIEW-R2 CR-02): the escape / query / fragment / backslash check reads the PATH
+  // only, after the scheme, user@ and host are stripped, so a `%` in the userinfo
+  // (`https://u%2Dx@github.com/open-gsd/gsd-core.git`, which reaches upstream) still parses. A null
+  // here is an ALLOW at the boolean consumers (containment ENF-07, worktree-fresh-base ENF-25), so
+  // the parser must never return null for a URL that reaches upstream.
+  if (/[%?#\\]/.test(rest)) return null;
   rest = rest.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.git$/i, '').replace(/\/+$/, '');
-  const segs = rest.split('/');
-  // F9 R2: an empty, `.` or `..` segment is not an enumerated form (fail closed).
-  if (segs.some((x) => x === '' || x === '.' || x === '..')) return null;
+  // F9 R3: `//` collapses (GitHub and git treat it as `/`); a `.` or `..` segment stays fail-closed.
+  const segs = rest.split('/').filter((x) => x.length > 0);
+  if (segs.some((x) => x === '.' || x === '..')) return null;
   if (segs.length < 2) return null;
   const owner = segs[segs.length - 2];
   const repo = segs[segs.length - 1];
@@ -885,35 +974,51 @@ function repoSpecTargetsGsdCore(value) {
  * @returns {boolean}
  */
 function tokenTargetsGsdCoreApi(token) {
-  if (typeof token !== 'string' || token.length === 0) return false;
+  const a = apiRepoOf(token);
+  // F9 R3 (WR-03): a `repos/` path with a dot or encoded segment fails CLOSED (true).
+  if (a.kind === 'unparseable') return true;
+  return a.kind === 'repo' && a.repo.owner === GSD_CORE_OWNER && a.repo.repo === GSD_CORE_REPO;
+}
+
+/**
+ * quick-261007-rni F9 R3 (item 5, REVIEW-R2 WR-03): the THREE-way reading of a gh-api / curl REST
+ * token. The token is normalized (scheme, `api.github.com[:port]` host and leading slashes
+ * stripped); the leading `repos/` prefix is required, else `{kind:'none'}`. Under `repos/`, the
+ * path before any `?` / `#` is read: a `.` / `..` segment, any `%` or a backslash is
+ * `{kind:'unparseable'}` (curl and the server collapse dot segments and decode escapes, so
+ * `repos/open-gsd/x/../gsd-core` reaches upstream while its first two segments read `open-gsd/x`).
+ * Otherwise the FIRST two segments (empty ones collapse) go through parseOwnerRepo: a parse is
+ * `{kind:'repo'}`, and a non-parse (`{owner}/{repo}` gh placeholders, fewer than two segments)
+ * stays `{kind:'none'}`, the pre-R3 behaviour (the cwd rule decides).
+ * @param {*} token
+ * @returns {{kind:'none'} | {kind:'unparseable'} | {kind:'repo', repo:{owner:string, repo:string, host:string}}}
+ */
+function apiRepoOf(token) {
+  if (typeof token !== 'string' || token.length === 0) return { kind: 'none' };
   let s = token.trim();
   s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, ''); // strip scheme
   s = s.replace(/^api\.github\.com(?::\d+)?/i, ''); // strip REST host + optional :port (close :443 slip)
   s = s.replace(/^\/+/, ''); // strip leading slashes
   const m = /^repos\/(.+)$/i.exec(s); // the `repos/` prefix is required
-  if (!m) return false;
-  const after = m[1].split('/').filter((x) => x.length > 0);
-  if (after.length < 2) return false;
+  if (!m) return { kind: 'none' };
+  const pathPart = m[1].split(/[?#]/)[0];
+  const raw = pathPart.split('/');
+  if (/[%\\]/.test(pathPart) || raw.some((x) => x === '.' || x === '..')) return { kind: 'unparseable' };
+  const after = raw.filter((x) => x.length > 0);
+  if (after.length < 2) return { kind: 'none' };
   const r = parseOwnerRepo(after[0] + '/' + after[1]); // owner/repo are the FIRST two segments after repos/
-  return !!r && r.owner === GSD_CORE_OWNER && r.repo === GSD_CORE_REPO;
+  return r ? { kind: 'repo', repo: r } : { kind: 'none' };
 }
 
 /**
- * The `owner/repo` a gh-api / curl REST token names (`repos/<owner>/<repo>/...`), or null.
+ * The `owner/repo` a gh-api / curl REST token names (`repos/<owner>/<repo>/...`), or null (no
+ * `repos/` target, or an unparseable one: see apiRepoOf, which segmentRepoTarget reads instead).
  * @param {string} token
  * @returns {{owner:string, repo:string}|null}
  */
 function tokenApiRepo(token) {
-  if (typeof token !== 'string' || token.length === 0) return null;
-  let s = token.trim();
-  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
-  s = s.replace(/^api\.github\.com(?::\d+)?/i, '');
-  s = s.replace(/^\/+/, '');
-  const m = /^repos\/(.+)$/i.exec(s);
-  if (!m) return null;
-  const after = m[1].split('/').filter((x) => x.length > 0);
-  if (after.length < 2) return null;
-  return parseOwnerRepo(after[0] + '/' + after[1]);
+  const a = apiRepoOf(token);
+  return a.kind === 'repo' ? a.repo : null;
 }
 
 /**
@@ -1002,8 +1107,9 @@ function segmentRepoTarget(seg, ghRepo) {
     targets.push(r);
   }
   for (const tok of tokens) {
-    const r = tokenApiRepo(tok);
-    if (r) targets.push(r);
+    const a = apiRepoOf(tok);
+    if (a.kind === 'unparseable') return 'gsd-core'; // F9 R3 (WR-03): fail closed
+    if (a.kind === 'repo') targets.push(a.repo);
   }
   if (targets.length === 0) return null;
   return targets.some((r) => r.owner === GSD_CORE_OWNER && r.repo === GSD_CORE_REPO) ? 'gsd-core' : 'other';
@@ -1156,6 +1262,7 @@ module.exports = {
   isConventionalBranch,
   isContribBranch,
   parseOwnerRepo,
+  UPSTREAM_ALIASES,
   repoSpecTargetsGsdCore,
   tokenTargetsGsdCoreApi,
 };
