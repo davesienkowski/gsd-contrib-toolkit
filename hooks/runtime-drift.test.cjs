@@ -397,7 +397,9 @@ for (const cmd of [
   const TOOLKIT = 'https://github.com/davesienkowski/gsd-contrib-toolkit.git';
   const REMOTES = { backup: [FORK], origin: [UPSTREAM] };
   // F9 R2 (item 8, WR-02): the rule-c note describes the cwd fallback, not a gsd-core verdict.
-  const PD4 = /could not be resolved, so the gate fell back to the gsd-core-checkout rule/;
+  // F9 R3 (IN-01) FLIPPED this pin's wording: "could not confirm where this push goes (X), so the
+  // gate fell back to ..." (one sentence; true also when the remote resolved but failed the allowlist).
+  const PD4 = /could not confirm where this push goes \(.*\), so the gate fell back to the gsd-core-checkout rule/s;
 
   const A = fs.mkdtempSync(path.join(os.tmpdir(), 'f9-drift-a-'));
   const B = fs.mkdtempSync(path.join(os.tmpdir(), 'f9-drift-b-'));
@@ -797,6 +799,11 @@ for (const cmd of [
     });
 
     // ── positive pins (item 9): the plain forms still allow ──
+    // F9 R3 (item 2): a derived dir that does not exist is rule c, so the two `~/repos/gsd-core`
+    // pins run under a fixture HOME that has that dir (hermetic: CI has no ~/repos/gsd-core).
+    const PIN_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'f9r3-pin-home-'));
+    fs.mkdirSync(path.join(PIN_HOME, 'repos', 'gsd-core'), { recursive: true });
+    require('node:test').after(() => fs.rmSync(PIN_HOME, { recursive: true, force: true }));
     for (const cmd of [
       'git push backup fix/x',
       'git push backup fix/x 2>&1 | tail -5',
@@ -811,7 +818,13 @@ for (const cmd of [
       test('F9 R2 guard: pin `' + cmd + '` from a gsd-core cwd ALLOWS (backup is a fork)', () => {
         const lookup = lookupMap(REMOTES);
         const { deps, calls } = f9World({ resolvePushUrls: lookup, segmentDirs: (c, s) => pushSegmentDirs(c, FIX, s) });
-        assertAllow(runRuntimeDriftGate(input(cmd), deps), calls, cmd);
+        const savedHome = process.env.HOME;
+        process.env.HOME = PIN_HOME;
+        try {
+          assertAllow(runRuntimeDriftGate(input(cmd), deps), calls, cmd);
+        } finally {
+          process.env.HOME = savedHome;
+        }
       });
     }
 
@@ -889,6 +902,114 @@ for (const cmd of [
         assertAllow(runRuntimeDriftGate(input(cmd), deps), calls, cmd);
         assert.strictEqual(calls.segmentDirs + calls.resolvePushUrls + calls.urlRewrites + calls.resolveRoot, 0, cmd);
       }
+    });
+  }
+
+  // ───────────── quick-261007-rni F9 R3: hardening round 3 (REVIEW-R2 CR-01..03 / WR-01..03 / IN-01, ADVERSARIAL-R2 A/B) ─────────────
+  //
+  // Naming: `F9 R3: ` fails before the R3 fix and passes after; `F9 R3 guard: ` passes both.
+  // Every deny row is from a gsd-core cwd with an unstamped runtime.
+  {
+    const ALIAS_OPEN = 'https://github.com/open-gsd/get-shit-done-redux';
+    const ALIAS_REDUX = 'https://github.com/GSD-redux/get-shit-done-redux.git';
+    const UP_DSLASH = 'https://github.com/open-gsd//gsd-core.git';
+    const UP_PCT_USER = 'https://u%2Dx@github.com/open-gsd/gsd-core.git';
+
+    // [label, command, lookup map, decision when the command runs from a non-gsd-core cwd]
+    const R3_ROWS = [
+      // ADVERSARIAL-R2 A / REVIEW-R2 CR-01: the rename aliases are upstream (rule a, any cwd)
+      ['ADV-R2 A literal alias', 'git push ' + ALIAS_OPEN + ' fix/x', REMOTES, 'deny'],
+      ['ADV-R2 A GSD-redux alias + pipe', 'git push ' + ALIAS_REDUX + ' fix/x 2>&1 | tail -5', REMOTES, 'deny'],
+      ['ADV-R2 A scp alias', 'git push git@github.com:open-gsd/get-shit-done-redux.git fix/x', REMOTES, 'deny'],
+      ['ADV-R2 A git -C alias', 'git -C ' + FIX + ' push ' + ALIAS_OPEN + ' x', REMOTES, 'deny'],
+      ['ADV-R2 A named legacy remote', 'git push legacy fix/x', { legacy: [ALIAS_REDUX] }, 'deny'],
+      ['CR-01 upper-case alias', 'git push https://github.com/OPEN-GSD/GET-SHIT-DONE-REDUX next', REMOTES, 'deny'],
+      ['CR-01 origin = alias', 'git push origin next', { origin: [ALIAS_OPEN + '.git'] }, 'deny'],
+      ['CR-01 origin = alias + pipe', 'git push origin HEAD:next 2>&1 | tail -3', { origin: [ALIAS_OPEN + '.git'] }, 'deny'],
+      // item 1: any other open-gsd repo is never 'other' (rule c: the cwd rule)
+      ['item 1 org literal', 'git push https://github.com/open-gsd/gsd-test-runner.git x', REMOTES, 'allow'],
+      ['item 1 org remote', 'git push tr x', { tr: ['https://github.com/open-gsd/some-renamed-repo.git'] }, 'allow'],
+      // REVIEW-R2 CR-02: `//` and `%`-userinfo upstream URLs are rule a
+      ['CR-02 // literal', 'git push ' + UP_DSLASH + ' next', REMOTES, 'deny'],
+      ['CR-02 %-userinfo literal', 'git push ' + UP_PCT_USER + ' next', REMOTES, 'deny'],
+      ['CR-02 // remote', 'git push backup x', { backup: [UP_DSLASH] }, 'deny'],
+      // REVIEW-R2 WR-02: OLDPWD / the inherited dir stack
+      ['WR-02 cd -', 'cd - && git push backup x', REMOTES, 'allow'],
+      ['WR-02 cd -- -', 'cd -- - && git push backup x', REMOTES, 'allow'],
+      ['WR-02 popd', 'popd && git push backup x', REMOTES, 'allow'],
+      ['WR-02 bare pushd', 'pushd && git push backup x', REMOTES, 'allow'],
+      // REVIEW-R2 WR-03: a dot segment under repos/ fails closed (rule a for gh, any cwd)
+      ['WR-03 gh api dot segment', 'gh api -X POST repos/open-gsd/x/../gsd-core/issues -f title=t', REMOTES, 'deny'],
+    ];
+    for (const [label, cmd, map, away] of R3_ROWS) {
+      test('F9 R3: ' + label + ': `' + cmd.replace(FIX, '<FIX>') + '` DENIES from a gsd-core cwd (stale runtime)', () => {
+        const here = f9World({ resolvePushUrls: lookupMap(map) });
+        assertDeny(runRuntimeDriftGate(input(cmd), here.deps), here.calls, cmd);
+        const elsewhere = f9World({ resolveRoot: () => null, resolvePushUrls: lookupMap(map) });
+        const d = runRuntimeDriftGate(input(cmd), elsewhere.deps);
+        if (away === 'deny') assertDeny(d, elsewhere.calls, cmd + ' (from another repo: rule a)');
+        else assertAllow(d, elsewhere.calls, cmd + ' (from another repo: rule c keeps the cwd rule)');
+      });
+    }
+
+    // ADVERSARIAL-R2 B / REVIEW-R2 CR-03: lexical vs physical dirs, with REAL symlinks and the real
+    // pushSegmentDirs. T/F/root is the gsd-core cwd (backup -> fork); T/F/lnk -> T/E/x; T/E/root's
+    // backup -> upstream; T/gc/lnk -> T/E/x and T/E's backup -> upstream (where `gc/lnk/..` lands).
+    const T = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'f9r3-drift-phys-')));
+    require('node:test').after(() => fs.rmSync(T, { recursive: true, force: true }));
+    const FR = path.join(T, 'F', 'root');
+    const ER = path.join(T, 'E', 'root');
+    const GC = path.join(T, 'gc');
+    for (const d of [FR, ER, path.join(T, 'E', 'x'), GC]) fs.mkdirSync(d, { recursive: true });
+    fs.symlinkSync(path.join(T, 'E', 'x'), path.join(T, 'F', 'lnk'));
+    fs.symlinkSync(path.join(T, 'E', 'x'), path.join(GC, 'lnk'));
+    const PHYS_MAP = {
+      [FR + '|backup']: [FORK],
+      [GC + '|backup']: [FORK],
+      [ER + '|backup']: [UPSTREAM],
+      [path.join(T, 'E') + '|backup']: [UPSTREAM],
+      origin: [UPSTREAM],
+    };
+    for (const [cmd, base] of [
+      ['git -C lnk/.. push backup x', GC],
+      ['cd -P lnk/.. && git push backup x', GC],
+      ['git -C ../lnk/../root push backup x', FR],
+      ['git -C ' + path.join(T, 'F') + '/lnk/../root push backup x', FR],
+      ['cd -P ../lnk/../root && git push backup x', FR],
+      ['cd -P ../lnk && cd .. && git -C root push backup x', FR],
+    ]) {
+      test('F9 R3: ADV-R2 B `' + cmd.replace(T, '<T>') + '` (symlink `..`) DENIES from a gsd-core cwd', () => {
+        const here = f9World({ resolvePushUrls: lookupMap(PHYS_MAP), segmentDirs: (c, s) => pushSegmentDirs(c, base, s) });
+        const d = runRuntimeDriftGate(input(cmd), here.deps);
+        assertDeny(d, here.calls, cmd);
+        assert.match(d.permissionDecisionReason, PD4);
+        assert.match(d.permissionDecisionReason, /symlink/);
+      });
+    }
+
+    // positive pins with real dirs: the plain forms still allow
+    for (const cmd of ['git push backup fix/x', 'git push backup fix/x 2>&1 | tail -5', 'git -C ' + FR + ' push backup x']) {
+      test('F9 R3 guard: pin `' + cmd.replace(T, '<T>') + '` from a real (realpath) gsd-core fixture cwd ALLOWS', () => {
+        const { deps, calls } = f9World({ resolvePushUrls: lookupMap(PHYS_MAP), segmentDirs: (c, s) => pushSegmentDirs(c, FR, s) });
+        assertAllow(runRuntimeDriftGate(input(cmd), deps), calls, cmd);
+      });
+    }
+
+    // IN-01: one sentence, and it does not claim the target "could not be resolved" twice.
+    test('F9 R3: the rule-c note reads "could not confirm where this push goes (...)" once, with no repeated clause', () => {
+      const { deps, calls } = f9World({ resolvePushUrls: lookupMap(REMOTES) });
+      const d = runRuntimeDriftGate(input('git push backup x && git stash'), deps);
+      assertDeny(d, calls, 'allowlist miss');
+      assert.match(d.permissionDecisionReason, PD4);
+      assert.doesNotMatch(d.permissionDecisionReason, /could not resolve where this push goes/);
+      assert.doesNotMatch(d.permissionDecisionReason, /Its target could not be resolved/);
+    });
+
+    test('F9 R3: a rule-a alias arm (`legacy` -> GSD-redux) carries NO unresolved note', () => {
+      const { deps, calls } = f9World({ resolvePushUrls: lookupMap({ legacy: [ALIAS_REDUX] }) });
+      const d = runRuntimeDriftGate(input('git push legacy x'), deps);
+      assertDeny(d, calls, 'legacy');
+      assert.doesNotMatch(d.permissionDecisionReason, /Note: ENF-21 could not/);
     });
   }
 }

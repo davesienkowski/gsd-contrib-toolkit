@@ -1064,3 +1064,56 @@ test('F10 guard: `git push backup x && gh issue create --repo open-gsd/gsd-core 
   );
   assert.strictEqual(r.permissionDecision, 'deny');
 });
+
+// ── quick-261007-rni F9 R3: F10 consumes classifyPushTarget and pushSegmentDirs, so every R3
+//    change reaches protocol-artifact too. `F9 R3: ` fails before the R3 fix; `F9 R3 guard: ` holds both. ──
+{
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { pushSegmentDirs } = require('./lib/resolve.cjs');
+  const ALIAS_REDUX = 'https://github.com/GSD-redux/get-shit-done-redux.git';
+
+  for (const [cmd, map] of [
+    ['git push https://github.com/open-gsd/get-shit-done-redux fix/1234-slug', undefined],
+    ['git push legacy fix/1234-slug', { legacy: [ALIAS_REDUX] }],
+    ['git push https://github.com/open-gsd/gsd-test-runner.git fix/1234-slug', undefined],
+    ['git push https://github.com/open-gsd//gsd-core.git fix/1234-slug', undefined],
+    ['cd - && git push backup fix/1234-slug', undefined],
+  ]) {
+    test((cmd.includes('//gsd-core') ? 'F9 R3 guard: ' : 'F9 R3: ') + 'protocol-artifact `' + cmd + '` with P3-red.json missing -> deny', () => {
+      const { d } = pushWorld(['P3-red.json'], map ? Object.assign({ backup: [F10_FORK] }, map) : undefined);
+      const r = runProtocolArtifactGate(input(cmd), d);
+      assert.strictEqual(r.permissionDecision, 'deny', r.permissionDecisionReason);
+    });
+  }
+
+  const T = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'f9r3-pa-phys-')));
+  require('node:test').after(() => fs.rmSync(T, { recursive: true, force: true }));
+  const GC = path.join(T, 'gc');
+  fs.mkdirSync(GC, { recursive: true });
+  fs.mkdirSync(path.join(T, 'E', 'x'), { recursive: true });
+  fs.symlinkSync(path.join(T, 'E', 'x'), path.join(GC, 'lnk'));
+  const physWorld = () => {
+    const { d, calls } = pushWorld(['P3-red.json']);
+    d.segmentDirs = (c, s) => pushSegmentDirs(c, GC, s);
+    d.resolvePushUrls = (dir, name) => {
+      calls.lookups.push([dir, name]);
+      if (name !== 'backup') throw new Error('No such remote ' + name);
+      return dir === GC ? [F10_FORK] : [F10_UPSTREAM];
+    };
+    return { d, calls };
+  };
+
+  test('F9 R3: protocol-artifact `git -C lnk/.. push backup x` (symlink `..`) with P3-red.json missing -> deny', () => {
+    const r = runProtocolArtifactGate(input('git -C lnk/.. push backup x'), physWorld().d);
+    assert.strictEqual(r.permissionDecision, 'deny', r.permissionDecisionReason);
+  });
+
+  for (const cmd of ['git push backup fix/1234-slug', 'git push backup fix/1234-slug 2>&1 | tail -5', 'git -C ' + GC + ' push backup fix/1234-slug']) {
+    test('F9 R3 guard: protocol-artifact pin `' + cmd.replace(T, '<T>') + '` (fork, real dirs) -> allow', () => {
+      const r = runProtocolArtifactGate(input(cmd), physWorld().d);
+      assert.strictEqual(r.permissionDecision, 'allow', r.permissionDecisionReason);
+    });
+  }
+}

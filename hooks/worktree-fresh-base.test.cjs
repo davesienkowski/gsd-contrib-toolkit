@@ -2432,6 +2432,17 @@ for (const url of ['https://github.com/open-gsd/gsd-core.git', 'git@github.com:o
   });
 }
 
+// quick-261007-rni F9 R3 (item 4, REVIEW-R2 WR-01): `//` and a `%` in the userinfo reach upstream
+// (`git ls-remote` 2026-10-08), so such an origin arms. `F9 R3: ` fails before the parser fix.
+for (const url of ['https://github.com/open-gsd//gsd-core.git', 'https://u%2Dx@github.com/open-gsd/gsd-core.git']) {
+  test('F9 R3: ENF-25 MA-01: origin ' + url + ' arms the gate (fetch once, CAS once)', () => {
+    const { deps, calls } = scenario({ originUrl: url });
+    assert.strictEqual(runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps).permissionDecision, 'allow');
+    assert.strictEqual(calls.fetchOrigin, 1);
+    assert.strictEqual(calls.casUpdateRef, 1);
+  });
+}
+
 test('ENF-25 MA-01: the origin check runs once per root, and after the HEAD-branch read (HEAD on work: ZERO originUrl)', () => {
   const two = scenario();
   runWorktreeFreshBaseGate(input('git worktree add -b a p next && git worktree add -b b q origin/next'), two.deps);

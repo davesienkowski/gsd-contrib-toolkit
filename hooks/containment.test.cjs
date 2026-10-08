@@ -770,3 +770,38 @@ test('isContributionBranch matches fix|docs|feat/, not main', () => {
   assert.ok(!isContributionBranch('main'));
   assert.ok(!isContributionBranch('master'));
 });
+
+// ── quick-261007-rni F9 R3 (item 4, REVIEW-R2 CR-02): parseOwnerRepo's R2 strictness returned null
+// for two upstream-reaching URL shapes, and null is "not upstream" (ALLOW) here. `git ls-remote`
+// reached open-gsd/gsd-core through both on 2026-10-08. `F9 R3: ` fails before the fix. ──
+const R3_UP_DSLASH = 'https://github.com/open-gsd//gsd-core.git';
+const R3_UP_PCT_USER = 'https://u%2Dx@github.com/open-gsd/gsd-core.git';
+
+for (const url of [R3_UP_DSLASH, R3_UP_PCT_USER]) {
+  test('F9 R3: URL target `git push ' + url + ' fix/x` -> DENY (ENF-07)', () => {
+    const d = runContainmentGate(
+      input('git push ' + url + ' fix/x'),
+      deps({ remoteUrl: () => { throw new Error('a URL target must not be looked up'); }, currentBranch: () => 'fix/x' })
+    );
+    assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  });
+
+  test('F9 R3: named remote `backup` whose URL is `' + url + '` -> DENY (ENF-07)', () => {
+    const d = runContainmentGate(
+      input('git push backup fix/x'),
+      deps({ remoteUrl: (root, r) => (r === 'backup' ? url : FORK), currentBranch: () => 'fix/x' })
+    );
+    assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  });
+
+  test('F9 R3: isUpstreamRemote(`' + url + '`) -> true', () => {
+    assert.ok(isUpstreamRemote(url));
+  });
+}
+
+test('F9 R3 guard: control `git push https://github.com/open-gsd/gsd-core.git fix/x` -> DENY; a fork URL with `//` -> allow', () => {
+  const up = runContainmentGate(input('git push ' + UPSTREAM + ' fix/x'), deps({ currentBranch: () => 'fix/x' }));
+  assert.strictEqual(up.permissionDecision, 'deny', up.permissionDecisionReason);
+  const fork = runContainmentGate(input('git push https://github.com/dave//gsd-core-fork.git fix/x'), deps({ currentBranch: () => 'fix/x' }));
+  assert.strictEqual(fork.permissionDecision, 'allow', fork.permissionDecisionReason);
+});

@@ -672,8 +672,8 @@ for (const input of [
   'https://github.com/open-gsd/gsd-core/./',
   'https://github.com/open-gsd/gsd-core/../gsd-core',
   './gsd-core',
-  'open-gsd//gsd-core',
-  'https://github.com/open-gsd//gsd-core',
+  // F9 R3 (item 4, REVIEW-R2 CR-02) FLIPPED two rows that were here: `open-gsd//gsd-core` and
+  // `https://github.com/open-gsd//gsd-core` now normalize to open-gsd/gsd-core (see below).
 ]) {
   test('F9 R2: parseOwnerRepo(' + JSON.stringify(input) + ') -> null (dot or empty segment)', () => {
     assert.strictEqual(res.parseOwnerRepo(input), null);
@@ -1137,5 +1137,148 @@ test('R2-WR-05: commandTargetsGsdCore reads GH_REPO after `env` and from an earl
   test('F9: pushSegmentDirs a segment whose tokens are not in the command -> null', () => {
     const other = pushSegs('git push elsewhere y')[0];
     assert.strictEqual(res.pushSegmentDirs('git push backup x', F9B, other), null);
+  });
+}
+
+// ───────────── quick-261007-rni F9 R3: hardening round 3 (REVIEW-R2 CR-02/CR-03/WR-03, ADVERSARIAL-R2 B) ─────────────
+//
+// Naming: `F9 R3: ` fails before the R3 fix and passes after; `F9 R3 guard: ` passes both.
+
+// ── item 4 (CR-02): parseOwnerRepo never returns null for a URL that reaches upstream ──
+// `git ls-remote` reached open-gsd/gsd-core (refs/heads/next 83aba446) through each of these
+// shapes on 2026-10-08; a null here is an ALLOW at containment (ENF-07) and ENF-25.
+for (const input of [
+  'open-gsd//gsd-core',
+  'https://github.com/open-gsd//gsd-core',
+  'https://github.com/open-gsd//gsd-core.git',
+  'git@github.com:open-gsd//gsd-core.git',
+  'https://u%2Dx@github.com/open-gsd/gsd-core.git',
+  'ssh://u%2Dx@github.com/open-gsd/gsd-core.git',
+  'u%2Dx@github.com:open-gsd/gsd-core.git',
+]) {
+  test('F9 R3: parseOwnerRepo(' + JSON.stringify(input) + ') -> open-gsd/gsd-core (`//` collapses, `%` in userinfo is not the path)', () => {
+    assert.deepStrictEqual(res.parseOwnerRepo(input), F9R2_UP);
+  });
+}
+
+test('F9 R3 guard: parseOwnerRepo("https://github.com//open-gsd/gsd-core.git") -> open-gsd/gsd-core (leading slashes were already stripped)', () => {
+  assert.deepStrictEqual(res.parseOwnerRepo('https://github.com//open-gsd/gsd-core.git'), F9R2_UP);
+});
+
+test('F9 R3: repoSpecTargetsGsdCore is true for `//` and `%`-userinfo upstream URLs (ENF-07 / ENF-25 consumers)', () => {
+  assert.strictEqual(res.repoSpecTargetsGsdCore('https://github.com/open-gsd//gsd-core.git'), true);
+  assert.strictEqual(res.repoSpecTargetsGsdCore('https://u%2Dx@github.com/open-gsd/gsd-core.git'), true);
+});
+
+for (const input of [
+  'open-gsd/gsd%2Dcore',
+  'https://github.com/open-gsd/gsd%2Dcore.git',
+  'https://github.com/open-gsd/gsd-core?x=1',
+  'https://github.com/open-gsd/gsd-core#frag',
+  'https://github.com/open-gsd\\gsd-core',
+  'https://u x@github.com/open-gsd/gsd-core.git',
+  'https://github.com/open-gsd/x/../gsd-core',
+  'https://github.com/open-gsd/./gsd-core',
+]) {
+  test('F9 R3 guard: parseOwnerRepo(' + JSON.stringify(input) + ') stays null (escape, query, fragment, backslash, whitespace or dot in the PATH)', () => {
+    assert.strictEqual(res.parseOwnerRepo(input), null);
+  });
+}
+
+// ── item 1: the frozen alias list (evidence beside UPSTREAM_ALIASES in resolve.cjs) ──
+test('F9 R3: UPSTREAM_ALIASES lists the two GitHub redirect names of open-gsd/gsd-core, lowercased and frozen', () => {
+  assert.ok(Array.isArray(res.UPSTREAM_ALIASES), 'UPSTREAM_ALIASES is exported');
+  assert.ok(Object.isFrozen(res.UPSTREAM_ALIASES));
+  assert.deepStrictEqual(res.UPSTREAM_ALIASES.slice().sort(), ['gsd-redux/get-shit-done-redux', 'open-gsd/get-shit-done-redux']);
+  // checked and excluded: gsd-build/get-shit-done (and glittercowboy/get-shit-done) is another repo.
+  assert.ok(!res.UPSTREAM_ALIASES.includes('gsd-build/get-shit-done'));
+  assert.ok(!res.UPSTREAM_ALIASES.includes('glittercowboy/get-shit-done'));
+});
+
+// ── item 5 (WR-03): a REST `repos/` path with a dot segment fails closed ──
+{
+  const { parseCommandForGates } = require('./argv.cjs');
+  for (const cmd of [
+    'gh api -X POST repos/open-gsd/x/../gsd-core/issues -f title=t',
+    'gh api repos/open-gsd/./gsd-core/issues',
+    'gh api repos/open-gsd/x/%2e%2e/gsd-core/issues',
+    'gh api /repos/someone/x/../../open-gsd/gsd-core/pulls',
+  ]) {
+    test('F9 R3: segmentRepoTarget(`' + cmd + '`) -> gsd-core (dot or encoded segment under repos/ fails closed)', () => {
+      assert.strictEqual(res.segmentRepoTarget(parseCommandForGates(cmd).segments[0]), 'gsd-core');
+    });
+  }
+  for (const tok of ['repos/open-gsd/x/../gsd-core/issues', 'https://api.github.com/repos/open-gsd/x/../gsd-core/issues', 'repos/a/b/./c']) {
+    test('F9 R3: tokenTargetsGsdCoreApi(`' + tok + '`) -> true (fail closed)', () => {
+      assert.strictEqual(res.tokenTargetsGsdCoreApi(tok), true);
+    });
+  }
+  for (const [cmd, want] of [
+    ['gh api repos/someone/fork/issues', 'other'],
+    ['gh api repos/open-gsd/gsd-core/issues', 'gsd-core'],
+    ['gh api user', null],
+    ['gh api repos/{owner}/{repo}/pulls', null],
+    ['gh api repos/someone/fork/issues?q=a%20b', 'other'],
+  ]) {
+    test('F9 R3 guard: segmentRepoTarget(`' + cmd + '`) -> ' + want, () => {
+      assert.strictEqual(res.segmentRepoTarget(parseCommandForGates(cmd).segments[0]), want);
+    });
+  }
+}
+
+// ── item 2 (CR-03, ADVERSARIAL-R2 B): a derived dir whose logical and physical resolutions differ ──
+// Fixture (realpath'd, so logical == physical on any host): T/gc (the cwd), T/E/root and T/E/x,
+// T/gc/lnk -> T/E/x, and T/F/lnk -> T/E/x beside T/F/root. pushSegmentDirs throws (the caller's rule c).
+{
+  const { parseCommandForGates } = require('./argv.cjs');
+  const { classifyAction } = require('./classify.cjs');
+  const T = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'f9r3-phys-')));
+  require('node:test').after(() => fs.rmSync(T, { recursive: true, force: true }));
+  const GC = path.join(T, 'gc');
+  const E = path.join(T, 'E');
+  const F = path.join(T, 'F');
+  for (const d of [GC, path.join(E, 'root'), path.join(E, 'x'), path.join(F, 'root'), path.join(GC, 'sub')]) fs.mkdirSync(d, { recursive: true });
+  fs.symlinkSync(path.join(E, 'x'), path.join(GC, 'lnk'));
+  fs.symlinkSync(path.join(E, 'x'), path.join(F, 'lnk'));
+  const FROOT = path.join(F, 'root');
+  const pushSeg = (cmd) => parseCommandForGates(cmd).segments.filter(
+    (s) => classifyAction({ ok: true, segments: [s] }).action === 'push'
+  )[0];
+  const dirsOf = (cmd, base) => res.pushSegmentDirs(cmd, base, pushSeg(cmd));
+
+  for (const [cmd, base] of [
+    ['git -C lnk/.. push backup x', GC],
+    ['cd -P lnk/.. && git push backup x', GC],
+    ['git -C ../lnk/../root push backup x', FROOT],
+    ['git -C ' + F + '/lnk/../root push backup x', FROOT],
+    ['cd -P ../lnk/../root && git push backup x', FROOT],
+    ['cd -P ../lnk && cd .. && git -C root push backup x', FROOT],
+    ['cd ../lnk/../root && git push backup x', FROOT],
+  ]) {
+    test('F9 R3: pushSegmentDirs(`' + cmd.replace(T, '<T>') + '`) throws (logical and physical dirs differ)', () => {
+      assert.throws(() => dirsOf(cmd, base), /symlink|physical/i);
+    });
+  }
+
+  for (const cmd of ['cd ' + path.join(T, 'nope') + ' && git push backup x', 'git -C nope push backup x']) {
+    test('F9 R3: pushSegmentDirs(`' + cmd.replace(T, '<T>') + '`) throws (a derived dir that does not exist)', () => {
+      assert.throws(() => dirsOf(cmd, GC), /exist|ENOENT|resolve/i);
+    });
+  }
+
+  for (const [cmd, want] of [
+    ['git push backup x', [GC]],
+    ['cd sub && git push backup x', [path.join(GC, 'sub')]],
+    ['git -C ' + GC + ' push backup x', [GC]],
+    ['git -C lnk push backup x', [path.join(GC, 'lnk')]],
+    ['cd sub/.. && git push backup x', [GC]],
+  ]) {
+    test('F9 R3 guard: pushSegmentDirs(`' + cmd.replace(T, '<T>') + '`) -> ' + JSON.stringify(want.map((d) => d.replace(T, '<T>'))), () => {
+      assert.deepStrictEqual(dirsOf(cmd, GC), want);
+    });
+  }
+
+  test('F9 R3 guard: commandCandidateDirs (the cwd rule) still resolves `lnk/..` lexically, unchanged', () => {
+    assert.deepStrictEqual(res.commandCandidateDirs('git -C lnk/.. push backup x', GC), [GC]);
   });
 }
