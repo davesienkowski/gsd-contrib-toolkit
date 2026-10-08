@@ -479,7 +479,7 @@ function pushWorld(map = { backup: [F10_FORK], backup2: [F10_FORK], origin: [F10
     resolvePushUrls: (dir, name) => {
       calls.lookups.push([dir, name]);
       if (Object.prototype.hasOwnProperty.call(map, name)) return map[name];
-      throw new Error('No such remote ' + name);
+      throw Object.assign(new Error('No such remote ' + name), { status: 2, signal: null }) // F9 R4: git's exit 2;
     },
     urlRewrites: () => [],
     readTreeSha: () => {
@@ -637,7 +637,7 @@ test('F10 guard: `git commit -m x && git push backup y` -> deny (git commit is o
     d.segmentDirs = (c, s) => pushSegmentDirs(c, GC, s);
     d.resolvePushUrls = (dir, name) => {
       calls.lookups.push([dir, name]);
-      if (name !== 'backup') throw new Error('No such remote ' + name);
+      if (name !== 'backup') throw Object.assign(new Error('No such remote ' + name), { status: 2, signal: null }) // F9 R4: git's exit 2;
       return dir === GC ? [F10_FORK] : [F10_UPSTREAM];
     };
     return { d, calls };
@@ -651,6 +651,43 @@ test('F10 guard: `git commit -m x && git push backup y` -> deny (git commit is o
   for (const cmd of ['git push backup fix/x', 'git push backup fix/x 2>&1 | tail -5', 'git -C ' + GC + ' push backup x']) {
     test('F9 R3 guard: lint-ci-marker pin `' + cmd.replace(T, '<T>') + '` (fork, real dirs) -> allow', () => {
       const r = runLintCiMarkerGate(input(cmd), physWorld().d);
+      assert.strictEqual(r.permissionDecision, 'allow', r.permissionDecisionReason);
+    });
+  }
+}
+
+// ---- quick-261007-rni F9 R4: R4 changes reach lint-ci-marker through classifyPushTarget.
+//      `F9 R4: ` fails before the R4 fix; `F9 R4 guard: ` holds both. ----
+{
+  const LIT = 'https://github.com/davesienkowski/gsd-core-experiments';
+  for (const [cmd, map, kind] of [
+    // ADVERSARIAL-R3 R3-A: remote."<literal URL>".pushurl = upstream (planted by an earlier call)
+    ['git push ' + LIT + ' fix/x', { [LIT]: [F10_UPSTREAM] }, 'R4'],
+    ['git push backup fix/x; git push ' + LIT + ' fix/x', { backup: [F10_FORK], [LIT]: [F10_UPSTREAM] }, 'R4'],
+    // ADVERSARIAL-R3 R3-B: a bare relative cd target may be found through CDPATH
+    ['cd docs && git push backup fix/x', undefined, 'R4'],
+    ['pushd docs && git push backup fix/x', undefined, 'R4'],
+    // REVIEW-R3 CR-01: dot segments / escapes (rule c already kept these armed here; rule a now)
+    ['git push https://github.com/x/../open-gsd/gsd-core.git fix/x', undefined, 'guard'],
+    ['git push https://github.com/%6Fpen-gsd/gsd-core.git fix/x', undefined, 'guard'],
+  ]) {
+    test((kind === 'R4' ? 'F9 R4: ' : 'F9 R4 guard: ') + 'lint-ci-marker `' + cmd + '` -> deny', () => {
+      const { d } = pushWorld(map);
+      const r = runLintCiMarkerGate(input(cmd), d);
+      assert.strictEqual(r.permissionDecision, 'deny', r.permissionDecisionReason);
+    });
+  }
+
+  for (const cmd of [
+    'git push backup fix/x',
+    'git push backup fix/x 2>&1 | tail -5',
+    'git -C /tmp/wt push backup x',
+    'git push ' + LIT + '.git fix/x', // a literal fork URL with no remote."<URL>" entry ("No such remote")
+    'cd ./docs && git push backup fix/x',
+  ]) {
+    test('F9 R4 guard: lint-ci-marker pin `' + cmd + '` (fork) -> allow', () => {
+      const { d } = pushWorld();
+      const r = runLintCiMarkerGate(input(cmd), d);
       assert.strictEqual(r.permissionDecision, 'allow', r.permissionDecisionReason);
     });
   }

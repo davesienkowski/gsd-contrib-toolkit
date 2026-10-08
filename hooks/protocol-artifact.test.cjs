@@ -984,7 +984,7 @@ function pushWorld(missing = [], map = { backup: [F10_FORK], origin: [F10_UPSTRE
     resolvePushUrls: (dir, name) => {
       calls.lookups.push([dir, name]);
       if (Object.prototype.hasOwnProperty.call(map, name)) return map[name];
-      throw new Error('No such remote ' + name);
+      throw Object.assign(new Error('No such remote ' + name), { status: 2, signal: null }) // F9 R4: git's exit 2;
     },
     urlRewrites: () => [],
     readBranch: () => {
@@ -1099,7 +1099,7 @@ test('F10 guard: `git push backup x && gh issue create --repo open-gsd/gsd-core 
     d.segmentDirs = (c, s) => pushSegmentDirs(c, GC, s);
     d.resolvePushUrls = (dir, name) => {
       calls.lookups.push([dir, name]);
-      if (name !== 'backup') throw new Error('No such remote ' + name);
+      if (name !== 'backup') throw Object.assign(new Error('No such remote ' + name), { status: 2, signal: null }) // F9 R4: git's exit 2;
       return dir === GC ? [F10_FORK] : [F10_UPSTREAM];
     };
     return { d, calls };
@@ -1113,6 +1113,40 @@ test('F10 guard: `git push backup x && gh issue create --repo open-gsd/gsd-core 
   for (const cmd of ['git push backup fix/1234-slug', 'git push backup fix/1234-slug 2>&1 | tail -5', 'git -C ' + GC + ' push backup fix/1234-slug']) {
     test('F9 R3 guard: protocol-artifact pin `' + cmd.replace(T, '<T>') + '` (fork, real dirs) -> allow', () => {
       const r = runProtocolArtifactGate(input(cmd), physWorld().d);
+      assert.strictEqual(r.permissionDecision, 'allow', r.permissionDecisionReason);
+    });
+  }
+}
+
+// ── quick-261007-rni F9 R4: R4 changes reach protocol-artifact through classifyPushTarget.
+//    `F9 R4: ` fails before the R4 fix; `F9 R4 guard: ` holds both. ──
+{
+  const LIT = 'https://github.com/davesienkowski/gsd-core-experiments';
+  for (const [cmd, map, kind] of [
+    ['git push ' + LIT + ' fix/1234-slug', { [LIT]: [F10_UPSTREAM] }, 'R4'],
+    ['git push ' + LIT + ' fix/1234-slug 2>&1 | tail -5', { [LIT]: [F10_UPSTREAM] }, 'R4'],
+    ['cd docs && git push backup fix/1234-slug', undefined, 'R4'],
+    ['pushd docs && git push backup fix/1234-slug', undefined, 'R4'],
+    ['git push https://github.com/./open-gsd/gsd-core.git fix/1234-slug', undefined, 'guard'],
+    ['git push https://github.com/open-gsd/gsd%2Dcore.git fix/1234-slug', undefined, 'guard'],
+  ]) {
+    test((kind === 'R4' ? 'F9 R4: ' : 'F9 R4 guard: ') + 'protocol-artifact `' + cmd + '` with P3-red.json missing -> deny', () => {
+      const { d } = pushWorld(['P3-red.json'], map);
+      const r = runProtocolArtifactGate(input(cmd), d);
+      assert.strictEqual(r.permissionDecision, 'deny', r.permissionDecisionReason);
+    });
+  }
+
+  for (const cmd of [
+    'git push backup fix/1234-slug',
+    'git push backup fix/1234-slug 2>&1 | tail -5',
+    'git -C /tmp/wt push backup fix/1234-slug',
+    'git push ' + LIT + '.git fix/1234-slug',
+    'cd ./docs && git push backup fix/1234-slug',
+  ]) {
+    test('F9 R4 guard: protocol-artifact pin `' + cmd + '` (fork) with P3-red.json missing -> allow', () => {
+      const { d } = pushWorld(['P3-red.json']);
+      const r = runProtocolArtifactGate(input(cmd), d);
       assert.strictEqual(r.permissionDecision, 'allow', r.permissionDecisionReason);
     });
   }

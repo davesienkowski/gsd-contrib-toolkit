@@ -805,3 +805,68 @@ test('F9 R3 guard: control `git push https://github.com/open-gsd/gsd-core.git fi
   const fork = runContainmentGate(input('git push https://github.com/dave//gsd-core-fork.git fix/x'), deps({ currentBranch: () => 'fix/x' }));
   assert.strictEqual(fork.permissionDecision, 'allow', fork.permissionDecisionReason);
 });
+
+// ── quick-261007-rni F9 R4 (item 1, REVIEW-R3 CR-01; item 4, REVIEW-R3 WR-02): ENF-07 reads
+// parseOwnerRepo, and a null there is ALLOW. Dot segments and unreserved escapes reach upstream
+// (`git ls-remote`, REVIEW-R3), and so do the GitHub rename aliases (UPSTREAM_ALIASES, R3 evidence).
+// `F9 R4: ` fails before the R4 fix; `F9 R4 guard: ` passes both. ──
+const R4_UPSTREAM_SHAPES = [
+  'https://github.com/x/../open-gsd/gsd-core.git',
+  'https://github.com/./open-gsd/gsd-core.git',
+  'https://github.com/open-gsd/x/../gsd-core.git',
+  'https://github.com/open-gsd/gsd-core/x/..//',
+  'https://github.com/%6Fpen-gsd/gsd-core.git',
+  'https://github.com/open-gsd/gsd%2Dcore.git',
+  'https://github.com/open-gsd/get-shit-done-redux.git',
+  'https://github.com/GSD-redux/get-shit-done-redux.git',
+  'git@github.com:open-gsd/get-shit-done-redux.git',
+];
+
+for (const url of R4_UPSTREAM_SHAPES) {
+  test('F9 R4: URL target `git push ' + url + ' fix/1-x` -> DENY (ENF-07)', () => {
+    const d = runContainmentGate(
+      input('git push ' + url + ' fix/1-x'),
+      deps({ remoteUrl: () => { throw new Error('a URL target must not be looked up'); }, currentBranch: () => 'fix/1-x' })
+    );
+    assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  });
+
+  test('F9 R4: named remote `legacy` whose URL is `' + url + '` -> DENY (ENF-07)', () => {
+    const d = runContainmentGate(
+      input('git push legacy fix/1-x'),
+      deps({ remoteUrl: (root, r) => (r === 'legacy' ? url : FORK), currentBranch: () => 'fix/1-x' })
+    );
+    assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  });
+
+  test('F9 R4: isUpstreamRemote(`' + url + '`) -> true', () => {
+    assert.ok(isUpstreamRemote(url));
+  });
+}
+
+test('F9 R4: a pre-rename clone `git push origin fix/1-x` (origin = the GSD-redux alias) -> DENY (ENF-07)', () => {
+  const d = runContainmentGate(
+    input('git push origin fix/1-x'),
+    deps({ remoteUrl: () => 'https://github.com/GSD-redux/get-shit-done-redux.git', currentBranch: () => 'fix/1-x' })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+});
+
+for (const url of [
+  'https://github.com/x/../davesienkowski/gsd-core-experiments.git',
+  'https://github.com/gsd-build/get-shit-done.git',
+  'https://github.com/dave/gsd%2Dcore-fork.git',
+]) {
+  test('F9 R4 guard: a fork / non-alias URL target `' + url + '` -> allow (no false deny)', () => {
+    const d = runContainmentGate(input('git push ' + url + ' fix/1-x'), deps({ currentBranch: () => 'fix/1-x' }));
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  });
+}
+
+// positive pins (backup = a fork remote)
+for (const cmd of ['git push backup fix/x', 'git push backup fix/x 2>&1 | tail -5', 'git -C /tmp/gsd-core push backup x']) {
+  test('F9 R4 guard: pin `' + cmd + '` (backup = fork) -> allow', () => {
+    const d = runContainmentGate(input(cmd), deps({ remoteUrl: () => 'https://github.com/davesienkowski/gsd-core-experiments.git', currentBranch: () => 'fix/x' }));
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  });
+}

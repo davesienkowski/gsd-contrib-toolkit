@@ -319,3 +319,24 @@ for (const cmd of [
     assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
   });
 }
+
+// ---- quick-261007-rni F9 R4 (item 4, REVIEW-R3 WR-02): a GitHub rename alias of open-gsd/gsd-core
+// (UPSTREAM_ALIASES) is upstream on the gh path too, so an out-of-tree filing against it fails closed
+// like `-R open-gsd/gsd-core`. `F9 R4: ` fails before the R4 fix. ----
+for (const spec of ['open-gsd/get-shit-done-redux', 'GSD-redux/get-shit-done-redux']) {
+  test('F9 R4: ROB-01: out-of-tree `gh issue create -R ' + spec + '` (rename alias) -> DENY (fail-closed)', () => {
+    const d = runIssueGate(
+      input('cd /tmp && gh issue create -R ' + spec + ' --label bug --title x --body "no version"'),
+      denyingOverride
+    );
+    assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  });
+}
+
+test('F9 R4 guard: ROB-01: out-of-tree `gh issue create -R gsd-build/get-shit-done` (another repo) -> ALLOW', () => {
+  const d = runIssueGate(
+    input('cd /tmp && gh issue create -R gsd-build/get-shit-done --label bug --title x --body "x"'),
+    denyingOverride
+  );
+  assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+});
