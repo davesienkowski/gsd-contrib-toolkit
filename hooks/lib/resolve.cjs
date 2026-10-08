@@ -798,7 +798,14 @@ const OWNER_REPO_SEG = /^[A-Za-z0-9._-]+$/;
  *
  * Returns `{ owner, repo, host }` with owner/repo/host LOWER-cased (GitHub routes
  * owner/repo case-insensitively — CR-01), or `null` when the input does not resolve to an
- * enumerated form / >=2 path segments / GitHub-safe owner+repo. Pure (string in,
+ * enumerated form / >=2 path segments / GitHub-safe owner+repo.
+ *
+ * quick-261007-rni F9 R2 (item 7, review CR-01): trailing slashes are stripped before AND after
+ * the `.git` strip, so `.git/`, `/` and `.git//` normalize to the repo. Any path segment that
+ * is empty, `.` or `..`, and any `%`, `?`, `#`, `\` or whitespace, returns null: git and curl
+ * collapse dot segments and decode escapes, so `open-gsd/gsd-core/x/..` reaches upstream while a
+ * last-two-segments reading would call it `x/..`. null is the fail-closed signal at every caller
+ * (an unparseable explicit gh --repo arms; an unparseable push URL takes ENF-21 rule c). Pure (string in,
  * object|null out); operates on already-structured argv values (HARD-04-safe — never a
  * raw-command regex).
  *
@@ -809,6 +816,7 @@ function parseOwnerRepo(urlOrSpec) {
   if (typeof urlOrSpec !== 'string') return null;
   const raw = urlOrSpec.trim();
   if (raw.length === 0) return null;
+  if (/[\s%?#\\]/.test(raw)) return null; // F9 R2: whitespace, escapes, query/fragment, backslash
 
   let host = null;
   let rest = raw;
@@ -835,8 +843,10 @@ function parseOwnerRepo(urlOrSpec) {
   }
   // else: bare `owner/repo` or `host/owner/repo` — host stays the github.com default.
 
-  rest = rest.replace(/^\/+/, '').replace(/\.git$/i, '');
-  const segs = rest.split('/').filter((x) => x.length > 0);
+  rest = rest.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.git$/i, '').replace(/\/+$/, '');
+  const segs = rest.split('/');
+  // F9 R2: an empty, `.` or `..` segment is not an enumerated form (fail closed).
+  if (segs.some((x) => x === '' || x === '.' || x === '..')) return null;
   if (segs.length < 2) return null;
   const owner = segs[segs.length - 2];
   const repo = segs[segs.length - 1];
