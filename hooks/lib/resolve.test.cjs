@@ -1032,3 +1032,63 @@ test('R2-WR-05: commandTargetsGsdCore reads GH_REPO after `env` and from an earl
   assert.strictEqual(res.commandTargetsGsdCore(parseCommand('export GH_REPO=dave/fork && gh pr create --title x')), false);
   assert.strictEqual(res.commandTargetsGsdCore(parseCommand('export GH_REPO=open-gsd/gsd-core; unset GH_REPO; gh pr create --title x')), false);
 });
+
+// ── quick-261007-rni F9: pushSegmentDirs, the PER-SEGMENT candidate dirs of one push segment ──
+//
+// ENF-21 looks a push's remote up in the directory THAT push runs in. The command-wide union
+// (commandCandidateDirs) is wrong for that: `cd A && git push backup x && cd B && git push origin
+// main` would look `backup` up in B too. The segment is the gate-shaped one (parseCommandForGates),
+// matched to the resolver's own segments by its token list.
+{
+  const { parseCommandForGates } = require('./argv.cjs');
+  const { classifyAction } = require('./classify.cjs');
+  const F9A = fs.mkdtempSync(path.join(os.tmpdir(), 'f9-dirs-a-'));
+  const F9B = fs.mkdtempSync(path.join(os.tmpdir(), 'f9-dirs-b-'));
+  const F9C = fs.mkdtempSync(path.join(os.tmpdir(), 'f9-dirs-c-'));
+  require('node:test').after(() => {
+    for (const d of [F9A, F9B, F9C]) fs.rmSync(d, { recursive: true, force: true });
+  });
+  const pushSegs = (cmd) => parseCommandForGates(cmd).segments.filter(
+    (s) => classifyAction({ ok: true, segments: [s] }).action === 'push'
+  );
+
+  test('F9: pushSegmentDirs `git -C A push backup x` from base B -> [A]', () => {
+    const cmd = 'git -C ' + F9A + ' push backup x';
+    assert.deepStrictEqual(res.pushSegmentDirs(cmd, F9B, pushSegs(cmd)[0]), [F9A]);
+  });
+
+  test('F9: pushSegmentDirs `cd A && git push backup x` from base B -> [A]', () => {
+    const cmd = 'cd ' + F9A + ' && git push backup x';
+    assert.deepStrictEqual(res.pushSegmentDirs(cmd, F9B, pushSegs(cmd)[0]), [F9A]);
+  });
+
+  test('F9: pushSegmentDirs `cd A; git push backup x` from base B -> [A, B] (a failed cd keeps B)', () => {
+    const cmd = 'cd ' + F9A + '; git push backup x';
+    assert.deepStrictEqual(res.pushSegmentDirs(cmd, F9B, pushSegs(cmd)[0]), [F9A, F9B]);
+  });
+
+  test('F9: pushSegmentDirs newline-split `git status` then a push, from base B -> [B]', () => {
+    const cmd = 'git status\ngit push backup x';
+    const segs = pushSegs(cmd);
+    assert.strictEqual(segs.length, 1);
+    assert.deepStrictEqual(res.pushSegmentDirs(cmd, F9B, segs[0]), [F9B]);
+  });
+
+  test('F9: pushSegmentDirs two token-identical push segments -> the union of their dirs [A, C]', () => {
+    const cmd = 'cd ' + F9A + ' && git push backup x; cd ' + F9C + ' && git push backup x';
+    assert.deepStrictEqual(res.pushSegmentDirs(cmd, F9B, pushSegs(cmd)[0]), [F9A, F9C]);
+  });
+
+  test('F9: pushSegmentDirs mixed chain gives each push its own dir, not the union', () => {
+    const cmd = 'cd ' + F9A + ' && git push backup x && cd ' + F9B + ' && git push origin main';
+    const segs = pushSegs(cmd);
+    assert.strictEqual(segs.length, 2);
+    assert.deepStrictEqual(res.pushSegmentDirs(cmd, F9C, segs[0]), [F9A]);
+    assert.deepStrictEqual(res.pushSegmentDirs(cmd, F9C, segs[1]), [F9B]);
+  });
+
+  test('F9: pushSegmentDirs a segment whose tokens are not in the command -> null', () => {
+    const other = pushSegs('git push elsewhere y')[0];
+    assert.strictEqual(res.pushSegmentDirs('git push backup x', F9B, other), null);
+  });
+}
