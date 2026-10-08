@@ -508,9 +508,41 @@ function applyTarget(cands, t, homes) {
 function commandCandidateDirs(command, baseCwd, opts) {
   const followGitC = !(opts && opts.followGitC === false);
   const base = path.resolve(baseCwd == null ? process.cwd() : String(baseCwd));
+  const ctx = candidateContext(command, base);
+  if (ctx === null) return [base];
+  const { segs } = ctx;
+
+  // Relevant segments: git / gh segments the shared classifier names an action for (the only ones
+  // a gate can govern), so a read-only `git log` / `git status` in the session cwd does not gate a
+  // commit or push that runs elsewhere. None of those -> every git / gh segment; none at all ->
+  // the end state. classify.cjs is required lazily (it does not require this module).
+  // If no git / gh segment is recognised but the classifier still names an action somewhere (a
+  // wrapper form this walk does not model), every segment and the end state are relevant.
+  const gitOrGh = [];
+  segs.forEach((s, j) => { if (s.program === 'git' || s.program === 'gh') gitOrGh.push(j); });
+  let relevant = gitOrGh.filter((j) => segmentIsGovernable(segs[j]));
+  if (relevant.length === 0) relevant = gitOrGh;
+  if (relevant.length === 0 && segs.some((s) => segmentIsGovernable(s))) relevant = segs.map((_, j) => j).concat([segs.length]);
+  if (relevant.length === 0) relevant = [segs.length];
+
+  const out = [];
+  for (const j of relevant) {
+    pushUnique(out, segmentCandidates(segs, j, { base, homes: ctx.homes, cdFunction: ctx.cdFunction, followGitC }));
+  }
+  appendCandidateExtras(out, ctx, base);
+  return out;
+}
+
+/**
+ * The state every candidate computation of one command shares: the resolver's own segments
+ * (parsed with `{cwdSeparators:true}`, falling back to a plain parse), every possible HOME, and
+ * the HOME-reassignment and cd-function flags. null when the command does not parse.
+ * (quick-261007-rni F9: extracted unchanged from commandCandidateDirs so pushSegmentDirs shares it.)
+ */
+function candidateContext(command, base) {
   let parsed = parseCommand(command, { cwdSeparators: true });
   if (!parsed || parsed.ok !== true) parsed = parseCommand(command);
-  if (!parsed || parsed.ok !== true || !Array.isArray(parsed.segments)) return [base];
+  if (!parsed || parsed.ok !== true || !Array.isArray(parsed.segments)) return null;
 
   const segs = parsed.segments.map((seg) => {
     const e = effectiveProgram(seg);
@@ -533,65 +565,62 @@ function commandCandidateDirs(command, baseCwd, opts) {
     }
     pushUnique(homes, absolutePathTokens(segs));
   }
+  return { segs, reassign, cdFunction, homes };
+}
 
-  // Relevant segments: git / gh segments the shared classifier names an action for (the only ones
-  // a gate can govern), so a read-only `git log` / `git status` in the session cwd does not gate a
-  // commit or push that runs elsewhere. None of those -> every git / gh segment; none at all ->
-  // the end state. classify.cjs is required lazily (it does not require this module).
-  // If no git / gh segment is recognised but the classifier still names an action somewhere (a
-  // wrapper form this walk does not model), every segment and the end state are relevant.
-  const gitOrGh = [];
-  segs.forEach((s, j) => { if (s.program === 'git' || s.program === 'gh') gitOrGh.push(j); });
-  let relevant = gitOrGh.filter((j) => segmentIsGovernable(segs[j]));
-  if (relevant.length === 0) relevant = gitOrGh;
-  if (relevant.length === 0 && segs.some((s) => segmentIsGovernable(s))) relevant = segs.map((_, j) => j).concat([segs.length]);
-  if (relevant.length === 0) relevant = [segs.length];
-
-  const out = [];
-  for (const j of relevant) {
-    let cands = [base];
-    const seen = [base];
-    for (let i = 0; i < j; i++) {
-      const s = segs[i];
-      if (!CD_PROGRAMS.has(s.program) && s.program !== 'popd') continue;
-      // Round 3 (re-review R2-WR-01): a cd that is a PIPELINE STAGE (`a | cd X`, `cd X | b`) runs in
-      // a subshell and never moves the parent: no candidate changes.
-      if ((i > 0 && segs[i - 1].nextOp === '|') || s.nextOp === '|') continue;
-      let bypass = cdFunction || s.subshell;
-      // The operators between the cd and segment j that let j run after a FAILED cd: `;`, `||`, a
-      // lone `&` and a newline. `&&` short-circuits, a later `|` only joins a pipeline that is itself
-      // behind the cd (`cd X && a | b && git commit` runs git only in X), and the end of the command
-      // (null) is no operator.
-      for (let k = i; k < j && !bypass; k++) {
-        const op = segs[k].nextOp;
-        if (op === ';' || op === '||' || op === '&' || op === '\n') bypass = true;
-      }
-      const t = s.program === 'popd' ? '-' : cdTarget(s.rest);
-      let next;
-      if (t === '-' || (s.program === 'pushd' && t === null)) {
-        next = pushUnique(cands.slice(), seen);
-      } else {
-        next = t === null ? applyTarget(cands, '~', homes) : applyTarget(cands, t, homes);
-        if (bypass || next.length === 0) pushUnique(next, cands);
-      }
-      cands = next;
-      pushUnique(seen, cands);
+/**
+ * The candidate directories of resolver segment `j` (the end state when j === segs.length): the
+ * cd walk before it, its own `env -C` / `sudo -D` chdirs and, for git, its global `-C` targets.
+ * (quick-261007-rni F9: the per-segment body of commandCandidateDirs, extracted unchanged.)
+ */
+function segmentCandidates(segs, j, { base, homes, cdFunction, followGitC }) {
+  let cands = [base];
+  const seen = [base];
+  for (let i = 0; i < j; i++) {
+    const s = segs[i];
+    if (!CD_PROGRAMS.has(s.program) && s.program !== 'popd') continue;
+    // Round 3 (re-review R2-WR-01): a cd that is a PIPELINE STAGE (`a | cd X`, `cd X | b`) runs in
+    // a subshell and never moves the parent: no candidate changes.
+    if ((i > 0 && segs[i - 1].nextOp === '|') || s.nextOp === '|') continue;
+    let bypass = cdFunction || s.subshell;
+    // The operators between the cd and segment j that let j run after a FAILED cd: `;`, `||`, a
+    // lone `&` and a newline. `&&` short-circuits, a later `|` only joins a pipeline that is itself
+    // behind the cd (`cd X && a | b && git commit` runs git only in X), and the end of the command
+    // (null) is no operator.
+    for (let k = i; k < j && !bypass; k++) {
+      const op = segs[k].nextOp;
+      if (op === ';' || op === '||' || op === '&' || op === '\n') bypass = true;
     }
-    // `env -C <dir>` / `sudo -D <dir>` move this segment only (round 3, R2-WR-02).
-    if (j < segs.length) {
-      for (const d of segs[j].chdirs) {
-        const moved = applyTarget(cands, String(d), homes);
-        if (moved.length > 0) cands = moved;
-      }
+    const t = s.program === 'popd' ? '-' : cdTarget(s.rest);
+    let next;
+    if (t === '-' || (s.program === 'pushd' && t === null)) {
+      next = pushUnique(cands.slice(), seen);
+    } else {
+      next = t === null ? applyTarget(cands, '~', homes) : applyTarget(cands, t, homes);
+      if (bypass || next.length === 0) pushUnique(next, cands);
     }
-    if (j < segs.length && followGitC && segs[j].program === 'git') {
-      for (const d of gitGlobalChdirs({ tokens: ['git'].concat(segs[j].rest.slice(1)) })) {
-        const moved = applyTarget(cands, String(d), homes);
-        if (moved.length > 0) cands = moved;
-      }
-    }
-    pushUnique(out, cands);
+    cands = next;
+    pushUnique(seen, cands);
   }
+  // `env -C <dir>` / `sudo -D <dir>` move this segment only (round 3, R2-WR-02).
+  if (j < segs.length) {
+    for (const d of segs[j].chdirs) {
+      const moved = applyTarget(cands, String(d), homes);
+      if (moved.length > 0) cands = moved;
+    }
+  }
+  if (j < segs.length && followGitC && segs[j].program === 'git') {
+    for (const d of gitGlobalChdirs({ tokens: ['git'].concat(segs[j].rest.slice(1)) })) {
+      const moved = applyTarget(cands, String(d), homes);
+      if (moved.length > 0) cands = moved;
+    }
+  }
+  return cands;
+}
+
+/** The command-wide extras appended after the per-segment candidates (HOME reassignment, cd functions). */
+function appendCandidateExtras(out, ctx, base) {
+  const { segs, reassign, cdFunction, homes } = ctx;
   if (reassign) pushUnique(out, [base]);
   if (cdFunction) {
     for (const t of new Set(absolutePathTokens(segs).concat(
@@ -603,6 +632,35 @@ function commandCandidateDirs(command, baseCwd, opts) {
     }
   }
   return out;
+}
+
+/**
+ * quick-261007-rni F9: the candidate directories of ONE push segment, for looking its remote up
+ * where that push actually runs. The command-wide union (commandCandidateDirs) is wrong here:
+ * `cd A && git push backup x && cd B && git push origin main` would look `backup` up in B as well,
+ * fail, and false-arm. `seg` is a gate-shaped segment (parseCommandForGates), matched to the
+ * resolver's own segments by its token list; token-identical segments get the union of their
+ * dirs. git `-C` is always followed. The same command-wide extras as commandCandidateDirs apply.
+ * @param {string} command raw tool_input.command
+ * @param {string} [baseCwd] the hook's process.cwd()
+ * @param {{tokens?: Array}} seg
+ * @returns {string[]|null} absolute directories, or null when the command does not parse or no
+ *   resolver segment carries these tokens (the caller fails closed to its cwd rule)
+ */
+function pushSegmentDirs(command, baseCwd, seg) {
+  const base = path.resolve(baseCwd == null ? process.cwd() : String(baseCwd));
+  const ctx = candidateContext(command, base);
+  if (ctx === null) return null;
+  const key = JSON.stringify(Array.isArray(seg && seg.tokens) ? seg.tokens.map(String) : []);
+  const out = [];
+  let matched = false;
+  ctx.segs.forEach((s, j) => {
+    if (JSON.stringify(s.allTokens) !== key) return;
+    matched = true;
+    pushUnique(out, segmentCandidates(ctx.segs, j, { base, homes: ctx.homes, cdFunction: ctx.cdFunction, followGitC: true }));
+  });
+  if (!matched) return null;
+  return appendCandidateExtras(out, ctx, base);
 }
 
 /**
@@ -1069,6 +1127,8 @@ module.exports = {
   GSD_CORE_IDENTITY_SCRIPTS,
   commandStartDir,
   commandCandidateDirs,
+  // quick-261007-rni F9: per-push-segment dirs for ENF-21's remote lookup (not the command union).
+  pushSegmentDirs,
   expandHome,
   resolveGsdCoreRootForCommand,
   resolveRootForCommand,
