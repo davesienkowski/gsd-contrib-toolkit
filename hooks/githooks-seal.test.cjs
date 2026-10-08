@@ -206,3 +206,27 @@ test('scoping does not weaken: --no-verify on a LATER push segment → deny', ()
   const d = runGithooksGate(input('git commit -m x && git push --no-verify'), deps());
   assert.strictEqual(d.permissionDecision, 'deny');
 });
+
+// quick-261007-tz0 F10 (locked decision): githooks-seal is a hook-bypass control, not an
+// upstream-contribution control, so it keeps arming on a push to a fork or the backup remote and
+// never looks the push target up.
+test('F10 guard: githooks-seal stays armed on a fork push (--no-verify and an unset hooksPath) -> deny, zero lookups', () => {
+  const calls = { dirs: 0, lookups: 0 };
+  const lookups = {
+    segmentDirs: () => {
+      calls.dirs += 1;
+      return ['/tmp/wt'];
+    },
+    resolvePushUrls: () => {
+      calls.lookups += 1;
+      return ['https://github.com/davesienkowski/gsd-core-experiments.git'];
+    },
+  };
+  const a = runGithooksGate(input('git push --no-verify backup fix/x'), deps(lookups));
+  assert.strictEqual(a.permissionDecision, 'deny');
+  assert.match(a.permissionDecisionReason, /no-verify/);
+  const b = runGithooksGate(input('git push backup fix/x'), deps(Object.assign({ readHooksPath: () => '' }, lookups)));
+  assert.strictEqual(b.permissionDecision, 'deny');
+  assert.strictEqual(calls.dirs, 0);
+  assert.strictEqual(calls.lookups, 0);
+});

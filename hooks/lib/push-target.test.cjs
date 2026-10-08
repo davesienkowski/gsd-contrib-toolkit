@@ -648,3 +648,217 @@ test('F9 R2: urlRewritesLive: no rewrite -> [] (git exits 1), a pushInsteadOf ->
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// ── quick-261007-tz0 F10: narrowToArmingPushes (lint-ci-marker and protocol-artifact consumers) ──
+// `F10: ` cases fail before the helper exists and pass after. The real-classifier cases use only
+// single-push commands plus the hidden-push pin; every other case injects io.classifyPushTarget so
+// it asserts the helper's narrowing contract, not the hardened rule-(b) allowlist.
+
+/** Counted lookup world: segmentDirs -> ['/tmp/wt']; resolvePushUrls -> map[name] or throws. */
+function f10World(map = {}) {
+  const calls = { dirs: 0, lookups: [], rewrites: 0 };
+  return {
+    calls,
+    segmentDirs: () => {
+      calls.dirs += 1;
+      return ['/tmp/wt'];
+    },
+    resolvePushUrls: (dir, name) => {
+      calls.lookups.push([dir, name]);
+      if (Object.prototype.hasOwnProperty.call(map, name)) return map[name];
+      throw new Error('No such remote ' + name);
+    },
+    urlRewrites: () => {
+      calls.rewrites += 1;
+      return [];
+    },
+  };
+}
+
+/** The repository token of a push segment (the token after `push`), for stub classifiers. */
+function remoteOf(seg) {
+  const t = seg.tokens.map(String);
+  return t[t.indexOf('push') + 1];
+}
+
+/** A stub classifier keyed on the push's remote token; records every segment it sees. */
+function stubClassifier(byRemote, seen = []) {
+  return (seg) => {
+    seen.push(seg);
+    const target = Object.prototype.hasOwnProperty.call(byRemote, remoteOf(seg)) ? byRemote[remoteOf(seg)] : null;
+    return { target, unresolved: null };
+  };
+}
+
+function narrow(cmd, io) {
+  const parsed = parseCommandForGates(cmd);
+  assert.ok(parsed.ok, 'fixture must parse: ' + cmd);
+  return { parsed, out: pt.narrowToArmingPushes(cmd, parsed, io) };
+}
+
+test('F10: real classifier, `git push origin x` with an upstream lookup -> the same object, empty false', () => {
+  const w = f10World({ origin: [UPSTREAM] });
+  const { parsed, out } = narrow('git push origin x', w);
+  assert.strictEqual(out.parsed, parsed);
+  assert.strictEqual(out.empty, false);
+  assert.deepStrictEqual(w.calls.lookups, [['/tmp/wt', 'origin']]);
+});
+
+test('F10: real classifier, a throwing lookup (rule c) -> the same object, empty false', () => {
+  const w = f10World({});
+  const { parsed, out } = narrow('git push typo x', w);
+  assert.strictEqual(out.parsed, parsed);
+  assert.strictEqual(out.empty, false);
+  assert.strictEqual(w.calls.lookups.length, 1);
+});
+
+test('F10: real classifier, a bare `git push` (rule d) -> the same object, zero segmentDirs and lookup calls', () => {
+  const w = f10World({ origin: [FORK] });
+  const { parsed, out } = narrow('git push', w);
+  assert.strictEqual(out.parsed, parsed);
+  assert.strictEqual(out.empty, false);
+  assert.strictEqual(w.calls.dirs, 0);
+  assert.strictEqual(w.calls.lookups.length, 0);
+});
+
+test('F10: real classifier, `git push backup fix/x` with a fork lookup -> empty true, exactly one lookup', () => {
+  const w = f10World({ backup: [FORK] });
+  const { out } = narrow('git push backup fix/x', w);
+  assert.strictEqual(out.empty, true);
+  assert.deepStrictEqual(w.calls.lookups, [['/tmp/wt', 'backup']]);
+});
+
+test('F10: real classifier, hidden-push pin `git push backup x && bash -c "git push origin main"` -> the same object', () => {
+  const w = f10World({ backup: [FORK], origin: [FORK] });
+  const { parsed, out } = narrow('git push backup x && bash -c "git push origin main"', w);
+  assert.strictEqual(out.parsed, parsed);
+  assert.strictEqual(out.empty, false);
+});
+
+test('F10: missing or partial io -> the same object, empty false, zero calls', () => {
+  const w = f10World({ backup: [FORK] });
+  const seen = [];
+  const classifyPushTarget = stubClassifier({ backup: 'other' }, seen);
+  for (const io of [
+    undefined,
+    {},
+    { segmentDirs: w.segmentDirs, classifyPushTarget },
+    { resolvePushUrls: w.resolvePushUrls, classifyPushTarget },
+  ]) {
+    const { parsed, out } = narrow('git push backup fix/x', io);
+    assert.strictEqual(out.parsed, parsed);
+    assert.strictEqual(out.empty, false);
+  }
+  assert.strictEqual(w.calls.dirs, 0);
+  assert.strictEqual(w.calls.lookups.length, 0);
+  assert.strictEqual(seen.length, 0);
+});
+
+test('F10: `git status && ls` (no push segment) -> the same object, zero calls even with a classifier saying other', () => {
+  const w = f10World({ backup: [FORK] });
+  const seen = [];
+  const io = Object.assign({}, w, { classifyPushTarget: () => { seen.push(1); return { target: 'other', unresolved: null }; } });
+  const { parsed, out } = narrow('git status && ls', io);
+  assert.strictEqual(out.parsed, parsed);
+  assert.strictEqual(out.empty, false);
+  assert.strictEqual(seen.length, 0);
+  assert.strictEqual(w.calls.dirs, 0);
+  assert.strictEqual(w.calls.lookups.length, 0);
+});
+
+test('F10: dropping segment 0 of `git push backup x && gh pr create` rebuilds the top-level fields from the kept segment', () => {
+  const w = f10World({});
+  const io = Object.assign({}, w, { classifyPushTarget: stubClassifier({ backup: 'other' }) });
+  const { parsed, out } = narrow('git push backup x && gh pr create --title t --body b', io);
+  assert.strictEqual(out.empty, false);
+  assert.notStrictEqual(out.parsed, parsed);
+  const kept = parsed.segments[1];
+  assert.strictEqual(out.parsed.segments.length, 1);
+  assert.strictEqual(out.parsed.segments[0], kept);
+  assert.strictEqual(out.parsed.program, 'gh');
+  for (const k of ['program', 'subcommands', 'flags', 'shortFlags', 'positionals', 'tokens']) {
+    assert.deepStrictEqual(out.parsed[k], kept[k], k);
+  }
+  assert.strictEqual(out.parsed.raw, parsed.raw);
+  assert.strictEqual(classifyAction(out.parsed).action, 'pr-create');
+});
+
+test('F10: kept segments keep their order and nextOp; the first kept one supplies program', () => {
+  const io = Object.assign({}, f10World({}), { classifyPushTarget: stubClassifier({ backup: 'other' }) });
+  const { parsed, out } = narrow('git push backup x && git status && gh pr create --title t --body b', io);
+  assert.strictEqual(out.empty, false);
+  assert.strictEqual(out.parsed.segments.length, 2);
+  assert.strictEqual(out.parsed.segments[0], parsed.segments[1]);
+  assert.strictEqual(out.parsed.segments[1], parsed.segments[2]);
+  assert.strictEqual(out.parsed.segments[0].nextOp, parsed.segments[1].nextOp);
+  assert.strictEqual(out.parsed.program, 'git');
+  assert.deepStrictEqual(out.parsed.tokens, parsed.segments[1].tokens);
+});
+
+test('F10: newline-split alt push segment is dropped by identity; the joined segment stays; altSegments recomputed', () => {
+  const seen = [];
+  const io = Object.assign({}, f10World({}), { classifyPushTarget: stubClassifier({ backup: 'other' }, seen) });
+  const { parsed, out } = narrow('echo hi\ngit push backup x', io);
+  assert.strictEqual(parsed.altSegments, 2, 'fixture shape: two appended alt segments');
+  assert.strictEqual(parsed.segments.length, 3, 'fixture shape: joined + two alt segments');
+  assert.strictEqual(out.empty, false);
+  assert.strictEqual(out.parsed.segments.length, 2);
+  assert.strictEqual(out.parsed.segments[0], parsed.segments[0]);
+  assert.strictEqual(out.parsed.segments[1], parsed.segments[1]);
+  assert.strictEqual(out.parsed.altSegments, 1);
+  assert.strictEqual(seen.length, 1, 'only the alt push segment is a push candidate');
+  assert.strictEqual(seen[0], parsed.segments[2], 'the segment reaches the classifier unchanged');
+});
+
+test('F10: two token-identical fork pushes are both dropped (identity, not re-serialised tokens)', () => {
+  const seen = [];
+  const io = Object.assign({}, f10World({}), { classifyPushTarget: stubClassifier({ backup: 'other' }, seen) });
+  const { parsed, out } = narrow('git push backup x && git push backup x', io);
+  assert.strictEqual(out.empty, true);
+  assert.strictEqual(seen.length, 2);
+  assert.strictEqual(seen[0], parsed.segments[0]);
+  assert.strictEqual(seen[1], parsed.segments[1]);
+});
+
+test('F10: a classifier answering gsd-core or null keeps the push -> the same object', () => {
+  for (const target of ['gsd-core', null]) {
+    const io = Object.assign({}, f10World({}), { classifyPushTarget: stubClassifier({ backup: target }) });
+    const { parsed, out } = narrow('git push backup x', io);
+    assert.strictEqual(out.parsed, parsed, String(target));
+    assert.strictEqual(out.empty, false, String(target));
+  }
+});
+
+test('F10: twice on the same command and deps -> equal results, equal lookup counts, input not mutated', () => {
+  const cmd = 'git push backup x && git status && git push origin y';
+  const w = f10World({ backup: [FORK], origin: [UPSTREAM] });
+  const parsed = parseCommandForGates(cmd);
+  const snapshot = JSON.parse(JSON.stringify(parsed));
+  const a = pt.narrowToArmingPushes(cmd, parsed, w);
+  const n1 = w.calls.lookups.length;
+  const b = pt.narrowToArmingPushes(cmd, parsed, w);
+  const n2 = w.calls.lookups.length - n1;
+  assert.deepStrictEqual(a, b);
+  assert.strictEqual(n1, n2);
+  assert.ok(n1 > 0);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(parsed)), snapshot);
+  assert.strictEqual(a.empty, false);
+  assert.strictEqual(a.parsed.segments.length, 2, 'the fork push is dropped; status and the upstream push are kept');
+});
+
+test('F10: a throwing classifier or a throwing segmentDirs -> the same object, empty false, no throw', () => {
+  const thrower = Object.assign({}, f10World({}), {
+    classifyPushTarget: () => { throw new Error('boom'); },
+  });
+  const r1 = narrow('git push backup x', thrower);
+  assert.strictEqual(r1.out.parsed, r1.parsed);
+  assert.strictEqual(r1.out.empty, false);
+  const dirsThrow = {
+    segmentDirs: () => { throw new Error('no dir'); },
+    resolvePushUrls: () => [FORK],
+    urlRewrites: () => [],
+  };
+  const r2 = narrow('git push backup x', dirsThrow);
+  assert.strictEqual(r2.out.parsed, r2.parsed);
+  assert.strictEqual(r2.out.empty, false);
+});

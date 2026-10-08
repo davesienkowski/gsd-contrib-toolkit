@@ -180,6 +180,11 @@ function deps(over = {}) {
     readChangedPaths: () => ['src/core.cts', 'tests/bug-1234-slug.test.cjs'],
     readMatrixRun: () => MATRIX_GREEN,
     readHeadCommittedAt: () => '2026-07-27T19:00:00.000Z',
+    // quick-261007-tz0 F10: rule c (a lookup that fails) = the pre-F10 arming, with no real git.
+    segmentDirs: () => ['/tmp/wt'],
+    resolvePushUrls: () => {
+      throw new Error('no remote lookup is configured in this test');
+    },
     overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
   };
   const merged = Object.assign(base, over);
@@ -956,4 +961,106 @@ test('a scaffold-write failure degrades to a plain deny, never to an allow', () 
   );
   assert.strictEqual(d.permissionDecision, 'deny');
   assert.match(d.permissionDecisionReason, /ENF-19 STEP-ZERO/);
+});
+
+// ── quick-261007-tz0 F10: protocol-artifact does not arm on a push whose every target is another
+//    repo. Armed branch fix/1234-slug; backup -> the experiments fork, origin -> upstream, any
+//    other name throws (rule c). `F10: ` fails before the fix; `F10 guard: ` holds both ways. ──
+
+const F10_FORK = 'https://github.com/davesienkowski/gsd-core-experiments.git';
+const F10_UPSTREAM = 'https://github.com/open-gsd/gsd-core.git';
+const F10_DIR = '.gsd/contrib/fix-1234-slug/';
+
+/** deps() with a counted lookup world, a counted readBranch, and the named artifacts missing. */
+function pushWorld(missing = [], map = { backup: [F10_FORK], origin: [F10_UPSTREAM] }) {
+  const calls = { dirs: 0, lookups: [], branch: 0 };
+  const base = deps();
+  const gone = new Set(missing.map((f) => F10_DIR + f));
+  const d = deps({
+    segmentDirs: () => {
+      calls.dirs += 1;
+      return ['/tmp/wt'];
+    },
+    resolvePushUrls: (dir, name) => {
+      calls.lookups.push([dir, name]);
+      if (Object.prototype.hasOwnProperty.call(map, name)) return map[name];
+      throw new Error('No such remote ' + name);
+    },
+    urlRewrites: () => [],
+    readBranch: () => {
+      calls.branch += 1;
+      return 'fix/1234-slug';
+    },
+    artifactExists: (rel) => !gone.has(rel) && base.artifactExists(rel),
+    writeScaffold: () => ({ written: false }),
+  });
+  return { d, calls };
+}
+
+test('F10: `git push backup fix/1234-slug` (fork) with P3-red.json missing -> allow, no readBranch, one lookup', () => {
+  const { d, calls } = pushWorld(['P3-red.json']);
+  const r = runProtocolArtifactGate(input('git push backup fix/1234-slug'), d);
+  assert.strictEqual(r.permissionDecision, 'allow', r.permissionDecisionReason);
+  assert.strictEqual(calls.branch, 0);
+  assert.deepStrictEqual(calls.lookups, [['/tmp/wt', 'backup']]);
+});
+
+test('F10: `git status && git push backup fix/1234-slug` with P3-red.json missing -> allow', () => {
+  const { d } = pushWorld(['P3-red.json']);
+  const r = runProtocolArtifactGate(input('git status && git push backup fix/1234-slug'), d);
+  assert.strictEqual(r.permissionDecision, 'allow', r.permissionDecisionReason);
+});
+
+test('F10 guard: `git push origin fix/1234-slug` (upstream) with P3-red.json missing -> deny naming it', () => {
+  const { d } = pushWorld(['P3-red.json']);
+  const r = runProtocolArtifactGate(input('git push origin fix/1234-slug'), d);
+  assert.strictEqual(r.permissionDecision, 'deny');
+  assert.match(r.permissionDecisionReason, /P3-red\.json/);
+});
+
+test('F10 guard: `git push typo x` (rule c) with P3-red.json missing -> deny', () => {
+  const { d } = pushWorld(['P3-red.json']);
+  const r = runProtocolArtifactGate(input('git push typo x'), d);
+  assert.strictEqual(r.permissionDecision, 'deny');
+});
+
+test('F10 guard: bare `git push` (rule d) with P3-red.json missing -> deny, zero lookups', () => {
+  const { d, calls } = pushWorld(['P3-red.json']);
+  const r = runProtocolArtifactGate(input('git push'), d);
+  assert.strictEqual(r.permissionDecision, 'deny');
+  assert.strictEqual(calls.dirs, 0);
+  assert.strictEqual(calls.lookups.length, 0);
+});
+
+test('F10 guard: `gh pr create --repo open-gsd/gsd-core ... && git push backup x` with P2 missing -> deny', () => {
+  const { d } = pushWorld(['P2-review.json']);
+  const r = runProtocolArtifactGate(
+    input('gh pr create --repo open-gsd/gsd-core --title t --body b && git push backup x'),
+    d
+  );
+  assert.strictEqual(r.permissionDecision, 'deny');
+  assert.match(r.permissionDecisionReason, /P2-review\.json/);
+});
+
+test('F10 guard: hidden push beside a fork push (`bash -c "git push origin main"`) with P3 missing -> deny', () => {
+  const { d } = pushWorld(['P3-red.json']);
+  const r = runProtocolArtifactGate(input('git push backup x && bash -c "git push origin main"'), d);
+  assert.strictEqual(r.permissionDecision, 'deny');
+});
+
+test('F10 guard: `git status` (non-governed) -> allow, zero segmentDirs and lookup calls', () => {
+  const { d, calls } = pushWorld(['P3-red.json']);
+  const r = runProtocolArtifactGate(input('git status'), d);
+  assert.strictEqual(r.permissionDecision, 'allow', r.permissionDecisionReason);
+  assert.strictEqual(calls.dirs, 0);
+  assert.strictEqual(calls.lookups.length, 0);
+});
+
+test('F10 guard: `git push backup x && gh issue create --repo open-gsd/gsd-core ...` with P1 and P3 missing -> deny', () => {
+  const { d } = pushWorld(['P1-repro.json', 'P3-red.json']);
+  const r = runProtocolArtifactGate(
+    input('git push backup x && gh issue create --repo open-gsd/gsd-core --title t --body b'),
+    d
+  );
+  assert.strictEqual(r.permissionDecision, 'deny');
 });
