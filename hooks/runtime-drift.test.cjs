@@ -480,12 +480,15 @@ for (const cmd of [
     });
   }
 
-  test('F9: the literal fork scp URL from a gsd-core cwd -> allow with no lookup', () => {
+  // F9 R4 (item 2) FLIPPED the lookup count 0 -> 1: a literal is first looked up as a remote NAME
+  // (git exits 2, "No such remote", so the literal itself is classified).
+  test('F9: the literal fork scp URL from a gsd-core cwd -> allow after one remote-name lookup', () => {
     const cmd = 'git push git@github.com:davesienkowski/gsd-core-experiments.git x';
     const lookup = lookupMap(REMOTES);
     const { deps, calls } = f9World({ resolvePushUrls: lookup });
     assertAllow(runRuntimeDriftGate(input(cmd), deps), calls, cmd);
-    assert.strictEqual(calls.resolvePushUrls, 0);
+    assert.strictEqual(calls.resolvePushUrls, 1);
+    assert.deepStrictEqual(lookup.log.map((e) => e[1]), ['git@github.com:davesienkowski/gsd-core-experiments.git']);
   });
 
   test('F9: `git -C <A> push backup x` from base B looks backup up in A only -> allow', () => {

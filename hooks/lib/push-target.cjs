@@ -53,7 +53,8 @@
  *      typeset / readonly / local / set / unset / read, or sudo / su / doas / runuser;
  *   3. every segment's program (its FIRST token: no wrapper) is cd / pushd / popd / pwd / true /
  *      (R3 item 5, WR-02: before a push, no `cd -`, no popd and no pushd without a visible dir,
- *      because OLDPWD and the inherited dir stack are invisible to the hook) /
+ *      because OLDPWD and the inherited dir stack are invisible to the hook; R4 item 3: no cd /
+ *      pushd to a bare relative dir such as `docs`, which bash may find through CDPATH) /
  *      echo / printf (no -v) / ls / sleep; or tail / head / grep / wc / cat with no file argument,
  *      only as a pipe consumer; or `git` (globals: only -C and the safe booleans) running push,
  *      status, log, diff, show or rev-parse (no --output), branch (list forms), fetch (no
@@ -62,9 +63,11 @@
  *      alias-like git subcommand) is rule (c);
  *   4. no `--receive-pack` / `--exec` anywhere in the push segment, in any abbreviation git
  *      accepts, and every dash token after the repository positional is a known boolean;
- *   5. a LITERAL URL target also needs `git -C <dir> config --get-regexp ^url\.` to print nothing
- *      in every candidate dir (no insteadOf / pushInsteadOf rewrite; named remotes are resolved
- *      by `remote get-url --push`, which already applies them);
+ *   5. a LITERAL URL target is first looked up as a remote NAME (R4 item 2: a configured
+ *      `remote."<URL>"` replaces the literal): `git remote get-url --push --all <literal>` exit 0
+ *      -> its URLs are classified like a named remote's; exit 2 ("No such remote") -> the literal
+ *      itself, and `git -C <dir> config --get-regexp ^url\.` must print nothing in that dir (no
+ *      insteadOf / pushInsteadOf rewrite); any other failure -> rule c;
  *   6. every local lookup fits ONE budget per hook invocation (LOOKUP_BUDGET_MS total, each call
  *      min(PUSH_URL_TIMEOUT_MS, remaining)), and a push has at most MAX_PUSH_DIRS candidate dirs.
  * Rule (a) is checked first: an upstream URL arms whether or not the command passes the list.
@@ -79,10 +82,12 @@
  *
  * Residuals (recorded): the lookup runs with the hook's env, not the command shell's
  * (T-261007-rni-08; item 2 removes the in-command half); config, hooks or a FIFO planted by an
- * EARLIER Bash call that the lookups cannot see (item 5 covers url rewrites only); an scp-like
- * `host:path` with no user is treated as a name (rule c). R3 (IN-03) adds:
- *   - environment-borne shell state: CDPATH (a relative `cd x` may land in $CDPATH/x) and an
- *     ambient OLDPWD (`cd -` is now rule c, but `~-` / `$OLDPWD` already are by item 1);
+ * EARLIER Bash call that the lookups cannot see (item 5 covers url rewrites, and R4 item 2 the
+ * `remote."<literal URL>"` alias, by asking git itself); an scp-like `host:path` with no user is
+ * treated as a name (rule c). R3 (IN-03) adds:
+ *   - environment-borne shell state: an ambient OLDPWD (`cd -` is rule c; `$OLDPWD` is rule c by
+ *     item 1, the `$`; `~-` is rule c only because its literal path does not exist, R3 item 2,
+ *     REVIEW-R3 IN-02). CDPATH is closed by R4 item 3 (a bare relative cd target is rule c);
  *   - aliases and functions restored from the Bash tool's shell snapshot (`expand_aliases` is on),
  *     which can make `cd` / `git` mean something else; the hook sees only the command text;
  *   - a `run_in_background` job from an earlier call that rewrites `.git/config` between the lookup
@@ -95,11 +100,12 @@
  * CTK-ADR-0001 (fail closed), CTK-ADR-0007 D-07 (ENF-21 arming; refined, not amended).
  */
 
+const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { performance } = require('node:perf_hooks');
 const { resolveProgram, classifyAction } = require('./classify.cjs');
-const { parseOwnerRepo, GSD_CORE_OWNER, GSD_CORE_REPO, UPSTREAM_ALIASES } = require('./resolve.cjs');
+const { parseOwnerRepo, GSD_CORE_OWNER, GSD_CORE_REPO, isUpstreamOwnerRepo } = require('./resolve.cjs');
 
 /** PD-5: the bound on one `git remote get-url` call (same budget as worktree-fresh-base's local git). */
 const PUSH_URL_TIMEOUT_MS = 3000;
@@ -472,12 +478,28 @@ function dirStackReason(prog, args) {
   const target = args[k];
   const seen = shown([prog].concat(args).join(' '));
   if (prog === 'cd') {
-    return target === '-' ? 'the command runs ' + seen + ', which moves to OLDPWD (a directory the hook cannot see)' : null;
+    if (target === '-') return 'the command runs ' + seen + ', which moves to OLDPWD (a directory the hook cannot see)';
+    return cdpathReason(target, seen);
   }
   if (target === undefined || target === '-' || /^[+-]\d+$/.test(target) || flags.some((f) => f.includes('n'))) {
     return 'the command runs ' + seen + ', which reads the directory stack the hook cannot see';
   }
-  return null;
+  return cdpathReason(target, seen);
+}
+
+/**
+ * F9 R4 (item 3, ADVERSARIAL-R3 R3-B): a cd / pushd target that bash may resolve through CDPATH,
+ * which the hook cannot see (the shell's environment). bash consults CDPATH unless the target is
+ * absolute or its FIRST path component is `.` or `..` (POSIX cd step 5); a `~` form is expanded to
+ * an absolute path first. So `docs`, `docs/sub`, `.docs` are rule c; `./docs`, `../x`, `.`, `..`,
+ * `/abs`, `~/x` are not. `git -C` / `env -C` never read CDPATH.
+ */
+function cdpathReason(target, seen) {
+  if (typeof target !== 'string' || target === '') return null;
+  if (target.startsWith('/') || target.startsWith('~')) return null;
+  const first = target.split('/')[0];
+  if (first === '.' || first === '..') return null;
+  return 'the command runs ' + seen + ', a relative directory bash may look up through CDPATH (which the hook cannot see)';
 }
 
 function ruleBAllowlistReason(command, parsed) {
@@ -535,11 +557,30 @@ function isLiteralPushTarget(value) {
     v.startsWith('../') || v.startsWith('~');
 }
 
-/** Rule (a): open-gsd/gsd-core itself, or one of its GitHub rename aliases (R3 item 1). */
+/**
+ * Rule (a): open-gsd/gsd-core itself, or one of its GitHub rename aliases (R3 item 1). R4 (item 4):
+ * the one shared predicate (resolve.cjs isUpstreamOwnerRepo) that every gate now uses.
+ */
 function isUpstream(p) {
-  if (!p) return false;
-  if (p.owner === GSD_CORE_OWNER && p.repo === GSD_CORE_REPO) return true;
-  return UPSTREAM_ALIASES.includes(p.owner + '/' + p.repo);
+  return isUpstreamOwnerRepo(p);
+}
+
+/**
+ * F9 R4 (item 2, ADVERSARIAL-R3 R3-A): git's own "No such remote" from `git remote get-url`: exit
+ * status 2 and no signal (builtin/remote.c exits 2 only there; a missing dir or a non-repo is 128, a
+ * timeout kill has a signal). Status only, not the localized message text.
+ */
+function isNoSuchRemote(err) {
+  return !!err && err.status === 2 && !err.signal;
+}
+
+/**
+ * F9 R4 (item 2): the remote NAME git consults for a literal push target. The shell expands a
+ * leading `~` / `~/` before git sees the argument, so look up the expanded path (the hook's HOME;
+ * the hook-env vs shell-env gap is the recorded T-08 residual).
+ */
+function literalLookupName(value) {
+  return value === '~' || value.startsWith('~/') ? path.join(os.homedir(), value.slice(1)) : value;
 }
 
 /** R3 item 1: any OTHER repo under the upstream org can never earn rule (b) (an in-org rename redirects). */
@@ -622,14 +663,47 @@ function classifyInner(seg, parsed, io) {
     const p = parseOwnerRepo(value);
     if (isUpstream(p)) return { target: 'gsd-core', unresolved: null };
     if (!p) return unresolved('the push URL ' + sv + ' does not name an owner/repo');
-    if (isUpstreamOrg(p)) return unresolved('the push URL ' + sv + ' is in the ' + GSD_CORE_OWNER + ' org' + ORG_NOTE);
-    const why = ruleBReason(seg, parsed, io);
-    if (why) return unresolved(why + ', so the push to ' + sv + ' may be redirected');
-    // Item 5: git applies url.<base>.insteadOf / pushInsteadOf to a literal URL at push time.
     const dirs = pushDirs(io, sv);
     if (typeof dirs === 'string') return unresolved(dirs);
-    if (typeof io.urlRewrites !== 'function') return unresolved('the url rewrite config for ' + sv + ' could not be read');
+    // R4 item 2 (ADVERSARIAL-R3 R3-A): git looks a literal up as a remote NAME first; a configured
+    // `remote."<literal>".url` / `.pushurl` REPLACES it (git 2.43 remote.c remotes_remote_get_1).
+    // `git remote get-url --push --all <literal>`: exit 0 -> classify what it prints (rule a on any
+    // upstream URL, every one must be another repo for rule b; insteadOf / pushInsteadOf are already
+    // applied); exit 2 "No such remote" -> the literal itself, plus the url-rewrite check (item 5)
+    // in that dir; any other failure -> rule c. Rule (a) is checked before the allowlist, as for a
+    // named remote.
+    const name = literalLookupName(value);
+    let failure = null;
+    const literalDirs = [];
     for (const dir of dirs) {
+      const r = budgeted(budget, (ms) => io.resolvePushUrls(dir, name, ms));
+      if (!r.ok) {
+        if (!r.why && isNoSuchRemote(r.err)) { literalDirs.push(dir); continue; }
+        if (failure === null) failure = r.why || 'the push URL ' + sv + ' could not be checked for a remote of that name (' + errLine(r.err) + ')';
+        if (r.why) break;
+        continue;
+      }
+      const urls = r.value;
+      if (!Array.isArray(urls) || urls.length === 0) {
+        if (failure === null) failure = 'the push URL ' + sv + ' is configured as a remote that resolves to no URL';
+        continue;
+      }
+      for (const u of urls) {
+        const q = parseOwnerRepo(u);
+        if (isUpstream(q)) return { target: 'gsd-core', unresolved: null };
+        if (!q && failure === null) failure = 'the push URL ' + sv + ' is configured as a remote whose URL is unparseable';
+        if (isUpstreamOrg(q) && failure === null) failure = 'the push URL ' + sv + ' is configured as a remote in the ' + GSD_CORE_OWNER + ' org' + ORG_NOTE;
+      }
+    }
+    if (failure !== null) return unresolved(failure);
+    if (literalDirs.length > 0 && isUpstreamOrg(p)) return unresolved('the push URL ' + sv + ' is in the ' + GSD_CORE_OWNER + ' org' + ORG_NOTE);
+    // R3 item 2: a derived dir that could not be confirmed physically never earns rule (b).
+    if (typeof dirs.unverified === 'string') return unresolved(dirs.unverified + ', so the push to ' + sv + ' may run elsewhere');
+    const why = ruleBReason(seg, parsed, io);
+    if (why) return unresolved(why + ', so the push to ' + sv + ' may be redirected');
+    // Item 5: git applies url.<base>.insteadOf / pushInsteadOf to an unconfigured literal at push time.
+    if (literalDirs.length > 0 && typeof io.urlRewrites !== 'function') return unresolved('the url rewrite config for ' + sv + ' could not be read');
+    for (const dir of literalDirs) {
       const r = budgeted(budget, (ms) => io.urlRewrites(dir, ms));
       if (!r.ok) return unresolved(r.why || 'the url rewrite config for ' + sv + ' could not be read (' + errLine(r.err) + ')');
       if (!Array.isArray(r.value)) return unresolved('the url rewrite config for ' + sv + ' could not be read');
@@ -637,8 +711,6 @@ function classifyInner(seg, parsed, io) {
         return unresolved('a url.<base>.insteadOf / pushInsteadOf rewrite is configured (' + shown(r.value[0]) + '), so the push to ' + sv + ' may be redirected');
       }
     }
-    // R3 item 2: a derived dir that could not be confirmed physically never earns rule (b).
-    if (typeof dirs.unverified === 'string') return unresolved(dirs.unverified + ', so the push to ' + sv + ' may run elsewhere');
     return { target: 'other', unresolved: null };
   }
 

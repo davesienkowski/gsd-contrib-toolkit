@@ -36,7 +36,7 @@
 
 const { parseCommandForGates } = require('./lib/argv.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
-const { resolveGsdCoreRootForCommand, ScriptResolveError, parseOwnerRepo } = require('./lib/resolve.cjs');
+const { resolveGsdCoreRootForCommand, ScriptResolveError, repoSpecTargetsGsdCore } = require('./lib/resolve.cjs');
 const { resolveProgram } = require('./lib/classify.cjs');
 
 // FailClosed/safeCommand: shared IN-03 helpers from failclosed.cjs.
@@ -105,12 +105,17 @@ function isToolkitArtifact(p) {
  * reroute: keeps the boolean shape the gate() consumer (:330) depends on, only ADDING the
  * case-fold + port handling the hand-rolled body lacked.
  *
+ * quick-261007-rni F9 R4 (item 4, REVIEW-R3 WR-02): routes through resolve.repoSpecTargetsGsdCore,
+ * i.e. the ONE upstream predicate (isUpstreamOwnerRepo), so a GitHub rename alias of
+ * open-gsd/gsd-core (UPSTREAM_ALIASES; GitHub redirects push through it) is upstream here too. And
+ * F9 R4 item 1: parseOwnerRepo collapses dot segments and decodes unreserved escapes, so a URL the
+ * server resolves to upstream is never a null (= ALLOW) here.
+ *
  * @param {string} url
  * @returns {boolean}
  */
 function isUpstreamRemote(url) {
-  const r = parseOwnerRepo(url);
-  return !!r && r.owner === 'open-gsd' && r.repo === 'gsd-core';
+  return repoSpecTargetsGsdCore(url);
 }
 
 /**
