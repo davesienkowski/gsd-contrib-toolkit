@@ -876,6 +876,9 @@ function isContribBranch(branch) {
 // the input did NOT resolve to an enumerated owner/repo → null (fail-closed signal).
 const OWNER_REPO_SEG = /^[A-Za-z0-9._-]+$/;
 
+/** F9 R4 (item 1): an RFC 3986 unreserved character; only these decode from a `%XX` escape. */
+const UNRESERVED_CHAR = /^[A-Za-z0-9\-._~]$/;
+
 /**
  * parseOwnerRepo — the SINGLE owner/repo normalizer (CHD-01, WR-03: fix the class, not the
  * instance). It DELIBERATELY ENUMERATES the accepted input forms (Postel-inversion, binding
@@ -894,14 +897,20 @@ const OWNER_REPO_SEG = /^[A-Za-z0-9._-]+$/;
  * owner/repo case-insensitively — CR-01), or `null` when the input does not resolve to an
  * enumerated form / >=2 path segments / GitHub-safe owner+repo.
  *
- * quick-261007-rni F9 R2 (item 7, review CR-01) and R3 (item 4, REVIEW-R2 CR-02): trailing slashes
- * are stripped before AND after the `.git` strip, so `.git/`, `/` and `.git//` normalize to the
- * repo, and empty segments (`//`) collapse. Any PATH segment that is `.` or `..`, any `%`, `?`,
- * `#` or `\` in the PATH (the part after scheme, user@ and host), and whitespace anywhere, returns
- * null: git and curl
- * collapse dot segments and decode escapes, so `open-gsd/gsd-core/x/..` reaches upstream while a
- * last-two-segments reading would call it `x/..`. null is the fail-closed signal at every caller
- * (an unparseable explicit gh --repo arms; an unparseable push URL takes ENF-21 rule c). Pure (string in,
+ * quick-261007-rni F9 R2 (item 7, review CR-01), R3 (item 4, REVIEW-R2 CR-02) and R4 (item 1,
+ * REVIEW-R3 CR-01 / WR-01): the PATH (the part after scheme, user@ and host) is normalized the way
+ * the server and curl see it, then the LAST two segments are read:
+ *   1. `%XX` escapes of the RFC 3986 unreserved characters (A-Z a-z 0-9 - . _ ~) decode; any other
+ *      `%` (a reserved or invalid escape), any `?`, `#` or `\`, and whitespace anywhere -> null;
+ *   2. RFC 3986 remove_dot_segments: empty and `.` segments drop, `..` removes the previous one and
+ *      is clamped at the root (the server collapses `x/../open-gsd/gsd-core` to upstream);
+ *   3. a trailing `.git` (and the slashes around it) is stripped from the collapsed path.
+ * So `https://github.com/x/../open-gsd/gsd-core.git`, `.../%6Fpen-gsd/gsd-core.git` and
+ * `.../open-gsd/gsd-core/x/..` all parse as open-gsd/gsd-core (`git ls-remote` reached upstream
+ * through each, REVIEW-R3). INVARIANT: never return null for a URL that reaches upstream. null is
+ * fail-closed at segmentRepoTarget, commandTargetsGsdCore, gh-pr-create and push-target, but it is
+ * an ALLOW at containment's isUpstreamRemote (ENF-07) and worktree-fresh-base (ENF-25); a later
+ * round must not tighten this parser back to null for a shape the server resolves. Pure (string in,
  * object|null out); operates on already-structured argv values (HARD-04-safe — never a
  * raw-command regex).
  *
@@ -939,16 +948,28 @@ function parseOwnerRepo(urlOrSpec) {
   }
   // else: bare `owner/repo` or `host/owner/repo` — host stays the github.com default.
 
-  // F9 R3 (item 4, REVIEW-R2 CR-02): the escape / query / fragment / backslash check reads the PATH
-  // only, after the scheme, user@ and host are stripped, so a `%` in the userinfo
-  // (`https://u%2Dx@github.com/open-gsd/gsd-core.git`, which reaches upstream) still parses. A null
-  // here is an ALLOW at the boolean consumers (containment ENF-07, worktree-fresh-base ENF-25), so
-  // the parser must never return null for a URL that reaches upstream.
-  if (/[%?#\\]/.test(rest)) return null;
-  rest = rest.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.git$/i, '').replace(/\/+$/, '');
-  // F9 R3: `//` collapses (GitHub and git treat it as `/`); a `.` or `..` segment stays fail-closed.
+  // F9 R3 (item 4, REVIEW-R2 CR-02): every PATH check runs after the scheme, user@ and host are
+  // stripped, so a `%` in the userinfo (`https://u%2Dx@github.com/...`, which reaches upstream) parses.
+  if (/[?#\\]/.test(rest)) return null;
+  // F9 R4 (item 1, step 1): decode the unreserved escapes; any other escape is null.
+  let badEscape = false;
+  rest = rest.replace(/%([0-9A-Fa-f]{2})/g, (m, hex) => {
+    const c = String.fromCharCode(parseInt(hex, 16));
+    if (UNRESERVED_CHAR.test(c)) return c;
+    badEscape = true;
+    return m;
+  });
+  if (badEscape || rest.includes('%')) return null;
+  // F9 R4 (item 1, step 2): RFC 3986 remove_dot_segments, `..` clamped at the root; `//` collapses.
+  const collapsed = [];
+  for (const x of rest.split('/')) {
+    if (x === '' || x === '.') continue;
+    if (x === '..') { collapsed.pop(); continue; }
+    collapsed.push(x);
+  }
+  // Step 3: trailing slashes before AND after the `.git` strip (`.git/`, `.git//` normalize).
+  rest = collapsed.join('/').replace(/\/+$/, '').replace(/\.git$/i, '').replace(/\/+$/, '');
   const segs = rest.split('/').filter((x) => x.length > 0);
-  if (segs.some((x) => x === '.' || x === '..')) return null;
   if (segs.length < 2) return null;
   const owner = segs[segs.length - 2];
   const repo = segs[segs.length - 1];
@@ -970,8 +991,23 @@ function parseOwnerRepo(urlOrSpec) {
  * @returns {boolean}
  */
 function repoSpecTargetsGsdCore(value) {
-  const r = parseOwnerRepo(value);
-  return !!r && r.owner === GSD_CORE_OWNER && r.repo === GSD_CORE_REPO;
+  return isUpstreamOwnerRepo(parseOwnerRepo(value));
+}
+
+/**
+ * quick-261007-rni F9 R4 (item 4, REVIEW-R3 WR-02): THE upstream predicate. True for
+ * open-gsd/gsd-core and for every UPSTREAM_ALIASES entry (a GitHub rename redirect to it). Every
+ * repo-target check routes through this one function (repoSpecTargetsGsdCore, tokenTargetsGsdCoreApi,
+ * segmentRepoTarget, commandTargetsGsdCore, containment's isUpstreamRemote, push-target's rule a),
+ * so ENF-07, ENF-25, the gh gates and ENF-21 agree on what "upstream" is. The alias widening only
+ * adds arming / denying (fail-closed direction).
+ * @param {{owner?:string, repo?:string}|null} r a parseOwnerRepo result (lowercased)
+ * @returns {boolean}
+ */
+function isUpstreamOwnerRepo(r) {
+  if (!r || typeof r.owner !== 'string' || typeof r.repo !== 'string') return false;
+  if (r.owner === GSD_CORE_OWNER && r.repo === GSD_CORE_REPO) return true;
+  return UPSTREAM_ALIASES.includes(r.owner + '/' + r.repo);
 }
 
 /**
@@ -990,7 +1026,7 @@ function tokenTargetsGsdCoreApi(token) {
   const a = apiRepoOf(token);
   // F9 R3 (WR-03): a `repos/` path with a dot or encoded segment fails CLOSED (true).
   if (a.kind === 'unparseable') return true;
-  return a.kind === 'repo' && a.repo.owner === GSD_CORE_OWNER && a.repo.repo === GSD_CORE_REPO;
+  return a.kind === 'repo' && isUpstreamOwnerRepo(a.repo); // F9 R4 (item 4): aliases are upstream
 }
 
 /**
@@ -1125,7 +1161,7 @@ function segmentRepoTarget(seg, ghRepo) {
     if (a.kind === 'repo') targets.push(a.repo);
   }
   if (targets.length === 0) return null;
-  return targets.some((r) => r.owner === GSD_CORE_OWNER && r.repo === GSD_CORE_REPO) ? 'gsd-core' : 'other';
+  return targets.some(isUpstreamOwnerRepo) ? 'gsd-core' : 'other'; // F9 R4 (item 4): aliases are upstream
 }
 
 /**
@@ -1187,7 +1223,7 @@ function commandTargetsGsdCore(parsed) {
     for (const spec of explicitSpecs) {
       const r = parseOwnerRepo(spec);
       if (r) {
-        if (r.owner === GSD_CORE_OWNER && r.repo === GSD_CORE_REPO) return true; // upstream → DENY
+        if (isUpstreamOwnerRepo(r)) return true; // upstream (or an F9 R4 rename alias) → DENY
         // else: parses as a clearly-non-upstream fork → not targeting via this source (continue).
       } else {
         // explicit spec present but unparseable (GitHub-ish but unparseable) → fail-closed.
@@ -1276,6 +1312,7 @@ module.exports = {
   isContribBranch,
   parseOwnerRepo,
   UPSTREAM_ALIASES,
+  isUpstreamOwnerRepo,
   repoSpecTargetsGsdCore,
   tokenTargetsGsdCoreApi,
 };

@@ -44,10 +44,29 @@ function pushOf(cmd) {
 }
 
 /**
+ * quick-261007-rni F9 R4 (item 2): git's own "No such remote" failure: exit status 2, no signal
+ * (`git remote get-url` on a name no remote is configured under; verified on git 2.43).
+ */
+function noSuchRemote(name) {
+  return Object.assign(new Error("error: No such remote '" + name + "'"), {
+    status: 2, signal: null, stderr: "error: No such remote '" + name + "'\n",
+  });
+}
+
+/**
+ * The default lookup: a remote NAME resolves to the fork; a literal URL / path target is not a
+ * configured remote (F9 R4 item 2: git's status-2 "No such remote"), as in a real repo.
+ */
+function defaultLookup(dir, name) {
+  if (pt.isLiteralPushTarget(name) || name.startsWith('/')) throw noSuchRemote(name);
+  return [FORK];
+}
+
+/**
  * Injected io with call counts. `dirs` is the segmentDirs result (or a function that throws);
  * `lookup(dir, name)` returns URLs or throws.
  */
-function makeIo({ dirs = ['/r'], lookup = () => [FORK], rewrites = () => [], command, budget } = {}) {
+function makeIo({ dirs = ['/r'], lookup = defaultLookup, rewrites = () => [], command, budget } = {}) {
   const log = { dirs: 0, lookups: [], rewrites: [] };
   const io = {
     // F9 R2 (item 1): the raw command text the allowlist reads.
@@ -256,12 +275,14 @@ test('push-target: every URL a fork in two dirs -> other, both dirs looked up', 
 
 for (const lit of ['~/repos/gsd-core', 'file:///tmp/x/gsd-core', FORK_SCP]) {
   // F9 R2 (item 5): a literal target now resolves its dir once, for the url rewrite check.
-  test('F9 R2: literal `' + lit + '` -> other with no remote lookup and one rewrite check in its dir', () => {
+  // F9 R4 (item 2) FLIPPED the lookup count 0 -> 1: a literal is first looked up as a remote NAME
+  // (git uses a `remote."<literal>"` entry when one is configured); "No such remote" -> the literal.
+  test('F9 R2: literal `' + lit + '` -> other with one remote-name lookup and one rewrite check in its dir', () => {
     const { r, log } = classify('git push ' + lit + ' x', {});
     assert.deepStrictEqual(r, { target: 'other', unresolved: null });
     assert.strictEqual(log.dirs, 1);
     assert.deepStrictEqual(log.rewrites, ['/r']);
-    assert.strictEqual(log.lookups.length, 0);
+    assert.strictEqual(log.lookups.length, 1);
   });
 }
 
@@ -511,10 +532,11 @@ for (const cmd of [
 }
 
 // item 5: literal URL targets need an empty url-rewrite list.
-test('F9 R2: a literal fork URL with a url rewrite configured -> rule c, no remote lookup', () => {
+// F9 R4 (item 2) FLIPPED the lookup count 0 -> 1 (the remote-name lookup runs first; "No such remote").
+test('F9 R2: a literal fork URL with a url rewrite configured -> rule c, after one remote-name lookup', () => {
   const { r, log } = classify('git push ' + FORK + ' x', { rewrites: () => ['url.' + UPSTREAM + '.pushinsteadof ' + FORK] });
   assertUnresolved(r, 'rewrite');
-  assert.strictEqual(log.lookups.length, 0);
+  assert.deepStrictEqual(log.lookups, [['/r', FORK]]);
 });
 
 test('F9 R2: a literal fork URL whose rewrite check throws or returns a non-array -> rule c', () => {
@@ -544,17 +566,10 @@ for (const lit of [
   });
 }
 
-for (const lit of [
-  'https://github.com/open-gsd/gsd-core/../gsd-core',
-  'https://github.com/open-gsd/gsd-core/./',
-  'https://github.com/open-gsd/gsd-core/x/..',
-  // F9 R3 (item 4, REVIEW-R2 CR-02) FLIPPED `https://github.com/open-gsd//gsd-core` out of this
-  // list: `//` now collapses, so it is rule a (see the F9 R3 block).
-]) {
-  test('F9 R2: literal `' + lit + '` -> rule c (dot or encoded segment)', () => {
-    assertUnresolved(classify('git push ' + lit + ' x', {}).r, lit);
-  });
-}
+// F9 R3 (item 4, REVIEW-R2 CR-02) FLIPPED `https://github.com/open-gsd//gsd-core` out of the R2
+// rule-c list here; F9 R4 (item 1, REVIEW-R3 CR-01) FLIPPED the other three
+// (`.../gsd-core/../gsd-core`, `.../gsd-core/./`, `.../gsd-core/x/..`): dot segments collapse, so
+// they are rule a. See the F9 R4 block.
 
 for (const u of [UPSTREAM + '/', 'git@github.com:open-gsd/gsd-core.git/', UPSTREAM + '//']) {
   test('F9 R2: a looked-up URL `' + u + '` -> gsd-core (rule a)', () => {
@@ -562,15 +577,8 @@ for (const u of [UPSTREAM + '/', 'git@github.com:open-gsd/gsd-core.git/', UPSTRE
   });
 }
 
-for (const u of ['https://github.com/open-gsd/gsd-core/x/..', 'https://github.com/open-gsd/gsd-core/.']) {
-  test('F9 R2: a looked-up URL `' + u + '` -> rule c', () => {
-    assertUnresolved(classify('git push backup x', { lookup: () => [u] }).r, u);
-  });
-}
-
-test('F9 R2 guard: literal `https://github.com/open-gsd/gsd%2Dcore` -> rule c (encoded segment)', () => {
-  assertUnresolved(classify('git push https://github.com/open-gsd/gsd%2Dcore x', {}).r, '%2D');
-});
+// F9 R4 (item 1) FLIPPED two R2 rule-c rows (looked-up `.../gsd-core/x/..` and `.../gsd-core/.`)
+// and one R2 guard (literal `https://github.com/open-gsd/gsd%2Dcore`) to rule a: see the F9 R4 block.
 
 // item 6: the budget and the dir cap.
 test('F9 R2: more than MAX_PUSH_DIRS candidate dirs -> rule c with no lookup', () => {
@@ -1015,6 +1023,214 @@ test('F9 R3: the live lookups kill a git that ignores SIGTERM at their timeout (
 // ── positive pins (item 3): the plain forms still earn rule b ──
 for (const cmd of ['git push backup fix/x', 'git push backup fix/x 2>&1 | tail -5', 'git -C /r push backup x']) {
   test('F9 R3 guard: pin `' + cmd + '` with a fork lookup -> other', () => {
+    assert.deepStrictEqual(classify(cmd, {}).r, { target: 'other', unresolved: null });
+  });
+}
+
+// ───────────── quick-261007-rni F9 R4 (REVIEW-R3 CR-01, ADVERSARIAL-R3 R3-A / R3-B) ─────────────
+//
+// Naming: `F9 R4: ` fails before the R4 fix and passes after; `F9 R4 guard: ` passes both.
+
+// ── item 1 (CR-01): dot segments and unreserved escapes reach upstream, so they are rule a ──
+for (const lit of [
+  'https://github.com/x/../open-gsd/gsd-core.git',
+  'https://github.com/./open-gsd/gsd-core.git',
+  'https://github.com/open-gsd/gsd-core/../gsd-core',
+  'https://github.com/open-gsd/gsd-core/./',
+  'https://github.com/open-gsd/gsd-core/x/..',
+  'https://github.com/%6Fpen-gsd/gsd-core.git',
+  'https://github.com/open-gsd/gsd%2Dcore',
+]) {
+  test('F9 R4: literal `' + lit + '` -> gsd-core (rule a), no lookup', () => {
+    const { r, log } = classify('git push ' + lit + ' x', {});
+    assert.deepStrictEqual(r, { target: 'gsd-core', unresolved: null });
+    assert.strictEqual(log.lookups.length, 0);
+  });
+}
+
+for (const u of ['https://github.com/open-gsd/gsd-core/x/..', 'https://github.com/open-gsd/gsd-core/.', 'https://github.com/x/../open-gsd/gsd-core.git', 'https://github.com/%6Fpen-gsd/gsd-core.git']) {
+  test('F9 R4: a looked-up URL `' + u + '` -> gsd-core (rule a)', () => {
+    assert.deepStrictEqual(classify('git push backup x', { lookup: () => [u] }).r, { target: 'gsd-core', unresolved: null });
+  });
+}
+
+test('F9 R4: a dot-segment fork literal is now a correct `other` (the server collapses the segments too)', () => {
+  assert.deepStrictEqual(classify('git push https://github.com/x/../davesienkowski/gsd-core-experiments.git x', {}).r, { target: 'other', unresolved: null });
+});
+
+test('F9 R4 guard: a literal with a reserved escape (`%2F`) or a fragment stays rule c', () => {
+  assertUnresolved(classify('git push https://github.com/dave%2Ffork.git x', {}).r, '%2F');
+  assertUnresolved(classify('git push https://github.com/dave/fork.git#x x', {}).r, '#');
+});
+
+// ── item 2 (ADVERSARIAL-R3 R3-A): a literal URL target is first looked up as a remote NAME ──
+// git v2.43 remote.c remotes_remote_get_1: a configured `remote."<URL>".url` / `.pushurl` replaces
+// the literal; `git remote get-url --push --all <URL>` prints what git would push to.
+test('F9 R4: a literal fork URL aliased by remote."<URL>".pushurl to upstream -> gsd-core (rule a)', () => {
+  const { r, log } = classify('git push ' + FORK + ' x', {
+    lookup: (dir, name) => (name === FORK ? [UPSTREAM] : defaultLookup(dir, name)),
+    rewrites: () => { throw new Error('an exit-0 lookup already applied the rewrites'); },
+  });
+  assert.deepStrictEqual(r, { target: 'gsd-core', unresolved: null });
+  assert.deepStrictEqual(log.lookups, [['/r', FORK]]);
+});
+
+test('F9 R4: the ADVERSARIAL-R3 R3-A shape (literal without `.git`, alias to upstream) -> gsd-core', () => {
+  const lit = 'https://github.com/davesienkowski/gsd-core-experiments';
+  const { r } = classify('git push ' + lit + ' fix/x', { lookup: (dir, name) => (name === lit ? ['https://github.com/open-gsd/gsd-core.git'] : defaultLookup(dir, name)) });
+  assert.deepStrictEqual(r, { target: 'gsd-core', unresolved: null });
+});
+
+test('F9 R4: a literal aliased to another fork -> other, with no rewrite check (get-url applied them)', () => {
+  const { r, log } = classify('git push ' + FORK + ' x', {
+    lookup: (dir, name) => (name === FORK ? [TOOLKIT] : defaultLookup(dir, name)),
+    rewrites: () => { throw new Error('must not run on an exit-0 lookup'); },
+  });
+  assert.deepStrictEqual(r, { target: 'other', unresolved: null });
+  assert.strictEqual(log.rewrites.length, 0);
+});
+
+for (const [label, urls] of [
+  ['an unparseable URL', ['not a url']],
+  ['an open-gsd org URL', ['https://github.com/open-gsd/gsd-test-runner.git']],
+  ['no URL', []],
+]) {
+  test('F9 R4: a literal alias that resolves to ' + label + ' -> rule c', () => {
+    assertUnresolved(classify('git push ' + FORK + ' x', { lookup: () => urls.slice() }).r, label);
+  });
+}
+
+for (const [label, err] of [
+  ['a plain error (no status)', new Error('boom')],
+  ['exit 128 (not a git repository)', Object.assign(new Error('fatal: not a git repository'), { status: 128, signal: null })],
+  ['exit 1', Object.assign(new Error('x'), { status: 1, signal: null })],
+  ['a timeout kill', Object.assign(new Error('ETIMEDOUT'), { status: null, signal: 'SIGKILL' })],
+  ['status 2 with a signal', Object.assign(new Error('x'), { status: 2, signal: 'SIGTERM' })],
+]) {
+  test('F9 R4: a literal whose remote-name lookup fails with ' + label + ' -> rule c (only "No such remote" means the literal)', () => {
+    const { r, log } = classify('git push ' + FORK + ' x', { lookup: () => { throw err; } });
+    assertUnresolved(r, label);
+    assert.strictEqual(log.rewrites.length, 0);
+  });
+}
+
+test('F9 R4: two dirs, dir 1 "No such remote", dir 2 aliases the literal to upstream -> gsd-core', () => {
+  const { r } = classify('git push ' + FORK + ' x', {
+    dirs: ['/a', '/b'],
+    lookup: (dir, name) => { if (dir === '/a') throw noSuchRemote(name); return [UPSTREAM]; },
+  });
+  assert.deepStrictEqual(r, { target: 'gsd-core', unresolved: null });
+});
+
+test('F9 R4 guard: two dirs, "No such remote" in both -> the literal is classified and the rewrite check runs in both', () => {
+  const { r, log } = classify('git push ' + FORK + ' x', { dirs: ['/a', '/b'] });
+  assert.deepStrictEqual(r, { target: 'other', unresolved: null });
+  assert.deepStrictEqual(log.rewrites, ['/a', '/b']);
+});
+
+test('F9 R4 guard: two dirs, dir 1 aliased to a fork, dir 2 "No such remote" with a rewrite -> rule c', () => {
+  const { r } = classify('git push ' + FORK + ' x', {
+    dirs: ['/a', '/b'],
+    lookup: (dir, name) => { if (dir === '/b') throw noSuchRemote(name); return [TOOLKIT]; },
+    rewrites: (dir) => (dir === '/b' ? ['url.' + UPSTREAM + '.pushinsteadof ' + FORK] : []),
+  });
+  assertUnresolved(r, 'rewrite in dir 2');
+});
+
+test('F9 R4: a `~/` literal is looked up under the name git sees (the shell expands `~`)', () => {
+  const { log } = classify('git push ~/repos/x x', {});
+  assert.deepStrictEqual(log.lookups, [['/r', path.join(os.homedir(), 'repos/x')]]);
+});
+
+test('F9 R4 guard: a literal upstream URL arms before any remote-name lookup', () => {
+  const { r, log } = classify('git push ' + UPSTREAM + ' x', { lookup: () => { throw new Error('must not run'); } });
+  assert.deepStrictEqual(r, { target: 'gsd-core', unresolved: null });
+  assert.strictEqual(log.lookups.length, 0);
+});
+
+test('F9 R4: resolvePushUrlsLive and classifyPushTarget against a hermetic repo with a remote."<URL>" alias', () => {
+  const KEYS = ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_DIR', 'GIT_WORK_TREE', 'HOME'];
+  const saved = {};
+  for (const k of KEYS) saved[k] = Object.prototype.hasOwnProperty.call(process.env, k) ? process.env[k] : undefined;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'f9r4-literal-alias-'));
+  try {
+    process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+    process.env.GIT_CONFIG_NOSYSTEM = '1';
+    process.env.HOME = tmp;
+    delete process.env.GIT_DIR;
+    delete process.env.GIT_WORK_TREE;
+    const repo = path.join(tmp, 'repo');
+    fs.mkdirSync(repo);
+    git(repo, 'init', '-q');
+    git(repo, 'remote', 'add', 'backup', FORK);
+    const ALIASED = 'https://github.com/davesienkowski/gsd-core-experiments';
+    git(repo, 'config', 'remote.' + ALIASED + '.pushurl', UPSTREAM);
+    assert.deepStrictEqual(pt.resolvePushUrlsLive(repo, ALIASED), [UPSTREAM]);
+    let thrown = null;
+    try { pt.resolvePushUrlsLive(repo, FORK); } catch (e) { thrown = e; }
+    assert.ok(thrown, 'an unconfigured literal throws');
+    assert.strictEqual(thrown.status, 2, 'git exits 2 for "No such remote"');
+
+    const live = (cmd) => ({ command: cmd, segmentDirs: () => [repo], resolvePushUrls: pt.resolvePushUrlsLive, urlRewrites: pt.urlRewritesLive });
+    for (const [cmd, want] of [
+      ['git push ' + ALIASED + ' fix/x', 'gsd-core'],
+      ['git push ' + FORK + ' fix/x', 'other'],
+      ['git push backup fix/x', 'other'],
+    ]) {
+      const { parsed, seg } = pushOf(cmd);
+      assert.deepStrictEqual(pt.classifyPushTarget(seg, parsed, live(cmd)), { target: want, unresolved: null }, cmd);
+    }
+  } finally {
+    for (const k of KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// ── item 3 (ADVERSARIAL-R3 R3-B): a bare relative cd / pushd target may be found through CDPATH ──
+for (const cmd of [
+  'cd docs && git push backup x',
+  'cd docs/sub && git push backup x',
+  'cd -P docs && git push backup x',
+  'cd -- docs && git push backup x',
+  'pushd docs && git push backup x',
+  'cd .docs && git push backup x',
+  'cd ...x && git push backup x',
+  'git status && cd docs && git push backup x',
+]) {
+  test('F9 R4: `' + cmd + '` -> rule c (a bare relative cd target is looked up through CDPATH)', () => {
+    const why = pt.ruleBAllowlistReason(cmd, parseCommandForGates(cmd));
+    assert.ok(typeof why === 'string' && /CDPATH/.test(why), cmd + ' -> ' + JSON.stringify(why));
+    const r = classify(cmd, {}).r;
+    assertUnresolved(r, cmd);
+    assert.match(r.unresolved, /CDPATH/);
+  });
+}
+
+for (const cmd of [
+  'cd ./docs && git push backup x',
+  'cd ../x && git push backup x',
+  'cd . && git push backup x',
+  'cd .. && git push backup x',
+  'cd /tmp && git push backup x',
+  'cd ~/repos/gsd-core && git push backup x',
+  'cd ~ && git push backup x',
+  'cd && git push backup x',
+  'pushd ./docs && git push backup x',
+  'git -C docs push backup x',
+  'git push backup x && cd docs',
+]) {
+  test('F9 R4 guard: `' + cmd + '` -> other (no CDPATH lookup: dot, absolute, tilde, HOME, git -C, or after the push)', () => {
+    assert.strictEqual(pt.ruleBAllowlistReason(cmd, parseCommandForGates(cmd)), null, cmd);
+    assert.deepStrictEqual(classify(cmd, {}).r, { target: 'other', unresolved: null });
+  });
+}
+
+// ── positive pins ──
+for (const cmd of ['git push backup fix/x', 'git push backup fix/x 2>&1 | tail -5', 'git -C /r push backup x']) {
+  test('F9 R4 guard: pin `' + cmd + '` with a fork lookup -> other', () => {
     assert.deepStrictEqual(classify(cmd, {}).r, { target: 'other', unresolved: null });
   });
 }
