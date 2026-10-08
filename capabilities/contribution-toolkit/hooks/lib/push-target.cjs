@@ -28,8 +28,9 @@
  *       R3 item 1) — returns 'gsd-core': the gate arms from ANY directory (D-07 / F8).
  *   (b) every URL in every candidate dir parses to another owner/repo, NOT under the open-gsd org
  *       (R3 item 1: an in-org rename redirects, so any other open-gsd repo is rule c), every
- *       derived dir resolves the same logically and physically (R3 item 2, resolve.cjs
- *       pushSegmentDirs), AND the whole command passes the rule-(b) ALLOWLIST below — returns
+ *       derived dir resolves the same logically and physically (R3 item 2: resolve.cjs
+ *       pushSegmentDirs adds a differing physical dir as a candidate, so rule a still sees it, and
+ *       marks the list `unverified`), AND the whole command passes the rule-(b) ALLOWLIST — returns
  *       'other': this segment does not arm. Rule (b) is the only way this module produces an allow
  *       on its own, so it is a list of known-good forms, not a list of known-bad channels
  *       (Revision 2, review CR-02..04).
@@ -636,6 +637,8 @@ function classifyInner(seg, parsed, io) {
         return unresolved('a url.<base>.insteadOf / pushInsteadOf rewrite is configured (' + shown(r.value[0]) + '), so the push to ' + sv + ' may be redirected');
       }
     }
+    // R3 item 2: a derived dir that could not be confirmed physically never earns rule (b).
+    if (typeof dirs.unverified === 'string') return unresolved(dirs.unverified + ', so the push to ' + sv + ' may run elsewhere');
     return { target: 'other', unresolved: null };
   }
 
@@ -663,6 +666,9 @@ function classifyInner(seg, parsed, io) {
     }
   }
   if (failure !== null) return unresolved(failure);
+  // R3 item 2: every candidate (physical ones included) was looked up and none is upstream (rule a
+  // checked first), but a derived dir that could not be confirmed physically never earns rule (b).
+  if (typeof dirs.unverified === 'string') return unresolved(dirs.unverified + ', so the push to ' + sv + ' may run elsewhere');
   const why = ruleBReason(seg, parsed, io);
   if (why) return unresolved(why + ', so the push to ' + sv + ' may be redirected');
   return { target: 'other', unresolved: null };
