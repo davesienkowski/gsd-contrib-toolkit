@@ -938,8 +938,9 @@ for (const cmd of [
       ['WR-02 cd -- -', 'cd -- - && git push backup x', REMOTES, 'allow'],
       ['WR-02 popd', 'popd && git push backup x', REMOTES, 'allow'],
       ['WR-02 bare pushd', 'pushd && git push backup x', REMOTES, 'allow'],
-      // REVIEW-R2 WR-03: a dot segment under repos/ fails closed (rule a for gh, any cwd)
-      ['WR-03 gh api dot segment', 'gh api -X POST repos/open-gsd/x/../gsd-core/issues -f title=t', REMOTES, 'deny'],
+      // REVIEW-R2 WR-03 is pinned in resolve.test.cjs (segmentRepoTarget / tokenTargetsGsdCoreApi)
+      // and below: the classifier marks every dot-segment `repos/` form unknown + failClosed, so it is
+      // ENF-15's (gh-issue-create) to deny, and ENF-21 never governs an unknown action (step 4).
     ];
     for (const [label, cmd, map, away] of R3_ROWS) {
       test('F9 R3: ' + label + ': `' + cmd.replace(FIX, '<FIX>') + '` DENIES from a gsd-core cwd (stale runtime)', () => {
@@ -994,6 +995,16 @@ for (const cmd of [
         assertAllow(runRuntimeDriftGate(input(cmd), deps), calls, cmd);
       });
     }
+
+    test('F9 R3 guard: WR-03 `gh api -X POST repos/open-gsd/x/../gsd-core/issues` is unclassifiable (ENF-15 denies it), so ENF-21 leaves it alone', () => {
+      const { parseCommandForGates } = require('./lib/argv.cjs');
+      const { classifyAction } = require('./lib/classify.cjs');
+      const { segmentRepoTarget } = require('./lib/resolve.cjs');
+      const cmd = 'gh api -X POST repos/open-gsd/x/../gsd-core/issues -f title=t';
+      const seg = parseCommandForGates(cmd).segments[0];
+      assert.deepStrictEqual(classifyAction({ ok: true, segments: [seg] }), { action: 'unknown', failClosed: true });
+      assert.strictEqual(segmentRepoTarget(seg), 'gsd-core');
+    });
 
     // IN-01: one sentence, and it does not claim the target "could not be resolved" twice.
     test('F9 R3: the rule-c note reads "could not confirm where this push goes (...)" once, with no repeated clause', () => {

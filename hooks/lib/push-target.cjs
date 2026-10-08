@@ -24,11 +24,15 @@
  *
  * ── THE FOUR-WAY RULE (per governed push segment) ──
  *   (a) an explicit upstream match — a literal URL, or ANY URL a named remote resolves to, parses
- *       to open-gsd/gsd-core — returns 'gsd-core': the gate arms from ANY directory (D-07 / F8).
- *   (b) every URL in every candidate dir parses to another owner/repo AND the whole command passes
- *       the rule-(b) ALLOWLIST below — returns 'other': this segment does not arm. Rule (b) is the
- *       only way this module produces an allow on its own, so it is a list of known-good forms,
- *       not a list of known-bad channels (Revision 2, review CR-02..04).
+ *       to open-gsd/gsd-core or to one of its GitHub rename aliases (resolve.cjs UPSTREAM_ALIASES,
+ *       R3 item 1) — returns 'gsd-core': the gate arms from ANY directory (D-07 / F8).
+ *   (b) every URL in every candidate dir parses to another owner/repo, NOT under the open-gsd org
+ *       (R3 item 1: an in-org rename redirects, so any other open-gsd repo is rule c), every
+ *       derived dir resolves the same logically and physically (R3 item 2, resolve.cjs
+ *       pushSegmentDirs), AND the whole command passes the rule-(b) ALLOWLIST below — returns
+ *       'other': this segment does not arm. Rule (b) is the only way this module produces an allow
+ *       on its own, so it is a list of known-good forms, not a list of known-bad channels
+ *       (Revision 2, review CR-02..04).
  *   (c) anything short of a positive resolution — a lookup that throws, times out or prints
  *       nothing, an unparseable URL, an undeterminable dir, an unrecognised option, a
  *       `$` / backtick / dash-leading token, or a redirect channel — returns null plus an
@@ -47,6 +51,8 @@
  *   2. no segment starts with an environment assignment, and none runs env / export / declare /
  *      typeset / readonly / local / set / unset / read, or sudo / su / doas / runuser;
  *   3. every segment's program (its FIRST token: no wrapper) is cd / pushd / popd / pwd / true /
+ *      (R3 item 5, WR-02: before a push, no `cd -`, no popd and no pushd without a visible dir,
+ *      because OLDPWD and the inherited dir stack are invisible to the hook) /
  *      echo / printf (no -v) / ls / sleep; or tail / head / grep / wc / cat with no file argument,
  *      only as a pipe consumer; or `git` (globals: only -C and the safe booleans) running push,
  *      status, log, diff, show or rev-parse (no --output), branch (list forms), fetch (no
@@ -73,15 +79,26 @@
  * Residuals (recorded): the lookup runs with the hook's env, not the command shell's
  * (T-261007-rni-08; item 2 removes the in-command half); config, hooks or a FIFO planted by an
  * EARLIER Bash call that the lookups cannot see (item 5 covers url rewrites only); an scp-like
- * `host:path` with no user is treated as a name (rule c).
+ * `host:path` with no user is treated as a name (rule c). R3 (IN-03) adds:
+ *   - environment-borne shell state: CDPATH (a relative `cd x` may land in $CDPATH/x) and an
+ *     ambient OLDPWD (`cd -` is now rule c, but `~-` / `$OLDPWD` already are by item 1);
+ *   - aliases and functions restored from the Bash tool's shell snapshot (`expand_aliases` is on),
+ *     which can make `cd` / `git` mean something else; the hook sees only the command text;
+ *   - a `run_in_background` job from an earlier call that rewrites `.git/config` between the lookup
+ *     and the push (an allowlisted `sleep` widens that window);
+ *   - a future rename or transfer of open-gsd/gsd-core under a new owner must be added to
+ *     UPSTREAM_ALIASES; only a network identity check (the repo id) could catch it unaided;
+ *   - glob / `~user` cd targets are resolved literally (a missing dir is rule c, and the cwd rule
+ *     then decides, as before F9).
  *
  * CTK-ADR-0001 (fail closed), CTK-ADR-0007 D-07 (ENF-21 arming; refined, not amended).
  */
 
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { performance } = require('node:perf_hooks');
 const { resolveProgram, classifyAction } = require('./classify.cjs');
-const { parseOwnerRepo, GSD_CORE_OWNER, GSD_CORE_REPO } = require('./resolve.cjs');
+const { parseOwnerRepo, GSD_CORE_OWNER, GSD_CORE_REPO, UPSTREAM_ALIASES } = require('./resolve.cjs');
 
 /** PD-5: the bound on one `git remote get-url` call (same budget as worktree-fresh-base's local git). */
 const PUSH_URL_TIMEOUT_MS = 3000;
@@ -440,12 +457,37 @@ function consumerReason(prog, args) {
  * @param {{segments?: Array}} parsed parseCommandForGates(command)
  * @returns {string|null}
  */
+/**
+ * R3 item 5 (REVIEW-R2 WR-02): why a cd / pushd / popd segment moves to a directory that is NOT in
+ * the command text, or null. `cd -` reads OLDPWD; popd and a dirless / `+N` / `-N` / `-n` pushd
+ * read the dir stack the shell inherited. Every cd target rule (b) trusts must be visible.
+ */
+function dirStackReason(prog, args) {
+  if (prog === 'popd') return 'the command runs ' + shown(['popd'].concat(args).join(' ')) + ', which returns to a directory the hook cannot see';
+  let k = 0;
+  const flags = [];
+  while (k < args.length && /^-[LPe@n]+$/.test(args[k])) { flags.push(args[k]); k += 1; }
+  if (args[k] === '--') k += 1;
+  const target = args[k];
+  const seen = shown([prog].concat(args).join(' '));
+  if (prog === 'cd') {
+    return target === '-' ? 'the command runs ' + seen + ', which moves to OLDPWD (a directory the hook cannot see)' : null;
+  }
+  if (target === undefined || target === '-' || /^[+-]\d+$/.test(target) || flags.some((f) => f.includes('n'))) {
+    return 'the command runs ' + seen + ', which reads the directory stack the hook cannot see';
+  }
+  return null;
+}
+
 function ruleBAllowlistReason(command, parsed) {
   if (typeof command !== 'string') return 'the raw command text is unavailable';
   const m = RAW_FORBIDDEN_RE.exec(command.replace(DUP_STDERR_RE, '$1'));
   if (m) return 'the command contains the shell metacharacter ' + JSON.stringify(esc(m[0]));
   const segs = parsed && Array.isArray(parsed.segments) ? parsed.segments : null;
   if (!segs || segs.length === 0) return 'the command segments are unavailable';
+  // R3 item 5: a dir-stack / OLDPWD move only matters before a push.
+  let lastPush = -1;
+  segs.forEach((sg, k) => { if (classifyAction({ ok: true, segments: [sg] }).action === 'push') lastPush = k; });
   for (let i = 0; i < segs.length; i++) {
     const seg = segs[i];
     const tokens = Array.isArray(seg && seg.tokens) ? seg.tokens.map(String) : [];
@@ -457,6 +499,10 @@ function ruleBAllowlistReason(command, parsed) {
     if (PRIVILEGE_PROGRAMS.has(prog)) return 'the command runs ' + shown(prog) + ', which changes HOME and git config';
     if (INERT_PROGRAMS.has(prog)) {
       if (prog === 'printf' && args.some((a) => a.startsWith('-v'))) return 'the command sets a variable with ' + shown('printf -v');
+      if (i < lastPush && (prog === 'cd' || prog === 'pushd' || prog === 'popd')) {
+        const why = dirStackReason(prog, args);
+        if (why) return why;
+      }
       continue;
     }
     if (PIPE_CONSUMERS.has(prog)) {
@@ -488,9 +534,19 @@ function isLiteralPushTarget(value) {
     v.startsWith('../') || v.startsWith('~');
 }
 
+/** Rule (a): open-gsd/gsd-core itself, or one of its GitHub rename aliases (R3 item 1). */
 function isUpstream(p) {
-  return !!p && p.owner === GSD_CORE_OWNER && p.repo === GSD_CORE_REPO;
+  if (!p) return false;
+  if (p.owner === GSD_CORE_OWNER && p.repo === GSD_CORE_REPO) return true;
+  return UPSTREAM_ALIASES.includes(p.owner + '/' + p.repo);
 }
+
+/** R3 item 1: any OTHER repo under the upstream org can never earn rule (b) (an in-org rename redirects). */
+function isUpstreamOrg(p) {
+  return !!p && p.owner === GSD_CORE_OWNER;
+}
+
+const ORG_NOTE = ' (a renamed or transferred repo can redirect to ' + GSD_CORE_OWNER + '/' + GSD_CORE_REPO + ')';
 
 function unresolved(phrase) {
   return { target: null, unresolved: cap(phrase, PHRASE_MAX) };
@@ -505,11 +561,12 @@ function errLine(err) {
 /**
  * Item 6: one lookup budget per hook invocation. The caller creates it once and passes it in
  * `io.budget`, so several push segments share LOOKUP_BUDGET_MS. Not module state.
- * @param {()=>number} [now] clock (ms); defaults to Date.now
+ * @param {()=>number} [now] clock (ms); defaults to the MONOTONIC performance.now (R3 IN-02: a
+ *   backwards wall-clock step during a lookup cannot loosen the deadline)
  * @returns {{now: ()=>number, deadline: number}}
  */
 function createLookupBudget(now) {
-  const clock = typeof now === 'function' ? now : Date.now;
+  const clock = typeof now === 'function' ? now : () => performance.now();
   return { now: clock, deadline: Number(clock()) + LOOKUP_BUDGET_MS };
 }
 
@@ -564,6 +621,7 @@ function classifyInner(seg, parsed, io) {
     const p = parseOwnerRepo(value);
     if (isUpstream(p)) return { target: 'gsd-core', unresolved: null };
     if (!p) return unresolved('the push URL ' + sv + ' does not name an owner/repo');
+    if (isUpstreamOrg(p)) return unresolved('the push URL ' + sv + ' is in the ' + GSD_CORE_OWNER + ' org' + ORG_NOTE);
     const why = ruleBReason(seg, parsed, io);
     if (why) return unresolved(why + ', so the push to ' + sv + ' may be redirected');
     // Item 5: git applies url.<base>.insteadOf / pushInsteadOf to a literal URL at push time.
@@ -601,6 +659,7 @@ function classifyInner(seg, parsed, io) {
       const p = parseOwnerRepo(u);
       if (isUpstream(p)) return { target: 'gsd-core', unresolved: null };
       if (!p && failure === null) failure = 'the push remote ' + sv + ' resolved to an unparseable URL';
+      if (isUpstreamOrg(p) && failure === null) failure = 'the push remote ' + sv + ' resolves into the ' + GSD_CORE_OWNER + ' org' + ORG_NOTE;
     }
   }
   if (failure !== null) return unresolved(failure);
@@ -723,6 +782,7 @@ function resolvePushUrlsLive(dir, name, timeoutMs) {
   const out = execFileSync('git', ['-C', String(dir), 'remote', 'get-url', '--push', '--all', String(name)], {
     encoding: 'utf8',
     timeout: boundedTimeout(timeoutMs),
+    killSignal: 'SIGKILL', // R3 IN-02: a git wrapper that ignores SIGTERM cannot overrun the bound
     stdio: ['ignore', 'pipe', 'pipe'],
     env: process.env,
   });
@@ -745,6 +805,7 @@ function urlRewritesLive(dir, timeoutMs) {
     out = execFileSync('git', ['-C', String(dir), 'config', '--get-regexp', '^url\\.'], {
       encoding: 'utf8',
       timeout: boundedTimeout(timeoutMs),
+      killSignal: 'SIGKILL', // R3 IN-02
       stdio: ['ignore', 'pipe', 'pipe'],
       env: process.env,
     });

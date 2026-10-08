@@ -305,3 +305,17 @@ test('a thrown live gate WITH a logged override → allow (HARD-03)', () => {
   );
   assert.strictEqual(d.permissionDecision, 'allow');
 });
+
+// ---- quick-261007-rni F9 R3 (REVIEW-R2 WR-03): a dot segment under `repos/` can reach upstream
+// (curl and the server collapse it). The classifier cannot name the action, so ENF-15 denies it here;
+// this is the gate that owns the form (ENF-21 skips unknown actions). Guard: holds before and after R3. ----
+for (const cmd of [
+  'gh api -X POST repos/open-gsd/x/../gsd-core/issues -f title=t',
+  'gh api -X POST repos/open-gsd/./gsd-core/issues -f title=t',
+  'curl -X POST https://api.github.com/repos/open-gsd/x/../gsd-core/issues -d x',
+]) {
+  test('F9 R3 guard: `' + cmd + '` -> DENY (unclassifiable mutating synonym, ENF-15)', () => {
+    const d = runIssueGate(input(cmd), deps());
+    assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+  });
+}
