@@ -59,11 +59,29 @@
  * into a fail-closed deny: it would be a false deny on a command the gate can actually
  * adjudicate.
  *
+ * PUSH TARGET (quick-261007-rni F9, Revision 1). A `git push` segment arms on where it pushes,
+ * not only on the cwd (hooks/lib/push-target.cjs). Its repository is the first positional after
+ * `push`, else the last `--repo`; a URL / path is parsed, a remote name is resolved with
+ * `git -C <that segment's dir> remote get-url --push --all`. Four ways:
+ *   (a) any open-gsd/gsd-core URL arms from ANY directory (the posture above);
+ *   (b) every URL another owner/repo, with no push-redirect channel: this segment does NOT arm,
+ *       so `git push backup fix/x` to a fork from a gsd-core cwd passes;
+ *   (c) unresolvable, indeterminate or redirected (lookup failure, unparseable URL, unknown
+ *       option, `-c` / `--git-dir` / `GIT_*` / config writes / `source` / a git function /
+ *       `--receive-pack`): the pre-F9 cwd rule, unchanged, and the deny says why. So
+ *       `git -C <other repo> push typo main` still passes through (the resolveRoot default in
+ *       runRuntimeDriftGate follows `git -C`);
+ *   (d) no repository: the pre-F9 cwd rule, unchanged.
+ * gh's `--repo` / `GH_REPO` / `repos/<o>/<r>` reading is never applied to a git push (it let
+ * `GH_REPO=other/x git push origin y` through). issue-create / pr-create keep F8 unchanged.
+ *
  * ── COST ────────────────────────────────────────────────────────────────────────────────
  * The RES-01 action-first short-circuit is the FIRST thing after the parse, so a
  * non-governed command (`git status`, `npm test`) costs zero filesystem digests, zero stamp
  * reads, zero resolves and zero network calls. Asserted by call count in the tests, not by
  * timing. Inside the 15 min TTL even a governed command makes no network call at all.
+ * The F9 remote lookup (one local `git remote get-url`, 3000 ms bound, no network) runs only for a
+ * governed push segment with an explicit, non-literal repository.
  *
  * @module hooks/runtime-drift
  */
@@ -71,7 +89,8 @@
 const { parseCommandForGates } = require('./lib/argv.cjs');
 const { hasGovernedSegment, isNonGovernedCommand, classifyAction } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, ask, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
-const { resolveRootForCommand, commandTargetsGsdCore, segmentRepoTarget, ghRepoBySegment } = require('./lib/resolve.cjs');
+const { resolveRootForCommand, commandTargetsGsdCore, segmentRepoTarget, ghRepoBySegment, pushSegmentDirs } = require('./lib/resolve.cjs');
+const { classifyPushTarget, resolvePushUrlsLive } = require('./lib/push-target.cjs');
 const runtimeStamp = require('./lib/runtime-stamp.cjs');
 
 const { UpstreamUnavailable, REMEDIATION_COMMAND } = runtimeStamp;
@@ -102,6 +121,10 @@ const ASK_LIMIT_NOTE =
  * @param {string} stdinString raw PreToolUse JSON
  * @param {Object} deps
  * @param {(command:string)=>(string|null)} deps.resolveRoot gsd-core root for the command, or null
+ * @param {(command:string, seg:Object)=>(string[]|null)} deps.segmentDirs the dirs ONE push segment
+ *   can run in (F9; a throw, null or [] makes that push target unresolvable -> rule c)
+ * @param {(dir:string, name:string)=>string[]} deps.resolvePushUrls every push URL of a remote
+ *   name in a dir (F9; a throw makes the target unresolvable -> rule c)
  * @param {()=>string} deps.runtimeDigest digest of the installed runtime tree (may throw)
  * @param {()=>(Object|null)} deps.readStamp the toolkit stamp, or null when unstamped (may throw)
  * @param {()=>{sha:string, source:string, ageMs:number}} deps.upstreamTip the upstream tip
@@ -130,18 +153,39 @@ function gate(stdinString, deps) {
   // `gh issue create --repo open-gsd/gsd-graph` from a gsd-core cwd is not a gsd-core filing. A
   // segment with NO explicit target keeps the old rule: armed when the command resolves to a
   // gsd-core root or otherwise names upstream gsd-core.
+  //
+  // quick-261007-rni F9: a `push` segment is keyed on its PUSH TARGET instead (classifyPushTarget,
+  // see the D-07 header): gsd-core arms (rule a); other does not arm this segment (rule b); null
+  // falls to the same old rule (rules c and d), and a rule-c arm records why the target was
+  // unresolvable for the deny text. gh's repo reading is never applied to a git push.
   let root;
   let armed = false;
+  let unresolvedPhrase = null;
   const ghRepos = ghRepoBySegment(parsed.segments); // R2-WR-05: env / earlier-export GH_REPO
   for (let si = 0; si < parsed.segments.length; si++) {
     const seg = parsed.segments[si];
     const action = classifyAction({ ok: true, segments: [seg] }).action;
     if (!GOVERNED_ACTIONS.includes(action)) continue;
-    const target = segmentRepoTarget(seg, ghRepos[si]);
+    let target;
+    let unresolved = null;
+    if (action === 'push') {
+      const r = classifyPushTarget(seg, parsed, {
+        segmentDirs: () => deps.segmentDirs(command, seg),
+        resolvePushUrls: deps.resolvePushUrls,
+      });
+      target = r.target;
+      unresolved = r.unresolved;
+    } else {
+      target = segmentRepoTarget(seg, ghRepos[si]);
+    }
     if (target === 'gsd-core') { armed = true; break; }
     if (target === 'other') continue;
     if (root === undefined) root = deps.resolveRoot(command);
-    if (root !== null || commandTargetsGsdCore(parsed) === true) { armed = true; break; }
+    if (root !== null || commandTargetsGsdCore(parsed) === true) {
+      armed = true;
+      unresolvedPhrase = unresolved;
+      break;
+    }
   }
   if (!armed) return allow();
 
@@ -190,7 +234,12 @@ function gate(stdinString, deps) {
       '(That command resolves the tip, verifies the installed payload against it, reinstalls from ' +
       '`origin/' + runtimeStamp.UPSTREAM_REF + '` only if it actually differs, and stamps the ' +
       'result. It never installs the PUBLISHED npm package, which can be far behind `' +
-      runtimeStamp.UPSTREAM_REF + '`.)'
+      runtimeStamp.UPSTREAM_REF + '`.)' +
+      // quick-261007-rni F9 (PD-4): a rule-c arm says why the push target was unresolvable.
+      (unresolvedPhrase
+        ? '\n\nNote: ENF-21 armed on this push because ' + unresolvedPhrase +
+          '; an unresolvable push target is treated as `open-gsd/gsd-core` (fail-closed).'
+        : '')
   );
 }
 
@@ -221,6 +270,11 @@ function runRuntimeDriftGate(stdinString, deps = {}) {
       // false-gating a push to an unrelated repo (ENF-21 narrowing).
       resolved.resolveRoot = (command) => resolveRootForCommand(command, process.cwd());
     }
+    // quick-261007-rni F9: where ONE push segment runs, and what its remote resolves to there.
+    if (!resolved.segmentDirs) {
+      resolved.segmentDirs = (command, seg) => pushSegmentDirs(command, process.cwd(), seg);
+    }
+    if (!resolved.resolvePushUrls) resolved.resolvePushUrls = resolvePushUrlsLive;
     if (!resolved.runtimeDigest) {
       resolved.runtimeDigest = () => runtimeStamp.runtimeDigest(runtimeStamp.RUNTIME_ROOT);
     }
