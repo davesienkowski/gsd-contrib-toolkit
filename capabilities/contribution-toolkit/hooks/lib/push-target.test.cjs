@@ -30,7 +30,6 @@ const FORK = 'https://github.com/davesienkowski/gsd-core-experiments.git';
 const FORK_SCP = 'git@github.com:davesienkowski/gsd-core-experiments.git';
 const UPSTREAM = 'https://github.com/open-gsd/gsd-core.git';
 const TOOLKIT = 'https://github.com/davesienkowski/gsd-contrib-toolkit.git';
-const PD4 = /an unresolvable push target is treated as `open-gsd\/gsd-core`/;
 
 /** Parse a whole command and return {parsed, seg} for its (last) push segment. */
 function pushOf(cmd) {
@@ -48,24 +47,32 @@ function pushOf(cmd) {
  * Injected io with call counts. `dirs` is the segmentDirs result (or a function that throws);
  * `lookup(dir, name)` returns URLs or throws.
  */
-function makeIo({ dirs = ['/r'], lookup = () => [FORK] } = {}) {
-  const log = { dirs: 0, lookups: [] };
+function makeIo({ dirs = ['/r'], lookup = () => [FORK], rewrites = () => [], command, budget } = {}) {
+  const log = { dirs: 0, lookups: [], rewrites: [] };
   const io = {
+    // F9 R2 (item 1): the raw command text the allowlist reads.
+    command,
     segmentDirs: () => {
       log.dirs += 1;
       return typeof dirs === 'function' ? dirs() : dirs;
     },
-    resolvePushUrls: (dir, name) => {
+    resolvePushUrls: (dir, name, ms) => {
       log.lookups.push([dir, name]);
-      return lookup(dir, name);
+      return lookup(dir, name, ms);
+    },
+    // F9 R2 (item 5): url.<base>.insteadOf / pushInsteadOf lines in the push dir.
+    urlRewrites: (dir, ms) => {
+      log.rewrites.push(dir);
+      return rewrites(dir, ms);
     },
   };
+  if (budget) io.budget = budget;
   return { io, log };
 }
 
 function classify(cmd, ioOpts) {
   const { parsed, seg } = pushOf(cmd);
-  const { io, log } = makeIo(ioOpts);
+  const { io, log } = makeIo(Object.assign({ command: cmd }, ioOpts));
   return { r: pt.classifyPushTarget(seg, parsed, io), log };
 }
 
@@ -248,10 +255,12 @@ test('push-target: every URL a fork in two dirs -> other, both dirs looked up', 
 });
 
 for (const lit of ['~/repos/gsd-core', 'file:///tmp/x/gsd-core', FORK_SCP]) {
-  test('push-target: literal `' + lit + '` -> other with no dir resolution and no lookup', () => {
+  // F9 R2 (item 5): a literal target now resolves its dir once, for the url rewrite check.
+  test('F9 R2: literal `' + lit + '` -> other with no remote lookup and one rewrite check in its dir', () => {
     const { r, log } = classify('git push ' + lit + ' x', {});
     assert.deepStrictEqual(r, { target: 'other', unresolved: null });
-    assert.strictEqual(log.dirs, 0);
+    assert.strictEqual(log.dirs, 1);
+    assert.deepStrictEqual(log.rewrites, ['/r']);
     assert.strictEqual(log.lookups.length, 0);
   });
 }
@@ -259,8 +268,6 @@ for (const lit of ['~/repos/gsd-core', 'file:///tmp/x/gsd-core', FORK_SCP]) {
 for (const cmd of [
   'git remote -v && git push backup y',
   'git remote get-url backup && git push backup y',
-  'git config --get remote.backup.url && git push backup y',
-  'git config --list && git push backup y',
 ]) {
   test('push-target: read-only twin `' + cmd + '` is not a redirect -> other', () => {
     const { r } = classify(cmd, {});
@@ -350,14 +357,289 @@ test('push-target: resolvePushUrlsLive against a hermetic real repo (pushurl, --
     assert.throws(() => pt.resolvePushUrlsLive(repo, 'nosuch'));
     assert.throws(() => pt.resolvePushUrlsLive(path.join(tmp, 'does-not-exist'), 'backup'));
 
-    const live = { segmentDirs: () => [repo], resolvePushUrls: pt.resolvePushUrlsLive };
+    // F9 R2 (item 1): the io carries the raw command the allowlist reads.
+    const live = (command) => ({ command, segmentDirs: () => [repo], resolvePushUrls: pt.resolvePushUrlsLive });
     const want = { backup: 'other', split: 'other', multi: 'gsd-core', rewr: 'gsd-core' };
     for (const name of Object.keys(want)) {
-      const { parsed, seg } = pushOf('git push ' + name + ' x');
-      assert.deepStrictEqual(pt.classifyPushTarget(seg, parsed, live), { target: want[name], unresolved: null }, name);
+      const cmd = 'git push ' + name + ' x';
+      const { parsed, seg } = pushOf(cmd);
+      assert.deepStrictEqual(pt.classifyPushTarget(seg, parsed, live(cmd)), { target: want[name], unresolved: null }, name);
     }
     const { parsed, seg } = pushOf('git push nosuch x');
-    assertUnresolved(pt.classifyPushTarget(seg, parsed, live), 'nosuch');
+    assertUnresolved(pt.classifyPushTarget(seg, parsed, live('git push nosuch x')), 'nosuch');
+  } finally {
+    for (const k of KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// ───────────── quick-261007-rni F9 R2: rule (b) is an allowlist; bounded lookups (CONTEXT Revision 2) ─────────────
+//
+// `F9 R2: ` fails before the R2 fix and passes after; `F9 R2 guard: ` passes both.
+
+test('F9 R2: LOOKUP_BUDGET_MS is 5000 and MAX_PUSH_DIRS is 3 (item 6)', () => {
+  assert.strictEqual(pt.LOOKUP_BUDGET_MS, 5000);
+  assert.strictEqual(pt.MAX_PUSH_DIRS, 3);
+});
+
+for (const cmd of [
+  'git config --get remote.backup.url && git push backup y',
+  'git config --list && git push backup y',
+]) {
+  test('F9 R2: `' + cmd + '` -> rule c (item 3: git config is not an allowlisted subcommand)', () => {
+    assertUnresolved(classify(cmd, {}).r, cmd);
+  });
+}
+
+// item 1-3: the allowlist itself.
+for (const cmd of [
+  'git push backup fix/x',
+  'git push backup fix/x 2>&1 | tail -5',
+  'cd ~/repos/gsd-core && git push backup x',
+  'git -C ~/repos/gsd-core push backup x',
+  'git status && git push backup x',
+  'pwd && ls -la && echo hi && printf "%s" x && true && sleep 1 && git push backup x',
+  'pushd /tmp && git push backup x && popd',
+  'git log --oneline -3 && git diff --stat && git show HEAD && git rev-parse HEAD && git push backup x',
+  'git branch -vv && git branch --show-current && git fetch backup && git ls-remote backup && git push backup x',
+  'git remote && git remote -v && git remote get-url --push backup && git remote show backup && git push backup x',
+  'git push backup x 2>&1 | grep -v hint | head -5 | wc -l',
+  'git push backup x | cat',
+]) {
+  test('F9 R2: ruleBAllowlistReason accepts `' + cmd + '`', () => {
+    assert.strictEqual(pt.ruleBAllowlistReason(cmd, parseCommandForGates(cmd)), null);
+  });
+}
+
+for (const cmd of [
+  'git push backup x && (git push origin main)',
+  'git push backup x && { git push origin main; }',
+  'git push backup x && bash -c "git push origin main"',
+  'git push backup x && xargs git push origin < /dev/null',
+  'FOO=1 git push backup x',
+  'env -i git push backup x',
+  'sudo -u u git push backup x',
+  'export HOME=/tmp/e && git push backup x',
+  'printf -v GIT_DIR %s /x && git push backup x',
+  'set -e && git push backup x',
+  'read x && git push backup x',
+  'git config remote.backup.pushurl x && git push backup x',
+  'git remote set-url backup x && git push backup x',
+  'git remote add up x && git push backup x',
+  'node -e x && git push backup x',
+  'eval x && git push backup x',
+  'tail -5 && git push backup x',
+  'cat .git/config && git push backup x',
+  'git push backup x | tee out',
+  'git push backup x | grep -f pat.txt',
+  'git push backup x | wc -l file',
+  'git status\ngit push backup x',
+  'cd $HOME && git push backup x',
+  'git push backup x > out',
+  'git push backup x 2>&1>out',
+  'git push backup x \\\n --force',
+  'git stash && git push backup x',
+  'git -c x=y status && git push backup x',
+  'git --git-dir=/x status && git push backup x',
+  'git fetch --upload-pack=x . && git push backup x',
+  'git fetch --upload=x . && git push backup x',
+  'git ls-remote -u x . && git push backup x',
+  'git ls-remote --exec=x . && git push backup x',
+  'git diff --output=x && git push backup x',
+  'git log --outp=x && git push backup x',
+  'git branch -D x && git push backup x',
+  'git branch new && git push backup x',
+  'git remote prune backup && git push backup x',
+  '/usr/bin/git push backup x',
+  'command git push backup x',
+]) {
+  test('F9 R2: ruleBAllowlistReason rejects `' + cmd.replace(/\n/g, '\\n') + '`', () => {
+    const parsed = parseCommandForGates(cmd);
+    const why = parsed.ok ? pt.ruleBAllowlistReason(cmd, parsed) : 'unparseable';
+    assert.ok(typeof why === 'string' && why.length > 0, cmd + ' -> ' + JSON.stringify(why));
+  });
+}
+
+test('F9 R2: ruleBAllowlistReason fails closed on a missing command text or a malformed parse', () => {
+  assert.ok(typeof pt.ruleBAllowlistReason(undefined, parseCommandForGates('git push backup x')) === 'string');
+  assert.ok(typeof pt.ruleBAllowlistReason('git push backup x', { ok: true, segments: null }) === 'string');
+  assert.ok(typeof pt.ruleBAllowlistReason('git push backup x', { ok: true, segments: [{ tokens: [] }] }) === 'string');
+});
+
+test('F9 R2: classifyPushTarget with no io.command is rule c, never rule b (item 1 fails closed)', () => {
+  const { parsed, seg } = pushOf('git push backup x');
+  const { io } = makeIo({});
+  assertUnresolved(pt.classifyPushTarget(seg, parsed, io), 'no command');
+});
+
+// item 4: --receive-pack / --exec anywhere, any abbreviation; post-positional dash tokens.
+for (const cmd of [
+  'git push backup x --receive-pack=foo',
+  'git push backup x --exec=foo',
+  'git push backup x --receive=foo',
+  'git push backup x --rec=foo',
+  'git push backup x --exe=foo',
+  'git push backup x --e=foo',
+  'git push backup x --frobnicate',
+  'git push backup x -o ci.skip',
+  'git push backup x --push-option=ci.skip',
+  'git push backup x -z',
+  'git push backup x --repo=other',
+  'git push --porcelain backup x --receive-pack=y',
+]) {
+  test('F9 R2: `' + cmd + '` -> rule c (item 4)', () => {
+    assertUnresolved(classify(cmd, {}).r, cmd);
+  });
+}
+
+for (const cmd of [
+  'git push backup x --force',
+  'git push backup x -f',
+  'git push backup x -fu',
+  'git push backup x --force-with-lease',
+  'git push backup x --force-with-lease=main:abc',
+  'git push backup x --no-verify',
+  'git push backup x y z',
+  'git push backup -- x',
+]) {
+  test('F9 R2 guard: `' + cmd + '` -> other (known boolean or refspec after the positional)', () => {
+    assert.deepStrictEqual(classify(cmd, {}).r, { target: 'other', unresolved: null });
+  });
+}
+
+// item 5: literal URL targets need an empty url-rewrite list.
+test('F9 R2: a literal fork URL with a url rewrite configured -> rule c, no remote lookup', () => {
+  const { r, log } = classify('git push ' + FORK + ' x', { rewrites: () => ['url.' + UPSTREAM + '.pushinsteadof ' + FORK] });
+  assertUnresolved(r, 'rewrite');
+  assert.strictEqual(log.lookups.length, 0);
+});
+
+test('F9 R2: a literal fork URL whose rewrite check throws or returns a non-array -> rule c', () => {
+  assertUnresolved(classify('git push ' + FORK + ' x', { rewrites: () => { throw new Error('fatal'); } }).r, 'throw');
+  assertUnresolved(classify('git push ' + FORK + ' x', { rewrites: () => null }).r, 'null');
+});
+
+test('F9 R2: a literal fork URL whose dir list is empty -> rule c', () => {
+  assertUnresolved(classify('git push ' + FORK + ' x', { dirs: [] }).r, 'no dir');
+});
+
+test('F9 R2 guard: a literal upstream URL arms (rule a) without a rewrite check', () => {
+  const { r, log } = classify('git push ' + UPSTREAM + ' x', { rewrites: () => { throw new Error('must not run'); } });
+  assert.deepStrictEqual(r, { target: 'gsd-core', unresolved: null });
+  assert.strictEqual(log.rewrites.length, 0);
+});
+
+// item 7 through the literal path.
+for (const lit of [
+  'https://github.com/open-gsd/gsd-core.git/',
+  'git@github.com:open-gsd/gsd-core.git/',
+  'ssh://git@github.com/open-gsd/gsd-core.git/',
+  'https://github.com/open-gsd/gsd-core.git//',
+]) {
+  test('F9 R2: literal `' + lit + '` -> gsd-core (trailing slashes normalize)', () => {
+    assert.deepStrictEqual(classify('git push ' + lit + ' x', {}).r, { target: 'gsd-core', unresolved: null });
+  });
+}
+
+for (const lit of [
+  'https://github.com/open-gsd/gsd-core/../gsd-core',
+  'https://github.com/open-gsd/gsd-core/./',
+  'https://github.com/open-gsd/gsd-core/x/..',
+  'https://github.com/open-gsd//gsd-core',
+]) {
+  test('F9 R2: literal `' + lit + '` -> rule c (dot, empty or encoded segment)', () => {
+    assertUnresolved(classify('git push ' + lit + ' x', {}).r, lit);
+  });
+}
+
+for (const u of [UPSTREAM + '/', 'git@github.com:open-gsd/gsd-core.git/', UPSTREAM + '//']) {
+  test('F9 R2: a looked-up URL `' + u + '` -> gsd-core (rule a)', () => {
+    assert.deepStrictEqual(classify('git push backup x', { lookup: () => [u] }).r, { target: 'gsd-core', unresolved: null });
+  });
+}
+
+for (const u of ['https://github.com/open-gsd/gsd-core/x/..', 'https://github.com/open-gsd/gsd-core/.']) {
+  test('F9 R2: a looked-up URL `' + u + '` -> rule c', () => {
+    assertUnresolved(classify('git push backup x', { lookup: () => [u] }).r, u);
+  });
+}
+
+test('F9 R2 guard: literal `https://github.com/open-gsd/gsd%2Dcore` -> rule c (encoded segment)', () => {
+  assertUnresolved(classify('git push https://github.com/open-gsd/gsd%2Dcore x', {}).r, '%2D');
+});
+
+// item 6: the budget and the dir cap.
+test('F9 R2: more than MAX_PUSH_DIRS candidate dirs -> rule c with no lookup', () => {
+  const { r, log } = classify('git push backup x', { dirs: ['/a', '/b', '/c', '/d'] });
+  assertUnresolved(r, '4 dirs');
+  assert.strictEqual(log.lookups.length, 0);
+});
+
+test('F9 R2: one budget across lookups; each call gets min(3000, remaining); exhausted -> rule c', () => {
+  let clock = 0;
+  const budget = pt.createLookupBudget(() => clock);
+  const seen = [];
+  const lookup = (dir, name, ms) => { seen.push(ms); clock += 2000; return [FORK]; };
+  const r1 = classify('git push backup x', { dirs: ['/a', '/b'], lookup, budget }).r;
+  assert.deepStrictEqual(r1, { target: 'other', unresolved: null });
+  const r2 = classify('git push backup y', { dirs: ['/a'], lookup, budget }).r;
+  assertUnresolved(r2, 'third lookup over budget');
+  assert.deepStrictEqual(seen, [3000, 3000, 1000]);
+  const r3 = classify('git push backup z', { lookup, budget }).r;
+  assertUnresolved(r3, 'no budget left');
+  assert.deepStrictEqual(seen, [3000, 3000, 1000], 'no call once the budget is spent');
+});
+
+test('F9 R2: the rewrite check of a literal target draws on the same budget', () => {
+  let clock = 0;
+  const budget = pt.createLookupBudget(() => clock);
+  const seen = [];
+  const rewrites = (dir, ms) => { seen.push(ms); clock += 5000; return []; };
+  assertUnresolved(classify('git push ' + FORK + ' x', { rewrites, budget }).r, 'rewrite over budget');
+  assert.deepStrictEqual(seen, [3000]);
+});
+
+// item 8: backticks never reach the phrase raw.
+test('F9 R2: a backtick in an echoed token or a lookup error is escaped in the phrase', () => {
+  const r1 = classify('git push a`b`c y', {}).r;
+  assertUnresolved(r1, 'token');
+  assert.ok(r1.unresolved.includes("a'b'c") && !r1.unresolved.includes('a`b`c'), r1.unresolved);
+  const r2 = classify('git push nosuch y', { lookup: () => { throw new Error('bad `thing` here'); } }).r;
+  assertUnresolved(r2, 'stderr');
+  assert.ok(r2.unresolved.includes("'thing'") && !r2.unresolved.includes('`thing`'), r2.unresolved);
+});
+
+// item 5: the live rewrite reader against a hermetic real repo.
+test('F9 R2: urlRewritesLive: no rewrite -> [] (git exits 1), a pushInsteadOf -> its line, not a dir -> throws', () => {
+  const KEYS = ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_DIR', 'GIT_WORK_TREE', 'HOME'];
+  const saved = {};
+  for (const k of KEYS) saved[k] = Object.prototype.hasOwnProperty.call(process.env, k) ? process.env[k] : undefined;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'f9r2-rewrites-'));
+  try {
+    process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+    process.env.GIT_CONFIG_NOSYSTEM = '1';
+    process.env.HOME = tmp;
+    delete process.env.GIT_DIR;
+    delete process.env.GIT_WORK_TREE;
+    const repo = path.join(tmp, 'repo');
+    fs.mkdirSync(repo);
+    git(repo, 'init', '-q');
+    git(repo, 'remote', 'add', 'backup', FORK);
+    assert.deepStrictEqual(pt.urlRewritesLive(repo), []);
+    assert.deepStrictEqual(pt.urlRewritesLive(repo, 1500), []);
+    git(repo, 'config', 'url.' + UPSTREAM + '.pushInsteadOf', FORK);
+    const lines = pt.urlRewritesLive(repo);
+    assert.strictEqual(lines.length, 1);
+    assert.match(lines[0], /^url\./);
+    assert.throws(() => pt.urlRewritesLive(path.join(tmp, 'does-not-exist')));
+
+    const cmd = 'git push ' + FORK + ' x';
+    const { parsed, seg } = pushOf(cmd);
+    const live = { command: cmd, segmentDirs: () => [repo], resolvePushUrls: pt.resolvePushUrlsLive, urlRewrites: pt.urlRewritesLive };
+    assertUnresolved(pt.classifyPushTarget(seg, parsed, live), 'live rewrite');
   } finally {
     for (const k of KEYS) {
       if (saved[k] === undefined) delete process.env[k];

@@ -646,6 +646,53 @@ test('parseOwnerRepo: a GitHub-ish-but-unparseable input → null (fail-closed s
   assert.strictEqual(res.parseOwnerRepo(42), null);
 });
 
+// --- quick-261007-rni F9 R2 (item 7, REVIEW CR-01): trailing slashes normalize; dot, empty,
+// encoded or whitespace segments are unparseable (null -> fail-closed at every caller) ---
+
+const F9R2_UP = { owner: 'open-gsd', repo: 'gsd-core', host: 'github.com' };
+for (const [input, label] of [
+  ['https://github.com/open-gsd/gsd-core.git/', 'F9 R2: '],
+  ['https://github.com/open-gsd/gsd-core.git//', 'F9 R2: '],
+  ['git@github.com:open-gsd/gsd-core.git/', 'F9 R2: '],
+  ['ssh://git@github.com/open-gsd/gsd-core.git/', 'F9 R2: '],
+  ['open-gsd/gsd-core.git/', 'F9 R2: '],
+  ['https://github.com/open-gsd/gsd-core/', 'F9 R2 guard: '],
+  ['open-gsd/gsd-core/', 'F9 R2 guard: '],
+]) {
+  test(label + 'parseOwnerRepo(`' + input + '`) normalizes to open-gsd/gsd-core', () => {
+    assert.deepStrictEqual(res.parseOwnerRepo(input), F9R2_UP);
+  });
+}
+
+for (const input of [
+  'open-gsd/./gsd-core',
+  'open-gsd/../gsd-core',
+  'https://github.com/open-gsd/gsd-core/x/..',
+  'https://github.com/open-gsd/gsd-core/.',
+  'https://github.com/open-gsd/gsd-core/./',
+  'https://github.com/open-gsd/gsd-core/../gsd-core',
+  './gsd-core',
+  'open-gsd//gsd-core',
+  'https://github.com/open-gsd//gsd-core',
+]) {
+  test('F9 R2: parseOwnerRepo(' + JSON.stringify(input) + ') -> null (dot or empty segment)', () => {
+    assert.strictEqual(res.parseOwnerRepo(input), null);
+  });
+}
+
+// Already null before R2 (OWNER_REPO_SEG rejects them); item 7 makes the rejection explicit.
+for (const input of ['open-gsd/gsd%2Dcore', 'https://github.com/open-gsd/gsd core', 'open-gsd/gsd-core\tx']) {
+  test('F9 R2 guard: parseOwnerRepo(' + JSON.stringify(input) + ') -> null (encoded or whitespace segment)', () => {
+    assert.strictEqual(res.parseOwnerRepo(input), null);
+  });
+}
+
+test('F9 R2: segmentRepoTarget arms an explicit gh --repo open-gsd/./gsd-core (unparseable -> gsd-core)', () => {
+  const { parseCommandForGates } = require('./argv.cjs');
+  const seg = parseCommandForGates('gh issue create --repo open-gsd/./gsd-core --title x').segments[0];
+  assert.strictEqual(res.segmentRepoTarget(seg), 'gsd-core');
+});
+
 // --- repoSpecTargetsGsdCore: rerouted through parseOwnerRepo (case-fold) ---
 
 test('repoSpecTargetsGsdCore: Open-GSD/GSD-Core (case-variant) → true (CR-01)', () => {
