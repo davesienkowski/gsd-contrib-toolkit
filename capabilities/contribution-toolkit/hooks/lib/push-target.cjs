@@ -2,8 +2,13 @@
 
 /**
  * hooks/lib/push-target.cjs — where does a `git push` segment push TO? (quick-261007-rni F9,
- * Revisions 1 and 2). Built for the ENF-21 runtime-drift gate (hooks/runtime-drift.cjs step 5) and
- * for reuse by the other push gates (the F10 follow-up).
+ * Revisions 1 and 2). Built for the ENF-21 runtime-drift gate (hooks/runtime-drift.cjs step 5),
+ * which calls classifyPushTarget directly because its rule (a) arms from any dir. F10
+ * (quick-261007-tz0) reuses it through narrowToArmingPushes in lint-ci-marker (ENF-05/17) and
+ * protocol-artifact (ENF-19): a push that provably goes to another owner/repo does not arm them.
+ * Locked split: scan-gate (ENF-09) and githooks-seal (ENF-12/13) are leak and hook-bypass controls
+ * and deliberately keep arming on every push from a gsd-core cwd; containment resolves its own
+ * remote.
  *
  * Pure, except resolvePushUrlsLive and urlRewritesLive (one bounded local `git` subprocess each).
  * No module-level mutable state: the lookup budget is an object the caller creates per hook
@@ -75,7 +80,7 @@
 
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { resolveProgram } = require('./classify.cjs');
+const { resolveProgram, classifyAction } = require('./classify.cjs');
 const { parseOwnerRepo, GSD_CORE_OWNER, GSD_CORE_REPO } = require('./resolve.cjs');
 
 /** PD-5: the bound on one `git remote get-url` call (same budget as worktree-fresh-base's local git). */
@@ -623,6 +628,83 @@ function classifyPushTarget(seg, parsed, io) {
   }
 }
 
+/**
+ * F10 (quick-261007-tz0): the parse a contribution-contract push gate should arm on. Drops ONLY the
+ * push segments that classifyPushTarget proves go to another owner/repo (rule b, 'other'); every
+ * other segment (commit, pr-create, issue-create, a push that is 'gsd-core' or null) is kept.
+ *
+ * - Nothing dropped, missing lookup deps, a non-ok parse or no segments: `{ parsed, empty: false }`
+ *   with the SAME input object, so rules a, c and d arm byte-for-byte as before F10.
+ * - Every segment dropped: `{ parsed, empty: true }`. The caller allows; it must never hand an empty
+ *   `segments` array to classifyAction, which would reclassify the top-level tokens.
+ * - Some dropped: a NEW object with the kept segments (same objects, original order), the top-level
+ *   program / subcommands / flags / shortFlags / positionals / tokens taken from the first kept
+ *   segment, `raw` unchanged and `altSegments` recounted over the kept appended tail.
+ * - Any throw (an injected dep or an internal fault) returns the input unchanged: toward arming,
+ *   never toward allow (CTK-ADR-0001). No module-level state; one lookup budget per call.
+ *
+ * The per-segment io is built exactly as runtime-drift.cjs step 5 builds it (command, segmentDirs
+ * bound to the segment, resolvePushUrls, urlRewrites, one shared budget). `io.classifyPushTarget`
+ * is a test seam; it defaults to this module's classifyPushTarget.
+ *
+ * @param {string} command raw tool_input.command
+ * @param {{ok:boolean, segments?:Array}} parsed parseCommandForGates(command)
+ * @param {{segmentDirs: (command:string, seg:Object)=>(string[]|null),
+ *   resolvePushUrls: (dir:string, name:string, timeoutMs:number)=>string[],
+ *   urlRewrites?: (dir:string, timeoutMs:number)=>string[], now?: ()=>number,
+ *   classifyPushTarget?: Function}} io
+ * @returns {{parsed: Object, empty: boolean}}
+ */
+function narrowToArmingPushes(command, parsed, io) {
+  const unchanged = { parsed, empty: false };
+  try {
+    if (!io || typeof io.segmentDirs !== 'function' || typeof io.resolvePushUrls !== 'function') return unchanged;
+    if (!parsed || parsed.ok !== true || !Array.isArray(parsed.segments) || parsed.segments.length === 0) {
+      return unchanged;
+    }
+    const classify = typeof io.classifyPushTarget === 'function' ? io.classifyPushTarget : classifyPushTarget;
+    const segs = parsed.segments;
+    const altCount = Number.isInteger(parsed.altSegments) && parsed.altSegments > 0 ? parsed.altSegments : 0;
+    const altStart = segs.length - altCount;
+    let budget = null;
+    const kept = [];
+    let keptAlt = 0;
+    for (let i = 0; i < segs.length; i++) {
+      const seg = segs[i];
+      if (classifyAction({ ok: true, segments: [seg] }).action === 'push') {
+        if (budget === null) budget = createLookupBudget(io.now);
+        const r = classify(seg, parsed, {
+          command,
+          segmentDirs: () => io.segmentDirs(command, seg),
+          resolvePushUrls: io.resolvePushUrls,
+          urlRewrites: io.urlRewrites,
+          budget,
+        });
+        if (r && r.target === 'other') continue;
+      }
+      kept.push(seg);
+      if (i >= altStart) keptAlt += 1;
+    }
+    if (kept.length === segs.length) return unchanged;
+    if (kept.length === 0) return { parsed, empty: true };
+    const first = kept[0];
+    const narrowed = Object.assign({}, parsed, {
+      segments: kept,
+      program: first.program,
+      subcommands: first.subcommands,
+      flags: first.flags,
+      shortFlags: first.shortFlags,
+      positionals: first.positionals,
+      tokens: first.tokens,
+    });
+    if (keptAlt > 0) narrowed.altSegments = keptAlt;
+    else delete narrowed.altSegments;
+    return { parsed: narrowed, empty: false };
+  } catch (_err) {
+    return unchanged;
+  }
+}
+
 function boundedTimeout(ms) {
   const n = Number(ms);
   return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), PUSH_URL_TIMEOUT_MS) : PUSH_URL_TIMEOUT_MS;
@@ -684,6 +766,7 @@ module.exports = {
   isLiteralPushTarget,
   createLookupBudget,
   classifyPushTarget,
+  narrowToArmingPushes,
   resolvePushUrlsLive,
   urlRewritesLive,
 };

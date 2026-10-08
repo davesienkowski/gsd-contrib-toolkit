@@ -42,6 +42,12 @@
  * only by a deliberate, logged GSD_CONTRIB_OVERRIDE (HARD-03), distinct from `--no-verify`
  * (denied by ENF-12).
  *
+ * F10 (quick-261007-tz0): a push segment that F9's classifyPushTarget proves goes to another
+ * owner/repo (a fork or backup remote) does not arm this gate: gate() narrows the parse with
+ * narrowToArmingPushes right after the parse-failure throw, so the trigger check and the push-only
+ * test:affected tier read the narrowed parse. An upstream push, an unresolvable or redirected
+ * target, and a push with no explicit remote arm exactly as before (CTK-ADR-0001).
+ *
  * @module hooks/lint-ci-marker
  */
 
@@ -52,7 +58,9 @@ const {
   resolveGsdCoreRootForCommand,
   requireLiveScript,
   ScriptResolveError,
+  pushSegmentDirs,
 } = require('./lib/resolve.cjs');
+const { narrowToArmingPushes, resolvePushUrlsLive, urlRewritesLive } = require('./lib/push-target.cjs');
 const {
   readTreeShaLive,
   readWorkingTreeStatusLive,
@@ -82,14 +90,25 @@ const TRIGGER_ACTIONS = new Set(['push', 'pr-create']);
  *   (HARD-02).
  * @param {string} [deps.worktreeRoot] the resolved gsd-core worktree root (passed to
  *   readMarkerExists for diagnostics; the live readers are pre-bound to it).
+ * @param {(command:string, seg:Object)=>(string[]|null)} [deps.segmentDirs] F10: the dirs one push
+ *   segment runs in. Without it (and resolvePushUrls) the parse is not narrowed.
+ * @param {(dir:string, name:string, timeoutMs:number)=>string[]} [deps.resolvePushUrls] F10: every
+ *   push URL of a named remote in a dir. MAY THROW (rule c: the push keeps arming).
+ * @param {(dir:string, timeoutMs:number)=>string[]} [deps.urlRewrites] F10: url rewrite lines.
  * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
  */
 function gate(stdinString, deps) {
   const input = readHookInput(stdinString);
   const command = (input.tool_input && input.tool_input.command) || '';
 
-  const parsed = parseCommandForGates(command);
-  if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
+  const rawParse = parseCommandForGates(command);
+  if (!rawParse.ok) throw new FailClosed('unparseable command: ' + rawParse.reason);
+
+  // F10 (quick-261007-tz0): drop only the push segments proven to go to another owner/repo. Every
+  // other path returns the SAME parse object, so this gate arms exactly as before.
+  const narrowed = narrowToArmingPushes(command, rawParse, deps);
+  if (narrowed.empty) return allow();
+  const parsed = narrowed.parsed;
 
   const action = classifyAction(parsed);
   // An unmappable mutating github synonym must not slip through (T-04-02-SYNONYM). This
@@ -159,6 +178,9 @@ function gate(stdinString, deps) {
  * @param {(root: string, sha: string) => boolean} [deps.readMarkerExists]
  * @param {(root: string) => void} [deps.runAffectedTier]
  * @param {string} [deps.worktreeRoot]
+ * @param {(command:string, seg:Object)=>(string[]|null)} [deps.segmentDirs] F10 push-target dirs
+ * @param {(dir:string, name:string, timeoutMs:number)=>string[]} [deps.resolvePushUrls] F10 lookup
+ * @param {(dir:string, timeoutMs:number)=>string[]} [deps.urlRewrites] F10 url-rewrite read
  * @param {{checkOverride:Function, writeReceipt:Function}} [deps.overrideImpl]
  * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
  */
@@ -182,6 +204,13 @@ function runLintCiMarkerGate(stdinString, deps = {}) {
     if (isNonGovernedCommand(parseCommandForGates(ctx.command), TRIGGER_ACTIONS)) return allow();
 
     const resolved = Object.assign({}, deps);
+    // F10 (quick-261007-tz0): where one push segment runs and what its remote resolves to there
+    // (the F9 runtime-drift defaults), independent of needsRoot.
+    if (!resolved.segmentDirs) {
+      resolved.segmentDirs = (command, seg) => pushSegmentDirs(command, process.cwd(), seg);
+    }
+    if (!resolved.resolvePushUrls) resolved.resolvePushUrls = resolvePushUrlsLive;
+    if (!resolved.urlRewrites) resolved.urlRewrites = urlRewritesLive;
     // WR-05: needsRoot must cover EVERY LIVE-backed dep that defaults to a root-bound wrapper.
     // runAffectedTier (defaulted below at requireLiveScript(root, ...)) is one of them — if a
     // caller injects the three readers but NOT runAffectedTier and provides no worktreeRoot, the
