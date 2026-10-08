@@ -50,7 +50,7 @@ function stampAt(sha, digest) {
  * FRESH runtime inside a real gsd-core checkout, so each test overrides only what it is about.
  */
 function scenario(over = {}) {
-  const calls = { resolveRoot: 0, runtimeDigest: 0, readStamp: 0, upstreamTip: 0, segmentDirs: 0, resolvePushUrls: 0 };
+  const calls = { resolveRoot: 0, runtimeDigest: 0, readStamp: 0, upstreamTip: 0, segmentDirs: 0, resolvePushUrls: 0, urlRewrites: 0 };
   const deps = Object.assign(
     {
       resolveRoot: () => { calls.resolveRoot += 1; return '/tmp/gsd-core'; },
@@ -58,6 +58,8 @@ function scenario(over = {}) {
       // takes rule c, which is exactly the pre-F9 cwd rule. Tests that need a resolution inject one.
       segmentDirs: () => { calls.segmentDirs += 1; return ['/tmp/gsd-core']; },
       resolvePushUrls: () => { calls.resolvePushUrls += 1; throw new Error('scenario: no remote lookup configured'); },
+      // quick-261007-rni F9 R2 (item 5): the default world has no url.<base>.insteadOf / pushInsteadOf rewrite.
+      urlRewrites: () => { calls.urlRewrites += 1; return []; },
       runtimeDigest: () => { calls.runtimeDigest += 1; return DIGEST; },
       readStamp: () => { calls.readStamp += 1; return stampAt(SHA_A, DIGEST); },
       upstreamTip: () => { calls.upstreamTip += 1; return { sha: SHA_A, source: 'live', ageMs: 0 }; },
@@ -394,7 +396,8 @@ for (const cmd of [
   const UPSTREAM = 'https://github.com/open-gsd/gsd-core.git';
   const TOOLKIT = 'https://github.com/davesienkowski/gsd-contrib-toolkit.git';
   const REMOTES = { backup: [FORK], origin: [UPSTREAM] };
-  const PD4 = /an unresolvable push target is treated as `open-gsd\/gsd-core`/;
+  // F9 R2 (item 8, WR-02): the rule-c note describes the cwd fallback, not a gsd-core verdict.
+  const PD4 = /could not be resolved, so the gate fell back to the gsd-core-checkout rule/;
 
   const A = fs.mkdtempSync(path.join(os.tmpdir(), 'f9-drift-a-'));
   const B = fs.mkdtempSync(path.join(os.tmpdir(), 'f9-drift-b-'));
@@ -434,7 +437,11 @@ for (const cmd of [
     }
     if (over.resolvePushUrls) {
       const f = over.resolvePushUrls;
-      deps.resolvePushUrls = (d, n) => { calls.resolvePushUrls += 1; return f(d, n); };
+      deps.resolvePushUrls = (d, n, ms) => { calls.resolvePushUrls += 1; return f(d, n, ms); };
+    }
+    if (over.urlRewrites) {
+      const f = over.urlRewrites;
+      deps.urlRewrites = (d, ms) => { calls.urlRewrites += 1; return f(d, ms); };
     }
     return { deps, calls };
   }
@@ -682,4 +689,206 @@ for (const cmd of [
     assertDeny(d, calls, 'origin HEAD');
     assert.doesNotMatch(d.permissionDecisionReason, PD4);
   });
+
+  // ───────────── quick-261007-rni F9 R2: hardening round (REVIEW CR-01..04 / WR-01..03, ADVERSARIAL C1) ─────────────
+  //
+  // Rule (b) is an ALLOWLIST (CONTEXT Revision 2): a push may classify 'other' only when the raw
+  // command has no ( ) { } ` $ < > \ or newline (except the exact token 2>&1), no env assignment or
+  // privilege wrapper, and every segment is an allowlisted program / git subcommand; a dash token
+  // after the push positional is a known boolean; no --receive-pack / --exec (any abbreviation);
+  // a literal URL needs an empty `git config --get-regexp ^url\.`; lookups share a 5000 ms budget
+  // and at most 3 dirs. Anything short of that is rule (c): the pre-F9 cwd rule.
+  //
+  // Naming: `F9 R2: ` fails before the R2 fix and passes after; `F9 R2 guard: ` passes both.
+  // Every deny row is from a gsd-core cwd with an unstamped runtime; origin = upstream and
+  // backup = a fork unless the row says otherwise.
+  {
+    const UP_SLASH = 'https://github.com/open-gsd/gsd-core.git/';
+    const UP_SCP_SLASH = 'git@github.com:open-gsd/gsd-core.git/';
+    const PLANT = "printf '[url \"https://github.com/open-gsd/gsd-core.git\"]\\n\\tpushInsteadOf = " + FORK + "\\n'";
+
+    // [label, command, lookup map, decision when the command runs from a non-gsd-core cwd]
+    const DENY_ROWS = [
+      // REVIEW bypass table (CR-01, CR-02, CR-03)
+      ['REVIEW row 1', 'git push ' + UP_SLASH + ' next', REMOTES, 'deny'],
+      ['REVIEW row 2', 'git push backup x', { backup: [UP_SLASH] }, 'deny'],
+      ['REVIEW row 3', 'git push backup x', { backup: [UP_SCP_SLASH] }, 'deny'],
+      ['REVIEW row 4', 'git push backup x && (git push origin main)', REMOTES, 'allow'],
+      ['REVIEW row 5', 'git push backup x && { git push origin main; }', REMOTES, 'allow'],
+      ['REVIEW row 6', 'git push backup x && bash -c "git push origin main"', REMOTES, 'allow'],
+      ['REVIEW row 7', 'git push backup x && sh -c "git push origin main"', REMOTES, 'allow'],
+      ['REVIEW row 8', 'git push backup x && xargs git push origin < /dev/null', REMOTES, 'allow'],
+      ['REVIEW row 9', 'cd /tmp/tk && git push origin main && cd /tmp/gc && (git push origin main)', { origin: [TOOLKIT] }, 'allow'],
+      ['REVIEW row 10', 'bash -c "git remote set-url backup ' + UPSTREAM + '" && git push backup x', REMOTES, 'allow'],
+      // CR-03 spellings
+      ['CR-03 node -e', 'node -e "require(\'child_process\').execSync(\'git remote set-url backup ' + UPSTREAM + '\')" && git push backup x', REMOTES, 'allow'],
+      ['CR-03 script', 'sh ./fix.sh && git push backup x', REMOTES, 'allow'],
+      ['CR-03 cd .git append', "cd .git && printf '[remote \"backup\"]\\n pushurl = " + UPSTREAM + "\\n' >> config && cd .. && git push backup x", REMOTES, 'allow'],
+      // CR-04 spellings
+      ['CR-04 printf -v GIT_DIR', 'printf -v GIT_DIR %s /other/repo && export GIT_DIR && git push backup x', REMOTES, 'allow'],
+      ['CR-04 HOME prefix', 'HOME=/tmp/e git push backup x', REMOTES, 'allow'],
+      ['CR-04 XDG prefix', 'XDG_CONFIG_HOME=/tmp/e/.config git push backup x', REMOTES, 'allow'],
+      ['CR-04 export HOME', 'export HOME=/tmp/e && git push backup x', REMOTES, 'allow'],
+      ['CR-04 sudo', 'sudo -u someone git push backup x', REMOTES, 'allow'],
+      ['CR-04 env -i', 'env -i git push backup x', REMOTES, 'allow'],
+      // ADVERSARIAL C1 refutations
+      ['ADV 1 scp trailing slash', 'git push ' + UP_SCP_SLASH + ' x', REMOTES, 'deny'],
+      ['ADV 1 ssh trailing slash', 'git push ssh://git@github.com/open-gsd/gsd-core.git/ x', REMOTES, 'deny'],
+      ['ADV 1b dot-dot segment', 'git push https://github.com/open-gsd/gsd-core/../gsd-core x', REMOTES, 'allow'],
+      ['ADV 1b dot segment', 'git push https://github.com/open-gsd/gsd-core/./ x', REMOTES, 'allow'],
+      ['ADV 2 .git/./config append', "printf '[remote \"backup\"]\\n\\tpushurl = https://github.com/open-gsd/gsd-core\\n' >> .git/./config && git push backup x", REMOTES, 'allow'],
+      ['ADV 3 cd .git config append', "cd .git && printf x >> config && cd .. && git push backup x", REMOTES, 'allow'],
+      ['ADV 4 XDG planted config', 'mkdir -p /tmp/x2/git && ' + PLANT + ' > /tmp/x2/git/./config && XDG_CONFIG_HOME=/tmp/x2 git push backup x', REMOTES, 'allow'],
+      ['ADV 4 export XDG', 'export XDG_CONFIG_HOME=/tmp/x; git push backup x', REMOTES, 'allow'],
+      ['ADV 5 HOME planted config', 'mkdir -p /tmp/h2/.config/git && ' + PLANT + ' > /tmp/h2/.config/git/./config && HOME=/tmp/h2 git push backup x', REMOTES, 'allow'],
+      ['ADV 6 --receive-pack after positional', 'git push backup x --receive-pack=foo', REMOTES, 'allow'],
+      ['ADV 6 --exec after positional', 'git push backup x --exec=foo', REMOTES, 'allow'],
+      ['ADV 6 quoted --receive-pack', "git push --porcelain backup x --receive-pack='git-receive-pack open-gsd/gsd-core.git #'", REMOTES, 'allow'],
+      ['ADV 6 abbreviated --receive', 'git push backup x --receive=foo', REMOTES, 'allow'],
+      ['ADV 6 abbreviated --exe', 'git push backup x --exe=foo', REMOTES, 'allow'],
+      ['ADV 6 unknown option after positional', 'git push backup x --frobnicate', REMOTES, 'allow'],
+      ['ADV 6 value option after positional', 'git push backup x -o ci.skip', REMOTES, 'allow'],
+      // allowlist (item 3) beyond the reported spellings
+      ['item 3 git fetch --upload-pack', 'git fetch --upload-pack="git remote set-url backup ' + UPSTREAM + '; git-upload-pack" . && git push backup x', REMOTES, 'allow'],
+      ['item 3 git ls-remote -u', 'git ls-remote -u git-upload-pack . && git push backup x', REMOTES, 'allow'],
+      ['item 3 git -c on a non-push segment', 'git -c core.pager=less log && git push backup x', REMOTES, 'allow'],
+      ['item 3 git diff --output', 'git diff --output=.git/config && git push backup x', REMOTES, 'allow'],
+      ['item 3 git branch write form', 'git branch -u origin/main && git push backup x', REMOTES, 'allow'],
+      ['item 3 git config read', 'git config --get remote.backup.url && git push backup x', REMOTES, 'allow'],
+      ['item 3 unknown git subcommand', 'git p origin x && git push backup x', REMOTES, 'allow'],
+      ['item 3 tee', 'git status | tee .git/config && git push backup x', REMOTES, 'allow'],
+      ['item 3 cat with a file', 'cat .git/./config && git push backup x', REMOTES, 'allow'],
+      ['item 3 pipe consumer with a file', 'git push backup x | grep -f .git/config', REMOTES, 'allow'],
+      ['item 3 |& pipe', 'git push backup x |& tail -5', REMOTES, 'allow'],
+      ['item 3 nice wrapper', 'nice git push backup x', REMOTES, 'allow'],
+      ['item 1 dollar', 'cd $HOME/repos/gsd-core && git push backup x', REMOTES, 'allow'],
+      ['item 1 newline', 'git status\ngit push backup x', REMOTES, 'allow'],
+      ['item 1 redirect', 'git push backup x > /tmp/out', REMOTES, 'allow'],
+    ];
+    // Rows the pre-R2 gate already denied (config-file token / no-op): pinned as guards.
+    const GUARD_ROWS = new Set(['item 3 git diff --output', 'item 3 tee', 'item 3 pipe consumer with a file']);
+    for (const [label, cmd, map, away] of DENY_ROWS) {
+      test((GUARD_ROWS.has(label) ? 'F9 R2 guard: ' : 'F9 R2: ') + label + ': `' + cmd.replace(/\n/g, '\\n') + '` DENIES from a gsd-core cwd (stale runtime)', () => {
+        const here = f9World({ resolvePushUrls: lookupMap(map) });
+        assertDeny(runRuntimeDriftGate(input(cmd), here.deps), here.calls, cmd);
+        const elsewhere = f9World({ resolveRoot: () => null, resolvePushUrls: lookupMap(map) });
+        const d = runRuntimeDriftGate(input(cmd), elsewhere.deps);
+        if (away === 'deny') assertDeny(d, elsewhere.calls, cmd + ' (from another repo: rule a)');
+        else assertAllow(d, elsewhere.calls, cmd + ' (from another repo: rule c keeps the cwd rule)');
+      });
+    }
+
+    // T-261007-rni-07 (item 5): a literal fork URL with a url.<base>.pushInsteadOf rewrite configured.
+    test('F9 R2: a literal fork URL with a url.*.pushInsteadOf rewrite configured DENIES (item 5, T-07)', () => {
+      const cmd = 'git push ' + FORK + ' x';
+      const rewrites = ['url.https://github.com/open-gsd/gsd-core.git.pushinsteadof ' + FORK];
+      const here = f9World({ resolvePushUrls: lookupMap(REMOTES), urlRewrites: () => rewrites.slice() });
+      const d = runRuntimeDriftGate(input(cmd), here.deps);
+      assertDeny(d, here.calls, cmd);
+      assert.strictEqual(here.calls.resolvePushUrls, 0, 'a literal target is never looked up as a remote');
+      assert.strictEqual(here.calls.urlRewrites, 1, 'the rewrite check runs once, in the push dir');
+      assert.match(d.permissionDecisionReason, PD4);
+    });
+
+    test('F9 R2: a literal fork URL whose rewrite check throws DENIES from a gsd-core cwd (item 5)', () => {
+      const cmd = 'git push ' + FORK + ' x';
+      const here = f9World({ urlRewrites: () => { throw new Error('fatal: not a git repository'); } });
+      assertDeny(runRuntimeDriftGate(input(cmd), here.deps), here.calls, cmd);
+    });
+
+    // ── positive pins (item 9): the plain forms still allow ──
+    for (const cmd of [
+      'git push backup fix/x',
+      'git push backup fix/x 2>&1 | tail -5',
+      'cd ~/repos/gsd-core && git push backup x',
+      'git -C ~/repos/gsd-core push backup x',
+      'git status && git push backup x',
+      'git push backup x --force-with-lease',
+      'git push -u backup fix/x && git log --oneline -3 | head -3',
+      'git remote -v && git push backup x',
+      'git push ' + FORK + ' x',
+    ]) {
+      test('F9 R2 guard: pin `' + cmd + '` from a gsd-core cwd ALLOWS (backup is a fork)', () => {
+        const lookup = lookupMap(REMOTES);
+        const { deps, calls } = f9World({ resolvePushUrls: lookup, segmentDirs: (c, s) => pushSegmentDirs(c, FIX, s) });
+        assertAllow(runRuntimeDriftGate(input(cmd), deps), calls, cmd);
+      });
+    }
+
+    // ── item 6 / WR-01: the lookup budget and the dir cap ──
+    test('F9 R2: three pushes whose lookups take 2500 ms each share ONE 5000 ms budget; the third falls to rule c', () => {
+      let clock = 1000000;
+      const timeouts = [];
+      const lookup = (dir, name, ms) => { timeouts.push(ms); clock += 2500; return [FORK]; };
+      const cmd = 'git push backup a && git push backup b && git push backup c';
+      const { deps, calls } = f9World({ resolvePushUrls: lookup, now: () => clock });
+      assertDeny(runRuntimeDriftGate(input(cmd), deps), calls, cmd);
+      assert.deepStrictEqual(timeouts, [3000, 2500], 'each lookup gets min(3000, remaining); none once the budget is spent');
+    });
+
+    test('F9 R2: a lookup that returns after the deadline does not earn rule b', () => {
+      let clock = 0;
+      const lookup = () => { clock += 6000; return [FORK]; };
+      const { deps, calls } = f9World({ resolvePushUrls: lookup, now: () => clock });
+      assertDeny(runRuntimeDriftGate(input('git push backup x'), deps), calls, 'slow lookup');
+    });
+
+    test('F9 R2: more than 3 candidate dirs falls to rule c with NO lookup', () => {
+      const { deps, calls } = f9World({ resolvePushUrls: lookupMap(REMOTES), segmentDirs: () => ['/a', '/b', '/c', '/d'] });
+      assertDeny(runRuntimeDriftGate(input('git push backup x'), deps), calls, '4 dirs');
+      assert.strictEqual(calls.resolvePushUrls, 0);
+    });
+
+    test('F9 R2: `cd A; cd B; cd C; cd OTHER; git push backup x` (4 real candidate dirs) DENIES with no lookup', () => {
+      const cmd = 'cd ' + A + '; cd ' + B + '; cd ' + C + '; cd ' + OTHER + '; git push backup x';
+      const { deps, calls } = f9World({ resolvePushUrls: lookupMap(REMOTES), segmentDirs: (c, s) => pushSegmentDirs(c, FIX, s) });
+      assertDeny(runRuntimeDriftGate(input(cmd), deps), calls, cmd);
+      assert.strictEqual(calls.resolvePushUrls, 0);
+    });
+
+    test('F9 R2 guard: exactly 3 candidate dirs, every URL a fork -> allow', () => {
+      const { deps, calls } = f9World({ resolvePushUrls: lookupMap(REMOTES), segmentDirs: () => ['/a', '/b', '/c'] });
+      assertAllow(runRuntimeDriftGate(input('git push backup x'), deps), calls, '3 dirs');
+      assert.strictEqual(calls.resolvePushUrls, 3);
+    });
+
+    // ── item 7: gh --repo through the stricter parseOwnerRepo ──
+    for (const [spec, label] of [
+      ['open-gsd/./gsd-core', 'F9 R2: '],
+      ['open-gsd/gsd-core.git/', 'F9 R2: '],
+      ['open-gsd/gsd-core/', 'F9 R2 guard: '],
+    ]) {
+      test(label + '`gh issue create --repo ' + spec + '` from a non-gsd-core cwd ARMS (item 7)', () => {
+        const { deps, calls } = f9World({ resolveRoot: () => null });
+        assertDeny(runRuntimeDriftGate(input('gh issue create --repo ' + spec + ' --title x --body y'), deps), calls, spec);
+      });
+    }
+
+    // ── item 8 / WR-02: the note text and backtick escaping ──
+    test('F9 R2: the rule-c note describes the cwd fallback, not an upstream verdict', () => {
+      const { deps, calls } = f9World({ resolvePushUrls: lookupMap(REMOTES) });
+      const d = runRuntimeDriftGate(input('git push nosuchremote x'), deps);
+      assertDeny(d, calls, 'nosuchremote');
+      assert.match(d.permissionDecisionReason, PD4);
+      assert.match(d.permissionDecisionReason, /nosuchremote/);
+      assert.doesNotMatch(d.permissionDecisionReason, /treated as `open-gsd\/gsd-core`/);
+    });
+
+    test('F9 R2: a backtick in an echoed token is escaped in the deny note', () => {
+      const { deps, calls } = f9World({ resolvePushUrls: lookupMap(REMOTES) });
+      const d = runRuntimeDriftGate(input('git push a`b`c y'), deps);
+      assertDeny(d, calls, 'backtick');
+      assert.ok(d.permissionDecisionReason.includes("a'b'c"), d.permissionDecisionReason);
+      assert.ok(!d.permissionDecisionReason.includes('a`b`c'), 'raw backticks must not reach the reason');
+    });
+
+    // ── zero-IO short-circuit still holds for the new dep ──
+    test('F9 R2 guard: non-governed commands never resolve dirs, look a remote up or read url rewrites', () => {
+      for (const cmd of ['git status', 'npm test', 'git log --oneline | head', 'ls && git diff']) {
+        const { deps, calls } = f9World();
+        assertAllow(runRuntimeDriftGate(input(cmd), deps), calls, cmd);
+        assert.strictEqual(calls.segmentDirs + calls.resolvePushUrls + calls.urlRewrites + calls.resolveRoot, 0, cmd);
+      }
+    });
+  }
 }
