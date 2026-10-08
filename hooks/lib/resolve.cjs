@@ -505,43 +505,49 @@ function physicalChdir(from, target) {
   return cur;
 }
 
-/** F9 R3 item 2: the error pushSegmentDirs throws when a derived dir cannot be trusted. */
-class PushDirError extends Error {}
-
 /**
- * F9 R3 item 2: throw a PushDirError unless the logical (textual, `path.resolve`) and the physical
- * (component-wise realpath) resolutions of `target` from `from` name the same existing directory.
+ * F9 R3 item 2: the logical (textual, `path.resolve`) and physical (component-wise realpath)
+ * resolutions of `target` from `from`. Returns `{ logical, physical: string|null, reason }`:
+ * `physical` is null and `reason` set when either does not resolve to an existing directory;
+ * `reason` is set when they differ. The physical dir is where `git -C` and `cd -P` really land.
  */
-function assertLogicalIsPhysical(from, target) {
+function logicalAndPhysical(from, target) {
+  const logical = path.resolve(from, target);
   const shownT = JSON.stringify(String(target)).slice(0, 120);
   let physical;
-  let logical;
+  let logicalReal;
   try {
     physical = physicalChdir(from, target);
-    logical = fs.realpathSync(path.resolve(from, target));
+    logicalReal = fs.realpathSync(logical);
   } catch (err) {
-    throw new PushDirError('the directory ' + shownT + ' does not resolve to an existing directory (' +
-      ((err && err.code) || 'not a directory') + ')');
+    return { logical, physical: null, reason: 'the directory ' + shownT + ' does not resolve to an existing directory (' +
+      ((err && err.code) || 'not a directory') + ')' };
   }
-  if (physical !== logical) {
-    throw new PushDirError('the directory ' + shownT + ' resolves through a symlink to ' +
-      JSON.stringify(physical).slice(0, 120) + ' physically but ' + JSON.stringify(logical).slice(0, 120) +
-      ' textually (`git -C` and `cd -P` resolve `..` physically)');
+  if (physical !== logicalReal) {
+    return { logical, physical, reason: 'the directory ' + shownT + ' resolves through a symlink to ' +
+      JSON.stringify(physical).slice(0, 120) + ' physically but ' + JSON.stringify(logicalReal).slice(0, 120) +
+      ' textually (`git -C` and `cd -P` resolve `..` physically)' };
   }
+  return { logical, physical, reason: null };
 }
 
 /**
- * Resolve target interpretations from every current candidate. With `physical` (pushSegmentDirs
- * only, F9 R3 item 2) every interpretation it keeps must resolve the same logically and physically.
+ * Resolve target interpretations from every current candidate. With a `taint` collector
+ * (pushSegmentDirs only, F9 R3 item 2) each kept interpretation is also resolved physically: a
+ * physical dir that differs is ADDED as a candidate (so a rule-(a) lookup sees where the push
+ * really goes), and any divergence or missing dir is recorded in `taint.reason` (never rule b).
  */
-function applyTarget(cands, t, homes, physical) {
+function applyTarget(cands, t, homes, taint) {
   const out = [];
   for (const c of cands) {
     for (const it of targetInterpretations(t, homes)) {
       const abs = path.resolve(c, it.p);
       if (it.mustExist && !isDir(abs)) continue;
-      if (physical) assertLogicalIsPhysical(c, it.p);
       pushUnique(out, [abs]);
+      if (!taint) continue;
+      const lp = logicalAndPhysical(c, it.p);
+      if (lp.reason && taint.reason === null) taint.reason = lp.reason;
+      if (lp.reason && lp.physical) pushUnique(out, [lp.physical]);
     }
   }
   return out;
@@ -623,7 +629,7 @@ function candidateContext(command, base) {
  * cd walk before it, its own `env -C` / `sudo -D` chdirs and, for git, its global `-C` targets.
  * (quick-261007-rni F9: the per-segment body of commandCandidateDirs, extracted unchanged.)
  */
-function segmentCandidates(segs, j, { base, homes, cdFunction, followGitC, physical }) {
+function segmentCandidates(segs, j, { base, homes, cdFunction, followGitC, taint }) {
   let cands = [base];
   const seen = [base];
   for (let i = 0; i < j; i++) {
@@ -646,7 +652,7 @@ function segmentCandidates(segs, j, { base, homes, cdFunction, followGitC, physi
     if (t === '-' || (s.program === 'pushd' && t === null)) {
       next = pushUnique(cands.slice(), seen);
     } else {
-      next = t === null ? applyTarget(cands, '~', homes, physical) : applyTarget(cands, t, homes, physical);
+      next = t === null ? applyTarget(cands, '~', homes, taint) : applyTarget(cands, t, homes, taint);
       if (bypass || next.length === 0) pushUnique(next, cands);
     }
     cands = next;
@@ -655,13 +661,13 @@ function segmentCandidates(segs, j, { base, homes, cdFunction, followGitC, physi
   // `env -C <dir>` / `sudo -D <dir>` move this segment only (round 3, R2-WR-02).
   if (j < segs.length) {
     for (const d of segs[j].chdirs) {
-      const moved = applyTarget(cands, String(d), homes, physical);
+      const moved = applyTarget(cands, String(d), homes, taint);
       if (moved.length > 0) cands = moved;
     }
   }
   if (j < segs.length && followGitC && segs[j].program === 'git') {
     for (const d of gitGlobalChdirs({ tokens: ['git'].concat(segs[j].rest.slice(1)) })) {
-      const moved = applyTarget(cands, String(d), homes, physical);
+      const moved = applyTarget(cands, String(d), homes, taint);
       if (moved.length > 0) cands = moved;
     }
   }
@@ -694,13 +700,17 @@ function appendCandidateExtras(out, ctx, base) {
  * @param {string} command raw tool_input.command
  * @param {string} [baseCwd] the hook's process.cwd()
  * @param {{tokens?: Array}} seg
- * quick-261007-rni F9 R3 (item 2): every cd / pushd / env -C / git -C directory this walk derives
- * must name the same existing directory logically (path.resolve) and physically (component-wise
- * realpath, as chdir and `git -C` resolve it); otherwise it THROWS a PushDirError whose message the
- * classifier puts in its rule-c phrase. commandCandidateDirs (the cwd rule) stays lexical.
- * @returns {string[]|null} absolute directories, or null when the command does not parse or no
- *   resolver segment carries these tokens (the caller fails closed to its cwd rule)
- * @throws {PushDirError} a derived directory is missing or resolves differently through a symlink
+ * quick-261007-rni F9 R3 (item 2, REVIEW-R2 CR-03 "precise" option): every cd / pushd / env -C /
+ * git -C directory this walk derives is also resolved physically (component-wise realpath, as chdir
+ * and `git -C` do). A physical dir that differs from the textual one is ADDED to the candidates, so
+ * the classifier's lookups see where the push really goes (rule a still arms); a divergence or a
+ * dir that does not exist sets the NON-enumerable `unverified` property on the returned array to a
+ * phrase, and the classifier then never grants rule (b) (rule c). It does not throw for these: a
+ * throw would skip the rule-(a) lookups in the other candidates (ADVERSARIAL-R2 row 31,
+ * `cd ../nope || cd ../evil1 && git push backup x`). commandCandidateDirs (the cwd rule) stays lexical.
+ * @returns {string[]|null} absolute directories (`.unverified` set when a dir could not be
+ *   confirmed), or null when the command does not parse or no resolver segment carries these tokens
+ *   (the caller fails closed to its cwd rule)
  */
 function pushSegmentDirs(command, baseCwd, seg) {
   const base = path.resolve(baseCwd == null ? process.cwd() : String(baseCwd));
@@ -708,14 +718,17 @@ function pushSegmentDirs(command, baseCwd, seg) {
   if (ctx === null) return null;
   const key = JSON.stringify(Array.isArray(seg && seg.tokens) ? seg.tokens.map(String) : []);
   const out = [];
+  const taint = { reason: null };
   let matched = false;
   ctx.segs.forEach((s, j) => {
     if (JSON.stringify(s.allTokens) !== key) return;
     matched = true;
-    pushUnique(out, segmentCandidates(ctx.segs, j, { base, homes: ctx.homes, cdFunction: ctx.cdFunction, followGitC: true, physical: true }));
+    pushUnique(out, segmentCandidates(ctx.segs, j, { base, homes: ctx.homes, cdFunction: ctx.cdFunction, followGitC: true, taint }));
   });
   if (!matched) return null;
-  return appendCandidateExtras(out, ctx, base);
+  appendCandidateExtras(out, ctx, base);
+  if (taint.reason !== null) Object.defineProperty(out, 'unverified', { value: taint.reason, enumerable: false });
+  return out;
 }
 
 /**

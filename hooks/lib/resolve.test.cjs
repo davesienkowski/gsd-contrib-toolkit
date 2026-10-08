@@ -1228,7 +1228,9 @@ test('F9 R3: UPSTREAM_ALIASES lists the two GitHub redirect names of open-gsd/gs
 
 // ── item 2 (CR-03, ADVERSARIAL-R2 B): a derived dir whose logical and physical resolutions differ ──
 // Fixture (realpath'd, so logical == physical on any host): T/gc (the cwd), T/E/root and T/E/x,
-// T/gc/lnk -> T/E/x, and T/F/lnk -> T/E/x beside T/F/root. pushSegmentDirs throws (the caller's rule c).
+// T/gc/lnk -> T/E/x, and T/F/lnk -> T/E/x beside T/F/root. pushSegmentDirs adds the PHYSICAL dir as
+// a candidate (the classifier's rule-a lookup sees it) and sets the non-enumerable `unverified`
+// phrase (never rule b). It does not throw: a throw would skip rule (a) in the other candidates.
 {
   const { parseCommandForGates } = require('./argv.cjs');
   const { classifyAction } = require('./classify.cjs');
@@ -1246,25 +1248,34 @@ test('F9 R3: UPSTREAM_ALIASES lists the two GitHub redirect names of open-gsd/gs
   )[0];
   const dirsOf = (cmd, base) => res.pushSegmentDirs(cmd, base, pushSeg(cmd));
 
-  for (const [cmd, base] of [
-    ['git -C lnk/.. push backup x', GC],
-    ['cd -P lnk/.. && git push backup x', GC],
-    ['git -C ../lnk/../root push backup x', FROOT],
-    ['git -C ' + F + '/lnk/../root push backup x', FROOT],
-    ['cd -P ../lnk/../root && git push backup x', FROOT],
-    ['cd -P ../lnk && cd .. && git -C root push backup x', FROOT],
-    ['cd ../lnk/../root && git push backup x', FROOT],
+  for (const [cmd, base, physical] of [
+    ['git -C lnk/.. push backup x', GC, E],
+    ['cd -P lnk/.. && git push backup x', GC, E],
+    ['git -C ../lnk/../root push backup x', FROOT, path.join(E, 'root')],
+    ['git -C ' + F + '/lnk/../root push backup x', FROOT, path.join(E, 'root')],
+    ['cd -P ../lnk/../root && git push backup x', FROOT, path.join(E, 'root')],
+    ['cd -P ../lnk && cd .. && git -C root push backup x', FROOT, path.join(E, 'root')],
+    ['cd ../lnk/../root && git push backup x', FROOT, path.join(E, 'root')],
   ]) {
-    test('F9 R3: pushSegmentDirs(`' + cmd.replace(T, '<T>') + '`) throws (logical and physical dirs differ)', () => {
-      assert.throws(() => dirsOf(cmd, base), /symlink|physical/i);
+    test('F9 R3: pushSegmentDirs(`' + cmd.replace(T, '<T>') + '`) adds the physical dir and marks the list unverified (symlink `..`)', () => {
+      const dirs = dirsOf(cmd, base);
+      assert.ok(dirs.includes(physical), JSON.stringify(dirs) + ' must include ' + physical);
+      assert.match(String(dirs.unverified), /symlink/);
+      assert.ok(!Object.keys(dirs).includes('unverified'), 'unverified is non-enumerable');
     });
   }
 
   for (const cmd of ['cd ' + path.join(T, 'nope') + ' && git push backup x', 'git -C nope push backup x']) {
-    test('F9 R3: pushSegmentDirs(`' + cmd.replace(T, '<T>') + '`) throws (a derived dir that does not exist)', () => {
-      assert.throws(() => dirsOf(cmd, GC), /exist|ENOENT|resolve/i);
+    test('F9 R3: pushSegmentDirs(`' + cmd.replace(T, '<T>') + '`) marks the list unverified (a derived dir that does not exist)', () => {
+      assert.match(String(dirsOf(cmd, GC).unverified), /does not resolve to an existing directory/);
     });
   }
+
+  test('F9 R3: `cd nope || cd sub && git push backup x` keeps sub as a candidate (row-31 shape: a missing dir does not hide the real one)', () => {
+    const dirs = dirsOf('cd nope || cd sub && git push backup x', GC);
+    assert.ok(dirs.includes(path.join(GC, 'sub')), JSON.stringify(dirs));
+    assert.match(String(dirs.unverified), /does not resolve/);
+  });
 
   for (const [cmd, want] of [
     ['git push backup x', [GC]],
@@ -1274,7 +1285,9 @@ test('F9 R3: UPSTREAM_ALIASES lists the two GitHub redirect names of open-gsd/gs
     ['cd sub/.. && git push backup x', [GC]],
   ]) {
     test('F9 R3 guard: pushSegmentDirs(`' + cmd.replace(T, '<T>') + '`) -> ' + JSON.stringify(want.map((d) => d.replace(T, '<T>'))), () => {
-      assert.deepStrictEqual(dirsOf(cmd, GC), want);
+      const dirs = dirsOf(cmd, GC);
+      assert.deepStrictEqual(dirs, want);
+      assert.strictEqual(dirs.unverified, undefined);
     });
   }
 

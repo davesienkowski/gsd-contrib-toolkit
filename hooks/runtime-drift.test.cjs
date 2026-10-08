@@ -961,7 +961,8 @@ for (const cmd of [
     const FR = path.join(T, 'F', 'root');
     const ER = path.join(T, 'E', 'root');
     const GC = path.join(T, 'gc');
-    for (const d of [FR, ER, path.join(T, 'E', 'x'), GC]) fs.mkdirSync(d, { recursive: true });
+    const EVIL = path.join(T, 'F', 'evil1');
+    for (const d of [FR, ER, path.join(T, 'E', 'x'), GC, EVIL]) fs.mkdirSync(d, { recursive: true });
     fs.symlinkSync(path.join(T, 'E', 'x'), path.join(T, 'F', 'lnk'));
     fs.symlinkSync(path.join(T, 'E', 'x'), path.join(GC, 'lnk'));
     const PHYS_MAP = {
@@ -969,24 +970,48 @@ for (const cmd of [
       [GC + '|backup']: [FORK],
       [ER + '|backup']: [UPSTREAM],
       [path.join(T, 'E') + '|backup']: [UPSTREAM],
+      [EVIL + '|backup']: [UPSTREAM],
       origin: [UPSTREAM],
     };
-    for (const [cmd, base] of [
+    // The same layout where the physical dir's backup is ANOTHER fork: nothing is upstream, so
+    // only the `unverified` mark keeps the push off rule (b).
+    const PHYS_FORK_MAP = Object.assign({}, PHYS_MAP, { [ER + '|backup']: [TOOLKIT], [path.join(T, 'E') + '|backup']: [TOOLKIT] });
+    const B_ROWS = [
       ['git -C lnk/.. push backup x', GC],
       ['cd -P lnk/.. && git push backup x', GC],
       ['git -C ../lnk/../root push backup x', FR],
       ['git -C ' + path.join(T, 'F') + '/lnk/../root push backup x', FR],
       ['cd -P ../lnk/../root && git push backup x', FR],
       ['cd -P ../lnk && cd .. && git -C root push backup x', FR],
-    ]) {
-      test('F9 R3: ADV-R2 B `' + cmd.replace(T, '<T>') + '` (symlink `..`) DENIES from a gsd-core cwd', () => {
-        const here = f9World({ resolvePushUrls: lookupMap(PHYS_MAP), segmentDirs: (c, s) => pushSegmentDirs(c, base, s) });
+    ];
+    for (const [cmd, base] of B_ROWS) {
+      test('F9 R3: ADV-R2 B `' + cmd.replace(T, '<T>') + '` (symlink `..`, physical backup = upstream) DENIES from any cwd (rule a)', () => {
+        const segmentDirs = (c, s) => pushSegmentDirs(c, base, s);
+        const here = f9World({ resolvePushUrls: lookupMap(PHYS_MAP), segmentDirs });
+        const d = runRuntimeDriftGate(input(cmd), here.deps);
+        assertDeny(d, here.calls, cmd);
+        assert.doesNotMatch(d.permissionDecisionReason, /Note: ENF-21 could not/);
+        const away = f9World({ resolveRoot: () => null, resolvePushUrls: lookupMap(PHYS_MAP), segmentDirs });
+        assertDeny(runRuntimeDriftGate(input(cmd), away.deps), away.calls, cmd + ' (from another repo: rule a)');
+      });
+      test('F9 R3: ADV-R2 B `' + cmd.replace(T, '<T>') + '` (symlink `..`, every URL a fork) DENIES from a gsd-core cwd with the symlink note (rule c)', () => {
+        const here = f9World({ resolvePushUrls: lookupMap(PHYS_FORK_MAP), segmentDirs: (c, s) => pushSegmentDirs(c, base, s) });
         const d = runRuntimeDriftGate(input(cmd), here.deps);
         assertDeny(d, here.calls, cmd);
         assert.match(d.permissionDecisionReason, PD4);
         assert.match(d.permissionDecisionReason, /symlink/);
       });
     }
+
+    // ADVERSARIAL-R2 row 31 (found by the R3 e2e re-run): a missing dir must not hide the real one.
+    test('F9 R3: `cd ../nope || cd ../evil1 && git push backup x` (evil1 backup = upstream) DENIES from any cwd (rule a)', () => {
+      const cmd = 'cd ../nope || cd ../evil1 && git push backup x';
+      const segmentDirs = (c, s) => pushSegmentDirs(c, FR, s);
+      const here = f9World({ resolvePushUrls: lookupMap(PHYS_MAP), segmentDirs });
+      assertDeny(runRuntimeDriftGate(input(cmd), here.deps), here.calls, cmd);
+      const away = f9World({ resolveRoot: () => null, resolvePushUrls: lookupMap(PHYS_MAP), segmentDirs });
+      assertDeny(runRuntimeDriftGate(input(cmd), away.deps), away.calls, cmd + ' (from another repo: rule a)');
+    });
 
     // positive pins with real dirs: the plain forms still allow
     for (const cmd of ['git push backup fix/x', 'git push backup fix/x 2>&1 | tail -5', 'git -C ' + FR + ' push backup x']) {

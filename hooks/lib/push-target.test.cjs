@@ -959,7 +959,26 @@ for (const cmd of ['cd /tmp && git push backup x', 'cd && git push backup x', 'p
   });
 }
 
-// ── item 2: a segmentDirs throw (pushSegmentDirs' physical check) is rule c with its phrase ──
+// ── item 2: pushSegmentDirs marks a list `unverified` (non-enumerable) and adds the physical dir ──
+const unverifiedDirs = (list, why) => Object.defineProperty(list.slice(), 'unverified', { value: why, enumerable: false });
+
+test('F9 R3: an `unverified` dir list whose every URL is a fork -> rule c carrying the reason, never other', () => {
+  const dirs = unverifiedDirs(['/gc', '/E'], 'the directory "lnk/.." resolves through a symlink');
+  const r = classify('git -C lnk/.. push backup x', { dirs }).r;
+  assertUnresolved(r, 'unverified');
+  assert.match(r.unresolved, /symlink/);
+});
+
+test('F9 R3: an `unverified` dir list whose physical dir resolves upstream -> gsd-core (rule a is checked first)', () => {
+  const dirs = unverifiedDirs(['/gc', '/E'], 'symlink');
+  const r = classify('git -C lnk/.. push backup x', { dirs, lookup: (dir) => (dir === '/E' ? [UPSTREAM] : [FORK]) }).r;
+  assert.deepStrictEqual(r, { target: 'gsd-core', unresolved: null });
+});
+
+test('F9 R3: a literal fork URL with an `unverified` dir list -> rule c (never other)', () => {
+  assertUnresolved(classify('git push ' + FORK + ' x', { dirs: unverifiedDirs(['/gc'], 'missing dir') }).r, 'literal unverified');
+});
+
 test('F9 R3 guard: a segmentDirs throw naming a symlink divergence is rule c and carries the reason', () => {
   const r = classify('git -C lnk/.. push backup x', { dirs: () => { throw new Error('lnk/.. resolves through a symlink'); } }).r;
   assertUnresolved(r, 'symlink');
