@@ -217,6 +217,8 @@ agents gain the tools. NO-GO -> Class A stays a gsd-patch target.
 Gate A2 (ENF-21 safety): confirm the capability route does not move the ENF-21 digest.
 Expected safe: digest covers only gsd-core/{workflows,references,templates,contexts};
 agents/ is outside it (per memory + runtime-stamp.cjs:162). Verify empirically.
+Note (2026-10-17): since CTK-ADR-0011 the ENF-21 stamp also binds the managed gsd-core hooks
+under ~/.claude/hooks (the built hooks/dist inventory); agents/ remains outside it.
 
 Gate A3 (profile-closure lint): confirm a local capability adding agent grants passes
 `lint:skill-deps` profile closure. If it fails, the grant must ship outside profile scope.
