@@ -51,9 +51,11 @@ mods' own files (for example `artifact-gate.cjs`, `herdr-agent-state.sh`, `gsd-p
    LIVE upstream script as the child process `npm run build:hooks`, with the clone as cwd, no shell
    and a bounded timeout (`BUILD_HOOKS_TIMEOUT_MS`, 120 s). The clone's `scripts/build-hooks.js` is
    never loaded into the toolkit's own process. A failed or timed-out build ends the sync non-zero
-   with reason `hooks-build-failed`; a build that exits 0 but leaves `hooks/dist` with no regular file
-   at depth 0 or 1 ends it with `hooks-dist-empty`. Neither runs install.js, neither writes a stamp,
-   and the tmpdir is still removed.
+   with reason `hooks-build-failed`, and the abort quotes the first non-empty line of the build's
+   stderr (control characters removed, at most 200 characters), because that is where npm says why;
+   a build that exits 0 but leaves `hooks/dist` with no regular file at depth 0 or 1 ends it with
+   `hooks-dist-empty`. Neither runs install.js, neither writes a stamp, and the tmpdir is still
+   removed.
 
 2. **The managed hook set is the built `hooks/dist` inventory, never all of `~/.claude/hooks`.**
    `hooksInventory` mirrors install.js: each top-level entry is stat'ed with symlinks followed; a
@@ -141,6 +143,18 @@ mods' own files (for example `artifact-gate.cjs`, `herdr-agent-state.sh`, `gsd-p
   same assumption `RUNTIME_ROOT` already makes.
 - **Residual:** a managed file whose rewrite does not advance its mtime (a filesystem that keeps the
   old timestamp) would make the sync abort; it never makes it stamp falsely.
+- **Residual (upstream coupling):** the toolkit names three gsd-core internals that no LIVE API
+  exposes: the `build:hooks` script (gsd-core `package.json`), its output directory `hooks/dist`
+  (shared by `scripts/build-hooks.js` and install.js's `hooksSrc`), and install.js's one-level walk
+  that `hooksInventory` mirrors; `HOOKS_ROOT` also assumes the Claude shared-hooks directory is named
+  `hooks`. If upstream renames the script, folds it into another script, moves the output or changes
+  the walk, every `sync` aborts (`hooks-build-failed`, `hooks-dist-empty` or
+  `post-install-hooks-mismatch`) while the gate keeps denying. That fails closed: no stamp is ever
+  written over hooks the toolkit could not confirm. Recovery is a toolkit change that follows
+  upstream (update the script name, the dist path or `hooksInventory`, with a test), then one `sync`.
+  The `hooks-build-failed` abort quotes the build's first stderr line (for example npm's
+  `Missing script: "build:hooks"`), so the cause is visible without re-running anything. Do not
+  hand-write the stamp to get past it.
 - **Residual:** a local mod that edits a managed hook would make the gate deny. None does as of the
   2026-10-17 local-mods audit (31 modified and 1 missing file, none under `hooks/`).
 - **Out of scope, named:** the pre-existing whole-tree `runtime_digest` already reads `unverified`

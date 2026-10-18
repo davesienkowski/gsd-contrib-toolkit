@@ -529,6 +529,42 @@ test('w1i: sync SLOW PATH: a failing build:hooks aborts hooks-build-failed, no i
   assert.match(out, /no stamp/i);
 });
 
+test('w1i: a failing build:hooks abort quotes the first non-empty stderr line (npm puts the reason there)', () => {
+  // execFileSync's err.message keeps only "Command failed: npm run build:hooks" on its first line;
+  // npm's reason, e.g. a renamed upstream script, is on err.stderr. The abort must say why.
+  const { deps, state } = syncDeps({ digests: { clone: DIGEST, runtime: [STALE, DIGEST] } });
+  const inner = deps.execFileSync;
+  deps.execFileSync = (file, args, o) => {
+    if (isBuildHooks({ file, args })) {
+      state.exec.push({ file, args });
+      const e = new Error('Command failed: npm run build:hooks\nnpm error Missing script: "build:hooks"');
+      e.status = 1;
+      e.stderr = '\n  \nnpm error Missing script: "build:hooks"\nnpm error\nnpm error To see a list of scripts, run:\n';
+      throw e;
+    }
+    return inner(file, args, o);
+  };
+  const r = cli.sync(deps);
+  assert.strictEqual(r.reason, 'hooks-build-failed');
+  assert.ok(!ran(state, isInstall));
+  assert.strictEqual(state.stamps.length, 0);
+  const out = state.logs.join('\n');
+  assert.ok(out.includes('Command failed: npm run build:hooks'), out);
+  assert.ok(out.includes('stderr: npm error Missing script: "build:hooks"'), out);
+  assert.ok(!out.includes('To see a list of scripts'), 'only the first non-empty stderr line is quoted');
+});
+
+test('w1i: firstStderrLine is bounded, strips control characters, and is empty without stderr', () => {
+  assert.strictEqual(typeof cli.firstStderrLine, 'function');
+  assert.ok(Number.isInteger(cli.STDERR_LINE_MAX) && cli.STDERR_LINE_MAX > 0);
+  assert.strictEqual(cli.firstStderrLine(new Error('no stderr here')), '');
+  assert.strictEqual(cli.firstStderrLine({ stderr: '' }), '');
+  assert.strictEqual(cli.firstStderrLine({ stderr: Buffer.from('\nboom\n') }), 'boom');
+  assert.strictEqual(cli.firstStderrLine({ stderr: '\u001b[31mred\u001b[0m\n' }), '[31mred[0m');
+  const long = cli.firstStderrLine({ stderr: 'x'.repeat(cli.STDERR_LINE_MAX * 3) });
+  assert.strictEqual(long, 'x'.repeat(cli.STDERR_LINE_MAX) + '...');
+});
+
 test('w1i: sync SLOW PATH: an empty hooks/dist aborts hooks-dist-empty, no install.js, no stamp, tmpdir removed', () => {
   const { deps, state } = syncDeps({ digests: { clone: DIGEST, runtime: [STALE, DIGEST] }, distInventory: [] });
   const r = cli.sync(deps);

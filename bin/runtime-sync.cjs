@@ -140,6 +140,29 @@ function firstLine(err) {
   return String((err && err.message) || 'unknown failure').split('\n')[0];
 }
 
+/** How many characters of a child's stderr line an abort message may quote. */
+const STDERR_LINE_MAX = 200;
+
+/**
+ * The first non-empty line of a failed child's captured stderr, with control characters removed
+ * and bounded to STDERR_LINE_MAX, or '' when there is none. `execFileSync` puts the child's stderr
+ * on `err.stderr`, while `err.message` keeps only "Command failed: ..." on its first line, so this
+ * is the line that says WHY (for example npm's `Missing script: "build:hooks"`, CTK-ADR-0011).
+ *
+ * @param {*} err the thrown error
+ * @returns {string}
+ */
+function firstStderrLine(err) {
+  const raw = err && err.stderr;
+  if (raw === undefined || raw === null) return '';
+  const text = Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw);
+  for (const line of text.split(/\r?\n/)) {
+    const t = line.replace(/[\u0000-\u001f\u007f]/g, '').trim();
+    if (t) return t.length > STDERR_LINE_MAX ? t.slice(0, STDERR_LINE_MAX) + '...' : t;
+  }
+  return '';
+}
+
 /**
  * Refuse to reinstall over a SYMLINKED runtime root (D-12, corrected).
  *
@@ -442,6 +465,8 @@ function sync(deps = {}) {
         buildHooks();
       } catch (err) {
         log('ENF-21 sync ABORTED: `npm run build:hooks` failed in the clone (' + firstLine(err) + ').');
+        const why = firstStderrLine(err);
+        if (why) log('  stderr: ' + why);
         log('No stamp was written: install.js copies the gsd-core hooks only from a built hooks/dist, so');
         log('installing now would keep the OLD managed hooks under ' + hooksRoot + ' (CTK-ADR-0011).');
         return { code: 1, reason: 'hooks-build-failed' };
@@ -564,6 +589,8 @@ if (require.main === module) {
 
 module.exports = {
   symlinkPreflight,
+  firstStderrLine,
+  STDERR_LINE_MAX,
   verifyHooksWritten,
   check,
   sync,
