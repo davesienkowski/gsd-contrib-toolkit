@@ -63,7 +63,10 @@ mods' own files (for example `artifact-gate.cjs`, `herdr-agent-state.sh`, `gsd-p
    anything deeper or non-regular is skipped. Dot-names are kept, because install.js copies them. The
    result is a list of POSIX relpaths sorted by plain `Array#sort`. A file in `~/.claude/hooks` that is
    not in that list is never listed, read, digested or required, so editing a user-owned hook can never
-   turn ENF-21 into a deny.
+   turn ENF-21 into a deny. Every listed name must also pass the relpath rule of Decision 4
+   (`isManagedHookRel`) before install.js runs: a name that fails it ends the sync with
+   `hooks-dist-unsafe-name`, no install.js and no stamp, and on the fast path it is inconclusive. A
+   name the stamp could not record would otherwise surface only at stamp time, after a full install.
 
 3. **After install.js, every managed hook must have been written by this install.** The install start
    is captured immediately before install.js runs. `verifyHooksWritten` then requires every listed

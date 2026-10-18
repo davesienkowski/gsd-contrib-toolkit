@@ -578,6 +578,32 @@ test('w1i: sync SLOW PATH: an empty hooks/dist aborts hooks-dist-empty, no insta
   assert.ok(state.logs.join('\n').includes('hooks/dist'), state.logs.join('\n'));
 });
 
+test('w1i: a hooks/dist name the stamp cannot carry aborts hooks-dist-unsafe-name BEFORE install.js, no stamp, tmpdir removed', () => {
+  for (const bad of ['bad\\name.js', 'ctl\u0001.js', 'a/b/c.js']) {
+    const { deps, state } = syncDeps({
+      digests: { clone: DIGEST, runtime: [STALE, DIGEST] },
+      distInventory: ['gsd-a.js', bad],
+    });
+    const r = cli.sync(deps);
+    assert.strictEqual(r.reason, 'hooks-dist-unsafe-name', JSON.stringify(bad) + '\n' + state.logs.join('\n'));
+    assert.notStrictEqual(r.code, 0);
+    assert.ok(ran(state, isBuildHooks));
+    assert.ok(!ran(state, isInstall), 'install.js must not run');
+    assert.strictEqual(state.stamps.length, 0);
+    assert.strictEqual(state.rm.length, 1);
+    assert.ok(state.logs.join('\n').includes(JSON.stringify(bad)), 'the bad name is shown, escaped');
+    assert.ok(!state.logs.join('\n').includes('"gsd-a.js"'), 'a safe name is not listed as unsafe');
+  }
+});
+
+test('w1i: payload equal and an unsafe early-dist name falls through the fast path, then aborts hooks-dist-unsafe-name', () => {
+  const { deps, state } = syncDeps({ distInventory: ['gsd-a.js', 'bad\\name.js'] });
+  const r = cli.sync(deps);
+  assert.strictEqual(r.reason, 'hooks-dist-unsafe-name', state.logs.join('\n'));
+  assert.ok(!ran(state, isInstall));
+  assert.strictEqual(state.stamps.length, 0);
+});
+
 test('w1i: post-install: a managed hook whose stat throws aborts post-install-hooks-mismatch, naming it, no stamp', () => {
   const { deps, state } = syncDeps({ digests: { clone: DIGEST, runtime: [STALE, DIGEST] }, mtimes: { 'lib/b.sh': 'throw' } });
   const r = cli.sync(deps);

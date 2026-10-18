@@ -421,6 +421,9 @@ function sync(deps = {}) {
         const early = O.hooksInventory(distRoot);
         if (early.length === 0) {
           log('  the early `npm run build:hooks` left hooks/dist with no regular file; the fast path is inconclusive.');
+        } else if (early.some((rel) => !O.isManagedHookRel(rel))) {
+          // Never stamp a name the stamp cannot carry; the slow path names it and aborts.
+          log('  the built hooks/dist holds a name the runtime stamp cannot record; the fast path is inconclusive.');
         } else if (O.hooksDigest(distRoot, early) === O.hooksDigest(hooksRoot, early)) {
           hooksFiles = early;
           fastPath = true;
@@ -486,6 +489,20 @@ function sync(deps = {}) {
         log('regular file at depth 0 or 1, so install.js would copy no hooks and keep the OLD managed');
         log('hooks under ' + hooksRoot + '. No stamp was written (CTK-ADR-0011).');
         return { code: 1, reason: 'hooks-dist-empty' };
+      }
+      // CTK-ADR-0011 (D2/D4): the inventory must pass the same relpath rule hooksDigest and
+      // validateStamp enforce. Checked BEFORE install.js: otherwise a name the stamp cannot carry
+      // (a backslash, a control character, ...) would surface only at stamp time, after a full
+      // install, as a generic exception.
+      const unsafe = hooksFiles.filter((rel) => !O.isManagedHookRel(rel));
+      if (unsafe.length > 0) {
+        log('ENF-21 sync ABORTED: the built hooks/dist under ' + distRoot + ' holds ' + unsafe.length +
+          ' name(s) the runtime stamp');
+        log('cannot record safely (empty, absolute, a backslash, a control character, a `.` or `..`');
+        log('segment, or deeper than one subdirectory): ' +
+          unsafe.slice(0, 5).map((r) => JSON.stringify(r)).join(', ') + '.');
+        log('install.js was not run and no stamp was written (CTK-ADR-0011).');
+        return { code: 1, reason: 'hooks-dist-unsafe-name' };
       }
 
       log('  node bin/install.js --claude …');
