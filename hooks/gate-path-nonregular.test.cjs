@@ -267,15 +267,55 @@ const TIP = 'a'.repeat(40);
 /** ENF-21 arms on a pure-argv upstream target from a cwd with no gsd-core sentinel. */
 const ENF21_CMD = 'gh pr create --repo open-gsd/gsd-core --title t --body b';
 
+/** The fixture's managed gsd-core hooks (relpaths under <home>/.claude/hooks), plain-sorted. */
+const MANAGED_HOOKS = Object.freeze(['gsd-fake-hook.js', 'lib/gsd-fake-lib.sh']);
+/** A user-owned file in the same hooks dir that the stamp never lists (quick 261017-w1i). */
+const UNMANAGED_HOOK = 'user-own-hook.sh';
+
 /**
  * A tiny fake installed runtime under `<home>/.claude/gsd-core` (the hook computes RUNTIME_ROOT
- * from its own HOME at module load; runtimeDigest fails closed on a missing root).
+ * from its own HOME at module load; runtimeDigest fails closed on a missing root), plus two managed
+ * gsd-core hooks and one unmanaged user hook under `<home>/.claude/hooks`. Every content is pure
+ * ASCII: the gate's hooksDigest reads UTF-8 text and re-encodes it, the local helper below hashes
+ * raw bytes, and the two agree only on ASCII.
  */
 function fakeRuntime(home) {
   const root = path.join(home, '.claude', 'gsd-core');
   fs.mkdirSync(path.join(root, 'workflows'), { recursive: true });
   fs.writeFileSync(path.join(root, 'workflows', 'a.md'), 'w5 fake runtime\n');
+  const hooks = path.join(home, '.claude', 'hooks');
+  fs.mkdirSync(path.join(hooks, 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(hooks, 'gsd-fake-hook.js'), '// w1i fake managed hook\n');
+  fs.writeFileSync(path.join(hooks, 'lib', 'gsd-fake-lib.sh'), '#!/bin/sh\n# w1i fake managed lib\n');
+  fs.writeFileSync(path.join(hooks, UNMANAGED_HOOK), '#!/bin/sh\n# the user own hook\n');
   return root;
+}
+
+/** The fixture's hooks dir. */
+const hooksDir = (home) => path.join(home, '.claude', 'hooks');
+
+/**
+ * The D4 managed-hook digest, computed HERE with node:crypto (never rs.hooksDigest), so the spawned
+ * gate is pinned against the framing end to end: a present file is `<rel> 0x00 <bytes> 0x00`, a
+ * missing one `<rel> 0x01 MISSING 0x00`, over a plain-sorted copy of the list.
+ */
+function localHooksDigest(root, files) {
+  const crypto = require('node:crypto');
+  const h = crypto.createHash('sha256');
+  for (const rel of files.slice().sort()) {
+    h.update(Buffer.from(rel, 'utf8'));
+    const abs = path.join(root, ...rel.split('/'));
+    let st = null;
+    try { st = fs.statSync(abs); } catch (_) { st = null; }
+    if (st && st.isFile()) {
+      h.update(Buffer.from([0]));
+      h.update(fs.readFileSync(abs));
+      h.update(Buffer.from([0]));
+    } else {
+      h.update(Buffer.from('\u0001MISSING\u0000', 'latin1'));
+    }
+  }
+  return 'sha256:' + h.digest('hex');
 }
 
 /**
@@ -292,8 +332,26 @@ function stubGit(binDir, mode) {
   return binDir;
 }
 
-/** A valid stamp at TIP whose digest matches the fake runtime, written in the TEST process. */
+/**
+ * A valid stamp at TIP whose digest matches the fake runtime and whose hook fields list the
+ * fixture's managed hooks (digest by the local helper), written in the TEST process.
+ */
 function freshStamp(home, state) {
+  const digest = rs.runtimeDigest(path.join(home, '.claude', 'gsd-core'));
+  rs.writeStamp(rs.buildStamp({
+    sha: TIP,
+    runtimeDigest: digest,
+    mode: 'payload-verified',
+    engineVerified: false,
+    hooksFiles: MANAGED_HOOKS.slice(),
+    hooksDigest: localHooksDigest(hooksDir(home), MANAGED_HOOKS),
+  }), {
+    stampPath: path.join(state, rs.STAMP_FILENAME),
+  });
+}
+
+/** A valid stamp at TIP built WITHOUT hook fields (a stamp that predates hook coverage). */
+function legacyStamp(home, state) {
   const digest = rs.runtimeDigest(path.join(home, '.claude', 'gsd-core'));
   rs.writeStamp(rs.buildStamp({ sha: TIP, runtimeDigest: digest, mode: 'payload-verified', engineVerified: false }), {
     stampPath: path.join(state, rs.STAMP_FILENAME),
@@ -464,3 +522,52 @@ for (const c of P4_COMMANDS) {
     assert.strictEqual(entry.reason, P4_REASON);
   });
 }
+
+// -------------------------------------------------------------------- quick 261017-w1i: the managed hooks
+//
+// The stamp now lists the managed gsd-core hooks under ~/.claude/hooks with a D4 digest, and the
+// spawned gate re-measures them on every governed command (CTK-ADR-0011). A non-regular file planted
+// at a managed hook is framed missing WITHOUT being opened, so it denies within the bound instead of
+// hanging; a user-owned file in the same dir is never listed, so rewriting it still allows.
+
+const HOOKS_UNVERIFIED = /verdict: unverified[\s\S]*~\/\.claude\/hooks/;
+
+test('w1i: a fresh stamp that lists the managed hooks (local D4 digest) -> ENF-21 allows within the bound', (t) => {
+  const fx = enf21Fixture(t, 'tip');
+  freshStamp(fx.home, fx.state);
+  const stamp = JSON.parse(fs.readFileSync(fx.stamp, 'utf8'));
+  assert.deepStrictEqual(stamp.hooks_files, MANAGED_HOOKS.slice(), 'the stamp lists the managed hooks');
+  assert.strictEqual(stamp.hooks_digest, localHooksDigest(hooksDir(fx.home), MANAGED_HOOKS));
+  assertDecided(t, runEnf21(fx), 'allow', null);
+});
+
+for (const p of PLANTINGS) {
+  test('w1i: ' + p.label + ' at a managed hook (tip, fresh stamp) -> ENF-21 denies unverified naming ~/.claude/hooks within the bound, planting intact', { skip: p.skip }, (t) => {
+    const fx = enf21Fixture(t, 'tip');
+    freshStamp(fx.home, fx.state);
+    const file = path.join(hooksDir(fx.home), MANAGED_HOOKS[0]);
+    const target = plant(t, p.kind, file);
+    assertDecided(t, runEnf21(fx), 'deny', HOOKS_UNVERIFIED);
+    assertPlanted(p.kind, file, target);
+  });
+}
+
+test('w1i: a managed hook edited after stamping (tip) -> ENF-21 denies unverified naming ~/.claude/hooks', (t) => {
+  const fx = enf21Fixture(t, 'tip');
+  freshStamp(fx.home, fx.state);
+  fs.writeFileSync(path.join(hooksDir(fx.home), 'lib', 'gsd-fake-lib.sh'), '#!/bin/sh\n# edited after the stamp\n');
+  assertDecided(t, runEnf21(fx), 'deny', HOOKS_UNVERIFIED);
+});
+
+test('w1i: a stamp built without hook fields (tip) -> ENF-21 denies, the stamp predates hook coverage', (t) => {
+  const fx = enf21Fixture(t, 'tip');
+  legacyStamp(fx.home, fx.state);
+  assertDecided(t, runEnf21(fx), 'deny', /verdict: unverified[\s\S]*predates hook coverage/);
+});
+
+test('w1i guard: rewriting the unmanaged hook in the same dir (tip, fresh stamp) -> ENF-21 still allows', (t) => {
+  const fx = enf21Fixture(t, 'tip');
+  freshStamp(fx.home, fx.state);
+  fs.writeFileSync(path.join(hooksDir(fx.home), UNMANAGED_HOOK), '#!/bin/sh\n# the user rewrote their own hook\n');
+  assertDecided(t, runEnf21(fx), 'allow', null);
+});

@@ -33,6 +33,10 @@
  *       gate hot-path state files outside ENF-20, read and written as regular files only through
  *       hooks/lib/regular-file.cjs), and exactly one "W5 residual" bullet names the same-class
  *       opens W5 left unchanged.
+ *   (k) Quick 261017-w1i: CTK-ADR-0011 (runtime freshness binds the managed gsd-core hooks) exists once,
+ *       is Proposed (never Accepted here), amends CTK-ADR-0007 Decision 1 and Decision 5, is plain ASCII,
+ *       has a Proposed row in docs/adr/README.md, and CTK-ADR-0007 carries exactly one Amended by line
+ *       naming it (its Accepted Status line, pinned by 36-06c, is unchanged).
  *
  * Dave accepted CTK-ADR-0008, CTK-ADR-0009 and CTK-ADR-0010 on 2026-10-06 by explicit sign-off (quick
  * 261006-p4t); (a), (b), (e) and (f) pin that acceptance. A later change of decision is a superseding or
@@ -647,4 +651,52 @@ test('261006-jsm review round (IN-03): observability names verdict-log.cjs; bypa
   const b = adr10Bullet(/^- \*\*The uncertain and unresolved asks are a prompt only in default mode/);
   assert.match(b, /statically recovered forms still deny/);
   assert.match(b, /readable event/);
+});
+
+// -- quick 261017-w1i (k): CTK-ADR-0011 amends CTK-ADR-0007 for managed-hook coverage -------------
+
+/** A `- **Label:**` header bullet with its continuation lines (up to the next bullet or blank). */
+function headerBullet(file, label) {
+  const lines = fs.readFileSync(file, 'utf8').split('\n');
+  const hits = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].startsWith('- **' + label + ':**')) continue;
+    const out = [lines[i]];
+    for (let j = i + 1; j < lines.length && lines[j].trim() !== '' && !/^- \*\*/.test(lines[j]) && !/^#/.test(lines[j]); j++) {
+      out.push(lines[j].trim());
+    }
+    hits.push(out.join(' '));
+  }
+  return hits;
+}
+
+test('w1i: exactly one CTK-ADR-0011 file, and its Status line starts Proposed', () => {
+  const line = statusLine(adrFile(11));
+  assert.match(line, /^- \*\*Status:\*\* Proposed/, line);
+  assert.doesNotMatch(line, /Accepted/, line);
+});
+
+test('w1i: CTK-ADR-0011 has an Amends line naming CTK-ADR-0007, Decision 1 and Decision 5', () => {
+  const hits = headerBullet(adrFile(11), 'Amends');
+  assert.strictEqual(hits.length, 1, JSON.stringify(hits));
+  for (const s of ['CTK-ADR-0007', 'Decision 1', 'Decision 5']) assert.ok(hits[0].includes(s), s + ' in ' + hits[0]);
+});
+
+test('w1i: every byte of CTK-ADR-0011 is plain ASCII', () => {
+  const buf = fs.readFileSync(adrFile(11));
+  const bad = [];
+  for (let i = 0; i < buf.length; i++) if (buf[i] > 0x7e || (buf[i] < 0x20 && buf[i] !== 0x0a)) bad.push(i);
+  assert.deepStrictEqual(bad.slice(0, 10), [], 'non-ASCII or control bytes at offsets ' + bad.slice(0, 10).join(','));
+});
+
+test('w1i: docs/adr/README.md row for CTK-ADR-0011 says Proposed and not Accepted', () => {
+  const cells = readmeRow('CTK-ADR-0011').split('|').map((c) => c.trim());
+  assert.ok(cells.includes('Proposed'), JSON.stringify(cells));
+  assert.ok(!cells.includes('Accepted'), JSON.stringify(cells));
+});
+
+test('w1i: CTK-ADR-0007 has exactly one Amended by line, and it names CTK-ADR-0011', () => {
+  const hits = headerBullet(adrFile(7), 'Amended by');
+  assert.strictEqual(hits.length, 1, JSON.stringify(hits));
+  assert.ok(hits[0].includes('CTK-ADR-0011'), hits[0]);
 });
