@@ -35,6 +35,24 @@
  * is verdict `unverified`, which is DRIFT: not knowing what is installed is precisely the
  * condition this gate exists to catch.
  *
+ * ── WHY THE STAMP ALSO BINDS THE MANAGED HOOKS (CTK-ADR-0011, quick 261017-w1i) ──────────
+ * `runtime_digest` covers only `~/.claude/gsd-core`. gsd-core also installs its hooks into
+ * `~/.claude/hooks`, and only from a BUILT `hooks/dist` (gitignored, produced by
+ * `npm run build:hooks`, never by `npm ci`); with no `hooks/dist` the installer silently keeps
+ * the OLD hooks. So a stamp written by a sync now also records `hooks_files` (the sorted relpaths
+ * of the built `hooks/dist` inventory: top-level files plus one level of subdirectories, exactly
+ * what install.js copies) and `hooks_digest` (a sha256 over those files as installed under
+ * `~/.claude/hooks`). Limits, stated plainly:
+ *   - the managed set is the built `hooks/dist` inventory, NEVER all of `~/.claude/hooks`: the
+ *     user's own and local-mods files in that directory are never listed, read or required;
+ *   - each listed file is read as UTF-8 TEXT through the bounded regular-file reader
+ *     (CTK-ADR-0010 W5) and re-encoded, so two files that differ only in invalid UTF-8 sequences
+ *     digest equal; a path that is not a regular file (FIFO, socket, device, directory, or a
+ *     symlink to one) is framed MISSING without being opened, so it can never stall the gate;
+ *   - the fields are ADDITIVE and STAMP_SCHEMA stays 1. A stamp without them is still readable,
+ *     but evaluateDrift reports it `unverified` (it predates hook coverage), so every old stamp
+ *     denies once until one `sync` re-stamps it.
+ *
  * ── WHY `git ls-remote`, NEVER A CLONE FETCH (D-03, finding #5) ─────────────────────────
  * The local gsd-core clone's own `gsd-core/bin/lib/*.cjs` are GITIGNORED build artifacts and
  * are routinely STALER than the runtime — diffing against its working tree reports the
@@ -66,6 +84,20 @@ const { GSD_CORE_OWNER, GSD_CORE_REPO } = require('./resolve.cjs');
 
 /** The installed gsd-core runtime this module measures. */
 const RUNTIME_ROOT = path.join(os.homedir(), '.claude', 'gsd-core');
+
+/**
+ * Where gsd-core's installer writes its managed hooks: the `hooks` directory beside the runtime
+ * root (CTK-ADR-0011). Derived from RUNTIME_ROOT, so both move together; callers inject their own.
+ */
+const HOOKS_ROOT = path.join(path.dirname(RUNTIME_ROOT), 'hooks');
+
+/**
+ * The frame a LISTED but missing (or non-regular) managed hook contributes after its relpath:
+ * 0x01 `MISSING` 0x00. A present file contributes 0x00 <bytes> 0x00 instead, so absence always
+ * changes the digest and cannot be forged by an empty file or by a file whose text is `MISSING`.
+ * A string, because Node cannot freeze a non-empty Buffer; hash it as latin1.
+ */
+const HOOK_MISSING_FRAME = '\u0001MISSING\u0000';
 
 /** State-dir default (D-01) and the dedicated directory override. */
 const STATE_DIRNAME = '.gsd-contrib';
@@ -362,6 +394,171 @@ function payloadDigest(root, deps = {}) {
   return 'sha256:' + hash.digest('hex');
 }
 
+// ───────────────────────────── the managed gsd-core hooks (CTK-ADR-0011) ─────────────────────────────
+
+/**
+ * Is `rel` a managed-hook relpath this toolkit will join under a hooks root? A non-empty POSIX
+ * relpath of ONE or TWO non-empty segments (install.js copies `hooks/dist` top-level files and one
+ * level of subdirectories), with no backslash, no control character (below 0x20, or 0x7f), no
+ * leading slash, and no `.` or `..` segment. This is the path-traversal guard for a stamp's
+ * user-writable `hooks_files`: nothing that fails it is ever joined or read.
+ *
+ * @param {*} rel
+ * @returns {boolean}
+ */
+function isManagedHookRel(rel) {
+  if (typeof rel !== 'string' || rel.length === 0) return false;
+  if (rel.includes('\\')) return false;
+  for (let i = 0; i < rel.length; i += 1) {
+    const c = rel.charCodeAt(i);
+    if (c < 0x20 || c === 0x7f) return false;
+  }
+  if (rel.startsWith('/')) return false;
+  const segs = rel.split('/');
+  if (segs.length > 2) return false;
+  return segs.every((seg) => seg.length > 0 && seg !== '.' && seg !== '..');
+}
+
+/**
+ * The managed hook INVENTORY of a built `hooks/dist`: mirrors gsd-core's
+ * `installSharedHooksBundle` exactly. Each top-level entry is stat'ed (symlinks FOLLOWED, as
+ * install.js does); a regular file adds its name, a directory adds each REGULAR-file child as
+ * `<dir>/<child>`, and anything deeper or non-regular is skipped. Dot-names are KEPT, because
+ * install.js copies them. A root that is absent, unreadable or not a directory is `[]`, never a
+ * throw: the caller decides what an empty inventory means.
+ *
+ * @param {string} root absolute path to the hooks dir to list (a clone's `hooks/dist`)
+ * @param {{readdirSync?:Function, statSync?:Function}} [deps]
+ * @returns {string[]} POSIX relpaths, sorted by plain Array#sort
+ */
+function hooksInventory(root, deps = {}) {
+  const readdirSync = deps.readdirSync || nodeFs.readdirSync;
+  const statSync = deps.statSync || nodeFs.statSync;
+  const statOf = (abs) => {
+    try {
+      return statSync(abs);
+    } catch (_) {
+      return null; // a vanished or unreadable entry is not a file install.js would copy
+    }
+  };
+  let names;
+  try {
+    names = readdirSync(root);
+  } catch (_) {
+    return [];
+  }
+  const out = [];
+  for (const name of names) {
+    if (typeof name !== 'string' || name.length === 0) continue;
+    const abs = path.join(root, name);
+    const st = statOf(abs);
+    if (!st) continue;
+    if (st.isFile()) {
+      out.push(name);
+      continue;
+    }
+    if (!st.isDirectory()) continue;
+    let kids;
+    try {
+      kids = readdirSync(abs);
+    } catch (_) {
+      continue;
+    }
+    for (const kid of kids) {
+      if (typeof kid !== 'string' || kid.length === 0) continue;
+      const kst = statOf(path.join(abs, kid));
+      if (kst && kst.isFile()) out.push(name + '/' + kid);
+    }
+  }
+  return out.sort();
+}
+
+/**
+ * sha256 over a LISTED set of managed hooks under `root` (CTK-ADR-0011, D4 framing), over a sorted
+ * COPY of `files` so the list order never matters:
+ *
+ *   present regular file   utf8(rel) 0x00 <bytes> 0x00
+ *   missing / non-regular  utf8(rel) HOOK_MISSING_FRAME   (0x01 MISSING 0x00)
+ *
+ * Only listed files are read, so an unlisted file under `root` never moves the digest. Each path
+ * is stat'ed first; a stat failure or anything that is not a regular file is framed MISSING
+ * WITHOUT being opened, so a FIFO, socket, device or directory can never block the gate. A regular
+ * file is read through the bounded regular-file reader (CTK-ADR-0010 W5) as UTF-8 text and
+ * re-encoded; an injected reader may return a Buffer. A read failure on a regular file is
+ * FailClosed (a hook we cannot read is not a hook we have verified).
+ *
+ * @param {string} root absolute path to the hooks dir
+ * @param {string[]} files managed relpaths (each must pass isManagedHookRel)
+ * @param {{statSync?:Function, readFileSync?:Function}} [deps]
+ * @returns {string} `sha256:<hex>`
+ * @throws {FailClosed} when `files` is not an array, an entry is not a managed relpath, or a
+ *   regular file cannot be read
+ */
+function hooksDigest(root, files, deps = {}) {
+  if (!Array.isArray(files)) {
+    throw new FailClosed('ENF-21: the managed gsd-core hook list is not an array: ' + JSON.stringify(files));
+  }
+  for (const rel of files) {
+    if (!isManagedHookRel(rel)) {
+      throw new FailClosed(
+        'ENF-21: ' + JSON.stringify(rel) + ' is not a managed hook relpath (one or two plain POSIX ' +
+          'segments, no `.`/`..`, no backslash, no control character)'
+      );
+    }
+  }
+  const statSync = deps.statSync || nodeFs.statSync;
+  // The default drops any encoding argument: the shared reader's second parameter is its byte cap.
+  const readFileSync = deps.readFileSync || ((p) => readRegularFileBounded(p));
+
+  const hash = nodeCrypto.createHash('sha256');
+  const NUL = Buffer.from([0]);
+  const MISSING = Buffer.from(HOOK_MISSING_FRAME, 'latin1');
+  for (const rel of files.slice().sort()) {
+    hash.update(Buffer.from(rel, 'utf8'));
+    const abs = path.join(root, ...rel.split('/'));
+    let st = null;
+    try {
+      st = statSync(abs);
+    } catch (_) {
+      st = null;
+    }
+    if (!st || typeof st.isFile !== 'function' || !st.isFile()) {
+      hash.update(MISSING);
+      continue;
+    }
+    let body;
+    try {
+      body = readFileSync(abs);
+    } catch (err) {
+      throw new FailClosed(
+        'ENF-21: could not read the managed gsd-core hook ' + rel + ' under ' + root +
+          ' (' + ((err && err.message) || 'read failure') + ')'
+      );
+    }
+    hash.update(NUL);
+    hash.update(Buffer.isBuffer(body) ? body : Buffer.from(String(body), 'utf8'));
+    hash.update(NUL);
+  }
+  return 'sha256:' + hash.digest('hex');
+}
+
+/**
+ * The ONE measurement helper `check` and the gate both call (no module-level cache, so a sync
+ * that lands between two calls is seen by the next one). Null, with NO filesystem access, when
+ * there is no stamp or the stamp carries no `hooks_files` (evaluateDrift then reports the stamp as
+ * predating hook coverage); otherwise hooksDigest over the stamp's own list.
+ *
+ * @param {(Object|null|undefined)} stamp a validated stamp
+ * @param {string} [root] the hooks dir (defaults to HOOKS_ROOT)
+ * @param {Object} [deps] forwarded to hooksDigest
+ * @returns {(string|null)}
+ */
+function hooksDigestForStamp(stamp, root, deps = {}) {
+  if (stamp === null || stamp === undefined || typeof stamp !== 'object') return null;
+  if (!Array.isArray(stamp.hooks_files)) return null;
+  return hooksDigest(root === undefined ? HOOKS_ROOT : root, stamp.hooks_files, deps);
+}
+
 // ───────────────────────────── the stamp ─────────────────────────────
 
 /**
@@ -384,6 +581,31 @@ function validateStamp(obj, where) {
   }
   if (typeof obj.runtime_digest !== 'string' || !DIGEST_RE.test(obj.runtime_digest)) {
     throw bad('`runtime_digest` is not a `sha256:<64-hex>` digest');
+  }
+  // CTK-ADR-0011: the managed-hook binding is ADDITIVE. Both fields absent is a legacy stamp (it
+  // reads back, and evaluateDrift reports it unverified); if either is present, both must be, and
+  // both must be well-formed, because `hooks_files` steers which paths the gate reads.
+  const hasFiles = obj.hooks_files !== undefined;
+  const hasDigest = obj.hooks_digest !== undefined;
+  if (hasFiles !== hasDigest) {
+    throw bad(hasFiles ? '`hooks_files` is present without `hooks_digest`' : '`hooks_digest` is present without `hooks_files`');
+  }
+  if (hasFiles) {
+    const files = obj.hooks_files;
+    if (!Array.isArray(files) || files.length === 0) {
+      throw bad('`hooks_files` is not a non-empty array of managed hook relpaths');
+    }
+    for (let i = 0; i < files.length; i += 1) {
+      if (!isManagedHookRel(files[i])) {
+        throw bad('`hooks_files` entry ' + JSON.stringify(files[i]) + ' is not a managed hook relpath');
+      }
+      if (i > 0 && !(files[i - 1] < files[i])) {
+        throw bad('`hooks_files` is not sorted and unique (at ' + JSON.stringify(files[i]) + ')');
+      }
+    }
+    if (typeof obj.hooks_digest !== 'string' || !DIGEST_RE.test(obj.hooks_digest)) {
+      throw bad('`hooks_digest` is not a `sha256:<64-hex>` digest');
+    }
   }
   return obj;
 }
@@ -449,13 +671,15 @@ function writeStamp(stamp, deps = {}) {
 }
 
 /**
- * Build a well-formed stamp object.
+ * Build a well-formed stamp object. With `hooksFiles` it also emits `hooks_files` (a sorted COPY)
+ * and `hooks_digest` (CTK-ADR-0011); without it the legacy shape is unchanged.
  *
- * @param {{sha:string, runtimeDigest:string, mode:string, engineVerified:boolean, now?:string}} f
+ * @param {{sha:string, runtimeDigest:string, mode:string, engineVerified:boolean, now?:string,
+ *   hooksFiles?:string[], hooksDigest?:string}} f
  * @returns {Object}
  */
 function buildStamp(f) {
-  return {
+  const stamp = {
     schema: STAMP_SCHEMA,
     sha: f.sha,
     runtime_digest: f.runtimeDigest,
@@ -464,6 +688,11 @@ function buildStamp(f) {
     installed_at: f.now || new Date().toISOString(),
     source: UPSTREAM_URL + '#' + UPSTREAM_REF,
   };
+  if (f.hooksFiles !== undefined && f.hooksFiles !== null) {
+    stamp.hooks_files = Array.isArray(f.hooksFiles) ? f.hooksFiles.slice().sort() : f.hooksFiles;
+    stamp.hooks_digest = f.hooksDigest;
+  }
+  return stamp;
 }
 
 // ───────────────────────────── the upstream tip ─────────────────────────────
@@ -677,18 +906,25 @@ function sourceNote(upstream) {
  * It deliberately returns a VERDICT, never a permissionDecision: mapping verdicts to
  * deny/allow/ask is the gate's job, and keeping it out of here is what keeps this reusable.
  *
- *   fresh       — stamp present, digest matches, stamp.sha === upstream.sha
- *   unstamped   — no stamp at all (we do not know what is installed)
- *   unverified  — digest mismatch (a foreign reinstall replaced the runtime under our stamp)
- *   drifted     — digest matches but the stamped sha is not the upstream tip
+ * The checks run in this ORDER (CTK-ADR-0011, D5), and the first that fires decides:
+ *
+ *   unstamped   - no stamp at all (we do not know what is installed)
+ *   unverified  - runtime digest mismatch (a foreign reinstall replaced the runtime under our
+ *                 stamp); this reason wins even when the hooks also differ
+ *   unverified  - the stamp carries no hook fields: it predates hook coverage, so the managed
+ *                 gsd-core hooks under `~/.claude/hooks` are unverified until one `sync`
+ *   unverified  - the measured managed-hooks digest is not the stamped one (or was not measured)
+ *   drifted     - both digests match but the stamped sha is not the upstream tip
+ *   fresh       - stamp present, both digests match, stamp.sha === upstream.sha
  *
  * `unstamped` / `unverified` / `drifted` are ALL deny-shaped (see DENY_VERDICTS).
  *
- * @param {{stamp:(Object|null), runtimeDigest:string, upstream:{sha:string, source?:string, ageMs?:number}}} input
+ * @param {{stamp:(Object|null), runtimeDigest:string, hooksDigest?:(string|null),
+ *   upstream:{sha:string, source?:string, ageMs?:number}}} input
  * @returns {{verdict:string, reason:string, behind?:{stamped:string, upstream:string}}}
  */
 function evaluateDrift(input) {
-  const { stamp, runtimeDigest: digest, upstream } = input || {};
+  const { stamp, runtimeDigest: digest, hooksDigest: measuredHooks, upstream } = input || {};
   const note = sourceNote(upstream);
 
   if (stamp === null || stamp === undefined) {
@@ -708,6 +944,27 @@ function evaluateDrift(input) {
         String(stamp.runtime_digest).slice(0, 19) + '…, measured ' + String(digest).slice(0, 19) +
         '…) — something reinstalled or edited `~/.claude/gsd-core` outside this toolkit, so the ' +
         'stamp can no longer be trusted',
+    };
+  }
+
+  if (!Array.isArray(stamp.hooks_files)) {
+    return {
+      verdict: 'unverified',
+      reason:
+        'the runtime stamp predates hook coverage (it records no `hooks_files` / `hooks_digest`), ' +
+        'so the managed gsd-core hooks under `~/.claude/hooks` are unverified: a sync that never ' +
+        'built them would have kept the OLD hooks; re-run sync once to re-stamp with hook coverage',
+    };
+  }
+
+  if (stamp.hooks_digest !== measuredHooks) {
+    return {
+      verdict: 'unverified',
+      reason:
+        'the managed gsd-core hooks under `~/.claude/hooks` no longer match the set the stamp ' +
+        'describes (stamped hooks digest ' + String(stamp.hooks_digest).slice(0, 19) + '..., measured ' +
+        String(measuredHooks).slice(0, 19) + '...): a managed hook was edited, removed or replaced ' +
+        'outside this toolkit, so the stamp can no longer be trusted',
     };
   }
 
@@ -732,6 +989,8 @@ function evaluateDrift(input) {
 module.exports = {
   // constants
   RUNTIME_ROOT,
+  HOOKS_ROOT,
+  HOOK_MISSING_FRAME,
   STATE_DIRNAME,
   STATE_DIR_ENV,
   STAMP_FILENAME,
@@ -756,6 +1015,11 @@ module.exports = {
   runtimeDigest,
   payloadDigest,
   payloadInventory,
+  // managed hooks (CTK-ADR-0011)
+  isManagedHookRel,
+  hooksInventory,
+  hooksDigest,
+  hooksDigestForStamp,
   // stamp
   readStamp,
   writeStamp,

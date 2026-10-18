@@ -35,7 +35,27 @@
  * anything observable, so the run stamps and stops — recording `mode:'payload-verified',
  * engine_verified:false`. Only an actual reinstall records `mode:'installed',
  * engine_verified:true`. `engine_verified` is RECORDED, NOT GATED: the gate keys on `sha` +
- * `runtime_digest`. Do not quietly promote it to a gate input.
+ * `runtime_digest` (+ the managed-hook fields below). Do not quietly promote it to a gate input.
+ *
+ * ── THE MANAGED gsd-core HOOKS (CTK-ADR-0011, quick 261017-w1i) ─────────────────────────
+ * gsd-core installs its hooks into `~/.claude/hooks` only from a BUILT `hooks/dist`, which is
+ * gitignored and produced by `npm run build:hooks` alone (`npm ci`'s `prepare` runs build:lib
+ * only). Without the build, install.js silently keeps the OLD hooks. So:
+ *   - the fast path above may stamp ONLY when the payload digests are equal AND an early
+ *     `npm run build:hooks` succeeds AND every managed hook in the built `hooks/dist` is
+ *     byte-equal to its installed copy; any other outcome is inconclusive and reinstalls;
+ *   - the slow path runs `npm run build:hooks` between `npm ci` and install.js, and aborts with NO
+ *     stamp when the build fails or leaves `hooks/dist` with no regular file;
+ *   - after install.js, every managed hook must exist as a regular file under `~/.claude/hooks`
+ *     with an mtime no older than the install start minus HOOK_MTIME_SLACK_MS. That proves each
+ *     managed file was WRITTEN by this install, NOT that its bytes are right (install.js rewrites
+ *     hook content, so bytes cannot be compared), and a concurrent writer inside the install window
+ *     is not detected;
+ *   - the stamp records `hooks_files` (the built `hooks/dist` inventory, never all of
+ *     `~/.claude/hooks`) and `hooks_digest` measured at stamp time, which `check` and the gate
+ *     re-measure on every call.
+ * The build always runs as the child process `npm run build:hooks` in the clone with a bounded
+ * timeout; the clone's scripts/build-hooks.js is never loaded into this process.
  *
  * ── WHY BYTE-EQUALITY CANNOT CONFIRM AN INSTALL (D-13, replaces D-11) ──────────────────
  * `bin/install.js` is NOT a byte-copy. It applies TWO transforms to the payload it writes:
@@ -70,6 +90,52 @@ const NPM_CI_TIMEOUT_MS = 600000;
 const INSTALL_TIMEOUT_MS = 300000;
 /** The shallow clone. */
 const CLONE_TIMEOUT_MS = 300000;
+/** `npm run build:hooks` in the clone (CTK-ADR-0011). A timeout throws, which aborts with no stamp. */
+const BUILD_HOOKS_TIMEOUT_MS = 120000;
+/**
+ * How far before the install start a managed hook's mtime may sit and still count as written by
+ * this install (filesystem timestamp granularity and clock skew). Older is stale: abort, no stamp.
+ */
+const HOOK_MTIME_SLACK_MS = 2000;
+
+/**
+ * Did this install write every managed hook (CTK-ADR-0011)? For each relpath under `hooksRoot`:
+ * a stat failure or a non-regular file is MISSING; an mtime below `sinceMs - HOOK_MTIME_SLACK_MS`
+ * (or no usable mtime) is STALE. This proves each file was WRITTEN during the install window, not
+ * that its bytes are right, and it cannot see a concurrent writer inside that window.
+ *
+ * @param {string} hooksRoot the installed hooks dir
+ * @param {string[]} files managed relpaths (POSIX)
+ * @param {number} sinceMs the install start, captured immediately before install.js ran
+ * @param {{statSync?:Function}} [deps]
+ * @returns {{missing:string[], stale:string[]}}
+ */
+function verifyHooksWritten(hooksRoot, files, sinceMs, deps = {}) {
+  const statSync = deps.statSync || nodeFs.statSync;
+  const floor = sinceMs - HOOK_MTIME_SLACK_MS;
+  const missing = [];
+  const stale = [];
+  for (const rel of files) {
+    let st;
+    try {
+      st = statSync(path.join(hooksRoot, ...String(rel).split('/')));
+    } catch (_) {
+      missing.push(rel);
+      continue;
+    }
+    if (!st || typeof st.isFile !== 'function' || !st.isFile()) {
+      missing.push(rel);
+      continue;
+    }
+    if (!(Number(st.mtimeMs) >= floor)) stale.push(rel);
+  }
+  return { missing, stale };
+}
+
+/** The first line of an error message, for a one-line abort. */
+function firstLine(err) {
+  return String((err && err.message) || 'unknown failure').split('\n')[0];
+}
 
 /**
  * Refuse to reinstall over a SYMLINKED runtime root (D-12, corrected).
@@ -148,7 +214,9 @@ const USAGE = [
   '            Writes nothing.',
   '  sync    bring the installed gsd-core runtime at ~/.claude/gsd-core to the current',
   '            open-gsd/gsd-core origin/next tip and stamp it. No prompts, no decisions.',
-  '            Reinstalls ONLY if the installed payload actually differs.',
+  '            Also builds (npm run build:hooks) and verifies the managed gsd-core hooks',
+  '            under ~/.claude/hooks, and stamps them (CTK-ADR-0011). Reinstalls ONLY if the',
+  '            installed payload or the managed hooks actually differ.',
 ].join('\n');
 
 /**
@@ -168,6 +236,7 @@ function oracleOf(over) {
  * @param {Object} [deps]
  * @param {Object} [deps.oracle] the runtime-stamp module (or a partial override)
  * @param {string} [deps.runtimeRoot]
+ * @param {string} [deps.hooksRoot] the managed hooks dir (defaults to the oracle's HOOKS_ROOT)
  * @param {(line:string)=>void} [deps.log]
  * @returns {{code:number, verdict:string, reason?:string}}
  */
@@ -175,9 +244,12 @@ function check(deps = {}) {
   const O = oracleOf(deps.oracle);
   const log = deps.log || ((l) => process.stdout.write(String(l) + '\n'));
   const runtimeRoot = deps.runtimeRoot || O.RUNTIME_ROOT;
+  const hooksRoot = deps.hooksRoot || O.HOOKS_ROOT;
 
   const digest = O.runtimeDigest(runtimeRoot);
   const stamp = O.readStamp();
+  // CTK-ADR-0011: the same one helper the gate calls, measured on every call (no cache).
+  const hooksDigest = O.hooksDigestForStamp(stamp, hooksRoot);
 
   let upstream;
   try {
@@ -191,7 +263,7 @@ function check(deps = {}) {
     throw err;
   }
 
-  const v = O.evaluateDrift({ stamp, runtimeDigest: digest, upstream });
+  const v = O.evaluateDrift({ stamp, runtimeDigest: digest, hooksDigest, upstream });
   if (v.verdict === 'fresh') {
     log('ENF-21 runtime freshness: fresh — ' + v.reason);
     return { code: 0, verdict: v.verdict, reason: v.reason };
@@ -209,16 +281,25 @@ function check(deps = {}) {
  *   1. resolve the current `origin/next` tip (`git ls-remote`);
  *   2. shallow-clone that branch into a tmpdir, then RACE-GUARD: the clone's HEAD must equal
  *      the resolved tip, else abort (the tip can move between the two calls);
- *   3. compare the clone's payload to the runtime's — equal ⇒ stamp `payload-verified` and stop;
- *   4. otherwise `npm ci` (which runs `prepare` → `build:lib`, producing the gitignored
- *      `bin/lib/*.cjs` the installer requires) then `node <tmp>/bin/install.js --claude`;
- *   5. RE-verify by payload INVENTORY (D-13 — invariant under both installer transforms); on
- *      mismatch abort WITHOUT stamping (T-0ov-06 — never stamp an install we could not
- *      confirm);
- *   6. stamp `installed` with a freshly computed whole-tree digest;
+ *   3. compare the clone's payload to the runtime's; when equal, run an early
+ *      `npm run build:hooks` and compare every built `hooks/dist` file to its installed copy
+ *      under `~/.claude/hooks`; all equal: stamp `payload-verified` and stop; an early build
+ *      failure, an empty `hooks/dist` or any hook difference is INCONCLUSIVE and falls through
+ *      (CTK-ADR-0011);
+ *   4. otherwise (after the symlinked-root preflight, D-12) `npm ci` (which runs `prepare` →
+ *      `build:lib`, producing the gitignored `bin/lib/*.cjs` the installer requires), then
+ *      `npm run build:hooks` (a failure or an empty `hooks/dist` aborts WITHOUT stamping), then
+ *      `node <tmp>/bin/install.js --claude`, with the install start captured just before it;
+ *   5. RE-verify by payload INVENTORY (D-13 — invariant under both installer transforms), then
+ *      check every managed hook was WRITTEN by this install (exists, mtime not older than the
+ *      install start minus HOOK_MTIME_SLACK_MS; proves the write, not the bytes); on any
+ *      mismatch abort WITHOUT stamping (T-0ov-06 — never stamp an install we could not confirm);
+ *   6. stamp `installed` with a freshly computed whole-tree digest plus `hooks_files` (the built
+ *      `hooks/dist` inventory) and `hooks_digest` (measured now). The stamp is the LAST write;
  *   7. remove the tmpdir in a `finally`, on the success AND the failure path.
  *
- * @param {Object} [deps]
+ * @param {Object} [deps] injectable seams, including `hooksRoot` (the managed hooks dir),
+ *   `statSync` (the post-install check) and `nowMs` (the install-start clock)
  * @returns {{code:number, mode?:string, stamp?:Object, reason?:string}}
  */
 function sync(deps = {}) {
@@ -230,6 +311,9 @@ function sync(deps = {}) {
   const rmSync = deps.rmSync || nodeFs.rmSync;
   const now = deps.now || (() => new Date().toISOString());
   const runtimeRoot = deps.runtimeRoot || O.RUNTIME_ROOT;
+  const hooksRoot = deps.hooksRoot || O.HOOKS_ROOT;
+  const statSync = deps.statSync || nodeFs.statSync;
+  const nowMs = deps.nowMs || (() => Date.now());
 
   // (1) The target tip. Resolved BEFORE any tmpdir exists, so an outage costs nothing.
   let tip;
@@ -271,16 +355,47 @@ function sync(deps = {}) {
 
     // (3) The comparison (D-09, amended by D-13 — D-11's projection was UNSOUND, see below).
     const cloneRoot = path.join(tmp, 'gsd-core');
+    const distRoot = path.join(tmp, 'hooks', 'dist');
+
+    // CTK-ADR-0011 (D1): the hooks are ALWAYS built by the child process `npm run build:hooks`
+    // in the clone, bounded; the clone's scripts/build-hooks.js is never loaded in this process.
+    const buildHooks = () => execFileSync('npm', ['run', 'build:hooks'], {
+      cwd: tmp,
+      encoding: 'utf8',
+      timeout: BUILD_HOOKS_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
 
     let mode = 'payload-verified';
     let engineVerified = false;
+    let hooksFiles = null;
+    let fastPath = false;
+    const payloadEqual = O.payloadDigest(cloneRoot) === O.payloadDigest(runtimeRoot);
 
-    if (O.payloadDigest(cloneRoot) === O.payloadDigest(runtimeRoot)) {
+    if (payloadEqual) {
       // Byte-equality with the raw clone. Only possible when BOTH install transforms happen to be
       // no-ops for this payload, but when it holds it is the strongest answer available and it
-      // costs neither an `npm ci` nor an install.
-      log('Installed payload already matches ' + tip.slice(0, 8) + ' — no reinstall needed.');
-    } else {
+      // costs neither an `npm ci` nor an install. Since CTK-ADR-0011 it must ALSO hold for the
+      // managed hooks (D7): a hooks-only upstream commit leaves the payload equal.
+      log('Installed payload already matches ' + tip.slice(0, 8) + ' - checking the managed gsd-core hooks ...');
+      try {
+        buildHooks();
+        const early = O.hooksInventory(distRoot);
+        if (early.length === 0) {
+          log('  the early `npm run build:hooks` left hooks/dist with no regular file; the fast path is inconclusive.');
+        } else if (O.hooksDigest(distRoot, early) === O.hooksDigest(hooksRoot, early)) {
+          hooksFiles = early;
+          fastPath = true;
+          log('  every managed hook (' + early.length + ') is byte-equal to the built hooks/dist - no reinstall needed.');
+        } else {
+          log('  the installed managed hooks under ' + hooksRoot + ' differ from the built hooks/dist; the fast path is inconclusive.');
+        }
+      } catch (err) {
+        log('  the early `npm run build:hooks` check failed (' + firstLine(err) + '); the fast path is inconclusive.');
+      }
+    }
+
+    if (!fastPath) {
       // D-13 — WHY NOT A PROJECTION (this replaces D-11):
       // D-11 tried to neutralise the installer's `/gsd:` → `/gsd-` rewrite by running the LIVE
       // installer into a throwaway `--config-dir` and comparing against THAT. It is unsound.
@@ -297,12 +412,15 @@ function sync(deps = {}) {
       // that the tip's payload actually landed. It is honestly weaker than byte-equality —
       // it proves the right files, not the right bytes — and the stamp says so via
       // `engine_verified`.
-      // NEVER collapse a symlinked runtime root automatically (D-12).
+      // NEVER collapse a symlinked runtime root automatically (D-12). This also guards the
+      // CTK-ADR-0011 route in (payload equal, hooks different): GSD_ALLOW_SYMLINKED_DEST is never set.
       if (symlinkPreflight(runtimeRoot, log, deps).blocked) {
         return { code: 1, reason: 'symlinked-runtime-root' };
       }
 
-      log('Installed payload differs from the raw clone — reinstalling from ' + tip.slice(0, 8) + ' …');
+      log(payloadEqual
+        ? 'The managed gsd-core hooks could not be confirmed - reinstalling from ' + tip.slice(0, 8) + ' ...'
+        : 'Installed payload differs from the raw clone — reinstalling from ' + tip.slice(0, 8) + ' …');
       log('  npm ci …');
       execFileSync('npm', ['ci'], {
         cwd: tmp,
@@ -310,7 +428,29 @@ function sync(deps = {}) {
         timeout: NPM_CI_TIMEOUT_MS,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
+
+      // CTK-ADR-0011 (D1): npm ci's `prepare` builds bin/lib only; install.js copies hooks only
+      // from a BUILT hooks/dist and silently keeps the old ones without it. Build, or abort.
+      log('  npm run build:hooks ...');
+      try {
+        buildHooks();
+      } catch (err) {
+        log('ENF-21 sync ABORTED: `npm run build:hooks` failed in the clone (' + firstLine(err) + ').');
+        log('No stamp was written: install.js copies the gsd-core hooks only from a built hooks/dist, so');
+        log('installing now would keep the OLD managed hooks under ' + hooksRoot + ' (CTK-ADR-0011).');
+        return { code: 1, reason: 'hooks-build-failed' };
+      }
+      hooksFiles = O.hooksInventory(distRoot);
+      if (hooksFiles.length === 0) {
+        log('ENF-21 sync ABORTED: `npm run build:hooks` exited 0 but ' + distRoot + ' (hooks/dist) holds no');
+        log('regular file at depth 0 or 1, so install.js would copy no hooks and keep the OLD managed');
+        log('hooks under ' + hooksRoot + '. No stamp was written (CTK-ADR-0011).');
+        return { code: 1, reason: 'hooks-dist-empty' };
+      }
+
       log('  node bin/install.js --claude …');
+      // Captured immediately BEFORE install.js: every managed hook it writes must be newer.
+      const installStartMs = nowMs();
       execFileSync(process.execPath, [path.join(tmp, 'bin', 'install.js'), '--claude'], {
         cwd: tmp,
         encoding: 'utf8',
@@ -340,18 +480,44 @@ function sync(deps = {}) {
       }
 
       log('Verified: ' + want.length + ' payload files match ' + tip.slice(0, 8) + ' exactly.');
+
+      // CTK-ADR-0011 (D3): every managed hook must have been WRITTEN by this install. Names alone
+      // cannot catch the measured defect (the stale hooks carry the right names), and bytes cannot
+      // be compared (install.js rewrites hook content), so the check is existence + mtime.
+      const hv = verifyHooksWritten(hooksRoot, hooksFiles, installStartMs, { statSync });
+      if (hv.missing.length > 0 || hv.stale.length > 0) {
+        log('ENF-21 sync ABORTED: install.js did not rewrite every managed gsd-core hook under');
+        log(hooksRoot + ' - refusing to stamp an install that cannot be confirmed.');
+        log('');
+        log('This check proves each managed hook was WRITTEN by this install (a regular file whose');
+        log('mtime is no older than the install start minus ' + HOOK_MTIME_SLACK_MS + ' ms); it does not prove');
+        log('the bytes. A miss here means the hooks were not installed where this tool measures them');
+        log('(for example a CLAUDE_CONFIG_DIR pointing elsewhere), a partial install, or a filesystem');
+        log('that did not advance the mtime.');
+        if (hv.missing.length) log('  missing (' + hv.missing.length + '): ' + hv.missing.slice(0, 5).join(', '));
+        if (hv.stale.length) log('  not rewritten (' + hv.stale.length + '): ' + hv.stale.slice(0, 5).join(', '));
+        log('');
+        log('Do not work around it by hand-writing ~/.gsd-contrib/runtime-stamp.json - that');
+        log('forges the very evidence the gate exists to check. See CTK-ADR-0011.');
+        return { code: 1, reason: 'post-install-hooks-mismatch' };
+      }
+      log('Verified: ' + hooksFiles.length + ' managed gsd-core hooks were written by this install.');
       mode = 'installed';
       engineVerified = true;
     }
 
     // (6) Stamp. The digest is over the WHOLE installed tree, so a later foreign reinstall
-    // surfaces as `unverified` rather than a stamp that quietly lies.
+    // surfaces as `unverified` rather than a stamp that quietly lies. The managed-hook fields bind
+    // the built hooks/dist inventory and the hooks digest measured NOW (CTK-ADR-0011). The stamp is
+    // the LAST write: any throw above (a timed-out or killed child included) leaves no stamp.
     const stamp = O.buildStamp({
       sha: tip,
       runtimeDigest: O.runtimeDigest(runtimeRoot),
       mode,
       engineVerified,
       now: now(),
+      hooksFiles,
+      hooksDigest: O.hooksDigest(hooksRoot, hooksFiles),
     });
     O.writeStamp(stamp);
     log('Stamped: sha=' + tip.slice(0, 8) + ' mode=' + mode + ' engine_verified=' + engineVerified);
@@ -392,6 +558,7 @@ if (require.main === module) {
 
 module.exports = {
   symlinkPreflight,
+  verifyHooksWritten,
   check,
   sync,
   main,
@@ -399,4 +566,6 @@ module.exports = {
   NPM_CI_TIMEOUT_MS,
   INSTALL_TIMEOUT_MS,
   CLONE_TIMEOUT_MS,
+  BUILD_HOOKS_TIMEOUT_MS,
+  HOOK_MTIME_SLACK_MS,
 };
