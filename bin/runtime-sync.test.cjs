@@ -357,7 +357,7 @@ test('sync SLOW PATH: the abort NAMES the missing files and rules the transforms
   assert.match(out, /invariant under both known installer transforms/i);
   assert.match(out, /workflows\/b\.md/, 'the missing file is named');
   assert.match(out, /Do not work around it by hand-writing/i, 'still forbids forging the stamp');
-  assert.match(out, /CTK-ADR-0007/);
+  assert.match(out, /CTK-ADR-0007 §Decision\.7\./, 'cites the live Decision 7, which keeps the hand-writing prohibition');
 });
 
 test('sync D-13: a matching inventory CONFIRMS the install even when the DIGEST differs', () => {

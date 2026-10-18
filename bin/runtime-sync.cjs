@@ -475,7 +475,7 @@ function sync(deps = {}) {
         if (extra.length) log('  unexpected (' + extra.length + '): ' + extra.slice(0, 5).join(', '));
         log('');
         log('Do not work around it by hand-writing ~/.gsd-contrib/runtime-stamp.json — that');
-        log('forges the very evidence the gate exists to check. See CTK-ADR-0007 §Decision.8.');
+        log('forges the very evidence the gate exists to check. See CTK-ADR-0007 §Decision.7.');
         return { code: 1, reason: 'post-install-mismatch' };
       }
 
