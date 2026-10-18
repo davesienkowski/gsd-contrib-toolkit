@@ -50,7 +50,8 @@
  *   - the slow path runs `npm run build:hooks` between `npm ci` and install.js, and aborts with NO
  *     stamp when the build fails or leaves `hooks/dist` with no regular file;
  *   - after install.js, every managed hook must exist as a regular file under `~/.claude/hooks`
- *     with an mtime no older than the install start minus HOOK_MTIME_SLACK_MS. That proves each
+ *     whose later of mtime and ctime is no older than the install start minus HOOK_MTIME_SLACK_MS
+ *     (ctime because a copy API may carry the source's mtime over, never its ctime). That proves each
  *     managed file was WRITTEN by this install, NOT that its bytes are right (install.js rewrites
  *     hook content, so bytes cannot be compared), and a concurrent writer inside the install window
  *     is not detected;
@@ -96,16 +97,22 @@ const CLONE_TIMEOUT_MS = 300000;
 /** `npm run build:hooks` in the clone (CTK-ADR-0011). A timeout throws, which aborts with no stamp. */
 const BUILD_HOOKS_TIMEOUT_MS = 120000;
 /**
- * How far before the install start a managed hook's mtime may sit and still count as written by
- * this install (filesystem timestamp granularity and clock skew). Older is stale: abort, no stamp.
+ * How far before the install start a managed hook's write time (the later of mtime and ctime) may
+ * sit and still count as written by this install (filesystem timestamp granularity and clock skew).
+ * Older is stale: abort, no stamp. The name keeps "MTIME" for compatibility.
  */
 const HOOK_MTIME_SLACK_MS = 2000;
 
 /**
  * Did this install write every managed hook (CTK-ADR-0011)? For each relpath under `hooksRoot`:
- * a stat failure or a non-regular file is MISSING; an mtime below `sinceMs - HOOK_MTIME_SLACK_MS`
- * (or no usable mtime) is STALE. This proves each file was WRITTEN during the install window, not
- * that its bytes are right, and it cannot see a concurrent writer inside that window.
+ * a stat failure or a non-regular file is MISSING; a write time below
+ * `sinceMs - HOOK_MTIME_SLACK_MS` (or no finite mtime or ctime at all) is STALE. The write time is
+ * the later of `mtimeMs` and `ctimeMs`: install.js writes .js/.cjs/.sh hooks with writeFileSync but
+ * copies the rest with copyFileSync, and a platform whose copy preserves the source mtime would
+ * otherwise read a freshly copied file as stale. A copy cannot carry ctime over; the kernel sets it
+ * on any write. A non-finite timestamp is ignored rather than allowed to poison the max. This
+ * proves each file was WRITTEN (or had its metadata changed) during the install window, not that
+ * its bytes are right, and it cannot see a concurrent writer inside that window.
  *
  * @param {string} hooksRoot the installed hooks dir
  * @param {string[]} files managed relpaths (POSIX)
@@ -130,7 +137,8 @@ function verifyHooksWritten(hooksRoot, files, sinceMs, deps = {}) {
       missing.push(rel);
       continue;
     }
-    if (!(Number(st.mtimeMs) >= floor)) stale.push(rel);
+    const times = [st.mtimeMs, st.ctimeMs].map(Number).filter(Number.isFinite);
+    if (times.length === 0 || !(Math.max(...times) >= floor)) stale.push(rel);
   }
   return { missing, stale };
 }
@@ -318,8 +326,9 @@ function check(deps = {}) {
  *      `npm run build:hooks` (a failure or an empty `hooks/dist` aborts WITHOUT stamping), then
  *      `node <tmp>/bin/install.js --claude`, with the install start captured just before it;
  *   5. RE-verify by payload INVENTORY (D-13 — invariant under both installer transforms), then
- *      check every managed hook was WRITTEN by this install (exists, mtime not older than the
- *      install start minus HOOK_MTIME_SLACK_MS; proves the write, not the bytes); on any
+ *      check every managed hook was WRITTEN by this install (exists, the later of mtime and ctime
+ *      not older than the install start minus HOOK_MTIME_SLACK_MS; proves the write, not the
+ *      bytes); on any
  *      mismatch abort WITHOUT stamping (T-0ov-06 — never stamp an install we could not confirm);
  *   6. stamp `installed` with a freshly computed whole-tree digest plus `hooks_files` (the built
  *      `hooks/dist` inventory) and `hooks_digest` (measured now). The stamp is the LAST write;
@@ -514,17 +523,18 @@ function sync(deps = {}) {
 
       // CTK-ADR-0011 (D3): every managed hook must have been WRITTEN by this install. Names alone
       // cannot catch the measured defect (the stale hooks carry the right names), and bytes cannot
-      // be compared (install.js rewrites hook content), so the check is existence + mtime.
+      // be compared (install.js rewrites hook content), so the check is existence + the later of
+      // mtime and ctime.
       const hv = verifyHooksWritten(hooksRoot, hooksFiles, installStartMs, { statSync });
       if (hv.missing.length > 0 || hv.stale.length > 0) {
         log('ENF-21 sync ABORTED: install.js did not rewrite every managed gsd-core hook under');
         log(hooksRoot + ' - refusing to stamp an install that cannot be confirmed.');
         log('');
         log('This check proves each managed hook was WRITTEN by this install (a regular file whose');
-        log('mtime is no older than the install start minus ' + HOOK_MTIME_SLACK_MS + ' ms); it does not prove');
-        log('the bytes. A miss here means the hooks were not installed where this tool measures them');
-        log('(for example a CLAUDE_CONFIG_DIR pointing elsewhere), a partial install, or a filesystem');
-        log('that did not advance the mtime.');
+        log('later of mtime and ctime is no older than the install start minus ' + HOOK_MTIME_SLACK_MS + ' ms); it does');
+        log('not prove the bytes. A miss here means the hooks were not installed where this tool measures');
+        log('them (for example a CLAUDE_CONFIG_DIR pointing elsewhere), a partial install, or a filesystem');
+        log('whose clock or timestamps lag the install start by more than the slack.');
         if (hv.missing.length) log('  missing (' + hv.missing.length + '): ' + hv.missing.slice(0, 5).join(', '));
         if (hv.stale.length) log('  not rewritten (' + hv.stale.length + '): ' + hv.stale.slice(0, 5).join(', '));
         log('');

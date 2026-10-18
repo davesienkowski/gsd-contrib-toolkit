@@ -67,12 +67,16 @@ mods' own files (for example `artifact-gate.cjs`, `herdr-agent-state.sh`, `gsd-p
 
 3. **After install.js, every managed hook must have been written by this install.** The install start
    is captured immediately before install.js runs. `verifyHooksWritten` then requires every listed
-   relpath to exist under `~/.claude/hooks` as a regular file whose mtime is no older than the install
-   start minus `HOOK_MTIME_SLACK_MS` (2000 ms); a missing or older file ends the sync with
-   `post-install-hooks-mismatch` and no stamp. What this proves: each managed file was written during
-   the install window. What it does not prove: that its bytes are right. Bytes cannot be compared,
-   because install.js rewrites hook content; names alone cannot catch the measured defect, because the
-   stale hooks carry the right names.
+   relpath to exist under `~/.claude/hooks` as a regular file whose write time, the later of its mtime
+   and its ctime, is no older than the install start minus `HOOK_MTIME_SLACK_MS` (2000 ms); a missing
+   or older file ends the sync with `post-install-hooks-mismatch` and no stamp. A timestamp that is not
+   a finite number is ignored, and a file with neither is stale. ctime is included because install.js
+   copies every hook that is not `.js`, `.cjs` or `.sh` with `copyFileSync`, and a copy API may carry
+   the source's mtime over; it cannot carry ctime, which the kernel sets on the write. What this
+   proves: each managed file was written (or had its metadata changed) during the install window. What
+   it does not prove: that its bytes are right. Bytes cannot be compared, because install.js rewrites
+   hook content; names alone cannot catch the measured defect, because the stale hooks carry the right
+   names.
 
 4. **The stamp gains two additive fields; `STAMP_SCHEMA` stays 1.** A stamp written by `sync` records
    `hooks_files` (the sorted inventory) and `hooks_digest`, a `sha256:<hex>` over the listed files as
@@ -131,18 +135,25 @@ mods' own files (for example `artifact-gate.cjs`, `herdr-agent-state.sh`, `gsd-p
   coverage) until one `sync`. This is the designed first-use cost.
 - **Negative / accepted:** the gate now reads the managed hook files on each governed command, in
   addition to the runtime tree. A non-governed command still costs nothing.
-- **Residual:** the mtime check proves each managed file was written in the install window, not that
-  its bytes are right.
+- **Residual:** the write-time check proves each managed file was written in the install window, not
+  that its bytes are right. Because it takes the later of mtime and ctime, a managed file that was
+  only re-permissioned, re-owned or renamed inside the window (a metadata change that advances ctime)
+  also passes it.
 - **Residual:** a concurrent writer that rewrites a managed hook inside the install window is not
-  detected by the mtime check. The next gate call re-measures the digest against the stamp, but that
+  detected by the write-time check. The next gate call re-measures the digest against the stamp, but that
   digest was taken after the concurrent write, so the stamp binds whatever was on disk at stamp time.
 - **Residual:** the digest reads each file as UTF-8 text through the bounded reader and re-encodes it,
   so two files that differ only in invalid UTF-8 sequences digest equal.
 - **Residual:** if `CLAUDE_CONFIG_DIR` points the install somewhere other than `~/.claude`, the
   post-install check finds the managed hooks missing or stale and aborts (fail closed, no stamp), the
   same assumption `RUNTIME_ROOT` already makes.
-- **Residual:** a managed file whose rewrite does not advance its mtime (a filesystem that keeps the
-  old timestamp) would make the sync abort; it never makes it stamp falsely.
+- **Residual:** a copy API that preserves the source's mtime (plausibly `copyFileSync` on some
+  platforms; not measured here) no longer makes the sync abort, because the check also reads ctime.
+  What still makes it abort, never stamp falsely: a filesystem whose clock or timestamps lag the
+  install start by more than the 2 s slack (for example a network or drvfs mount, or coarse timestamp
+  granularity at the boundary), or one that reports no usable mtime or ctime. The ctime behavior was
+  verified on Linux (WSL2 ext4), where `utimes` backdates mtime and leaves ctime at the current time;
+  other platforms were not measured.
 - **Residual (upstream coupling):** the toolkit names three gsd-core internals that no LIVE API
   exposes: the `build:hooks` script (gsd-core `package.json`), its output directory `hooks/dist`
   (shared by `scripts/build-hooks.js` and install.js's `hooksSrc`), and install.js's one-level walk

@@ -107,8 +107,9 @@ function syncDeps(over = {}) {
   // `buildThrows: 'early' | 'late' | 'both' | true` makes a `npm run build:hooks` call throw. The
   // EARLY build is the one before npm ci; the LATE one runs after it.
   const buildThrows = over.buildThrows;
-  // `mtimes` maps a managed relpath to its mtimeMs, or to 'throw' for a stat failure. Default: the
-  // file was written just after the install started (NOW_MS + 1).
+  // `mtimes` maps a managed relpath to its mtimeMs (ctimeMs then equals it), to
+  // `{mtimeMs, ctimeMs}` to set the two apart, or to 'throw' for a stat failure. Default: the file
+  // was written just after the install started (NOW_MS + 1).
   const mtimes = over.mtimes || {};
 
   const payloadDigest = (root) => {
@@ -147,7 +148,8 @@ function syncDeps(over = {}) {
           e.code = 'ENOENT';
           throw e;
         }
-        return { isFile: () => true, isDirectory: () => false, mtimeMs: m };
+        const t = (m && typeof m === 'object') ? m : { mtimeMs: m, ctimeMs: m };
+        return { isFile: () => true, isDirectory: () => false, mtimeMs: t.mtimeMs, ctimeMs: t.ctimeMs };
       },
       // Keyed off state.exec, so a test that swaps execFileSync but still records into state.exec
       // keeps a clock that moves once install.js has run.
@@ -615,6 +617,45 @@ test('w1i: post-install: a managed hook exactly at install start minus the slack
   assert.deepStrictEqual(state.stamps[0].hooks_files, HOOK_FILES.slice());
 });
 
+test('w1i: post-install: an OLD mtime with a FRESH ctime counts as written (a copy that preserved the source mtime)', () => {
+  // install.js copies non-.js/.cjs/.sh hooks with copyFileSync; where a copy carries the source's
+  // mtime over, only ctime (set by the kernel on the write) shows this install wrote the file.
+  const old = NOW_MS - cli.HOOK_MTIME_SLACK_MS - 3600000;
+  const { deps, state } = syncDeps({
+    digests: { clone: DIGEST, runtime: [STALE, DIGEST] },
+    mtimes: { 'lib/b.sh': { mtimeMs: old, ctimeMs: NOW_MS + 5 } },
+  });
+  const r = cli.sync(deps);
+  assert.strictEqual(r.code, 0, state.logs.join('\n'));
+  assert.strictEqual(state.stamps.length, 1);
+  assert.strictEqual(state.stamps[0].mode, 'installed');
+});
+
+test('w1i: post-install: an OLD mtime AND an OLD ctime is stale, post-install-hooks-mismatch, no stamp', () => {
+  const old = NOW_MS - cli.HOOK_MTIME_SLACK_MS - 3600000;
+  const { deps, state } = syncDeps({
+    digests: { clone: DIGEST, runtime: [STALE, DIGEST] },
+    mtimes: { 'lib/b.sh': { mtimeMs: old, ctimeMs: old + 1 } },
+  });
+  const r = cli.sync(deps);
+  assert.strictEqual(r.reason, 'post-install-hooks-mismatch');
+  assert.notStrictEqual(r.code, 0);
+  assert.strictEqual(state.stamps.length, 0);
+  assert.strictEqual(state.rm.length, 1);
+  assert.ok(state.logs.join('\n').includes('lib/b.sh'));
+});
+
+test('w1i: verifyHooksWritten ignores a non-finite timestamp instead of letting it poison the max', () => {
+  const since = NOW_MS;
+  const statOf = (t) => ({ statSync: () => Object.assign({ isFile: () => true }, t) });
+  // a fresh mtime with no ctime field (NaN) is still written; a fresh ctime with no mtime too
+  assert.deepStrictEqual(cli.verifyHooksWritten('/h', ['a.js'], since, statOf({ mtimeMs: since + 1 })), { missing: [], stale: [] });
+  assert.deepStrictEqual(cli.verifyHooksWritten('/h', ['a.js'], since, statOf({ ctimeMs: since + 1 })), { missing: [], stale: [] });
+  // neither timestamp usable is stale, never written
+  assert.deepStrictEqual(cli.verifyHooksWritten('/h', ['a.js'], since, statOf({})), { missing: [], stale: ['a.js'] });
+  assert.deepStrictEqual(cli.verifyHooksWritten('/h', ['a.js'], since, statOf({ mtimeMs: NaN, ctimeMs: Infinity })), { missing: [], stale: ['a.js'] });
+});
+
 test('w1i: the install start is captured BEFORE install.js (the clock moves +60 s once it has run)', () => {
   // Default mtimes are NOW_MS + 1. A start captured after install.js reads NOW_MS + 60000, so every
   // managed file would look stale and the sync would abort.
@@ -804,7 +845,7 @@ test('w1i: check measures the hooks under deps.hooksRoot, defaulting to oracle.H
   assert.deepStrictEqual(b.state.hooksRoots, [oracle.HOOKS_ROOT]);
 });
 
-test('w1i: verifyHooksWritten over a real temp dir reports {missing, stale}; a directory at a listed path is missing', (t) => {
+test('w1i: verifyHooksWritten over a real temp dir reports {missing, stale}; a directory at a listed path is missing; a backdated mtime with a fresh ctime is written', (t) => {
   const fs = require('node:fs');
   const os = require('node:os');
   assert.strictEqual(typeof cli.verifyHooksWritten, 'function');
@@ -815,9 +856,17 @@ test('w1i: verifyHooksWritten over a real temp dir reports {missing, stale}; a d
   fs.writeFileSync(path.join(root, 'lib', 'b.sh'), 'b');
   fs.mkdirSync(path.join(root, 'dir.js'));
   const since = Date.now() - 1000;
+  // Backdate lib/b.sh's mtime the way a mtime-preserving copy would. The kernel still sets its
+  // ctime to now, so it counts as written by this install (CTK-ADR-0011 Decision 3).
   const old = (since - cli.HOOK_MTIME_SLACK_MS - 10000) / 1000;
   fs.utimesSync(path.join(root, 'lib', 'b.sh'), old, old);
+  const bst = fs.statSync(path.join(root, 'lib', 'b.sh'));
+  assert.ok(bst.mtimeMs < since - cli.HOOK_MTIME_SLACK_MS && bst.ctimeMs >= since - cli.HOOK_MTIME_SLACK_MS,
+    'premise: utimes backdates mtime, not ctime (mtime ' + bst.mtimeMs + ', ctime ' + bst.ctimeMs + ')');
   const r = cli.verifyHooksWritten(root, ['dir.js', 'gone.js', 'gsd-a.js', 'lib/b.sh'], since);
-  assert.deepStrictEqual(r, { missing: ['dir.js', 'gone.js'], stale: ['lib/b.sh'] });
+  assert.deepStrictEqual(r, { missing: ['dir.js', 'gone.js'], stale: [] });
+  // A real stale case: an install start after both of the file's timestamps (plus the slack).
+  const future = Date.now() + cli.HOOK_MTIME_SLACK_MS + 60000;
+  assert.deepStrictEqual(cli.verifyHooksWritten(root, ['gsd-a.js', 'lib/b.sh'], future), { missing: [], stale: ['gsd-a.js', 'lib/b.sh'] });
   assert.deepStrictEqual(cli.verifyHooksWritten(root, ['gsd-a.js'], since), { missing: [], stale: [] });
 });
