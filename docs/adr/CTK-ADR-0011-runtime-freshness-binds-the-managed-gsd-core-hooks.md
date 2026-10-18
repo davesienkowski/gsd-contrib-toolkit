@@ -108,10 +108,16 @@ mods' own files (for example `artifact-gate.cjs`, `herdr-agent-state.sh`, `gsd-p
    are equal, an early `npm run build:hooks` in the clone succeeded, and every file of the built
    `hooks/dist` is byte-equal to its installed copy. An early build failure, an empty `hooks/dist` or
    any hook difference is inconclusive and falls through to the slow path (not an abort), which still
-   runs the symlinked-runtime-root preflight first and never sets `GSD_ALLOW_SYMLINKED_DEST`. As
-   measured during planning, install.js's rewrites change at least one managed hook on this machine's
-   install to `~/.claude`, so in practice `sync` takes the slow path; the condition closes the
-   hooks-only-upstream-commit hole rather than recording it.
+   runs the symlinked-runtime-root preflight first and never sets `GSD_ALLOW_SYMLINKED_DEST`. The
+   condition closes the hooks-only-upstream-commit hole rather than recording it, but it cannot hold
+   on any real install today: install.js replaces `{{GSD_VERSION}}` with the package version in every
+   `.js`, `.cjs` and `.sh` hook it writes, and 28 of the 30 top-level files under gsd-core `hooks/`
+   carry that placeholder at 030e7ca20 (`git grep -l`; the two without are `hooks.json` and
+   `managed-hooks-registry.cjs`). The built `hooks/dist` keeps the placeholder, while the installed
+   copy reads, for example, `gsd-hook-version: 1.17.0` (scratch-HOME install, 2026-10-17). So the
+   built and installed bytes differ, the fast path never stamps, and every `sync` reinstalls: the
+   early build only costs one extra `npm run build:hooks`. The fast-path code is kept for now;
+   removing or replacing it is a follow-up.
 
 ## Consequences
 

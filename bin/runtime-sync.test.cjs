@@ -612,6 +612,12 @@ test('w1i: the slow-path stamp binds the dist inventory and the POST-install hoo
 });
 
 test('w1i: FAST PATH: build:hooks runs exactly once, no npm ci, no install.js, and the stamp carries the hook fields', () => {
+  // UNREACHABLE PREMISE with the real installer: this mock makes the built hooks/dist digest equal
+  // the installed one, but install.js replaces `{{GSD_VERSION}}` in every .js/.cjs/.sh hook it writes
+  // (28 of the 30 top-level gsd-core hook sources carry it at 030e7ca20) and hooks/dist keeps the
+  // placeholder, so on a real install the two digests never match and sync always reinstalls
+  // (CTK-ADR-0011 Decision 7). This tests the branch's logic only; it is no evidence that sync is
+  // cheap when current. Removing or replacing the fast path is a follow-up.
   const { deps, state } = syncDeps();
   const opts = recordOpts(deps);
   const r = cli.sync(deps);

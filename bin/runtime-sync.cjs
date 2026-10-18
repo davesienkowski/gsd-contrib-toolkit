@@ -43,7 +43,10 @@
  * only). Without the build, install.js silently keeps the OLD hooks. So:
  *   - the fast path above may stamp ONLY when the payload digests are equal AND an early
  *     `npm run build:hooks` succeeds AND every managed hook in the built `hooks/dist` is
- *     byte-equal to its installed copy; any other outcome is inconclusive and reinstalls;
+ *     byte-equal to its installed copy; any other outcome is inconclusive and reinstalls. In
+ *     practice that last condition never holds: install.js replaces `{{GSD_VERSION}}` in every
+ *     .js/.cjs/.sh hook it writes and the built hooks/dist keeps the placeholder, so every sync
+ *     reinstalls (CTK-ADR-0011 Decision 7; removing the fast path is a follow-up);
  *   - the slow path runs `npm run build:hooks` between `npm ci` and install.js, and aborts with NO
  *     stamp when the build fails or leaves `hooks/dist` with no regular file;
  *   - after install.js, every managed hook must exist as a regular file under `~/.claude/hooks`
@@ -215,8 +218,9 @@ const USAGE = [
   '  sync    bring the installed gsd-core runtime at ~/.claude/gsd-core to the current',
   '            open-gsd/gsd-core origin/next tip and stamp it. No prompts, no decisions.',
   '            Also builds (npm run build:hooks) and verifies the managed gsd-core hooks',
-  '            under ~/.claude/hooks, and stamps them (CTK-ADR-0011). Reinstalls ONLY if the',
-  '            installed payload or the managed hooks actually differ.',
+  '            under ~/.claude/hooks, and stamps them (CTK-ADR-0011). In practice it reinstalls',
+  '            on every run: install.js writes the package version into the managed hooks',
+  '            ({{GSD_VERSION}}), so they never byte-match the clone and the fast path cannot fire.',
 ].join('\n');
 
 /**
@@ -376,7 +380,9 @@ function sync(deps = {}) {
       // Byte-equality with the raw clone. Only possible when BOTH install transforms happen to be
       // no-ops for this payload, but when it holds it is the strongest answer available and it
       // costs neither an `npm ci` nor an install. Since CTK-ADR-0011 it must ALSO hold for the
-      // managed hooks (D7): a hooks-only upstream commit leaves the payload equal.
+      // managed hooks (D7): a hooks-only upstream commit leaves the payload equal. With the real
+      // installer the hook comparison cannot succeed while hooks carry `{{GSD_VERSION}}` (install.js
+      // substitutes it, hooks/dist keeps it), so this branch only ever logs "inconclusive" today.
       log('Installed payload already matches ' + tip.slice(0, 8) + ' - checking the managed gsd-core hooks ...');
       try {
         buildHooks();
