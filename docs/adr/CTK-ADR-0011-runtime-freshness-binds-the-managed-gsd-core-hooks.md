@@ -33,7 +33,9 @@ mechanism, read from gsd-core `origin/next` (030e7ca20, 2026-10-17):
    copies nothing and raises nothing. With one, every top-level regular file is rewritten into
    `~/.claude/hooks` (`.js` / `.cjs` with config-dir, branding, `gsd:` and `{{GSD_VERSION}}` rewrites
    and `writeFileSync`; `.sh` with `{{GSD_VERSION}}` and `writeFileSync`; anything else
-   `copyFileSync`), and each top-level directory is recursed one level for its regular files.
+   `copyFileSync`), and each top-level directory is recursed one level for its regular files (a
+   child `.sh` with `{{GSD_VERSION}}` and `writeFileSync`; every other child, including the
+   `lib/*.js` helpers, `copyFileSync`).
 4. CTK-ADR-0007's `runtime_digest` covers only `~/.claude/gsd-core`, never `~/.claude/hooks`.
 
 So `sync`'s slow path ran `npm ci`, then install.js, which silently kept the OLD hooks, and the stamp
@@ -74,8 +76,10 @@ mods' own files (for example `artifact-gate.cjs`, `herdr-agent-state.sh`, `gsd-p
    and its ctime, is no older than the install start minus `HOOK_MTIME_SLACK_MS` (2000 ms); a missing
    or older file ends the sync with `post-install-hooks-mismatch` and no stamp. A timestamp that is not
    a finite number is ignored, and a file with neither is stale. ctime is included because install.js
-   copies every hook that is not `.js`, `.cjs` or `.sh` with `copyFileSync`, and a copy API may carry
-   the source's mtime over; it cannot carry ctime, which the kernel sets on the write. What this
+   writes only the top-level `.js`, `.cjs` and `.sh` hooks and a subdirectory's `.sh` files with
+   `writeFileSync`, and copies everything else, including the `lib/*.js` helpers, with
+   `copyFileSync`; a copy API may carry the source's mtime over, but it cannot carry ctime, which the
+   kernel sets on the write. What this
    proves: each managed file was written (or had its metadata changed) during the install window. What
    it does not prove: that its bytes are right. Bytes cannot be compared, because install.js rewrites
    hook content; names alone cannot catch the measured defect, because the stale hooks carry the right
@@ -124,8 +128,13 @@ mods' own files (for example `artifact-gate.cjs`, `herdr-agent-state.sh`, `gsd-p
    carry that placeholder at 030e7ca20 (`git grep -l`; the two without are `hooks.json` and
    `managed-hooks-registry.cjs`). The built `hooks/dist` keeps the placeholder, while the installed
    copy reads, for example, `gsd-hook-version: 1.17.0` (scratch-HOME install, 2026-10-17). So the
-   built and installed bytes differ, the fast path never stamps, and every `sync` reinstalls: the
-   early build only costs one extra `npm run build:hooks`. The fast-path code is kept for now;
+   built and installed bytes differ and the fast path never stamps. On an installer-produced runtime
+   the first condition fails too: the installer's payload rewrites (CTK-ADR-0007 Decision 6) keep the
+   raw clone's payload digest from matching, so the early build is not even reached. Measured
+   2026-10-18 in a scratch HOME: a second `sync` straight after a successful one, with nothing
+   changed, printed "Installed payload differs from the raw clone" and reinstalled. Every `sync`
+   therefore reinstalls; the early build costs one extra `npm run build:hooks` only in the case where
+   the payload digests do match. The fast-path code is kept for now;
    removing or replacing it is a follow-up.
 
 ## Consequences

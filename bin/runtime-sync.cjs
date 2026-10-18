@@ -107,9 +107,10 @@ const HOOK_MTIME_SLACK_MS = 2000;
  * Did this install write every managed hook (CTK-ADR-0011)? For each relpath under `hooksRoot`:
  * a stat failure or a non-regular file is MISSING; a write time below
  * `sinceMs - HOOK_MTIME_SLACK_MS` (or no finite mtime or ctime at all) is STALE. The write time is
- * the later of `mtimeMs` and `ctimeMs`: install.js writes .js/.cjs/.sh hooks with writeFileSync but
- * copies the rest with copyFileSync, and a platform whose copy preserves the source mtime would
- * otherwise read a freshly copied file as stale. A copy cannot carry ctime over; the kernel sets it
+ * the later of `mtimeMs` and `ctimeMs`: install.js writes the top-level .js/.cjs/.sh hooks and a
+ * subdirectory's .sh files with writeFileSync but copies everything else, including the lib/*.js
+ * helpers, with copyFileSync, and a platform whose copy preserves the source mtime would otherwise
+ * read a freshly copied file as stale. A copy cannot carry ctime over; the kernel sets it
  * on any write. A non-finite timestamp is ignored rather than allowed to poison the max. This
  * proves each file was WRITTEN (or had its metadata changed) during the install window, not that
  * its bytes are right, and it cannot see a concurrent writer inside that window.
@@ -414,7 +415,10 @@ function sync(deps = {}) {
       // costs neither an `npm ci` nor an install. Since CTK-ADR-0011 it must ALSO hold for the
       // managed hooks (D7): a hooks-only upstream commit leaves the payload equal. With the real
       // installer the hook comparison cannot succeed while hooks carry `{{GSD_VERSION}}` (install.js
-      // substitutes it, hooks/dist keeps it), so this branch only ever logs "inconclusive" today.
+      // substitutes it, hooks/dist keeps it), so when reached this branch can only log
+      // "inconclusive". On an installer-produced runtime it is not even reached: the payload rewrites
+      // (CTK-ADR-0007 Decision 6) keep payloadEqual false (measured: a second sync with nothing
+      // changed still printed "Installed payload differs from the raw clone").
       log('Installed payload already matches ' + tip.slice(0, 8) + ' - checking the managed gsd-core hooks ...');
       try {
         buildHooks();
