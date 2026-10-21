@@ -54,8 +54,9 @@
  *     and the ball goes to the author (failing checks, DIRTY), else the requested reviewers, else the
  *     maintainer (approval on an older commit, checks pending). BEHIND is NEVER a blocker (CTK-ADR-0012):
  *     with an active merge queue the PR is tested on top of the entries ahead of it, and without one the
- *     maintainer's squash merge does not need a rebase; a BEHIND PR prints an informational note whose
- *     wording follows the queue mode. When the queue is active the ready line says it enters the queue.
+ *     base requires up-to-date branches (GitHub reports BEHIND only then), so the maintainer runs Update
+ *     branch at merge time: the ready line carries "maintainer: Update branch at merge time; never --admin"
+ *     and a BEHIND note explains it. When the queue is active the ready line says it enters the queue.
  *   - Only dismissed reviews and nobody requested -> maintainer, re-approval needed. Pending requests
  *     -> reviewer. Else none. A draft or non-OPEN PR gets no ball.
  * reviewDecision is a cross-check: when GitHub's value disagrees with this reading a note line says so.
@@ -81,6 +82,7 @@ const FOOTER =
   'the reviewer was re-requested: check the timeline.';
 const MAX_BUFFER = 64 * 1024 * 1024; // review listings carry full bodies; 1 MiB (the default) is not enough
 const UNKNOWN_RETRY_MS = 2000;
+const MERGE_CAVEAT = 'Update branch at merge time; never --admin';
 
 /** The three read-only argv arrays for one PR. */
 function ghArgs(number, repo) {
@@ -151,10 +153,16 @@ function fetchPr(number, repo, deps = {}) {
   return { view, reviews, checks: Array.isArray(checks) ? checks : [] };
 }
 
-/** Flatten a --paginate --slurp result (an array of pages) or a single page into one array. */
-function pagesToArray(pages) {
-  if (!Array.isArray(pages)) return [];
-  return pages.every((p) => Array.isArray(p)) ? pages.flat() : pages;
+/**
+ * Flatten a --paginate --slurp result (an array of pages, each an array) into one array. Any other shape
+ * THROWS, so fetchQueue reports mode unknown instead of silently reading an odd reply as "no queue"
+ * (Postel: liberal in what is accepted, but never quietly).
+ */
+function pagesToArray(pages, what) {
+  if (!Array.isArray(pages) || !pages.every((p) => Array.isArray(p))) {
+    throw new Error(`${what} reply is not an array of pages`);
+  }
+  return pages.flat();
 }
 
 function hasMergeQueue(rules) {
@@ -204,6 +212,9 @@ function rulesetCovers(ruleset, base, defaultBranch) {
  */
 function deriveQueue({ base, rules, details, defaultBranch }) {
   const active = Array.isArray(rules) ? rules : [];
+  // strictUpToDate covers ACTIVE rulesets only. Classic branch protection (which is what enforces
+  // up-to-date on open-gsd next today) is invisible here, so the BEHIND caveat keys on mergeStateStatus
+  // itself, never on this flag.
   const strictUpToDate = active.some(
     (r) => r && r.type === 'required_status_checks' && r.parameters && r.parameters.strict_required_status_checks_policy === true
   );
@@ -230,9 +241,9 @@ function fetchQueue(repo, base, deps = {}) {
   const b = String(base || '');
   if (!b) return { base: '', mode: 'unknown', error: 'no base branch in the PR view' };
   try {
-    const rules = pagesToArray(gh(['api', '--paginate', '--slurp', `repos/${repo}/rules/branches/${encodeURIComponent(b)}?per_page=100`]));
+    const rules = pagesToArray(gh(['api', '--paginate', '--slurp', `repos/${repo}/rules/branches/${encodeURIComponent(b)}?per_page=100`]), 'rules/branches');
     if (hasMergeQueue(rules)) return deriveQueue({ base: b, rules, details: [], defaultBranch: null });
-    const list = pagesToArray(gh(['api', '--paginate', '--slurp', `repos/${repo}/rulesets?includes_parents=true&per_page=100`]));
+    const list = pagesToArray(gh(['api', '--paginate', '--slurp', `repos/${repo}/rulesets?includes_parents=true&per_page=100`]), 'rulesets');
     const candidates = list.filter((r) => r && r.target === 'branch' && r.enforcement === 'evaluate' && /^[0-9]+$/.test(String(r.id)));
     const details = candidates.map((r) => gh(['api', `repos/${repo}/rulesets/${String(r.id)}`]));
     const needsDefault = details.some(
@@ -362,7 +373,7 @@ function decisionNote(reviewDecision, latest) {
 }
 
 function ballOf(owner, fields) {
-  return Object.assign({ owner, login: null, reRequested: null, reason: '', ready: false, blockers: [] }, fields);
+  return Object.assign({ owner, login: null, reRequested: null, reason: '', ready: false, blockers: [], mergeCaveat: null }, fields);
 }
 
 function decideBall(v, latest, req, head, checks, queue) {
@@ -396,7 +407,11 @@ function decideBall(v, latest, req, head, checks, queue) {
     if (v.mergeStateStatus === 'DIRTY') blockers.push('DIRTY (merge conflicts)');
     // BEHIND is deliberately absent (CTK-ADR-0012): it is reported as an informational note instead.
     if (blockers.length === 0) {
-      return ballOf('maintainer', { ready: true, reason: 'ready for maintainer', entersQueue: Boolean(queue && queue.mode === 'active') });
+      const active = Boolean(queue && queue.mode === 'active');
+      // GitHub reports BEHIND only when the base requires up-to-date branches (CTK-ADR-0012), so without an
+      // active queue the merge needs an Update branch first: the maintainer's step, never the author's.
+      const mergeCaveat = !active && v.mergeStateStatus === 'BEHIND' ? MERGE_CAVEAT : null;
+      return ballOf('maintainer', { ready: true, reason: 'ready for maintainer', entersQueue: active, mergeCaveat });
     }
     const authorOwes = checks.counts.fail > 0 || v.mergeStateStatus === 'DIRTY';
     const owner = authorOwes ? 'author' : req.all.length ? 'reviewer' : 'maintainer';
@@ -440,7 +455,8 @@ function ballLine(d) {
   if (b.owner === 'reviewer') return `  ball: REVIEWER owes a first review (requests pending: ${d.requested.map(clean).join(', ')})`;
   if (b.owner === 'maintainer' && b.ready) {
     const base = '  ball: MAINTAINER ready (approved on the head, no change request, no pending requests, checks green, not DIRTY';
-    return b.entersQueue ? `${base}; enters the merge queue on ${clean(d.queue.base)})` : `${base})`;
+    if (b.entersQueue) return `${base}; enters the merge queue on ${clean(d.queue.base)})`;
+    return b.mergeCaveat ? `${base}; maintainer: ${b.mergeCaveat})` : `${base})`;
   }
   if (b.owner === 'maintainer' && b.blockers.length) return `  ball: MAINTAINER not ready ${blocked()}`;
   if (b.owner === 'maintainer') return `  ball: MAINTAINER re-approval needed (latest review by ${clean(b.login)} was dismissed; no review requested)`;
@@ -457,19 +473,18 @@ function queueLine(q) {
   return `  queue: ${base} unknown (queue read failed: ${clean(q.error) || 'unknown error'}; BEHIND treated as informational)`;
 }
 
-/** The informational BEHIND note; its wording follows the queue mode. BEHIND never blocks (CTK-ADR-0012). */
+/**
+ * The BEHIND note; its wording follows the queue mode. GitHub reports BEHIND only when the base requires
+ * up-to-date branches (open-gsd next: classic protection, enforcement_level non_admins), so BEHIND is never
+ * author work, and without an active queue the maintainer runs Update branch at merge time (CTK-ADR-0012).
+ */
 function behindNote(q) {
-  if (!q) return '  note: BEHIND is informational: the merge-queue mode was not read; do not rebase or update the branch for BEHIND alone';
-  const mode = q.mode;
   const base = (q && clean(q.base)) || 'the base branch';
-  if (mode === 'active') {
-    return `  note: BEHIND is informational: the merge queue on ${base} tests the PR on top of the entries ahead of it; do not rebase or update the branch for BEHIND`;
+  if (q && q.mode === 'active') {
+    return `  note: BEHIND is informational: the merge queue on ${base} tests the PR on top of the entries ahead of it; nobody rebases or runs Update branch for BEHIND, and never --admin`;
   }
-  if (mode === 'unknown') {
-    return '  note: BEHIND is informational: the merge-queue mode is unknown (read failed); do not rebase or update the branch for BEHIND alone';
-  }
-  const strict = q.strictUpToDate ? '; an active ruleset requires up-to-date branches, so the maintainer updates the branch at merge time' : '';
-  return `  note: BEHIND is informational: no enforcing merge queue on ${base}; do not rebase or update the branch for BEHIND alone (rebase for DIRTY or a needed change; a push after approval resets review)${strict}`;
+  const why = !q ? ' (mode not read)' : q.mode === 'unknown' ? ' (mode unknown: read failed)' : '';
+  return `  note: BEHIND is not author work: GitHub reports BEHIND only when ${base} requires up-to-date branches, so with no active merge queue${why} the maintainer runs Update branch at merge time (one fresh CI run) and never --admin; the author does not rebase for BEHIND`;
 }
 
 /**
