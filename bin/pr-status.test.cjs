@@ -576,16 +576,16 @@ test('n2m end to end: queue line, ready line and BEHIND note per mode; a failed 
   const cases = [
     ['active.json', /^ {2}queue: next active \(merge_queue rule in ruleset 16752567\)$/m,
       /^ {2}ball: MAINTAINER ready \(approved on the head, no change request, no pending requests, checks green, not DIRTY; enters the merge queue on next\)$/m,
-      /^ {2}note: BEHIND is informational: the merge queue on next tests the PR on top of the entries ahead of it; do not rebase or update the branch for BEHIND$/m],
+      /^ {2}note: BEHIND is informational: the merge queue on next tests the PR on top of the entries ahead of it; nobody rebases or runs Update branch for BEHIND, and never --admin$/m],
     ['evaluate.json', /^ {2}queue: next evaluate \(merge_queue rule in ruleset main-protection, not enforcing\)$/m,
-      /^ {2}ball: MAINTAINER ready \(approved on the head, no change request, no pending requests, checks green, not DIRTY\)$/m,
-      /^ {2}note: BEHIND is informational: no enforcing merge queue on next; do not rebase or update the branch for BEHIND alone \(rebase for DIRTY or a needed change; a push after approval resets review\)$/m],
+      /^ {2}ball: MAINTAINER ready \(approved on the head, no change request, no pending requests, checks green, not DIRTY; maintainer: Update branch at merge time; never --admin\)$/m,
+      /^ {2}note: BEHIND is not author work: GitHub reports BEHIND only when next requires up-to-date branches, so with no active merge queue the maintainer runs Update branch at merge time \(one fresh CI run\) and never --admin; the author does not rebase for BEHIND$/m],
     ['absent.json', /^ {2}queue: next none \(no merge_queue rule applies to the base branch\)$/m,
-      /^ {2}ball: MAINTAINER ready \(approved on the head, no change request, no pending requests, checks green, not DIRTY\)$/m,
-      /^ {2}note: BEHIND is informational: no enforcing merge queue on next; do not rebase or update the branch for BEHIND alone \(rebase for DIRTY or a needed change; a push after approval resets review\)$/m],
+      /^ {2}ball: MAINTAINER ready \(approved on the head, no change request, no pending requests, checks green, not DIRTY; maintainer: Update branch at merge time; never --admin\)$/m,
+      /^ {2}note: BEHIND is not author work: GitHub reports BEHIND only when next requires up-to-date branches, so with no active merge queue the maintainer runs Update branch at merge time \(one fresh CI run\) and never --admin; the author does not rebase for BEHIND$/m],
     ['rules-read-failure.json', /^ {2}queue: next unknown \(queue read failed: gh: Resource not accessible by integration \(HTTP 403\); BEHIND treated as informational\)$/m,
-      /^ {2}ball: MAINTAINER ready \(approved on the head, no change request, no pending requests, checks green, not DIRTY\)$/m,
-      /^ {2}note: BEHIND is informational: the merge-queue mode is unknown \(read failed\); do not rebase or update the branch for BEHIND alone$/m],
+      /^ {2}ball: MAINTAINER ready \(approved on the head, no change request, no pending requests, checks green, not DIRTY; maintainer: Update branch at merge time; never --admin\)$/m,
+      /^ {2}note: BEHIND is not author work: GitHub reports BEHIND only when next requires up-to-date branches, so with no active merge queue \(mode unknown: read failed\) the maintainer runs Update branch at merge time \(one fresh CI run\) and never --admin; the author does not rebase for BEHIND$/m],
   ];
   for (const [q, queueRe, readyRe, noteRe] of cases) {
     const r = runThroughStub(t, [n], { fixturesDir: dir, queue: q });
@@ -631,4 +631,45 @@ test('n2m --json: each result carries the queue object read for its base', (t) =
   assert.equal(d.queue.mode, 'evaluate');
   assert.equal(d.queue.base, 'next');
   assert.equal(d.queue.ruleset, 'main-protection');
+});
+
+// --- 261021-n2m adversarial-gate fixes: BEHIND proves up-to-date is enforced; non-array queue replies ---
+
+test('n2m gate fix: BEHIND with no active queue is a maintainer caveat (Update branch, never --admin), never author work', () => {
+  const fx = loadFixture('approved-ready.json');
+  fx.view.mergeStateStatus = 'BEHIND';
+  for (const mode of ['absent', 'evaluate', 'unknown']) {
+    const d = prStatus.derive({ ...fx, queue: { base: 'next', mode, error: mode === 'unknown' ? 'x' : undefined } });
+    assert.equal(d.ball.owner, 'maintainer', mode);
+    assert.equal(d.ball.ready, true, mode);
+    assert.deepEqual(d.ball.blockers, [], mode);
+    assert.equal(d.ball.mergeCaveat, 'Update branch at merge time; never --admin', mode);
+  }
+  const active = prStatus.derive({ ...fx, queue: { base: 'next', mode: 'active', ruleset: '1' } });
+  assert.equal(active.ball.mergeCaveat, null, 'the active queue handles BEHIND');
+  const clean = prStatus.derive({ ...loadFixture('approved-ready.json'), queue: { base: 'next', mode: 'absent' } });
+  assert.equal(clean.ball.mergeCaveat, null, 'no caveat when not BEHIND');
+  // A BEHIND PR that is not ready still names only its real blockers, and the author is not made to owe BEHIND.
+  const pending = loadFixture('approved-requests-pending.json');
+  pending.view.mergeStateStatus = 'BEHIND';
+  const p = prStatus.derive({ ...pending, queue: { base: 'next', mode: 'absent' } });
+  assert.notEqual(p.ball.owner, 'author');
+  assert.ok(!p.ball.blockers.some((b) => /BEHIND/.test(b)), JSON.stringify(p.ball.blockers));
+});
+
+test('n2m gate fix (Postel): a queue reply that is not an array of pages is mode unknown, never none', () => {
+  const shapes = [{ message: 'odd' }, [{ message: 'odd' }], 'text', null];
+  for (const bad of shapes) {
+    for (const which of ['rules', 'rulesets']) {
+      const gh = (args) => {
+        const p = args.find((a) => a.startsWith('repos/'));
+        if (/\/rules\/branches\//.test(p)) return which === 'rules' ? bad : [[]];
+        if (/\/rulesets\?/.test(p)) return bad;
+        throw new Error('unexpected read ' + p);
+      };
+      const got = prStatus.fetchQueue('open-gsd/gsd-core', 'next', { gh });
+      assert.equal(got.mode, 'unknown', `${which} reply ${JSON.stringify(bad)}`);
+      assert.match(got.error, /not an array/, `${which} reply ${JSON.stringify(bad)}`);
+    }
+  }
 });
