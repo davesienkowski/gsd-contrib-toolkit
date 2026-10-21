@@ -323,6 +323,18 @@ npm run build:lib                            # regenerates gitignored bin/lib/*.
 
 **Push target** — if you have push access (CODEOWNER/member: `gh api repos/open-gsd/gsd-core -q .permissions.push` → `true`), push the branch to **origin** and open a same-repo PR (`git push -u origin fix/<#>-<slug>` then `gh pr create --head fix/<#>-<slug>`). Only an external contributor without push access pushes to a fork and opens a cross-fork PR (`--head <user>:fix/<#>-<slug>`). Default to origin for maintainer work.
 
+**Pushing to an EXISTING PR (2026-10-21 lesson).** The remote is the one named by the PR's `head.repo`, never the worktree's tracking remote: tracking config is set when the worktree is created and can be wrong (on 2026-10-21 the worktrees for #5119 and #5192 tracked `origin` while both heads lived on `davesienkowski/gsd-core`). Before composing the push:
+
+```bash
+gh api repos/open-gsd/gsd-core/pulls/<n> --jq '.head.repo.full_name, .head.ref, .head.sha'
+git remote -v                      # map head.repo to the local remote whose URL names it
+git ls-remote <remote> refs/heads/<head.ref>   # prints head.sha when the mapping is right
+git push <remote> HEAD:<head.ref>             # a plain fast-forward push
+git push --force-with-lease=<head.ref>:<head.sha> <remote> HEAD:<head.ref>   # only after a needed history rewrite
+```
+
+The explicit lease fails closed on a wrong remote and on a moved head. Put `head.repo` in any push hand-off to a worker or to the `!` channel. **After approval, push only when a change is needed** (a push dismisses the approval), and never rebase only for BEHIND (CTK-ADR-0012).
+
 RED-before-GREEN when the fix is already written: `git stash push src/<file>.cts` → `build:lib` → run test (watch fail) → `git stash pop` → `build:lib` → run test (green).
 
 ## Issue body skeleton (bug_report, engine-internal)
@@ -388,9 +400,18 @@ Fixes #<issue#>
 - [x] Regression test added
 - [x] All existing tests pass (`npm test`)
 - [x] `.changeset/` fragment added
+## Self-test report
+- Failing test: <test file and test name>
+- Fails before the fix: <the failing line from the command, run at the parent commit>
+- Passes after the fix: <the passing line from the same command, run at the head>
+- Command: <the exact command>
+- OS: <e.g. Ubuntu 24.04 on WSL2, macOS 15.3, Windows 11 24H2>
+- Node: <node --version>
 ## Breaking changes
 <disclose any Hyrum's-Law behavior change from the artificer pass, else "None">
 ```
+
+**Self-test report (advisory).** Source: trek-e's merge-queue announcement (Discord, 2026-10-21, relayed by Dave): the failing test, that it fails before and passes after, the command run, the OS and the Node version; CI re-runs it; advisory at first. As of 2026-10-21 `.github/PULL_REQUEST_TEMPLATE/fix.md` on `origin/next` has no such section, and pr-template-policy checks only that the required headings are present, so the extra heading passes the template gate. When the upstream template gains the section, mirror its exact headings and drop this note; re-check with `git show origin/next:.github/PULL_REQUEST_TEMPLATE/fix.md`.
 
 **PR title convention (ENFORCED at open time — `pr-title-validator.yml`, `WARN_ONLY:false`):** the title MUST be `<type>(#<issue#>): <imperative>` — the linked issue ref lives **inside the scope**, not the subject. The live matcher is `scripts/release-notes/conventional-title.cjs` (`evaluatePrTitle`): a leading tag (`[security] …`) fails `bad-prefix`; a scope without `#<n>` (e.g. `fix(core): …`) fails `missing-issue-ref`. Valid: `fix(#1542): roadmap rollback`, `feat(#39)!: drop legacy flag`, `enhance(#1549): add PR-title validator`. You MAY add an area after the ref: `fix(#1542, core): …`. (Issue titles are NOT title-gated — the `<type>(<area>)` form above is fine for `gh issue create`; only PR titles are checked, because the changelog is built from them.)
 
@@ -402,7 +423,8 @@ gh pr create --repo open-gsd/gsd-core --base next --head fix/<issue#>-<slug> \
 gh api -X POST repos/open-gsd/gsd-core/issues/<PR#>/labels -f "labels[]=area: <X>"
 # changeset references the PR number → add AFTER the PR exists, then push:
 npm run changeset -- --type Fixed --pr <PR#> --body "<user-facing one-liner>"
-git add .changeset/ && git commit -q -m "chore(changeset): Fixed fragment for #<PR#> (<slug>)" && git push
+# Push to the remote named by the PR's head.repo (see *Push target*), never a bare `git push` that follows the tracking remote:
+git add .changeset/ && git commit -q -m "chore(changeset): Fixed fragment for #<PR#> (<slug>)" && git push <head-repo-remote> HEAD:<head.ref>
 ```
 
 **PR labels (author-applied; the repo has NO auto-labeler):** `area: <X>` (always, mirror the issue) + `security`/`runtime: <X>` if applicable. Use `no-changelog` only when there is no changeset. Do NOT put `bug`/`confirmed-bug`/`priority:` on the PR (issue-only) or `review:`/`needs rebase` (maintainer/bot). `Fixed`/`Security` changesets do NOT trigger docs-lint.
@@ -442,4 +464,4 @@ Children: each is its own issue + PR. The child **PR title** follows the same en
 - `lint:ci` runs `lint-allow-test-rule-refs` → any new `// allow-test-rule: <reason>` MUST carry `see #NNN` (ADR-456).
 - A **changeset-only commit can skip the Tests workflow** → the head shows green meta-checks while a prior commit's Tests FAILED. Always read check-runs on the head SHA and confirm Tests ran there.
 - Reproduce `lint:ci` in a **clean worktree** — a stray untracked `gsd-core/bin/lib/*.cjs` in the main checkout poisons `eslint .`.
-- Don't chase `mergeStateStatus: BEHIND` — the maintainer clears it on merge; re-pushing can re-dismiss an approval.
+- Don't rebase for `mergeStateStatus: BEHIND`: with the merge queue the queue tests the PR on top of `next`, without one the maintainer's squash merge does not need it, and a push after approval dismisses the approval (CTK-ADR-0012). Rebase only for DIRTY or a needed change.

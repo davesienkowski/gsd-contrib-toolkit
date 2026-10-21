@@ -57,8 +57,10 @@ The pipeline (an adversarial gate between every phase; re-fetch live state befor
 3. **Cross-reference in-flight work** — duplicate/overlapping issues, issue↔PR links, PR↔PR file
    collisions; group related `#numbers` so nothing is handled in isolation.
 4. **Prioritize** — quick-fix vs. highest user impact; surface data-loss/security/runtime-broken first.
-5. **State & cost-to-advance** — rank by cheapness: *approved+rebase* < *brief-ready, no PR* <
-   *re-review round* < *needs design*. A re-review beats a fresh design pass.
+5. **State & cost-to-advance** - rank by cheapness: *approved + green (joins the merge queue where
+   it is active)* < *brief-ready, no PR* < *re-review round* < *needs design*. A re-review beats a fresh
+   design pass. BEHIND never costs a tier and never earns a rebase request (CTK-ADR-0012); `pr-status`
+   reports the base branch's live merge-queue mode on its `queue:` line.
 6. **Stranded-value sweep** — issues with a complete brief but a missing `ready-for-agent` label
    (the brief is the expensive part; the label is the only thing gating dispatch).
 7. **Ball-in-court** — anchor to the latest **`CHANGES_REQUESTED`** review (not the latest review of any
