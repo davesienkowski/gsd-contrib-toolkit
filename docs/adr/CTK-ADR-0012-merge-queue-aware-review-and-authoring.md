@@ -155,7 +155,13 @@ The toolkit taught the treadmill trek-e is retiring:
   branch and one fresh CI run. That is the price of never using `--admin`, and it is still far cheaper
   than an author rebase per move of `next`. Not verified: whether that Update-branch push dismisses an
   existing approval (classic protection's dismiss-stale setting is not readable with this token); if it
-  does, the maintainer re-approves after the run.
+  does, the maintainer re-approves after the run. Added 2026-10-21 after acceptance (round-2 gate note
+  N2; no Decision changed): BEHIND can also be stale, read while `compare ... behind_by=0`, and the Update
+  branch is then a harmless no-op (gh 2.95.0 prints `PR branch already up-to-date` and pushes nothing;
+  that string and the compare are read from the gh binary, not exercised live). This record claims
+  neither the dismissal nor the absence of one. Re-review step 13 (note N1) handles both: it records the
+  head before the update, accepts only one new merge commit from the base, re-reads the checks and the
+  approval on the new head, and merges with `--match-head-commit`.
 - **Negative / accepted:** classic branch protection is only partly visible. `branches/<base>` shows it
   exists and which checks it requires, but `branches/<base>/protection` (and with it any up-to-date flag or
   classic merge-queue setting) returns 404 without admin rights. So `pr-status` keys the maintainer caveat
@@ -165,6 +171,21 @@ The toolkit taught the treadmill trek-e is retiring:
   advisory note and the wording test make the re-mirror a one-file edit.
 - **Negative / accepted:** each `pr-status` run now makes two to four extra REST reads per base branch
   (four on open-gsd today: the rules read, the rulesets list and two evaluate-mode branch rulesets).
+- **`queue.strictUpToDate` removed (added 2026-10-21 after acceptance, round-2 gate note N4; no Decision
+  changed).** The first implementation also returned `strictUpToDate` in the `pr-status --json` queue
+  object. It read active rulesets only, so on open-gsd `next` it said `false` while classic protection
+  enforces up-to-date for non-admins, and nothing keyed on it. Choice: removed, not kept as a deprecated
+  field for one release. Hyrum's law cuts toward removal here: every observable field gains a consumer
+  in time, and a consumer of this one would trust a false negative, so the cheapest moment to drop it is
+  before the first release that carries it. It is in no release tag (the latest is v2.7) and reached the
+  published main on 2026-10-21 (origin/main at 3254623). No consumer was found via the paths searched:
+  `git grep` of the toolkit (only `bin/pr-status.cjs`, its test and three fixtures), `grep -r` of
+  `~/repos` with `.git` and `node_modules` excluded (including dev-env and orca-gsd-plugin; only two
+  gsd-core-notes gate reports mention it), and `~/.claude/{skills,commands,hooks}` and `~/.gsd`. A
+  consumer outside Dave's machine cannot be ruled out; it would now see the key absent rather than a
+  wrong value. The queue object is now exactly `base`, `mode` and `ruleset` (`base`, `mode` and `error`
+  when unknown); a key-set test in `bin/pr-status.test.cjs` pins the active, evaluate and none shapes,
+  so a later field there is a decision, not drift.
 
 ## Alternatives considered
 
