@@ -11,7 +11,9 @@
   round-2 gate on the corrected record returned MERGE-OK.
 - **Review:** Published for maintainer review and open to revision. A changed decision is recorded by a
   superseding or amending CTK-ADR, never a silent edit to this record.
-- **Date:** 2026-10-21 (milestone v2.8)
+- **Date:** 2026-10-21 (milestone v2.8); Consequences gained two dated additions after acceptance on
+  2026-10-21 (round-2 gate notes N2 and N4, and the content check from the follow-up gate on N1); no
+  Decision changed.
 - **Scope:** GSD Contribution Toolkit: `bin/pr-status.cjs`, the `maintainer-review-sweep` and
   `core-contribution` skills, the `gsd-submit` and `gsd-review-sweep` commands, the maintainer guide.
 - **Trigger:** trek-e's announcement on the gsd-core Discord, 2026-10-21 (relayed by Dave), that
@@ -161,7 +163,12 @@ The toolkit taught the treadmill trek-e is retiring:
   that string and the compare are read from the gh binary, not exercised live). This record claims
   neither the dismissal nor the absence of one. Re-review step 13 (note N1) handles both: it records the
   head before the update, accepts only one new merge commit from the base, re-reads the checks and the
-  approval on the new head, and merges with `--match-head-commit`.
+  approval on the new head, and merges with `--match-head-commit`. That check covers both its parents and
+  its content: the new head's tree must equal the clean merge of its parents, recomputed locally with
+  `git merge-tree --write-tree` (git 2.38+; a throwaway-worktree merge on an older git), because a
+  contributor can force-push a merge commit with the expected parents and extra changes. On 2026-10-21
+  that recomputation matched the tree of 8 of 8 GitHub update-branch merges found in the local gsd-core
+  clone; a mismatch from a differing merge engine would only cost a restart.
 - **Negative / accepted:** classic branch protection is only partly visible. `branches/<base>` shows it
   exists and which checks it requires, but `branches/<base>/protection` (and with it any up-to-date flag or
   classic merge-queue setting) returns 404 without admin rights. So `pr-status` keys the maintainer caveat
