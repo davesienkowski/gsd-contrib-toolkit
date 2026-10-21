@@ -180,8 +180,8 @@ a LOUD error, never a false "no drift."
 
 - **Ball-in-court** anchors to the latest `CHANGES_REQUESTED`, not the latest review of any kind — a
   non-owner's approval does not clear an owner's change-request.
-- **Read real check-runs on the head SHA** — branch protection is evaluate-mode; a changeset-only commit
-  can hide a stale failed Tests run.
+- **Read real check-runs on the head SHA**: the rulesets are evaluate-mode and classic protection on `next`
+  gates 7 checks for non-admins; a changeset-only commit can hide a stale failed Tests run.
 - **Don't merge over another maintainer's *unresolved* change-request.** If your re-review *verifiably*
   confirms they were addressed, **dismiss** the stale CR with an evidence-cited message — but *only* on
   explicit human authorization (dismissal is consequential and hard to reverse).
