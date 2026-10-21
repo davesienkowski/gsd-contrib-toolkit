@@ -464,4 +464,4 @@ Children: each is its own issue + PR. The child **PR title** follows the same en
 - `lint:ci` runs `lint-allow-test-rule-refs` → any new `// allow-test-rule: <reason>` MUST carry `see #NNN` (ADR-456).
 - A **changeset-only commit can skip the Tests workflow** → the head shows green meta-checks while a prior commit's Tests FAILED. Always read check-runs on the head SHA and confirm Tests ran there.
 - Reproduce `lint:ci` in a **clean worktree** — a stray untracked `gsd-core/bin/lib/*.cjs` in the main checkout poisons `eslint .`.
-- Don't rebase for `mergeStateStatus: BEHIND`: with the merge queue the queue tests the PR on top of `next`, without one the maintainer's squash merge does not need it, and a push after approval dismisses the approval (CTK-ADR-0012). Rebase only for DIRTY or a needed change.
+- Don't rebase for `mergeStateStatus: BEHIND`: with the merge queue the queue tests the PR on top of `next`, without one the maintainer runs Update branch at merge time (not your job), and a push after approval dismisses the approval (CTK-ADR-0012). Rebase only for DIRTY or a needed change.
