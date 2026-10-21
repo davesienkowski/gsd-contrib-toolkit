@@ -119,3 +119,35 @@ test('n2m wording: the sweep reads the live queue mode from pr-status and never 
   assert.match(read('commands/gsd-review-sweep.md'), /BEHIND is informational/);
   assert.match(read('skills/maintainer-review-sweep/labels.md'), /Never add `needs rebase` for BEHIND/);
 });
+
+// --- adversarial-gate fixes: next has classic protection that enforces up-to-date for non-admins ---
+
+test('n2m gate fix: no surface claims the squash merge needs no update or that branch protection is evaluate-only', () => {
+  const banned = [
+    /squash merge does not need/,
+    /branch protection is evaluate-mode/,
+    /in evaluate mode means CI is not gated/,
+    /merge as before/,
+    /the sole `CLEAR/,
+  ];
+  for (const rel of SURFACES) {
+    const text = read(rel);
+    for (const re of banned) assert.ok(!re.test(text), `${rel} still matches ${re}`);
+  }
+});
+
+test('n2m gate fix: the maintainer updates a BEHIND branch at merge time, and --admin is never used in any mode', () => {
+  const rr = read('skills/maintainer-review-sweep/re-review.md');
+  assert.match(rr, /never `--admin` in any mode/);
+  assert.match(rr, /gh pr update-branch <n> --repo <owner>\/<repo>/);
+  for (const rel of [
+    'skills/maintainer-review-sweep/re-review.md',
+    'skills/maintainer-review-sweep/SKILL.md',
+    'skills/core-contribution/SKILL.md',
+    'skills/core-contribution/reference.md',
+    'commands/gsd-review-sweep.md',
+  ]) {
+    assert.match(read(rel), /Update branch at merge time/, `${rel} names the maintainer's Update branch at merge time`);
+  }
+  assert.match(read('skills/maintainer-review-sweep/SKILL.md'), /enforcement_level/, 'step 7 says how to read classic protection');
+});
