@@ -649,22 +649,37 @@ test('261006-jsm review round (IN-03): observability names verdict-log.cjs; bypa
   assert.match(b, /readable event/);
 });
 
-// Quick 261021-n2m: CTK-ADR-0012 (merge-queue convention change), accepted on Dave's 2026-10-21 request.
+// Quick 261021-n2m: CTK-ADR-0012 (merge-queue convention change). Proposed when landed on toolkit main,
+// then Accepted on Dave's 2026-10-21 sign-off, recorded verbatim in the Status bullet.
 // (CTK-ADR-0011 is reserved by the unmerged branch davesienkowski/fix-runtime-sync-builds-hooks.)
-test('261021-n2m: CTK-ADR-0012 is Proposed until Dave signs off (the README convention), with his request as the trigger', () => {
+test('261021-n2m: CTK-ADR-0012 Status line says Accepted with the dated sign-off, quotes it, and is not Proposed', () => {
   const line = statusLine(adrFile(12));
-  assert.match(line, /^- \*\*Status:\*\* Proposed \(2026-10-21\)\./, line);
-  assert.doesNotMatch(line, /Accepted/, line);
-  const text = fs.readFileSync(adrFile(12), 'utf8');
-  assert.match(text, /^- \*\*Trigger:\*\* trek-e's announcement/m, 'names the trigger');
-  assert.match(text, /^- \*\*Revisit:\*\* at trek-e's four-week review/m, 'revisit tied to the four-week review');
-  assert.match(text, /^## Revisit$/m, 'carries a Revisit section');
+  assert.match(line, /^- \*\*Status:\*\* Accepted \(2026-10-21, by Dave's explicit sign-off\)\./, line);
+  assert.doesNotMatch(line, /^- \*\*Status:\*\*\s*Proposed/, line);
+  // The Status bullet itself records the approval and its basis (the quote and the date).
+  const lines = fs.readFileSync(adrFile(12), 'utf8').split('\n');
+  const start = lines.findIndex((l) => l === line);
+  const para = [];
+  for (let i = start; i < lines.length && lines[i].trim() !== '' && (i === start || !/^- \*\*/.test(lines[i])); i++) para.push(lines[i]);
+  const text = para.join(' ').replace(/\s+/g, ' ');
+  assert.ok(text.includes('Dave has approved this record'), text);
+  assert.ok(text.includes('"i pre approve sign offs on everything. proceed using your judgement"'), text);
+  assert.doesNotMatch(text, PENDING_WORDING, text);
+  assert.doesNotMatch(text, /stays Proposed/, text);
+  // Pending wording must not return anywhere in the header list (to the first blank line).
+  const header = [];
+  for (let i = start; i < lines.length && lines[i].trim() !== ''; i++) header.push(lines[i]);
+  assert.doesNotMatch(header.join(' ').replace(/\s+/g, ' '), PENDING_WORDING, header.join(' '));
+  const whole = lines.join('\n');
+  assert.match(whole, /^- \*\*Trigger:\*\* trek-e's announcement/m, 'names the trigger');
+  assert.match(whole, /^- \*\*Revisit:\*\* at trek-e's four-week review/m, 'revisit tied to the four-week review');
+  assert.match(whole, /^## Revisit$/m, 'carries a Revisit section');
 });
 
-test('261021-n2m: docs/adr/README.md row for CTK-ADR-0012 says Proposed, milestone v2.8', () => {
+test('261021-n2m: docs/adr/README.md row for CTK-ADR-0012 says Accepted (not Proposed), milestone v2.8', () => {
   const cells = readmeRow('CTK-ADR-0012').split('|').map((c) => c.trim());
-  assert.ok(cells.includes('Proposed'), `status cell is Proposed: ${JSON.stringify(cells)}`);
-  assert.ok(!cells.includes('Accepted'), 'status cell is not Accepted');
+  assert.ok(cells.includes('Accepted'), `status cell is Accepted: ${JSON.stringify(cells)}`);
+  assert.ok(!cells.includes('Proposed'), 'status cell is not Proposed');
   assert.ok(cells.includes('v2.8'), `milestone cell is v2.8: ${JSON.stringify(cells)}`);
 });
 

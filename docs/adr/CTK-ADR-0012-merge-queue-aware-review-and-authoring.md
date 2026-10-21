@@ -1,11 +1,14 @@
 # CTK-ADR-0012: Follow the gsd-core merge queue: BEHIND is never author work, the queue mode is read live
 
-- **Status:** Proposed (2026-10-21). The decision is implemented on branch
-  `davesienkowski/merge-queue-awareness` and, per this corpus's README, stays Proposed until Dave signs
-  off. Dave's 2026-10-21 request to "update my gsd-contrib-toolkit and anything we use related to it to
-  consider what trek-e said" is the trigger for the work, not the sign-off (quick 261021-n2m). An
-  independent adversarial gate on 2026-10-21 refuted this record's first draft (it said up-to-date was not
-  enforced on `next`); the corrections are folded in below.
+- **Status:** Accepted (2026-10-21, by Dave's explicit sign-off). Dave has approved this record; before
+  that sign-off it was Proposed, documenting a decision implemented on branch
+  `davesienkowski/merge-queue-awareness` and fast-forwarded into toolkit main at 58528a3. Approval basis:
+  Dave, 2026-10-21, "i pre approve sign offs on everything. proceed using your judgement" (relayed to the
+  landing session by the coordinating session). Dave's 2026-10-21 request to "update my
+  gsd-contrib-toolkit and anything we use related to it to consider what trek-e said" is the trigger for
+  the work (quick 261021-n2m). An independent adversarial gate on 2026-10-21 refuted this record's first
+  draft (it said up-to-date was not enforced on `next`); the corrections are folded in below, and a
+  round-2 gate on the corrected record returned MERGE-OK.
 - **Review:** Published for maintainer review and open to revision. A changed decision is recorded by a
   superseding or amending CTK-ADR, never a silent edit to this record.
 - **Date:** 2026-10-21 (milestone v2.8)
@@ -193,4 +196,5 @@ Re-open this record when any of these happens, and re-run the live checks in *Co
   side of Decision 1 (Update branch at merge time) becomes permanent, so re-check its cost;
 - classic protection on `next` changes (`gh api repos/open-gsd/gsd-core/branches/next --jq .protection`), or
   open PRs stop reading BEHIND while behind `next`: the up-to-date requirement Decision 1 relies on moved;
-- Dave signs off: flip Status to Accepted with the date (a Proposed record becomes Accepted only by that).
+- Dave signed off on 2026-10-21 (see Status); from here a changed decision is an amending or superseding
+  CTK-ADR, never an edit to this record.
