@@ -3,8 +3,7 @@
     "source": "synthetic from absent.json",
     "edits": "rulesetDetails 16752567 (main-protection, enforcement evaluate, ref_name ~DEFAULT_BRANCH) gains a merge_queue rule; rules/branches/next stays [] because evaluate rules are not returned there",
     "expected": {
-      "mode": "evaluate",
-      "strictUpToDate": false
+      "mode": "evaluate"
     }
   },
   "repo": {

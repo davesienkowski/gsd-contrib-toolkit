@@ -3,8 +3,7 @@
     "source": "captured open-gsd/gsd-core rulesets 2026-10-21T20:41:02Z",
     "edits": "kept id, name, target, source_type, source, enforcement, conditions, rules; dropped node_id, _links, timestamps, current_user_can_bypass",
     "expected": {
-      "mode": "absent",
-      "strictUpToDate": false
+      "mode": "absent"
     }
   },
   "repo": {

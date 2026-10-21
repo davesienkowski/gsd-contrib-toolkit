@@ -498,7 +498,6 @@ test('n2m deriveQueue: each queue fixture yields its recorded mode (absent is th
     const got = prStatus.deriveQueue(queueInput(q));
     assert.equal(got.mode, q.provenance.expected.mode, `${f}: mode`);
     assert.equal(got.base, 'next', `${f}: base`);
-    assert.equal(got.strictUpToDate, q.provenance.expected.strictUpToDate, `${f}: strictUpToDate`);
   }
 });
 

@@ -208,23 +208,21 @@ function rulesetCovers(ruleset, base, defaultBranch) {
  *
  * @param {{base: string, rules: object[], details: object[], defaultBranch: (string|null)}} input
  *   rules = the ACTIVE rules for the base (rules/branches); details = the full evaluate-mode branch rulesets
- * @returns {{base: string, mode: 'active'|'evaluate'|'absent', ruleset: (string|null), strictUpToDate: boolean}}
+ * @returns {{base: string, mode: 'active'|'evaluate'|'absent', ruleset: (string|null)}}
  */
 function deriveQueue({ base, rules, details, defaultBranch }) {
   const active = Array.isArray(rules) ? rules : [];
-  // strictUpToDate covers ACTIVE rulesets only. Classic branch protection (which is what enforces
-  // up-to-date on open-gsd next today) is invisible here, so the BEHIND caveat keys on mergeStateStatus
-  // itself, never on this flag.
-  const strictUpToDate = active.some(
-    (r) => r && r.type === 'required_status_checks' && r.parameters && r.parameters.strict_required_status_checks_policy === true
-  );
+  // No up-to-date flag here: these reads see rulesets only, and classic branch protection (what enforces
+  // up-to-date on open-gsd next today) is invisible to them, so a flag would read false while the rule is
+  // enforced. The BEHIND caveat keys on mergeStateStatus itself (CTK-ADR-0012; strictUpToDate removed
+  // after the round-2 gate, note N4).
   const mq = active.find((r) => r && r.type === 'merge_queue');
-  if (mq) return { base, mode: 'active', ruleset: mq.ruleset_id == null ? null : String(mq.ruleset_id), strictUpToDate };
+  if (mq) return { base, mode: 'active', ruleset: mq.ruleset_id == null ? null : String(mq.ruleset_id) };
   const evaluating = (Array.isArray(details) ? details : []).find(
     (d) => d && d.target === 'branch' && d.enforcement === 'evaluate' && hasMergeQueue(d.rules) && rulesetCovers(d, base, defaultBranch)
   );
-  if (evaluating) return { base, mode: 'evaluate', ruleset: String(evaluating.name || evaluating.id), strictUpToDate };
-  return { base, mode: 'absent', ruleset: null, strictUpToDate };
+  if (evaluating) return { base, mode: 'evaluate', ruleset: String(evaluating.name || evaluating.id) };
+  return { base, mode: 'absent', ruleset: null };
 }
 
 /**
@@ -234,7 +232,7 @@ function deriveQueue({ base, rules, details, defaultBranch }) {
  * @param {string} repo owner/name
  * @param {string} base base branch name
  * @param {{gh?: Function}} [deps]
- * @returns {{base: string, mode: string, ruleset?: (string|null), strictUpToDate?: boolean, error?: string}}
+ * @returns {{base: string, mode: string, ruleset?: (string|null), error?: string}}
  */
 function fetchQueue(repo, base, deps = {}) {
   const gh = deps.gh || defaultGh;

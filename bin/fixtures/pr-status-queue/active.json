@@ -3,8 +3,7 @@
     "source": "synthetic from absent.json",
     "edits": "main-protection (16752567) switched to enforcement active and given a merge_queue rule; rules/branches/next returns its rules in the documented shape (type, ruleset_source_type, ruleset_source, ruleset_id, parameters)",
     "expected": {
-      "mode": "active",
-      "strictUpToDate": true
+      "mode": "active"
     }
   },
   "repo": {
