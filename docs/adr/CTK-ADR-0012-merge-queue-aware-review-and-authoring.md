@@ -1,11 +1,14 @@
-# CTK-ADR-0012: Follow the gsd-core merge queue: BEHIND is informational, the queue mode is read live
+# CTK-ADR-0012: Follow the gsd-core merge queue: BEHIND is never author work, the queue mode is read live
 
-- **Status:** Accepted (2026-10-21, by Dave's explicit request). Dave asked on 2026-10-21 to "update my
-  gsd-contrib-toolkit and anything we use related to it to consider what trek-e said"; that request is
-  the approval basis for this record (quick 261021-n2m).
+- **Status:** Proposed (2026-10-21). The decision is implemented on branch
+  `davesienkowski/merge-queue-awareness` and, per this corpus's README, stays Proposed until Dave signs
+  off. Dave's 2026-10-21 request to "update my gsd-contrib-toolkit and anything we use related to it to
+  consider what trek-e said" is the trigger for the work, not the sign-off (quick 261021-n2m). An
+  independent adversarial gate on 2026-10-21 refuted this record's first draft (it said up-to-date was not
+  enforced on `next`); the corrections are folded in below.
 - **Review:** Published for maintainer review and open to revision. A changed decision is recorded by a
   superseding or amending CTK-ADR, never a silent edit to this record.
-- **Date:** 2026-10-21 (milestone v2.8+)
+- **Date:** 2026-10-21 (milestone v2.8)
 - **Scope:** GSD Contribution Toolkit: `bin/pr-status.cjs`, the `maintainer-review-sweep` and
   `core-contribution` skills, the `gsd-submit` and `gsd-review-sweep` commands, the maintainer guide.
 - **Trigger:** trek-e's announcement on the gsd-core Discord, 2026-10-21 (relayed by Dave), that
@@ -48,10 +51,15 @@ Verified against GitHub and `origin/next` (812ddb5f) on 2026-10-21 at about 20:4
 | A merge queue on `next`? | **No.** No ruleset holds a `merge_queue` rule; `mergeQueue(branch:"next")` is null | `gh api repos/open-gsd/gsd-core/rulesets` and each ruleset's rules; GraphQL `repository{mergeQueue(branch:"next")}` |
 | Ruleset enforcement | All three rulesets (`main-protection` on `~DEFAULT_BRANCH` = `next`, `release-branches`, `tag-immutability`) are `evaluate`; `rules/branches/next` returns `[]` | REST rulesets and rules endpoints |
 | Self-test report in the fix template | **Not landed.** `.github/PULL_REQUEST_TEMPLATE/fix.md` last changed 2026-09-13 (1110c3b4e) and has no such section | `git show origin/next:.github/PULL_REQUEST_TEMPLATE/fix.md` |
+| Classic branch protection on `next` | **Enforced for non-admins.** `protected: true`; 7 required checks (check-branch, changeset-lint, docs-lint, validate-target, Issue link required, Pull request template format, Required tests); `enforcement_level: non_admins`. `branches/next/protection` returns 404 to this token: a permissions limit, not absence | `gh api repos/open-gsd/gsd-core/branches/next --jq '{protected,protection}'` |
+| Is up-to-date required? | **Yes, for non-admins.** 36 of 79 open PRs on `next` read BEHIND (35 BLOCKED, 8 DIRTY; e.g. #5598 `mergeable_state: behind`). Control: the fork's #33, 1303 commits behind an unprotected `next`, reads `clean`. GitHub reports BEHIND only when the base requires up-to-date branches; the evaluate rulesets do not affect merge state, so the requirement comes from classic protection | `gh pr list --base next --state open --json mergeStateStatus`; `gh api repos/davesienkowski/gsd-core/pulls/33`, `branches/next` there (`protected: false`), `compare` (`behind_by 1303`) |
 | Every required check reports in the queue | **Not landed.** Only `test.yml` has a `merge_group` trigger (#4242, 2026-09-03). The required checks `Changeset Required`, `require-issue-link` and `pr-template-format` run on `pull_request` / `pull_request_target` only. #4999 (make next merge-queue-ready) was reverted by #5001 on 2026-09-25 | `git grep merge_group origin/next -- .github/workflows`, PR search |
 
-So the queue is announced, not configured. That is the reason the toolkit must read the mode rather
-than assume it.
+So the queue is announced, not configured, and until it is active a non-admin cannot merge a BEHIND PR on
+`next`: someone must update the branch first, or bypass the requirement with `--admin`. That admin bypass
+is the "landed untested against next" path trek-e named, and his "maintainer PRs no longer need an admin
+override" fits this. The toolkit must read the mode rather than assume it, and must say who updates a
+BEHIND branch while there is no queue.
 
 ### What the toolkit encoded
 
@@ -69,32 +77,45 @@ The toolkit taught the treadmill trek-e is retiring:
 
 ## Decision
 
-1. **BEHIND is informational in every mode.** It is never a blocker, never makes the author owe work,
-   never costs a tier, and never earns a rebase or Update-branch request. A rebase is justified only by a
-   DIRTY conflict or by a needed change that requires new commits anyway. This holds before the queue
-   enforces too: the rulesets are `evaluate`, so the strict up-to-date policy is not enforced, the
-   maintainer's squash merge does not need a rebase, and the announcement asks contributors to stop now.
+1. **BEHIND is never author work; who handles it depends on the queue mode.**
+   - **Author (every mode):** never rebase or Update branch because `next` moved; BEHIND never costs a
+     tier and never earns a rebase request. A rebase is justified only by a DIRTY conflict or by a needed
+     change that requires new commits anyway. This is faithful to trek-e's rule and holds now.
+   - **Maintainer, queue `none`, `evaluate` or `unknown`:** a BEHIND PR cannot be merged by a non-admin
+     (classic protection requires up-to-date branches). At merge time the maintainer runs Update branch
+     (`gh pr update-branch <n>`, a merge commit from the base, which triggers one fresh CI run), waits for
+     it to go green, and then merges.
+   - **Queue `active`:** BEHIND is moot; the queue tests the PR on top of the entries ahead of it.
+   - **`--admin` is never used, in any mode.** It bypasses both the queue and the up-to-date
+     requirement, which is how a merge lands untested against `next`.
+   `pr-status` treats a reported BEHIND as proof that up-to-date is enforced on the base (GitHub reports
+   it only then), because classic protection is not fully readable: with no active queue it keeps the PR
+   MAINTAINER ready and adds "maintainer: Update branch at merge time; never --admin".
 
 2. **The queue mode is read live, never hardcoded.** `pr-status` reads it once per repo and base branch
    per run with REST GETs only: `rules/branches/<base>` (active rules; a `merge_queue` entry means
    **active**), then the repository rulesets and the details of the branch rulesets in evaluate mode (a
    `merge_queue` rule whose `ref_name` conditions cover the base means **evaluate**), with `repos/<R>`
    read only to resolve `~DEFAULT_BRANCH`. Otherwise **none**. Any failed read is **unknown**, named with
-   its error, and the output treats BEHIND as informational. No GraphQL: `pr-status`'s read-only contract
+   its error. A reply that is not an array of pages also reads as **unknown** (Postel: accept liberally, never
+   silently degrade an odd shape to none). No GraphQL: `pr-status`'s read-only contract
    excludes it, and `hooks/review-artifact.cjs` gates GraphQL.
 
 3. **Failing open is correct here, and only here.** `pr-status` is an advisory read, not a gate: it
-   cannot deny anything, and every mode, including unknown, yields the same non-blocking treatment of
-   BEHIND. This is CTK-ADR-0005 Decision 4's reasoning (a check that cannot deny may fail open) applied to
+   cannot deny anything, and unknown gets the same conservative treatment as none and evaluate (BEHIND
+   is the maintainer's Update branch at merge time, never the author's work). This is CTK-ADR-0005 Decision 4's reasoning (a check that cannot deny may fail open) applied to
    a tool outside the gate suite. The failure is always printed, never silently reported as none.
 
 4. **"Ready" means approved on the head, no pending requests, checks green, not DIRTY.** When the queue is
-   active the ready line adds that the PR enters the merge queue on its base; the merge gate says
-   `gh pr merge` then enqueues the PR and that `--admin` (which bypasses the queue) is never used.
+   active the ready line adds that the PR enters the merge queue on its base (`gh pr merge` enqueues it);
+   when the PR is BEHIND with no active queue it adds the maintainer caveat from Decision 1. The ready-line
+   text and `--json` (`queue`, `ball.entersQueue`, `ball.mergeCaveat`) changed; the only in-repo
+   consumers are the two skills, both updated (Hyrum: an external parser of the old text would break).
 
 5. **No push after approval unless a change is needed.** A push dismisses the approval and restarts review
-   and CI (the live `main-protection` ruleset carries `dismiss_stale_reviews_on_push: true`, evaluate
-   mode). The contribution skill, the gsd-submit command and the sweep hand-off carry the rule.
+   and CI (trek-e's announcement; the evaluate `main-protection` ruleset carries
+   `dismiss_stale_reviews_on_push: true`; classic protection's review settings are not readable with
+   this token). The contribution skill, the gsd-submit command and the sweep hand-off carry the rule.
 
 6. **Fix PR bodies carry an advisory `## Self-test report`.** Its items follow the announcement (failing
    test, fails before, passes after, command, OS, Node version) because the upstream template has not
@@ -127,14 +148,16 @@ The toolkit taught the treadmill trek-e is retiring:
   truth about the queue on every run, so the moment trek-e switches it on, the ready line and the BEHIND
   note change without a toolkit edit.
 - **Positive:** the push-target rule removes a failure that had already happened once.
-- **Negative / accepted:** without an enforcing queue, an approved PR that is BEHIND may still need an
-  update at merge time if an active ruleset ever enforces up-to-date branches. `pr-status` names that case
-  in its BEHIND note (an active `required_status_checks` rule with the strict policy) and assigns the
-  update to the maintainer at merge time, never to the author.
-- **Negative / accepted:** a queue configured through classic branch protection rather than a ruleset is
-  not visible to these REST reads. open-gsd uses rulesets; the classic branch-protection read for `next`
-  returned 404 on 2026-10-21, which means either no classic protection or no permission to read it, so
-  this is recorded, not handled.
+- **Negative / accepted:** until the queue is active, every BEHIND merge costs the maintainer one Update
+  branch and one fresh CI run. That is the price of never using `--admin`, and it is still far cheaper
+  than an author rebase per move of `next`. Not verified: whether that Update-branch push dismisses an
+  existing approval (classic protection's dismiss-stale setting is not readable with this token); if it
+  does, the maintainer re-approves after the run.
+- **Negative / accepted:** classic branch protection is only partly visible. `branches/<base>` shows it
+  exists and which checks it requires, but `branches/<base>/protection` (and with it any up-to-date flag or
+  classic merge-queue setting) returns 404 without admin rights. So `pr-status` keys the maintainer caveat
+  on a reported BEHIND, which GitHub emits only under an up-to-date requirement, and a merge queue set up
+  through classic protection rather than a ruleset would read as none.
 - **Negative / accepted:** the Self-test report shape may differ from the template trek-e lands; the
   advisory note and the wording test make the re-mirror a one-file edit.
 - **Negative / accepted:** each `pr-status` run now makes two to four extra REST reads per base branch
@@ -148,10 +171,12 @@ The toolkit taught the treadmill trek-e is retiring:
 - **Read `mergeQueue(branch:)` over GraphQL.** Rejected: `pr-status` is REST-only by contract, and the
   stub that proves it read-only refuses any GraphQL argument. `rules/branches/<base>` answers the active
   question for rulesets; the classic-protection gap is recorded above.
-- **Keep BEHIND as a blocker until the queue enforces.** Rejected: the strict up-to-date policy sits in an
-  evaluate-mode ruleset, so GitHub does not block a BEHIND merge, and the announcement asks contributors to
-  stop rebasing now.
-  Keeping it would keep producing the churn the queue is meant to end.
+- **Keep BEHIND as an author blocker until the queue enforces.** Rejected: GitHub does block a BEHIND merge
+  for non-admins today (classic protection), but the fix belongs to whoever merges. Asking every author to
+  rebase each time `next` moves is the churn trek-e measured (119 of 139 fix PRs); one maintainer Update
+  branch at merge time gives the same tested-against-current-`next` result once per PR.
+- **Merge BEHIND PRs with `--admin`.** Rejected in every mode: it skips the up-to-date check and the
+  queue, so the merge is untested against the current `next`, the exact failure the queue exists to stop.
 - **A hook that denies a push to an approved PR.** Rejected for now: it would need a network lookup of
   approval state on every push, and the "unless a change is needed" exception is a judgement a hook cannot
   make. If pushes after approval keep happening, revisit with an `ask`-severity gate (CTK-ADR-0005).
@@ -164,5 +189,8 @@ Re-open this record when any of these happens, and re-run the live checks in *Co
 - `pr-status` first reports `queue: next active`: check the ready line and merge-gate wording against how
   the queue actually behaves (grouping, failure reasons, `gh pr merge` behaviour);
 - `.github/PULL_REQUEST_TEMPLATE/fix.md` on `origin/next` gains a Self-test report: mirror its headings;
-- the required checks gain `merge_group` triggers, or the queue is reverted: if a revert comes with an
-  enforced up-to-date policy, Decision 1 needs a fresh look.
+- the required checks gain `merge_group` triggers, or the queue is reverted: on a revert the maintainer
+  side of Decision 1 (Update branch at merge time) becomes permanent, so re-check its cost;
+- classic protection on `next` changes (`gh api repos/open-gsd/gsd-core/branches/next --jq .protection`), or
+  open PRs stop reading BEHIND while behind `next`: the up-to-date requirement Decision 1 relies on moved;
+- Dave signs off: flip Status to Accepted with the date (a Proposed record becomes Accepted only by that).

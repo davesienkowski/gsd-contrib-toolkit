@@ -651,20 +651,29 @@ test('261006-jsm review round (IN-03): observability names verdict-log.cjs; bypa
 
 // Quick 261021-n2m: CTK-ADR-0012 (merge-queue convention change), accepted on Dave's 2026-10-21 request.
 // (CTK-ADR-0011 is reserved by the unmerged branch davesienkowski/fix-runtime-sync-builds-hooks.)
-test('261021-n2m: CTK-ADR-0012 Status line says Accepted on Dave\'s 2026-10-21 request and not Proposed', () => {
+test('261021-n2m: CTK-ADR-0012 is Proposed until Dave signs off (the README convention), with his request as the trigger', () => {
   const line = statusLine(adrFile(12));
-  assert.match(line, /^- \*\*Status:\*\* Accepted \(2026-10-21, by Dave's explicit request\)\./, line);
-  assert.doesNotMatch(line, /^- \*\*Status:\*\*\s*Proposed/, line);
+  assert.match(line, /^- \*\*Status:\*\* Proposed \(2026-10-21\)\./, line);
+  assert.doesNotMatch(line, /Accepted/, line);
   const text = fs.readFileSync(adrFile(12), 'utf8');
   assert.match(text, /^- \*\*Trigger:\*\* trek-e's announcement/m, 'names the trigger');
   assert.match(text, /^- \*\*Revisit:\*\* at trek-e's four-week review/m, 'revisit tied to the four-week review');
   assert.match(text, /^## Revisit$/m, 'carries a Revisit section');
 });
 
-test('261021-n2m: docs/adr/README.md row for CTK-ADR-0012 says Accepted (not Proposed)', () => {
+test('261021-n2m: docs/adr/README.md row for CTK-ADR-0012 says Proposed, milestone v2.8', () => {
   const cells = readmeRow('CTK-ADR-0012').split('|').map((c) => c.trim());
-  assert.ok(cells.includes('Accepted'), `status cell is Accepted: ${JSON.stringify(cells)}`);
-  assert.ok(!cells.includes('Proposed'), 'status cell is not Proposed');
+  assert.ok(cells.includes('Proposed'), `status cell is Proposed: ${JSON.stringify(cells)}`);
+  assert.ok(!cells.includes('Accepted'), 'status cell is not Accepted');
+  assert.ok(cells.includes('v2.8'), `milestone cell is v2.8: ${JSON.stringify(cells)}`);
+});
+
+test('261021-n2m gate fix: CTK-ADR-0012 records the enforced classic protection and forbids --admin', () => {
+  const text = fs.readFileSync(adrFile(12), 'utf8');
+  assert.match(text, /enforcement_level: non_admins/);
+  assert.match(text, /\*\*`--admin` is never used, in any mode\.\*\*/);
+  assert.doesNotMatch(text, /squash merge does not need/);
+  assert.doesNotMatch(text, /GitHub does not block a BEHIND merge/);
 });
 
 test('261021-n2m: CTK-ADR-0012 is plain ASCII (tab, newline and printable bytes only, so no em dash)', () => {
