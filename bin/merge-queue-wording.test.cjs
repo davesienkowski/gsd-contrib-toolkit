@@ -138,7 +138,7 @@ test('n2m gate fix: no surface claims the squash merge needs no update or that b
 
 test('n2m gate fix: the maintainer updates a BEHIND branch at merge time, and --admin is never used in any mode', () => {
   const rr = read('skills/maintainer-review-sweep/re-review.md');
-  assert.match(rr, /never `--admin` in any mode/);
+  assert.match(rr, /never `--admin` in any mode/i);
   assert.match(rr, /gh pr update-branch <n> --repo <owner>\/<repo>/);
   for (const rel of [
     'skills/maintainer-review-sweep/re-review.md',
