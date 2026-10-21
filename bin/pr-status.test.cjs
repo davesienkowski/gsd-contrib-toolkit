@@ -673,3 +673,31 @@ test('n2m gate fix (Postel): a queue reply that is not an array of pages is mode
     }
   }
 });
+
+// --- round-2 gate note N4: queue.strictUpToDate is removed, not kept as a deprecated field ---
+// It read only ACTIVE rulesets, so on open-gsd next it said false while classic protection enforced
+// up-to-date for non-admins; nothing keyed on it (no consumer found via the paths searched; see
+// CTK-ADR-0012 Consequences). A deliberate key set keeps the --json queue shape a decision, not drift.
+
+test('N4: deriveQueue returns exactly base, mode and ruleset (no strictUpToDate) for every queue fixture', () => {
+  for (const f of QUEUE_FIXTURES.filter((x) => x !== 'rules-read-failure.json')) {
+    const got = prStatus.deriveQueue(queueInput(loadQueue(f)));
+    assert.deepEqual(Object.keys(got).sort(), ['base', 'mode', 'ruleset'], `${f}: ${JSON.stringify(got)}`);
+  }
+});
+
+test('N4: no queue fixture records an expected strictUpToDate', () => {
+  for (const f of QUEUE_FIXTURES) {
+    assert.ok(!('strictUpToDate' in loadQueue(f).provenance.expected), `${f}: provenance.expected.strictUpToDate`);
+  }
+});
+
+test('N4: the --json queue object carries no strictUpToDate key in any mode', (t) => {
+  for (const q of ['active.json', 'evaluate.json', 'absent.json']) {
+    const r = runThroughStub(t, ['--json', '900020'], { queue: q });
+    assert.equal(r.status, 0, `${q}: ${r.stderr}`);
+    const [d] = JSON.parse(r.stdout);
+    assert.ok(d.queue && typeof d.queue.mode === 'string', `${q}: queue object present`);
+    assert.ok(!('strictUpToDate' in d.queue), `${q}: ${JSON.stringify(d.queue)}`);
+  }
+});
