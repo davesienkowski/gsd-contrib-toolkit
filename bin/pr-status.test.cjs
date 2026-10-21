@@ -33,6 +33,7 @@ const prStatus = require('./pr-status.cjs');
 
 const SCRIPT = path.join(__dirname, 'pr-status.cjs');
 const FIXTURES_DIR = path.join(__dirname, 'fixtures', 'pr-status');
+const QUEUE_DIR = path.join(__dirname, 'fixtures', 'pr-status-queue');
 
 function loadFixture(name) {
   return JSON.parse(fs.readFileSync(path.join(FIXTURES_DIR, name), 'utf8'));
@@ -69,6 +70,8 @@ function runThroughStub(t, args, opts = {}) {
     PR_STATUS_STUB_FIXTURES: opts.fixturesDir || FIXTURES_DIR,
     PR_STATUS_STUB_LOG: stub.logFile,
   });
+  if (opts.queue) env.PR_STATUS_STUB_QUEUE = path.join(QUEUE_DIR, opts.queue);
+  else delete env.PR_STATUS_STUB_QUEUE;
   let status = 0;
   let stdout;
   let stderr = '';
@@ -103,8 +106,12 @@ test('end to end: one captured change-requested PR through a stub gh that sees o
 
   assert.ok(!r.log.some((l) => l.startsWith('REFUSED')), `stub refused a call: ${r.log.join(' | ')}`);
   const calls = r.log.map((l) => JSON.parse(l));
-  assert.equal(calls.length, 3, `exactly three gh calls, got ${JSON.stringify(calls)}`);
-  const [view, api, checks] = calls;
+  // 261021-n2m: three per-PR reads, then the base branch's merge-queue reads (an empty repo: the active
+  // rules GET and the rulesets list GET, no detail reads).
+  assert.equal(calls.length, 5, `three PR reads plus two queue reads, got ${JSON.stringify(calls)}`);
+  const [view, api, checks, rules, rulesets] = calls;
+  assert.deepEqual(rules, ['api', '--paginate', '--slurp', 'repos/open-gsd/gsd-core/rules/branches/next?per_page=100']);
+  assert.deepEqual(rulesets, ['api', '--paginate', '--slurp', 'repos/open-gsd/gsd-core/rulesets?includes_parents=true&per_page=100']);
   assert.deepEqual(view.slice(0, 3), ['pr', 'view', n]);
   assert.equal(view[view.indexOf('--repo') + 1], 'open-gsd/gsd-core');
   assert.equal(api[0], 'api');
@@ -117,7 +124,7 @@ test('end to end: one captured change-requested PR through a stub gh that sees o
 // --- Task 2: every scenario, --json, --repo, usage, ERROR, UNKNOWN re-read, sanitizing, footer ---
 
 const ALL_FIXTURES = fs.readdirSync(FIXTURES_DIR).filter((f) => f.endsWith('.json')).sort();
-const FOOTER_START = 'Snapshot is point-in-time (three separate gh reads per PR); re-run before any write.';
+const FOOTER_START = 'Snapshot is point-in-time (three separate gh reads per PR, and separate merge-queue reads per base branch); re-run before any write.';
 
 function isPrintableAscii(s) {
   return /^[\t\n\x20-\x7e]*$/.test(s);
@@ -186,7 +193,7 @@ test('end to end: every scenario prints in argv order, footer once, ASCII only, 
   assert.ok(isPrintableAscii(r.stdout), 'text output is printable ASCII');
   for (const call of r.log.map((l) => JSON.parse(l))) {
     if (call[0] === 'pr') assert.equal(call[call.indexOf('--repo') + 1], 'open-gsd/gsd-core', `--repo on ${call.join(' ')}`);
-    else assert.match(call.find((a) => a.startsWith('repos/')), /^repos\/open-gsd\/gsd-core\/pulls\/\d+\/reviews\?per_page=100$/);
+    else assert.match(call.find((a) => a.startsWith('repos/')), /^repos\/open-gsd\/gsd-core\/(pulls\/\d+\/reviews\?per_page=100|rules\/branches\/next\?per_page=100|rulesets\?includes_parents=true&per_page=100)$/);
   }
 });
 
@@ -217,7 +224,7 @@ test('end to end: ball lines for reviewer, NOT RE-REQUESTED, maintainer, pending
   const cases = [
     ['reviewer-rerequested-captured.json', /^ {2}ball: REVIEWER trek-e owes a re-review \(the head moved after the change request\)$/m],
     ['not-rerequested.json', /^ {2}ball: REVIEWER trek-e owes a re-review \(the head moved after the change request\) NOT RE-REQUESTED$/m],
-    ['approved.json', /^ {2}ball: AUTHOR owes fixes \(approved but blocked: review requests pending \(Solvely-Colin, jeremymcs, davesienkowski\), BEHIND \(base moved\)\)$/m],
+    ['approved.json', /^ {2}ball: REVIEWER owes a review \(approved but blocked: review requests pending \(Solvely-Colin, jeremymcs, davesienkowski\)\)$/m],
     ['no-reviews-requested.json', /^ {2}ball: REVIEWER owes a first review \(requests pending: /m],
     ['dismissed-cr.json', /^ {2}ball: REVIEWER owes a first review \(requests pending: /m],
     ['no-reviews-no-requests.json', /^ {2}ball: none /m],
@@ -242,18 +249,20 @@ test('end to end: --json prints a JSON array of derive() results in argv order, 
   assert.ok(Array.isArray(arr));
   assert.deepEqual(arr.map((d) => d.number), [5079, 5235]);
   assert.deepEqual(arr[0].reviewers.map((x) => x.login), ['davesienkowski', 'trek-e']);
-  assert.deepEqual(arr[0], { repo: 'open-gsd/gsd-core', ...prStatus.derive(loadFixture('two-crs-captured.json')) });
+  assert.equal(arr[0].queue.mode, 'absent', 'an empty stub repo reads as no merge queue');
+  assert.deepEqual(arr[0], { repo: 'open-gsd/gsd-core', ...prStatus.derive({ ...loadFixture('two-crs-captured.json'), queue: arr[0].queue }) });
 });
 
 test('end to end: --repo passes through to every gh call', (t) => {
   const r = runThroughStub(t, ['--repo', 'other-org/other.repo', '5235']);
   assert.equal(r.status, 0, r.stderr);
   const calls = r.log.map((l) => JSON.parse(l));
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 5);
   for (const call of calls) {
     if (call[0] === 'pr') assert.equal(call[call.indexOf('--repo') + 1], 'other-org/other.repo');
-    else assert.ok(call.includes('repos/other-org/other.repo/pulls/5235/reviews?per_page=100'));
+    else assert.ok(call.some((a) => a.startsWith('repos/other-org/other.repo/')), `queue and review reads carry the repo: ${call.join(' ')}`);
   }
+  assert.ok(calls.some((c) => c.includes('repos/other-org/other.repo/pulls/5235/reviews?per_page=100')));
   assert.match(r.stdout, /^other-org\/other\.repo#5235 OPEN head /m, 'the header names the repo it read');
 });
 
@@ -369,7 +378,7 @@ test('WR-03: MAINTAINER ready only with an approval on the head, no requests, gr
 
 test('WR-03: ball lines name what blocks an approved PR', (t) => {
   const cases = [
-    ['approved-ready.json', /^ {2}ball: MAINTAINER ready \(approved on the head, no change request, no pending requests, checks green, not DIRTY or BEHIND\)$/m],
+    ['approved-ready.json', /^ {2}ball: MAINTAINER ready \(approved on the head, no change request, no pending requests, checks green, not DIRTY\)$/m],
     ['approved-older-commit.json', /^ {2}ball: MAINTAINER not ready \(approved but blocked: approval on an older commit\)$/m],
     ['approved-requests-pending.json', /^ {2}ball: REVIEWER owes a review \(approved but blocked: review requests pending \(Solvely-Colin, jeremymcs, davesienkowski\)\)$/m],
     ['approved-checks-failing.json', /^ {2}ball: AUTHOR owes fixes \(approved but blocked: checks failing\)$/m],
@@ -428,4 +437,198 @@ test('IN-02: PR number 0 is a usage error; leading zeros are normalised before a
   assert.deepEqual(calls[0].slice(0, 3), ['pr', 'view', '5235']);
   assert.ok(calls[1].includes('repos/open-gsd/gsd-core/pulls/5235/reviews?per_page=100'));
   assert.match(r.stdout, /^open-gsd\/gsd-core#5235 OPEN /m);
+});
+
+// --- quick 261021-n2m (CTK-ADR-0012): merge-queue awareness; BEHIND is never a blocker ---
+
+const QUEUE_FIXTURES = ['active.json', 'evaluate.json', 'absent.json', 'rules-read-failure.json'];
+
+function loadQueue(name) {
+  return JSON.parse(fs.readFileSync(path.join(QUEUE_DIR, name), 'utf8'));
+}
+
+/** The pure deriveQueue input a queue fixture describes for base `next`. */
+function queueInput(q, base = 'next') {
+  const details = (q.rulesets || [])
+    .filter((r) => r.target === 'branch' && r.enforcement === 'evaluate')
+    .map((r) => q.rulesetDetails[r.id])
+    .filter(Boolean);
+  return { base, rules: (q.rulesBranches && q.rulesBranches[base]) || [], details, defaultBranch: q.repo.default_branch };
+}
+
+/** A gh runner over one queue fixture that records each call (the per-PR reads are not served). */
+function queueGh(q, calls) {
+  return (args) => {
+    calls.push(args.join(' '));
+    const p = args.find((a) => a.startsWith('repos/')).split('?')[0];
+    const fail = (kind) => {
+      if (q.fail && q.fail[kind]) throw Object.assign(new Error('gh failed'), { status: 1, stderr: q.fail[kind] });
+    };
+    let m;
+    if ((m = /\/rules\/branches\/(.+)$/.exec(p))) { fail('rules'); return [(q.rulesBranches || {})[decodeURIComponent(m[1])] || []]; }
+    if (/\/rulesets$/.test(p)) { fail('rulesets'); return [q.rulesets || []]; }
+    if ((m = /\/rulesets\/(\d+)$/.exec(p))) { fail('ruleset'); return q.rulesetDetails[m[1]]; }
+    fail('repo');
+    return q.repo;
+  };
+}
+
+/** approved-ready.json with its merge state set to BEHIND, as a PR fixture dir for the stub. */
+function behindReadyDir(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-status-behind-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const fx = loadFixture('approved-ready.json');
+  fx.view.mergeStateStatus = 'BEHIND';
+  fs.writeFileSync(path.join(dir, 'behind-ready.json'), JSON.stringify(fx));
+  return { dir, fx };
+}
+
+test('n2m queue fixtures: each records its source, its edits and the hand-derived mode', () => {
+  for (const f of QUEUE_FIXTURES) {
+    const p = loadQueue(f).provenance;
+    assert.ok(p && /^(captured open-gsd\/gsd-core rulesets \S+Z|synthetic from \S+\.json)$/.test(p.source), `${f}: provenance.source`);
+    assert.equal(typeof p.edits, 'string', `${f}: provenance.edits`);
+    assert.ok(['active', 'evaluate', 'absent', 'unknown'].includes(p.expected.mode), `${f}: provenance.expected.mode`);
+  }
+});
+
+test('n2m deriveQueue: each queue fixture yields its recorded mode (absent is the live 2026-10-21 capture)', () => {
+  for (const f of QUEUE_FIXTURES.filter((x) => x !== 'rules-read-failure.json')) {
+    const q = loadQueue(f);
+    const got = prStatus.deriveQueue(queueInput(q));
+    assert.equal(got.mode, q.provenance.expected.mode, `${f}: mode`);
+    assert.equal(got.base, 'next', `${f}: base`);
+    assert.equal(got.strictUpToDate, q.provenance.expected.strictUpToDate, `${f}: strictUpToDate`);
+  }
+});
+
+test('n2m adjacency: an active merge_queue rule beats an evaluate one, and a matching exclude beats a matching include', () => {
+  const active = loadQueue('active.json');
+  const evaluate = loadQueue('evaluate.json');
+  const both = { ...queueInput(evaluate), rules: active.rulesBranches.next };
+  assert.equal(prStatus.deriveQueue(both).mode, 'active');
+
+  const mq = { type: 'merge_queue', parameters: { merge_method: 'SQUASH' } };
+  const ruleset = (include, exclude) => ({ id: 7, name: 'q', target: 'branch', enforcement: 'evaluate', conditions: { ref_name: { include, exclude } }, rules: [mq] });
+  const derive = (rs, base = 'next') => prStatus.deriveQueue({ base, rules: [], details: [rs], defaultBranch: 'next' }).mode;
+  assert.equal(derive(ruleset(['~ALL'], ['refs/heads/next'])), 'absent', 'exclude wins');
+  assert.equal(derive(ruleset(['~ALL'], []), 'next'), 'evaluate');
+  assert.equal(derive(ruleset(['~DEFAULT_BRANCH'], []), 'next'), 'evaluate');
+  assert.equal(derive(ruleset(['~DEFAULT_BRANCH'], []), 'main'), 'absent', '~DEFAULT_BRANCH covers only the default branch');
+  assert.equal(derive(ruleset(['refs/heads/release/**'], []), 'release/1.2/rc'), 'evaluate', '** crosses slashes');
+  assert.equal(derive(ruleset(['refs/heads/release/*'], []), 'release/1.2/rc'), 'absent', '* stops at a slash');
+  assert.equal(derive(ruleset(['next'], []), 'next'), 'evaluate', 'a bare name means refs/heads/<name>');
+  assert.equal(derive({ ...ruleset(['~ALL'], []), rules: [{ type: 'deletion' }] }), 'absent', 'no merge_queue rule');
+});
+
+test('n2m empty: no active rules and no rulesets reads as absent with no detail reads; no base reads nothing', () => {
+  const calls = [];
+  const empty = { repo: { default_branch: 'next' }, rulesBranches: {}, rulesets: [], rulesetDetails: {} };
+  const got = prStatus.fetchQueue('open-gsd/gsd-core', 'next', { gh: queueGh(empty, calls) });
+  assert.equal(got.mode, 'absent');
+  assert.equal(calls.length, 2, `rules GET and rulesets GET only: ${calls.join(' | ')}`);
+
+  const none = [];
+  const noBase = prStatus.fetchQueue('open-gsd/gsd-core', '', { gh: queueGh(empty, none) });
+  assert.equal(noBase.mode, 'unknown');
+  assert.match(noBase.error, /no base branch/);
+  assert.equal(none.length, 0, 'no queue read without a base branch');
+});
+
+test('n2m fetchQueue: active stops after the rules read; evaluate reads only the evaluate branch rulesets', () => {
+  const a = [];
+  assert.equal(prStatus.fetchQueue('open-gsd/gsd-core', 'next', { gh: queueGh(loadQueue('active.json'), a) }).mode, 'active');
+  assert.equal(a.length, 1, a.join(' | '));
+  const e = [];
+  assert.equal(prStatus.fetchQueue('open-gsd/gsd-core', 'next', { gh: queueGh(loadQueue('evaluate.json'), e) }).mode, 'evaluate');
+  assert.ok(e.some((c) => c.includes('rulesets/16752567')) && e.some((c) => c.includes('rulesets/16752568')), e.join(' | '));
+  assert.ok(!e.some((c) => c.includes('rulesets/16752570')), 'the tag ruleset is never read');
+  for (const c of [...a, ...e]) assert.ok(!/ -X | -f | -F |graphql/.test(` ${c} `), `read-only REST: ${c}`);
+});
+
+test('n2m failure: a failed queue read is mode unknown with the error named, never absent or active', () => {
+  const got = prStatus.fetchQueue('open-gsd/gsd-core', 'next', { gh: queueGh(loadQueue('rules-read-failure.json'), []) });
+  assert.equal(got.mode, 'unknown');
+  assert.match(got.error, /HTTP 403/);
+});
+
+test('n2m BEHIND is never a blocker: approved, green and BEHIND reads MAINTAINER ready in every queue mode', () => {
+  const fx = loadFixture('approved-ready.json');
+  fx.view.mergeStateStatus = 'BEHIND';
+  for (const f of QUEUE_FIXTURES) {
+    const q = loadQueue(f);
+    const queue = f === 'rules-read-failure.json' ? { base: 'next', mode: 'unknown', error: 'gh: x (HTTP 403)' } : prStatus.deriveQueue(queueInput(q));
+    const d = prStatus.derive({ ...fx, queue });
+    assert.equal(d.ball.owner, 'maintainer', `${f}: owner`);
+    assert.equal(d.ball.ready, true, `${f}: ready`);
+    assert.deepEqual(d.ball.blockers, [], `${f}: no blockers`);
+  }
+  // A failing check on a BEHIND PR still puts the ball on the author, for the failing check only.
+  const failing = loadFixture('approved-checks-failing.json');
+  failing.view.mergeStateStatus = 'BEHIND';
+  const d = prStatus.derive({ ...failing, queue: { base: 'next', mode: 'absent' } });
+  assert.deepEqual(d.ball.blockers, ['checks failing']);
+});
+
+test('n2m end to end: queue line, ready line and BEHIND note per mode; a failed queue read still exits 0', (t) => {
+  const { dir, fx } = behindReadyDir(t);
+  const n = String(fx.view.number);
+  const cases = [
+    ['active.json', /^ {2}queue: next active \(merge_queue rule in ruleset 16752567\)$/m,
+      /^ {2}ball: MAINTAINER ready \(approved on the head, no change request, no pending requests, checks green, not DIRTY; enters the merge queue on next\)$/m,
+      /^ {2}note: BEHIND is informational: the merge queue on next tests the PR on top of the entries ahead of it; do not rebase or update the branch for BEHIND$/m],
+    ['evaluate.json', /^ {2}queue: next evaluate \(merge_queue rule in ruleset main-protection, not enforcing\)$/m,
+      /^ {2}ball: MAINTAINER ready \(approved on the head, no change request, no pending requests, checks green, not DIRTY\)$/m,
+      /^ {2}note: BEHIND is informational: no enforcing merge queue on next; do not rebase or update the branch for BEHIND alone \(rebase for DIRTY or a needed change; a push after approval resets review\)$/m],
+    ['absent.json', /^ {2}queue: next none \(no merge_queue rule applies to the base branch\)$/m,
+      /^ {2}ball: MAINTAINER ready \(approved on the head, no change request, no pending requests, checks green, not DIRTY\)$/m,
+      /^ {2}note: BEHIND is informational: no enforcing merge queue on next; do not rebase or update the branch for BEHIND alone \(rebase for DIRTY or a needed change; a push after approval resets review\)$/m],
+    ['rules-read-failure.json', /^ {2}queue: next unknown \(queue read failed: gh: Resource not accessible by integration \(HTTP 403\); BEHIND treated as informational\)$/m,
+      /^ {2}ball: MAINTAINER ready \(approved on the head, no change request, no pending requests, checks green, not DIRTY\)$/m,
+      /^ {2}note: BEHIND is informational: the merge-queue mode is unknown \(read failed\); do not rebase or update the branch for BEHIND alone$/m],
+  ];
+  for (const [q, queueRe, readyRe, noteRe] of cases) {
+    const r = runThroughStub(t, [n], { fixturesDir: dir, queue: q });
+    assert.equal(r.status, 0, `${q}: exit (stderr: ${r.stderr})`);
+    assert.match(r.stdout, queueRe, `${q}: queue line`);
+    assert.match(r.stdout, readyRe, `${q}: ready line`);
+    assert.match(r.stdout, noteRe, `${q}: BEHIND note`);
+    assert.ok(isPrintableAscii(r.stdout), `${q}: ASCII`);
+    assert.ok(!r.log.some((l) => l.startsWith('REFUSED')), `${q}: nothing refused`);
+  }
+  // No BEHIND, no note.
+  const clean = runThroughStub(t, ['900020'], { queue: 'absent.json' });
+  assert.ok(!/note: BEHIND/.test(clean.stdout), clean.stdout);
+});
+
+test('n2m ordering: PRs sharing a repo and base share one set of queue reads and still print in argv order', (t) => {
+  const r = runThroughStub(t, ['5235', '900020', '5079'], { queue: 'absent.json' });
+  assert.equal(r.status, 0, r.stderr);
+  const rulesReads = r.log.filter((l) => l.includes('/rules/branches/next'));
+  assert.equal(rulesReads.length, 1, `one rules read for base next: ${rulesReads.join(' | ')}`);
+  const heads = [...r.stdout.matchAll(/^open-gsd\/gsd-core#(\d+) /gm)].map((m) => m[1]);
+  assert.deepEqual(heads, ['5235', '900020', '5079']);
+});
+
+test('n2m idempotency: two runs over each queue fixture print byte-identical output', (t) => {
+  for (const q of QUEUE_FIXTURES) {
+    const a = runThroughStub(t, ['900020', '5235'], { queue: q });
+    const b = runThroughStub(t, ['900020', '5235'], { queue: q });
+    assert.equal(a.status, 0, `${q}: ${a.stderr}`);
+    assert.equal(a.stdout, b.stdout, q);
+  }
+});
+
+test('n2m footer: the snapshot names the separate merge-queue reads, so a queue switched on mid-run is caught by re-running', (t) => {
+  const r = runThroughStub(t, ['900020'], { queue: 'absent.json' });
+  assert.ok(r.stdout.includes(FOOTER_START), r.stdout);
+});
+
+test('n2m --json: each result carries the queue object read for its base', (t) => {
+  const r = runThroughStub(t, ['--json', '900020'], { queue: 'evaluate.json' });
+  assert.equal(r.status, 0, r.stderr);
+  const [d] = JSON.parse(r.stdout);
+  assert.equal(d.queue.mode, 'evaluate');
+  assert.equal(d.queue.base, 'next');
+  assert.equal(d.queue.ruleset, 'main-protection');
 });

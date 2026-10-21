@@ -4,7 +4,8 @@
 /**
  * bin/fixtures/pr-status-gh-stub.cjs — the stub `gh` the pr-status tests copy onto PATH as `gh`.
  *
- * Serves the fixtures in $PR_STATUS_STUB_FIXTURES (indexed by view.number) for exactly three reads:
+ * Serves the fixtures in $PR_STATUS_STUB_FIXTURES (indexed by view.number) for exactly three per-PR reads
+ * (plus the per-repo merge-queue reads documented at serveQueue below):
  * `gh pr view N`, `gh pr checks N` (stdout = the checks JSON, exit = provenance.checksExit, stderr =
  * provenance.checksStderr) and `gh api ... repos/OWNER/REPO/pulls/N/reviews` (the page array). Every call
  * appends its argv as one JSON line to $PR_STATUS_STUB_LOG. Any other verb, and any -X / --method / -f /
@@ -20,6 +21,48 @@ const path = require('node:path');
 function done(code) {
   process.exitCode = code;
   return code;
+}
+
+/**
+ * The merge-queue reads (quick 261021-n2m). The queue state is per repo, not per PR, so it comes from ONE
+ * file named by $PR_STATUS_STUB_QUEUE (a bin/fixtures/pr-status-queue/*.json); unset means an empty
+ * repo: no active rules and no rulesets (mode absent). Four read-only paths:
+ *   repos/O/R/rules/branches/<b>[?...]  -> rulesBranches[<b>] (default [])
+ *   repos/O/R/rulesets[?...]            -> rulesets (default [])
+ *   repos/O/R/rulesets/<id>             -> rulesetDetails[<id>], else 404
+ *   repos/O/R                           -> repo (default { default_branch: 'next' })
+ * `fail.<rules|rulesets|ruleset|repo>` makes that read exit 1 with the given stderr. With --slurp the
+ * body is wrapped in one page, as gh --paginate --slurp does. Returns null for any other path.
+ */
+function serveQueue(apiPath, slurp) {
+  const [p] = apiPath.split('?');
+  let kind = null;
+  let key = null;
+  let m;
+  if ((m = /^repos\/[^/]+\/[^/]+\/rules\/branches\/(.+)$/.exec(p))) [kind, key] = ['rules', decodeURIComponent(m[1])];
+  else if (/^repos\/[^/]+\/[^/]+\/rulesets$/.test(p)) kind = 'rulesets';
+  else if ((m = /^repos\/[^/]+\/[^/]+\/rulesets\/(\d+)$/.exec(p))) [kind, key] = ['ruleset', m[1]];
+  else if (/^repos\/[^/]+\/[^/]+$/.test(p)) kind = 'repo';
+  if (!kind) return null;
+  const file = process.env.PR_STATUS_STUB_QUEUE;
+  const q = file ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+  if (q.fail && q.fail[kind]) {
+    process.stderr.write(q.fail[kind] + '\n');
+    return done(1);
+  }
+  let body;
+  if (kind === 'rules') body = (q.rulesBranches && q.rulesBranches[key]) || [];
+  else if (kind === 'rulesets') body = q.rulesets || [];
+  else if (kind === 'repo') body = q.repo || { default_branch: 'next' };
+  else {
+    body = q.rulesetDetails && q.rulesetDetails[key];
+    if (!body) {
+      process.stderr.write('gh: Not Found (HTTP 404)\n');
+      return done(1);
+    }
+  }
+  process.stdout.write(JSON.stringify(slurp ? [body] : body) + '\n');
+  return done(0);
 }
 
 function main() {
@@ -62,7 +105,10 @@ function main() {
     return done(prov.checksExit || 0);
   }
   if (argv[0] === 'api') {
-    const m = /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/reviews(\?.*)?$/.exec(argv.find((a) => a.startsWith('repos/')) || '');
+    const apiPath = argv.find((a) => a.startsWith('repos/')) || '';
+    const queue = serveQueue(apiPath, argv.includes('--slurp'));
+    if (queue !== null) return queue;
+    const m = /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/reviews(\?.*)?$/.exec(apiPath);
     if (!m) return refuse('unknown-api-path');
     const fx = fixtures.get(m[1]);
     if (!fx) {
