@@ -41,6 +41,18 @@ function walk(rel) {
   return out;
 }
 
+/** The text from `start` to the next level-2 heading that sits OUTSIDE a code fence (the skeleton's own
+ * headings are inside one). */
+function sectionAt(text, start) {
+  const lines = text.slice(start).split('\n');
+  let fenced = false;
+  for (let i = 1; i < lines.length; i += 1) {
+    if (/^```/.test(lines[i])) fenced = !fenced;
+    else if (!fenced && /^## /.test(lines[i])) return lines.slice(0, i).join('\n');
+  }
+  return lines.join('\n');
+}
+
 const SURFACES = [...walk('skills'), ...walk('commands'), ...walk('docs/guides')];
 
 test('n2m wording: the retired rebase-treadmill phrasings are gone from skills, commands and guides', () => {
@@ -62,7 +74,7 @@ test('n2m wording: the fix PR skeleton carries an advisory Self-test report with
   const ref = read('skills/core-contribution/reference.md');
   const start = ref.indexOf('## Fix PR body skeleton');
   assert.ok(start >= 0, 'fix PR skeleton section present');
-  const section = ref.slice(start, ref.indexOf('\n## ', start + 1));
+  const section = sectionAt(ref, start);
   const at = section.indexOf('## Self-test report');
   assert.ok(at >= 0, 'skeleton has a ## Self-test report heading');
   const block = section.slice(at, at + 1200);
