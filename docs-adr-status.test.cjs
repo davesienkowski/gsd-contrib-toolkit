@@ -648,3 +648,27 @@ test('261006-jsm review round (IN-03): observability names verdict-log.cjs; bypa
   assert.match(b, /statically recovered forms still deny/);
   assert.match(b, /readable event/);
 });
+
+// Quick 261021-n2m: CTK-ADR-0012 (merge-queue convention change), accepted on Dave's 2026-10-21 request.
+// (CTK-ADR-0011 is reserved by the unmerged branch davesienkowski/fix-runtime-sync-builds-hooks.)
+test('261021-n2m: CTK-ADR-0012 Status line says Accepted on Dave\'s 2026-10-21 request and not Proposed', () => {
+  const line = statusLine(adrFile(12));
+  assert.match(line, /^- \*\*Status:\*\* Accepted \(2026-10-21, by Dave's explicit request\)\./, line);
+  assert.doesNotMatch(line, /^- \*\*Status:\*\*\s*Proposed/, line);
+  const text = fs.readFileSync(adrFile(12), 'utf8');
+  assert.match(text, /^- \*\*Trigger:\*\* trek-e's announcement/m, 'names the trigger');
+  assert.match(text, /^- \*\*Revisit:\*\* at trek-e's four-week review/m, 'revisit tied to the four-week review');
+  assert.match(text, /^## Revisit$/m, 'carries a Revisit section');
+});
+
+test('261021-n2m: docs/adr/README.md row for CTK-ADR-0012 says Accepted (not Proposed)', () => {
+  const cells = readmeRow('CTK-ADR-0012').split('|').map((c) => c.trim());
+  assert.ok(cells.includes('Accepted'), `status cell is Accepted: ${JSON.stringify(cells)}`);
+  assert.ok(!cells.includes('Proposed'), 'status cell is not Proposed');
+});
+
+test('261021-n2m: CTK-ADR-0012 is plain ASCII (tab, newline and printable bytes only, so no em dash)', () => {
+  const bytes = fs.readFileSync(adrFile(12));
+  const bad = [...bytes].findIndex((b) => !(b === 0x09 || b === 0x0a || (b >= 0x20 && b <= 0x7e)));
+  assert.equal(bad, -1, `non-ASCII byte at offset ${bad}`);
+});
