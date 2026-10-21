@@ -696,3 +696,20 @@ test('261021-n2m: CTK-ADR-0012 is plain ASCII (tab, newline and printable bytes 
   const bad = [...bytes].findIndex((b) => !(b === 0x09 || b === 0x0a || (b >= 0x20 && b <= 0x7e)));
   assert.equal(bad, -1, `non-ASCII byte at offset ${bad}`);
 });
+
+// Round-2 gate follow-up (notes N2 and N4): CTK-ADR-0012 Consequences states both Update-branch unknowns
+// honestly and records why queue.strictUpToDate was removed rather than deprecated (Hyrum).
+test('round-2 N2/N4: CTK-ADR-0012 Consequences names stale BEHIND, the unverified dismissal and the strictUpToDate removal', () => {
+  const text = fs.readFileSync(adrFile(12), 'utf8');
+  const start = text.indexOf('## Consequences');
+  const end = text.indexOf('## Alternatives considered');
+  assert.ok(start >= 0 && end > start, 'Consequences section found');
+  const c = text.slice(start, end).replace(/\s+/g, ' ');
+  assert.match(c, /behind_by=0/, 'BEHIND can be stale');
+  assert.match(c, /PR branch already up-to-date/, 'Update branch is then a no-op');
+  assert.match(c, /Not verified: whether that Update-branch push dismisses/, 'dismissal stays unverified');
+  assert.match(c, /strictUpToDate/, 'names the removed field');
+  assert.match(c, /Hyrum/, 'records the Hyrum reasoning');
+  assert.match(c, /removed/, 'records the choice: removed');
+  assert.match(c, /via the paths searched/, 'the consumer search is scoped, not a claim of absence');
+});

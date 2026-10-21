@@ -151,3 +151,35 @@ test('n2m gate fix: the maintainer updates a BEHIND branch at merge time, and --
   }
   assert.match(read('skills/maintainer-review-sweep/SKILL.md'), /enforcement_level/, 'step 7 says how to read classic protection');
 });
+
+// --- round-2 gate notes N1 and N2 (re-review step 13, the maintainer's own Update branch) ---
+
+/** re-review.md step 13 (the Merge gate), up to step 14. */
+function step13() {
+  const rr = read('skills/maintainer-review-sweep/re-review.md');
+  const start = rr.indexOf('13. **Merge gate.**');
+  const end = rr.indexOf('14. **', start);
+  assert.ok(start >= 0 && end > start, 'step 13 found before step 14');
+  return rr.slice(start, end);
+}
+
+test('N1: step 13 records the head before Update branch and aborts only on an unexpected head change', () => {
+  const s = step13();
+  assert.doesNotMatch(s, /if its head SHA differs from step 1's, abort and restart\)/, 'the unconditional abort is gone');
+  assert.match(s, /`H0`/, 'names the head recorded before Update branch');
+  assert.match(s, /`H1`/, 'names the head after Update branch');
+  assert.ok(s.indexOf('`H0`') < s.indexOf('gh pr update-branch <n> --repo <owner>/<repo>'), 'H0 is recorded before update-branch runs');
+  assert.match(s, /exactly one new commit/, 'expects exactly one new commit');
+  assert.match(s, /gh api repos\/<owner>\/<repo>\/commits\/<H1> --jq '\[\.parents\[\]\.sha\]'/, 'checks the parents of the new head');
+  assert.match(s, /CI on `H1`/, 're-verifies checks on the new head');
+  assert.match(s, /--match-head-commit <H1>/, 'the merge is pinned to the verified head');
+  assert.match(s, /unexpected head change: abort and restart/, 'aborts only on an unexpected head change');
+});
+
+test('N2: step 13 states that BEHIND can be stale and that approval dismissal by Update branch is not verified', () => {
+  const s = step13();
+  assert.match(s, /behind_by=0/, 'BEHIND can read while behind_by=0');
+  assert.match(s, /PR branch already up-to-date/, 'names what gh prints for a stale BEHIND');
+  assert.match(s, /dismisses an existing approval is not verified/, 'does not claim either way about dismissal');
+  assert.match(s, /do not assume either way/);
+});
