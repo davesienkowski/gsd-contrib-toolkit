@@ -700,3 +700,12 @@ test('N4: the --json queue object carries no strictUpToDate key in any mode', (t
     assert.ok(!('strictUpToDate' in d.queue), `${q}: ${JSON.stringify(d.queue)}`);
   }
 });
+
+test('N4 (nits gate): the --json queue object in unknown mode is exactly base, mode and error', (t) => {
+  const r = runThroughStub(t, ['--json', '900020'], { queue: 'rules-read-failure.json' });
+  assert.equal(r.status, 0, r.stderr);
+  const [d] = JSON.parse(r.stdout);
+  assert.equal(d.queue.mode, 'unknown', JSON.stringify(d.queue));
+  assert.deepEqual(Object.keys(d.queue).sort(), ['base', 'error', 'mode'], JSON.stringify(d.queue));
+  assert.equal(typeof d.queue.error, 'string');
+});

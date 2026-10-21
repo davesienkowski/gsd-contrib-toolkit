@@ -183,3 +183,18 @@ test('N2: step 13 states that BEHIND can be stale and that approval dismissal by
   assert.match(s, /dismisses an existing approval is not verified/, 'does not claim either way about dismissal');
   assert.match(s, /do not assume either way/);
 });
+
+// --- nits gate BLOCK on N1 (2026-10-21): the parent shape is contributor-controlled metadata
+// (Kerckhoffs), so step 13.3 must also check the content: H1's tree equals a clean merge of its parents.
+
+test('N1 content: step 13 requires H1 tree to equal the clean merge of its two parents, conflict or mismatch aborts', () => {
+  const s = step13();
+  assert.match(s, /git merge-tree --write-tree <H0> <base-parent>/, 'recomputes the clean merge of the parents');
+  assert.match(s, /git rev-parse '<H1>\^\{tree\}'/, 'compares against the tree of H1');
+  assert.match(s, /exits non-zero on a conflict/, 'a conflict is named');
+  assert.match(s, /a conflict or a tree mismatch is an unexpected head change/, 'both abort');
+  assert.match(s, /git 2\.38/, 'names the git version merge-tree --write-tree needs');
+  assert.match(s, /git worktree add --detach/, 'gives the temporary-worktree fallback');
+  assert.match(s, /git fetch /, 'fetches the commits before checking them locally');
+  assert.ok(s.indexOf('merge-tree --write-tree') < s.indexOf('Re-verify on the new head'), 'the content check is in 13.3, before CI is read');
+});

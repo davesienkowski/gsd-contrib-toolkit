@@ -713,3 +713,22 @@ test('round-2 N2/N4: CTK-ADR-0012 Consequences names stale BEHIND, the unverifie
   assert.match(c, /removed/, 'records the choice: removed');
   assert.match(c, /via the paths searched/, 'the consumer search is scoped, not a claim of absence');
 });
+
+// Nits gate (2026-10-21): the header names the post-acceptance additions, and the Update-branch
+// consequence says step 13 checks both the parents and the content of the new head.
+test('nits gate: CTK-ADR-0012 header notes the post-acceptance additions; step 13 checks parents and content', () => {
+  const text = fs.readFileSync(adrFile(12), 'utf8');
+  const date = text.split('\n').find((l) => l.startsWith('- **Date:**'));
+  assert.ok(date, 'has a Date line');
+  const lines = text.split('\n');
+  const i = lines.indexOf(date);
+  const dateBullet = [date];
+  for (let k = i + 1; k < lines.length && /^  \S/.test(lines[k]); k++) dateBullet.push(lines[k]);
+  const d = dateBullet.join(' ').replace(/\s+/g, ' ');
+  assert.match(d, /additions after acceptance/, d);
+  assert.match(d, /no Decision changed/, d);
+  const start = text.indexOf('## Consequences');
+  const c = text.slice(start, text.indexOf('## Alternatives considered')).replace(/\s+/g, ' ');
+  assert.match(c, /both its parents and its content/, 'the consequence names the content check');
+  assert.match(c, /git merge-tree --write-tree/, 'names how the content is checked');
+});
