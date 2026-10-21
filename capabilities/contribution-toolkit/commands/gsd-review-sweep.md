@@ -12,6 +12,7 @@ Do not list issues, post any review, relabel, dismiss, or merge until that skill
 - **Respect the intake perimeter.** Don't work around the repo's bots; deliver a re-review as a single human-submitted formal review with the required disclaimer line.
 - **Ball-in-court anchors to the latest `CHANGES_REQUESTED`**, not the latest review of any kind.
 - **Read real check-runs on the head SHA** — branch protection is evaluate-mode, so "green" from the ruleset is not a gate; and a changeset-only commit can hide a stale failed Tests run.
+- **BEHIND is informational.** `pr-status` reads the base branch's merge-queue mode live (its `queue:` line); never ask for, or do, a rebase or an Update branch only because `next` moved (CTK-ADR-0012). Only a DIRTY conflict is a rebase reason.
 - **Stop at merge-readiness.** Merge ONLY if the task below carries an explicit `merge=#N` token AND the verdict is a plain, evidence-backed CLEAR AND no other maintainer has an unresolved change-request.
 - In sweep mode, present the ranked buckets and **await my pick** before any per-PR re-review.
 
