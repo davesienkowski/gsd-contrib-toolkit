@@ -266,3 +266,44 @@ test('N1 content: step 13 requires H1 tree to equal the clean merge of its two p
   assert.match(s, /git fetch /, 'fetches the commits before checking them locally');
   assert.ok(s.indexOf('merge-tree --write-tree') < s.indexOf('Re-verify on the new head'), 'the content check is in 13.3, before CI is read');
 });
+
+// --- quick 261021-sg6: next-queue (ruleset 25600238) went active at 2026-10-22T00:08:26Z while
+// main-protection, release-branches and tag-immutability stay evaluate. No surface may still say the
+// rulesets as a whole are evaluate-mode; each place that warns about ruleset "green" points at
+// pr-status's live queue readout instead of a hardcoded state.
+
+test('sg6: no surface says the rulesets as a whole are evaluate-mode', () => {
+  const banned = [
+    /the rulesets are evaluate-mode/,
+    /it's in evaluate mode; read actual check-run/,
+    /note `enforcement: evaluate` = audit-only, NOT enforcing\)/,
+    /note `enforcement: evaluate` = audit-only,\s*$/m,
+  ];
+  for (const rel of SURFACES) {
+    const text = read(rel);
+    for (const re of banned) assert.ok(!re.test(text), `${rel} still matches ${re}`);
+  }
+});
+
+test('sg6: each check-run warning points at the live pr-status queue line and names per-ruleset enforcement', () => {
+  const at = (rel, marker) => {
+    const text = read(rel);
+    const i = text.indexOf(marker);
+    assert.ok(i >= 0, `${rel} has ${marker}`);
+    return text.slice(i, i + 700).replace(/\s+/g, ' ');
+  };
+  for (const [rel, marker] of [
+    ['skills/core-contribution/SKILL.md', 'Read **real check-run conclusions** on the head SHA'],
+    ['commands/gsd-review-sweep.md', '- **Read real check-runs on the head SHA**'],
+    ['docs/guides/maintainer-guide.md', '- **Read real check-runs on the head SHA**'],
+    ['docs/guides/contributor-guide.md', '| **P6** |'],
+    ['skills/maintainer-review-sweep/SKILL.md', '- Trusting "CI green" from the ruleset'],
+  ]) {
+    const s = at(rel, marker);
+    assert.match(s, /`queue:` line/, `${rel}: points at pr-status's queue line`);
+    assert.match(s, /per ruleset/, `${rel}: enforcement is per ruleset`);
+  }
+  for (const rel of ['skills/maintainer-review-sweep/SKILL.md', 'docs/guides/maintainer-guide.md']) {
+    assert.match(read(rel), /each ruleset's `enforcement`: `evaluate` = audit-only, `active` = enforcing/, `${rel} step reads enforcement per ruleset`);
+  }
+});
