@@ -217,10 +217,13 @@ The toolkit taught the treadmill trek-e is retiring:
   non-author approval with write access on the current head, so it reads red on Dave's PRs until
   approved and again after a push. Seen live on outside authors' PRs (#5420, #5613 failure; trek-e's
   #5588 success); no Dave PR head yet carries it. (c) The `next-queue` ruleset (id 25600238, one
-  `merge_queue` rule on `~DEFAULT_BRANCH`) exists in `evaluate` mode; `rules/branches/next` still
-  returns `[]`, and `pr-status` reads `queue: next evaluate`, so the maintainer side of Decision 1 for
-  `evaluate` holds. Neither new context is a required context on any ruleset or among the 7 classic
-  checks; the toolkit calls both advisory (CTK-ADR-0001). The *What was live* table above stays the
+  `merge_queue` rule on `~DEFAULT_BRANCH`) was read in `evaluate` mode at about 00:00 UTC on
+  2026-10-22 (`rules/branches/next` returned `[]`, `pr-status` read `queue: next evaluate`), and was
+  switched to `active` at 2026-10-22T00:08:26Z while this addition was written: re-read the same
+  endpoints now return a `merge_queue` rule and `queue: next active`. Decision 1's `active` branch now
+  applies on `next`; Decision 2 (read live, never hardcode) is what kept `pr-status` right across the
+  switch. Neither new context is a required context on any ruleset (the active `next-queue` holds only the
+  `merge_queue` rule) or among the 7 classic checks; the toolkit calls both advisory (CTK-ADR-0001). The *What was live* table above stays the
   20:40 UTC baseline.
 
 ## Alternatives considered
