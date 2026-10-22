@@ -11,10 +11,12 @@
   round-2 gate on the corrected record returned MERGE-OK.
 - **Review:** Published for maintainer review and open to revision. A changed decision is recorded by a
   superseding or amending CTK-ADR, never a silent edit to this record.
-- **Date:** 2026-10-21 (milestone v2.8). Consequences gained two additions after acceptance, both dated
+- **Date:** 2026-10-21 (milestone v2.8). Consequences gained three additions after acceptance, all dated
   2026-10-21 there; no Decision changed. (1) The Update-branch consequence gained the stale-BEHIND note
   (round-2 gate note N2) and the parents-and-content sentence for re-review step 13 (follow-up gate on
-  N1). (2) A new consequence records the `queue.strictUpToDate` removal (round-2 gate note N4).
+  N1). (2) A new consequence records the `queue.strictUpToDate` removal (round-2 gate note N4). (3) A new
+  consequence records that the fix template gained the Self-test report (Decision 6's own clause fired),
+  the Reviewed or maintainer check and the evaluate-mode `next-queue` ruleset (quick 261021-rud).
 - **Scope:** GSD Contribution Toolkit: `bin/pr-status.cjs`, the `maintainer-review-sweep` and
   `core-contribution` skills, the `gsd-submit` and `gsd-review-sweep` commands, the maintainer guide.
 - **Trigger:** trek-e's announcement on the gsd-core Discord, 2026-10-21 (relayed by Dave), that
@@ -199,6 +201,27 @@ The toolkit taught the treadmill trek-e is retiring:
   wrong value. The queue object is now exactly `base`, `mode` and `ruleset` (`base`, `mode` and `error`
   when unknown); a key-set test in `bin/pr-status.test.cjs` pins the active, evaluate and none shapes,
   so a later field there is a decision, not drift.
+- **Upstream landed three announced pieces the same day (added 2026-10-21 after acceptance, quick
+  261021-rud; no Decision changed).** Read on origin/next at b043112d6 and through read-only REST.
+  (a) 76e1d4dc7 (#5612/#5614) added a `## Self-test report` section to `fix.md`, a fenced json block
+  between `### Runtimes tested` and `## Checklist`, checked by the advisory `Self-test report` context
+  (`scripts/self-test-report-policy.cjs`): schema 1, a `head_sha` that must equal the PR's current head,
+  a failing-first test or a stated reason, a passing full suite, os and node. Decision 6's own clause
+  fired: the skeleton now mirrors that block and the advisory note is gone, and the skill fills the block
+  after the last push and refills it after any later push. The policy applies to fix PRs by authors not
+  in `.github/MAINTAINERS`, which lists only trek-e, so Dave's PRs need it. The live policy, run on a
+  filled sample body, returned `ok_report`, and `fail_stale_sha` for another sha. (b) 4402ed4c2
+  (#5607/#5609) added the advisory `Reviewed or maintainer` context
+  (`scripts/reviewed-or-maintainer-policy.cjs`), which is how trek-e's "PRs from outside the maintainer
+  team need an approving review" landed: a MAINTAINERS author passes, anyone else needs a non-bot,
+  non-author approval with write access on the current head, so it reads red on Dave's PRs until
+  approved and again after a push. Seen live on outside authors' PRs (#5420, #5613 failure; trek-e's
+  #5588 success); no Dave PR head yet carries it. (c) The `next-queue` ruleset (id 25600238, one
+  `merge_queue` rule on `~DEFAULT_BRANCH`) exists in `evaluate` mode; `rules/branches/next` still
+  returns `[]`, and `pr-status` reads `queue: next evaluate`, so the maintainer side of Decision 1 for
+  `evaluate` holds. Neither new context is a required context on any ruleset or among the 7 classic
+  checks; the toolkit calls both advisory (CTK-ADR-0001). The *What was live* table above stays the
+  20:40 UTC baseline.
 
 ## Alternatives considered
 
