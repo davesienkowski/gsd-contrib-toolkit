@@ -224,6 +224,8 @@ The label lifecycle is driven by GitHub Actions, not by CONTRIBUTING.md prose:
 | `pr-target-validator.yml` | branch model; **skips maintainers** (OWNER/MEMBER/COLLABORATOR) |
 | `branch-naming.yml` | valid prefix (`feat/ fix/ hotfix/ docs/ chore/ …`); **warn-only**, non-blocking |
 | `dismiss-unauthorized-pr-approvals.yml` | dismisses approvals from non-collaborators / a blocklist |
+| `reviewed-or-maintainer.yml` | **advisory** (no ruleset requires it): passes for a `.github/MAINTAINERS` author (only trek-e) or a non-author, non-bot approval with write access on the CURRENT head; red on Dave's PRs until approved, red again after any push (SKILL.md Phase 6) |
+| `self-test-report.yml` | **advisory**: a fix PR from a non-maintainer needs the `## Self-test report` json block bound to the current head (*Fix PR body skeleton* below) |
 
 (The three typed PR templates + the `pr-template-policy.cjs` required headings are captured as skeletons in *Fix PR body skeleton* below; escape hatch `<!-- pr-template-exempt: <reason> -->`.)
 
@@ -380,7 +382,7 @@ gh issue create --repo open-gsd/gsd-core --title "<type>(<area>): <imperative>" 
 
 ## Fix PR body skeleton (required headings — pr-template-policy enforces them)
 
-```markdown
+````markdown
 ## Fix PR
 ## Linked Issue
 Fixes #<issue#>
@@ -393,6 +395,21 @@ Fixes #<issue#>
 - [x] Yes — added a test that would have caught this bug
 ### Platforms tested
 ### Runtimes tested
+## Self-test report
+
+```json
+{
+  "schema": 1,
+  "head_sha": "<git rev-parse HEAD of the pushed head>",
+  "tool": "npm-test",
+  "failing_first": { "test": "<tests/your-regression.test.cjs>", "fails_on_base": true, "passes_on_head": true },
+  "commands": ["<the exact P3b RED/GREEN command>", "npm test"],
+  "full_suite": { "command": "npm test", "result": "passed", "passed": 0, "failed": 0 },
+  "environment": { "os": "<OS and version>", "node": "<node --version>" },
+  "output_excerpt": "<the last lines of the passing npm test run, 2000 characters at most>"
+}
+```
+
 ## Checklist
 - [x] Issue linked above with `Fixes #NNN`
 - [x] Linked issue has the `confirmed-bug` label
@@ -400,18 +417,27 @@ Fixes #<issue#>
 - [x] Regression test added
 - [x] All existing tests pass (`npm test`)
 - [x] `.changeset/` fragment added
-## Self-test report
-- Failing test: <test file and test name>
-- Fails before the fix: <the failing line from the command, run at the parent commit>
-- Passes after the fix: <the passing line from the same command, run at the head>
-- Command: <the exact command>
-- OS: <e.g. Ubuntu 24.04 on WSL2, macOS 15.3, Windows 11 24H2>
-- Node: <node --version>
 ## Breaking changes
 <disclose any Hyrum's-Law behavior change from the artificer pass, else "None">
-```
+````
 
-**Self-test report (advisory).** Source: trek-e's merge-queue announcement (Discord, 2026-10-21, relayed by Dave): the failing test, that it fails before and passes after, the command run, the OS and the Node version; CI re-runs it; advisory at first. As of 2026-10-21 `.github/PULL_REQUEST_TEMPLATE/fix.md` on `origin/next` has no such section, and pr-template-policy checks only that the required headings are present, so the extra heading passes the template gate. When the upstream template gains the section, mirror its exact headings and drop this note; re-check with `git show origin/next:.github/PULL_REQUEST_TEMPLATE/fix.md`.
+**Self-test report (advisory check, fix PRs).** Upstream landed the section in `.github/PULL_REQUEST_TEMPLATE/fix.md` on `origin/next` in 76e1d4dc7 (#5612/#5614), between `### Runtimes tested` and `## Checklist`; the block above is that json block with passing values where the template ships failing defaults (`false`, `"skipped"`) and `<...>` where only you know the answer. The `Self-test report` status context runs `scripts/self-test-report-policy.cjs` from the base sha on every open, edit and push. It is advisory: not a required context on any ruleset, and pr-template-policy does not require the heading. Re-check the template with `git show origin/next:.github/PULL_REQUEST_TEMPLATE/fix.md` and the rules with `git show origin/next:scripts/self-test-report-policy.cjs`.
+
+- **Who must file it.** A fix PR is one whose head ref starts `fix/` or whose title starts `fix:` or `fix(...):` (optionally with `!`, any case), so every PR this skill opens counts. Authors ending `[bot]` pass outright, and so do authors listed in `.github/MAINTAINERS`, read from the base sha so a PR cannot add its own author. That file lists only trek-e (2026-10-21): Dave is not exempt.
+- **What passes.** `schema` is `1`; `head_sha` is 40 hex and equals the PR's current head (case-insensitive); `tool` is `gsd-test`, `npm-test` or `manual`; `failing_first` is either `{test, fails_on_base: true, passes_on_head: true}` or `{"not_applicable_reason": "<why>"}`, which the check accepts for any non-empty sentence, so it is a declaration, not proof; `commands` is a non-empty list; `full_suite` has a `command`, `result: "passed"`, `failed` 0 and `passed` at least 1; `environment` gives `os` and `node`; `output_excerpt` is non-empty and at most 2000 characters. Any of `head_sha`, `failing_first.test`, `failing_first.not_applicable_reason`, `commands`, `full_suite.command`, `environment.os`, `environment.node` or `output_excerpt` whose whole value is still `<...>` fails as the unfilled template (`<a>` inside real text is fine). The block must be the first ```` ```json ```` fence under the heading and not inside an HTML comment. The check reports one class per run: schema problems, then `fail_stale_sha`, then `fail_not_failing_first`, then `fail_suite_not_passed`.
+- **Fill it from runs that happened on the pushed head.** `failing_first` comes from the P3b RED output (the test failing without the fix) and the P3c GREEN run; `commands` names those exact commands. P3d's "full relevant suites" is not a full suite: run `npm test` (tool `npm-test`, or `gsd-test` with tool `gsd-test`) on the commit you push and copy its `# pass` and `# fail` counts and its last lines into `full_suite` and `output_excerpt`. Never report a suite you did not run on that commit: the check validates shape and sha binding only, so it cannot catch a made-up report, and CI on the merge-group commit stays authoritative.
+- **Bind it to the head after the last push.** Push first, then set `head_sha` to `git rev-parse HEAD` and confirm it equals the remote branch (`git ls-remote <remote> refs/heads/<branch>`); after `gh pr create`, confirm `gh pr view <n> --repo open-gsd/gsd-core --json headRefOid --jq .headRefOid` prints the same sha. **After any later push** (a review fix, a needed rebase) the report is stale and the check fails `fail_stale_sha`: re-run `npm test` on the new head, refresh `head_sha`, the counts and the excerpt together, re-run the P5d check, then `gh pr edit <n> --repo open-gsd/gsd-core --body-file BODY.md` and re-confirm `headRefOid`. Never swap only the sha. If `headRefOid` moved between the fill and the edit, fill again.
+- **P5d: run the LIVE policy on the exact body.** The script requires `./lib/cli-exit.cjs` and `./reviewed-or-maintainer-policy.cjs`, so take a base copy of the tree, not a single file:
+
+```bash
+B=$(mktemp -d); git -C ~/repos/gsd-core fetch -q origin next
+git -C ~/repos/gsd-core archive origin/next scripts .github/MAINTAINERS | tar -x -C "$B"
+printf '%s\n' '<the exact PR title>' > "$B/title.txt"
+( cd "$B" && PR_BODY_FILE='<absolute path of BODY.md>' PR_TITLE_FILE="$B/title.txt" HEAD_REF='fix/<issue#>-<slug>' \
+  PR_AUTHOR_LOGIN=davesienkowski HEAD_SHA="$(git -C "$WT" rev-parse HEAD)" MAINTAINERS_FILE="$B/.github/MAINTAINERS" \
+  node scripts/self-test-report-policy.cjs )
+# pass: {"ok":true,"reason":"ok_report","problems":[]}; any other reason prints its problems as ::error:: lines
+```
 
 **PR title convention (ENFORCED at open time — `pr-title-validator.yml`, `WARN_ONLY:false`):** the title MUST be `<type>(#<issue#>): <imperative>` — the linked issue ref lives **inside the scope**, not the subject. The live matcher is `scripts/release-notes/conventional-title.cjs` (`evaluatePrTitle`): a leading tag (`[security] …`) fails `bad-prefix`; a scope without `#<n>` (e.g. `fix(core): …`) fails `missing-issue-ref`. Valid: `fix(#1542): roadmap rollback`, `feat(#39)!: drop legacy flag`, `enhance(#1549): add PR-title validator`. You MAY add an area after the ref: `fix(#1542, core): …`. (Issue titles are NOT title-gated — the `<type>(<area>)` form above is fine for `gh issue create`; only PR titles are checked, because the changelog is built from them.)
 
