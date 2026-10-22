@@ -146,8 +146,10 @@ test('rud: SKILL.md gates the report with P5d, drops the not-landed note, and ex
   const p6 = skill.slice(skill.indexOf('### Phase 6'), skill.indexOf('### Phase 7')).replace(/\s+/g, ' ');
   for (const s of [
     'Reviewed or maintainer', 'write access', 'current head', 'fail_no_approval', 'fail_stale_approval_only',
-    'Bots never count', 'expected', 'advisory', 'not among the 7', 'next-queue', 'evaluate',
+    'Bots never count', 'expected', 'advisory', 'not among the 7', 'next-queue', '`evaluate`', '`active`',
+    'queue: next active',
   ]) assert.ok(p6.includes(s), `Phase 6 names ${s}`);
+  assert.doesNotMatch(p6, /queue is not yet active/, 'the queue went active at 2026-10-22T00:08Z');
   assert.match(p6, /re-reads? red after (a|any|every) (new )?push/i, 'approval is head-bound: a push re-reds it');
 });
 

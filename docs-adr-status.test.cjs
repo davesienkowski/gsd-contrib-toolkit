@@ -746,7 +746,7 @@ test('261021-rud: CTK-ADR-0012 records the landed Self-test template, Reviewed o
   assert.match(d, /\(3\)/, d);
   const c = text.slice(text.indexOf('## Consequences'), text.indexOf('## Alternatives considered')).replace(/\s+/g, ' ');
   for (const s of ['76e1d4dc7', 'self-test-report-policy.cjs', 'Reviewed or maintainer', '4402ed4c2',
-    'next-queue', 'evaluate', 'MAINTAINERS', 'no Decision changed']) {
+    'next-queue', 'evaluate', 'switched to `active` at 2026-10-22T00:08:26Z', 'queue: next active', 'MAINTAINERS', 'no Decision changed']) {
     assert.ok(c.includes(s), `Consequences names ${s}`);
   }
   // Decision 6 and the baseline row are left as accepted (the record's own Review rule).
