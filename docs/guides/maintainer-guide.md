@@ -65,8 +65,8 @@ The pipeline (an adversarial gate between every phase; re-fetch live state befor
    (the brief is the expensive part; the label is the only thing gating dispatch).
 7. **Ball-in-court** — anchor to the latest **`CHANGES_REQUESTED`** review (not the latest review of any
    kind): author pushed after it → ball on reviewer; otherwise author still owes changes.
-8. **Authority reality** — role, CODEOWNERS, and **rulesets** (note `enforcement: evaluate` = audit-only,
-   so CI "green" from the ruleset is *not* a gate — read real check-runs yourself).
+8. **Authority reality** — role, CODEOWNERS, and **rulesets** (note each ruleset's `enforcement`: `evaluate` = audit-only, `active` = enforcing;
+   a ruleset's "green" is still not a check-run result, so read real check-runs yourself).
 9. **Present & select** — show the ranked buckets and await your pick; then per-PR re-review.
 10. **Capture the outcome** *(advisory)* — file the verdict, its evidence, and specifically the
     **exogenous-pass delta**: what the fresh reviewer caught that your own pass missed. That delta is the
@@ -180,8 +180,8 @@ a LOUD error, never a false "no drift."
 
 - **Ball-in-court** anchors to the latest `CHANGES_REQUESTED`, not the latest review of any kind — a
   non-owner's approval does not clear an owner's change-request.
-- **Read real check-runs on the head SHA**: the rulesets are evaluate-mode and classic protection on `next`
-  gates 7 checks for non-admins; a changeset-only commit can hide a stale failed Tests run.
+- **Read real check-runs on the head SHA**: enforcement is per ruleset (on `next`, `pr-status`'s `queue:` line reads the merge-queue ruleset live; the other rulesets are audit-only `evaluate` unless a fresh `gh api repos/<owner>/<repo>/rulesets` says otherwise),
+  and classic protection on `next` gates 7 checks for non-admins; a changeset-only commit can hide a stale failed Tests run.
 - **Don't merge over another maintainer's *unresolved* change-request.** If your re-review *verifiably*
   confirms they were addressed, **dismiss** the stale CR with an evidence-cited message — but *only* on
   explicit human authorization (dismissal is consequential and hard to reverse).
