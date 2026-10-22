@@ -13,8 +13,9 @@
  * pinned byte-identical to these by bin/pr-status-prohibitions.test.cjs Q2 and the build check):
  *   1. the retired phrasings are gone: "approved+rebase", "not DIRTY or BEHIND", "needs rebase` if
  *      BEHIND" and the "Post-rebase handoff" step;
- *   2. the fix PR skeleton in core-contribution/reference.md carries a `## Self-test report` section
- *      with the five announced items, marked advisory;
+ *   2. the fix PR skeleton in core-contribution/reference.md carries upstream's `## Self-test report`
+ *      json block (quick 261021-rud, after 76e1d4dc7 landed it in fix.md), the live policy's rules, the
+ *      fill-after-the-last-push procedure, the P5d gate and the Reviewed-or-maintainer note;
  *   3. the no-push-after-approval rule and the rebase-only-for-DIRTY rule are in the contribution skill;
  *   4. the head.repo push-target rule is wherever the toolkit composes a push to an existing PR
  *      (reference.md, re-review.md, the sweep's authoring hand-off and the gsd-submit command);
@@ -70,19 +71,84 @@ test('n2m wording: the retired rebase-treadmill phrasings are gone from skills, 
   }
 });
 
-test('n2m wording: the fix PR skeleton carries an advisory Self-test report with the five announced items', () => {
+// Quick 261021-rud: the upstream fix template gained the section (76e1d4dc7, #5612/#5614), checked by the
+// advisory scripts/self-test-report-policy.cjs. The skeleton now mirrors upstream's json block, and the
+// prose around it states the policy's rules and when to fill and re-fill the block.
+
+/** The first fenced json block after `from` in `text`, as raw text. */
+function jsonBlockAfter(text, from) {
+  const open = text.indexOf('```json\n', from);
+  assert.ok(open >= 0, 'a ```json fence follows');
+  const body = open + '```json\n'.length;
+  const close = text.indexOf('\n```', body);
+  assert.ok(close > body, 'the json fence closes');
+  return text.slice(body, close);
+}
+
+test('rud: the fix PR skeleton carries upstream\'s Self-test report json block, between Runtimes tested and Checklist', () => {
   const ref = read('skills/core-contribution/reference.md');
   const start = ref.indexOf('## Fix PR body skeleton');
   assert.ok(start >= 0, 'fix PR skeleton section present');
   const section = sectionAt(ref, start);
   const at = section.indexOf('## Self-test report');
   assert.ok(at >= 0, 'skeleton has a ## Self-test report heading');
-  const block = section.slice(at, at + 1200);
-  for (const item of ['Failing test', 'Fails before the fix', 'Passes after the fix', 'Command', 'OS', 'Node']) {
-    assert.ok(block.includes(item), `Self-test report names ${item}`);
-  }
-  assert.match(section, /Self-test report[\s\S]*advisory/i, 'the section is marked advisory');
-  assert.match(section, /PULL_REQUEST_TEMPLATE\/fix\.md/, 'it says where to re-check the upstream template');
+  assert.ok(section.indexOf('### Runtimes tested') < at, 'after ### Runtimes tested, as upstream places it');
+  assert.ok(at < section.indexOf('## Checklist'), 'before ## Checklist, as upstream places it');
+  const report = JSON.parse(jsonBlockAfter(section, at));
+  assert.deepEqual(Object.keys(report), [
+    'schema', 'head_sha', 'tool', 'failing_first', 'commands', 'full_suite', 'environment', 'output_excerpt',
+  ], 'the eight upstream keys, in upstream order');
+  assert.equal(report.schema, 1);
+  assert.ok(['gsd-test', 'npm-test', 'manual'].includes(report.tool), report.tool);
+  // Passing values where upstream ships failing defaults, so a filled copy is not red by construction.
+  assert.equal(report.failing_first.fails_on_base, true);
+  assert.equal(report.failing_first.passes_on_head, true);
+  assert.equal(report.full_suite.result, 'passed');
+  assert.equal(report.full_suite.failed, 0);
+  // What only the author can know stays a whole <...> placeholder, which the live check rejects unfilled.
+  const ph = /^<[^<>]*>$/;
+  for (const [name, v] of [
+    ['head_sha', report.head_sha],
+    ['failing_first.test', report.failing_first.test],
+    ['environment.os', report.environment.os],
+    ['environment.node', report.environment.node],
+    ['output_excerpt', report.output_excerpt],
+  ]) assert.match(String(v), ph, `${name} is an unfilled placeholder`);
+  // The bullet shape and the not-landed note are gone.
+  assert.doesNotMatch(section, /^- Failing test: /m, 'the old bullet list is gone');
+  assert.doesNotMatch(ref, /has no such section/, 'the not-landed note is gone from reference.md');
+  assert.doesNotMatch(ref, /had not gained the section/, 'the not-landed note is gone from reference.md');
+});
+
+test('rud: reference.md states the live policy rules, who must file it, and when to fill and re-fill it', () => {
+  const ref = read('skills/core-contribution/reference.md');
+  const section = sectionAt(ref, ref.indexOf('## Fix PR body skeleton')).replace(/\s+/g, ' ');
+  for (const s of [
+    'scripts/self-test-report-policy.cjs', '76e1d4dc7', 'advisory',
+    // which PRs count, and that Dave is not exempt
+    '`fix/`', '.github/MAINTAINERS', 'trek-e', 'not exempt', '[bot]',
+    // validity rules
+    '`gsd-test`', '`npm-test`', '`manual`', 'not_applicable_reason', '2000 characters', '`passed` at least 1',
+    // fill after the last push, bound to the head, refill after any push
+    'after the last push', 'git rev-parse HEAD', 'headRefOid', 'fail_stale_sha', 'Never swap only the sha',
+    'gh pr edit', '# pass',
+    // local run of the LIVE policy from a base copy
+    'git archive origin/next', 'PR_BODY_FILE', 'HEAD_SHA', 'MAINTAINERS_FILE', 'ok_report',
+  ]) assert.ok(section.includes(s), `Fix PR skeleton section names ${s}`);
+  assert.match(section, /declaration, not proof/, 'not_applicable_reason is a declaration, not proof');
+  assert.match(section, /not a full suite/, 'P3d relevant suites are not a full suite');
+});
+
+test('rud: SKILL.md gates the report with P5d, drops the not-landed note, and explains Reviewed or maintainer', () => {
+  const skill = read('skills/core-contribution/SKILL.md');
+  assert.doesNotMatch(skill, /had not gained the section/, 'the not-landed note is gone from SKILL.md');
+  assert.match(skill, /^\[ \] P5d .*self-test-report-policy\.cjs.*\[GATE: ok_report/m, 'P5d runs the live policy as a gate');
+  const p6 = skill.slice(skill.indexOf('### Phase 6'), skill.indexOf('### Phase 7')).replace(/\s+/g, ' ');
+  for (const s of [
+    'Reviewed or maintainer', 'write access', 'current head', 'fail_no_approval', 'fail_stale_approval_only',
+    'Bots never count', 'expected', 'advisory', 'not among the 7', 'next-queue', 'evaluate',
+  ]) assert.ok(p6.includes(s), `Phase 6 names ${s}`);
+  assert.match(p6, /re-reads? red after (a|any|every) (new )?push/i, 'approval is head-bound: a push re-reds it');
 });
 
 test('n2m wording: the contribution skill forbids a push after approval and a rebase for BEHIND alone', () => {

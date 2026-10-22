@@ -732,3 +732,24 @@ test('nits gate: CTK-ADR-0012 header notes the post-acceptance additions; step 1
   assert.match(c, /both its parents and its content/, 'the consequence names the content check');
   assert.match(c, /git merge-tree --write-tree/, 'names how the content is checked');
 });
+
+// Quick 261021-rud: Decision 6's own clause fired (fix.md gained the section in 76e1d4dc7). Recorded as a
+// dated after-acceptance consequence; the Decision text and the baseline table stay as accepted.
+test('261021-rud: CTK-ADR-0012 records the landed Self-test template, Reviewed or maintainer and the evaluate queue', () => {
+  const text = fs.readFileSync(adrFile(12), 'utf8');
+  const lines = text.split('\n');
+  const i = lines.findIndex((l) => l.startsWith('- **Date:**'));
+  const dateBullet = [lines[i]];
+  for (let k = i + 1; k < lines.length && /^  \S/.test(lines[k]); k++) dateBullet.push(lines[k]);
+  const d = dateBullet.join(' ').replace(/\s+/g, ' ');
+  assert.match(d, /three additions after acceptance/, d);
+  assert.match(d, /\(3\)/, d);
+  const c = text.slice(text.indexOf('## Consequences'), text.indexOf('## Alternatives considered')).replace(/\s+/g, ' ');
+  for (const s of ['76e1d4dc7', 'self-test-report-policy.cjs', 'Reviewed or maintainer', '4402ed4c2',
+    'next-queue', 'evaluate', 'MAINTAINERS', 'no Decision changed']) {
+    assert.ok(c.includes(s), `Consequences names ${s}`);
+  }
+  // Decision 6 and the baseline row are left as accepted (the record's own Review rule).
+  assert.match(text, /because the upstream template has not\s+landed it/, 'Decision 6 text unchanged');
+  assert.match(text, /\| Self-test report in the fix template \| \*\*Not landed\.\*\*/, 'baseline row unchanged');
+});
