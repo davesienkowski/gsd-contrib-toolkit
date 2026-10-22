@@ -133,7 +133,7 @@ test('rud: reference.md states the live policy rules, who must file it, and when
     'after the last push', 'git rev-parse HEAD', 'headRefOid', 'fail_stale_sha', 'Never swap only the sha',
     'gh pr edit', '# pass',
     // local run of the LIVE policy from a base copy
-    'git archive origin/next', 'PR_BODY_FILE', 'HEAD_SHA', 'MAINTAINERS_FILE', 'ok_report',
+    'archive origin/next scripts .github/MAINTAINERS', 'PR_BODY_FILE', 'HEAD_SHA', 'MAINTAINERS_FILE', 'ok_report',
   ]) assert.ok(section.includes(s), `Fix PR skeleton section names ${s}`);
   assert.match(section, /declaration, not proof/, 'not_applicable_reason is a declaration, not proof');
   assert.match(section, /not a full suite/, 'P3d relevant suites are not a full suite');
