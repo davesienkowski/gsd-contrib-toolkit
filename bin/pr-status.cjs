@@ -10,7 +10,7 @@
  * head SHA, mergeable + mergeStateStatus, the current checks, every reviewer's latest state with the
  * commit it was on, the requested reviewers and one ball line.
  *
- *   node bin/pr-status.cjs [--json] [--overlap] [--cr [--reviewer <login>]] [--repo owner/name] <n...>
+ *   node bin/pr-status.cjs [--json] [--overlap] [--cr [--reviewer <login>]] [--body] [--repo owner/name] <n...>
  *
  * Text output is plain ASCII (every GitHub-sourced string has C0 controls and DEL dropped and any
  * other non-ASCII character replaced by ?), PR blocks print in argv order and end with one footer:
@@ -47,7 +47,10 @@
  * plus, when a change request was chosen, one more REST GET per PR:
  *  12. gh api --paginate --slurp "repos/R/pulls/N/reviews/<id>/comments?per_page=100"   (the chosen review's
  *      inline comments)
- * A failed timeline, overlap or inline-comments read is named on its own line and never fails the PR block or
+ * and, only with --body (same quick), the timeline read above plus one more read per PR, after 12:
+ *  13. gh pr view N --repo R --json body,baseRefOid,changedFiles   (a separate view, so a push between the two
+ *      views can move the head: the body lines name the head they compared against)
+ * A failed timeline, overlap, inline-comments or body read is named on its own line and never fails the PR block or
  * the exit code.
  * Any queue read that fails makes the mode `unknown` with the error named; it never fails the PR block
  * or the exit code (fail open to informational). Known limit: a queue configured through classic branch
@@ -87,11 +90,14 @@ const DEFAULT_REPO = 'open-gsd/gsd-core';
 const VIEW_FIELDS =
   'number,state,isDraft,author,headRefOid,baseRefName,mergeable,mergeStateStatus,reviewDecision,reviewRequests,commits,updatedAt';
 const CHECK_FIELDS = 'name,state,bucket,workflow,completedAt,link';
+const BODY_FIELDS = 'body,baseRefOid,changedFiles'; // the --body view (quick 261023-2u4), read apart from VIEW_FIELDS
 const BUCKETS = Object.freeze(['pass', 'fail', 'pending', 'skipping', 'cancel']);
 const IGNORED_REVIEW_STATES = new Set(['COMMENTED', 'PENDING']);
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const USAGE =
-  'usage: pr-status [--json] [--overlap] [--cr [--reviewer <login>]] [--repo owner/name] <pr-number...>  (default repo ' + DEFAULT_REPO + ')';
+  'usage: pr-status [--json] [--overlap] [--cr [--reviewer <login>]] [--body] [--repo owner/name] <pr-number...>  (default repo ' +
+  DEFAULT_REPO +
+  ')';
 const FOOTER =
   'Snapshot is point-in-time (three separate gh reads per PR, and separate merge-queue reads per base branch; ' +
   'plus a timeline read when a review was dismissed, and files and compare reads with --overlap); re-run before any write. ' +
@@ -252,6 +258,26 @@ function fetchCr(number, repo, pr, reviewer, deps = {}) {
     }
   }
   return deriveCr({ view: pr.view, reviews: pr.reviews, timeline: pr.timeline, timelineError: pr.timelineError, comments, commentsError, reviewer });
+}
+
+/**
+ * --body: one more read-only view (body, baseRefOid, changedFiles) and the --body verdict. A failed read is
+ * named, never a thrown PR error (CONTEXT D2 f).
+ *
+ * @returns {object} deriveBody result, or { error }
+ */
+function fetchBody(number, repo, pr, deps = {}) {
+  const gh = deps.gh || defaultGh;
+  let bodyView = null;
+  let bodyError = null;
+  try {
+    bodyView = gh(['pr', 'view', String(number), '--repo', repo, '--json', BODY_FIELDS]);
+    if (!bodyView || typeof bodyView !== 'object') throw new Error('body view reply is not an object');
+  } catch (err) {
+    bodyView = null;
+    bodyError = firstErrorLine(err);
+  }
+  return deriveBody({ view: pr.view, reviews: pr.reviews, timeline: pr.timeline, timelineError: pr.timelineError, bodyView, bodyError });
 }
 
 /** Every path a compare/pulls file entry names (its filename, plus previous_filename for a rename). */
@@ -727,6 +753,7 @@ function formatText(d) {
   if (d.decisionNote) lines.push(`  note: ${clean(d.decisionNote)}`);
   if (d.overlap) lines.push(...overlapLines(d.overlap));
   if (d.cr) lines.push(...crLines(d.cr));
+  if (d.body) lines.push(...bodyLines(d.body));
   return lines.join('\n');
 }
 
@@ -1070,6 +1097,219 @@ function crLines(cr) {
   return lines;
 }
 
+// ---- --body (quick 261023-2u4, CONTEXT D2): body sha classes, Self-test report binding, files-changed ----
+
+const SHA_CLASSES = Object.freeze(['head', 'base', 'pr commit', 'former head', 'earlier commit', 'ambiguous', 'unresolved']);
+const HEX_TOKEN_RE = /\b[0-9a-fA-F]{7,40}\b/g; // \b on both sides: a hex run longer than 40 is no token
+const FILES_CHANGED_RE = /\b(\d+)\s+(?:files?\s+changed|changed\s+files?)\b/gi;
+const SELF_TEST_TITLE = 'self-test report';
+const SYNTAX_LINE_MAX = 1000; // a longer line is never heading or fence syntax (bounded work on hostile text)
+
+/**
+ * D2 a: every sha the PR knows, each with ONE class, the first that applies in the order head, base, pr commit,
+ * former head, earlier commit. base is the base sha GitHub last recorded for the PR (baseRefOid), not the live
+ * base tip. Former heads = force-pushed head commits and review commits; earlier commits = committed events.
+ *
+ * @returns {Map<string, string>} lowercased 40-hex sha -> class
+ */
+function knownShas({ view, reviews, timeline, baseRefOid }) {
+  const v = view || {};
+  const known = new Map();
+  const add = (sha, cls) => {
+    const s = lower(sha);
+    if (/^[0-9a-f]{7,40}$/.test(s) && !known.has(s)) known.set(s, cls);
+  };
+  add(v.headRefOid, 'head');
+  add(baseRefOid, 'base');
+  for (const c of Array.isArray(v.commits) ? v.commits : []) add(c && c.oid, 'pr commit');
+  const tl = Array.isArray(timeline) ? timeline : [];
+  for (const e of tl) if (e && e.event === 'head_ref_force_pushed') add(e.commit_id, 'former head');
+  for (const r of (Array.isArray(reviews) ? reviews : []).flat()) add(r && r.commit_id, 'former head');
+  for (const e of tl) if (e && e.event === 'committed') add(e.sha, 'earlier commit');
+  return known;
+}
+
+/**
+ * D2 b-c: the hex tokens of a body (7 to 40 hex characters, case-insensitive, compared lowercased), de-duplicated
+ * by (token, line), in body order, each classified by prefix match: one known sha -> its class, two or more
+ * distinct -> ambiguous, none -> unresolved when it holds a letter a-f, and an all-digit token that matches
+ * nothing is ignored (review and comment ids are all digits).
+ *
+ * @returns {{counts: object, tokens: {line: number, token: string, cls: string}[]}}
+ */
+function classifyBodyShas(body, known) {
+  const counts = Object.fromEntries(SHA_CLASSES.map((c) => [c, 0]));
+  const tokens = [];
+  const shas = [...known.keys()];
+  String(body == null ? '' : body)
+    .split(/\r?\n/)
+    .forEach((text, i) => {
+      const seen = new Set();
+      for (const m of text.matchAll(HEX_TOKEN_RE)) {
+        const token = m[0].toLowerCase();
+        if (seen.has(token)) continue;
+        seen.add(token);
+        const hits = shas.filter((s) => s.startsWith(token));
+        let cls;
+        if (hits.length === 1) cls = known.get(hits[0]);
+        else if (hits.length > 1) cls = 'ambiguous';
+        else if (/[a-f]/.test(token)) cls = 'unresolved';
+        else continue;
+        counts[cls] += 1;
+        tokens.push({ line: i + 1, token, cls });
+      }
+    });
+  return { counts, tokens };
+}
+
+/** ATX heading -> { level, text } (text with ** removed, trimmed, lowercased), parsed without a backtracking regex. */
+function headingOf(line) {
+  const t = line.trim();
+  let level = 0;
+  while (level < t.length && t[level] === '#') level += 1;
+  if (level < 1 || level > 6 || level >= t.length || !/\s/.test(t[level])) return null;
+  let text = t.slice(level).trim();
+  let end = text.length;
+  while (end > 0 && text[end - 1] === '#') end -= 1;
+  if (end < text.length && (end === 0 || /\s/.test(text[end - 1]))) text = text.slice(0, end).trimEnd();
+  return { level, text: text.replace(/\*\*/g, '').trim().toLowerCase() };
+}
+
+/**
+ * R6: the Self-test report json block, by the rule of upstream gsd-core scripts/self-test-report-policy.cjs
+ * (extractReport, read 2026-10-23 from origin/next; reimplemented here, not copied): any heading level whose
+ * text, with ** removed, trimmed and lowercased, is "self-test report"; the section ends at the next heading
+ * of the same or a higher level; fence-aware (a # line inside a fence is no heading; a fence's first info word
+ * names its language); HTML comments outside fences are skipped; the first COMPLETE json block wins.
+ *
+ * @returns {string|null} the block's text, or null when the section or a complete block is absent
+ */
+function selfTestBlock(body) {
+  let fence = null; // { ch, len, capture }
+  let inComment = false;
+  let level = 0;
+  let captured = [];
+  for (const full of String(body == null ? '' : body).split(/\r?\n/)) {
+    const line = full.length > SYNTAX_LINE_MAX ? full.slice(0, SYNTAX_LINE_MAX) : full;
+    if (!fence) {
+      if (inComment) {
+        if (line.includes('-->')) inComment = false;
+        continue;
+      }
+      const at = line.indexOf('<!--');
+      if (at !== -1 && line.indexOf('-->', at + 4) === -1) {
+        inComment = true;
+        continue;
+      }
+      const open = /^\s*(`{3,}|~{3,})\s*([^\s`]*)(?:\s.*)?$/.exec(line);
+      if (open) {
+        fence = { ch: open[1][0], len: open[1].length, capture: level > 0 && open[2].toLowerCase() === 'json' };
+        captured = [];
+        continue;
+      }
+      const h = headingOf(line);
+      if (h) {
+        if (level === 0 && h.text === SELF_TEST_TITLE) level = h.level;
+        else if (level > 0 && h.level <= level) return null;
+      }
+      continue;
+    }
+    const close = /^\s*(`{3,}|~{3,})\s*$/.exec(line);
+    if (close && close[1][0] === fence.ch && close[1].length >= fence.len) {
+      if (fence.capture) return captured.join('\n');
+      fence = null;
+      continue;
+    }
+    if (fence.capture) captured.push(full);
+  }
+  return null;
+}
+
+/**
+ * D2 d: the Self-test report's binding to the head: bound (head_sha equals the head, case-insensitive), stale
+ * (another head_sha), none (no section or no complete json block), unparsable (the block is not JSON), or
+ * no-head-sha (JSON without a string head_sha).
+ */
+function selfTestBinding(body, head) {
+  const block = selfTestBlock(body);
+  if (block == null) return { status: 'none' };
+  let report;
+  try {
+    report = JSON.parse(block);
+  } catch {
+    return { status: 'unparsable' };
+  }
+  const sha = report && typeof report === 'object' && typeof report.head_sha === 'string' ? report.head_sha : null;
+  if (sha == null) return { status: 'no-head-sha' };
+  if (lower(sha) === lower(head) && head !== '') return { status: 'bound', headSha: sha };
+  return { status: 'stale', headSha: sha };
+}
+
+/** D2 e: the `<n> files changed` / `<n> changed files` phrases (singular too) that disagree with changedFiles. */
+function filesChangedMismatches(body, changedFiles) {
+  const out = [];
+  if (!Number.isInteger(changedFiles)) return out;
+  String(body == null ? '' : body)
+    .split(/\r?\n/)
+    .forEach((text, i) => {
+      for (const m of text.matchAll(FILES_CHANGED_RE)) {
+        if (Number(m[1]) !== changedFiles) out.push({ line: i + 1, phrase: m[0], n: Number(m[1]) });
+      }
+    });
+  return out;
+}
+
+/**
+ * Pure --body verdict (D2). bodyView = the `gh pr view --json body,baseRefOid,changedFiles` reply (null = the
+ * read failed, bodyError names why).
+ */
+function deriveBody({ view, reviews, timeline, timelineError, bodyView, bodyError }) {
+  if (!bodyView) return { error: bodyError || 'body not read' };
+  const v = view || {};
+  const head = String(v.headRefOid || '');
+  const body = String(bodyView.body == null ? '' : bodyView.body);
+  const known = knownShas({ view: v, reviews, timeline, baseRefOid: bodyView.baseRefOid });
+  const { counts, tokens } = classifyBodyShas(body, known);
+  const changedFiles = Number.isInteger(bodyView.changedFiles) ? bodyView.changedFiles : null;
+  return {
+    head,
+    base: String(bodyView.baseRefOid || ''),
+    counts,
+    tokens,
+    selfTest: selfTestBinding(body, head),
+    changedFiles,
+    filesChanged: filesChangedMismatches(body, changedFiles),
+    timelineError: Array.isArray(timeline) ? null : timelineError || 'timeline not read',
+  };
+}
+
+/** The --body lines of one PR block. */
+function bodyLines(b) {
+  if (b.error) return [`  body: unknown (read failed: ${clean(b.error)})`];
+  const lines = [];
+  const counts = SHA_CLASSES.map((c) => `${b.counts[c]} ${c}`).join(', ');
+  lines.push(
+    `  body: shas ${counts} (compared against head ${clean(short(b.head, 9))}; base is the base sha GitHub last recorded for the PR, not the live base tip)`
+  );
+  for (const t of b.tokens) {
+    if (t.cls === 'head' || t.cls === 'base') continue;
+    const check = t.cls === 'unresolved' ? ' (may be an older base or an unrelated commit: check)' : '';
+    lines.push(`    L${t.line} ${clean(t.token)} ${t.cls}${check}`);
+  }
+  if (b.timelineError) {
+    lines.push(`  body: timeline unknown (read failed: ${clean(b.timelineError)}); former heads come from the reviews only and earlier commits are not known`);
+  }
+  const s = b.selfTest;
+  if (s.status === 'bound') lines.push('  body: Self-test report bound to the head');
+  else if (s.status === 'stale') lines.push(`  body: Self-test report STALE (head_sha ${clean(s.headSha)}, head ${clean(b.head)})`);
+  else if (s.status === 'unparsable') lines.push('  body: Self-test report unparsable JSON');
+  else if (s.status === 'no-head-sha') lines.push('  body: Self-test report has no head_sha string');
+  else lines.push('  body: Self-test report none');
+  lines.push(`  body: counts checked: files-changed phrases only (changedFiles ${b.changedFiles == null ? 'unknown' : b.changedFiles})`);
+  for (const m of b.filesChanged) lines.push(`    L${m.line} "${clean(m.phrase)}" says ${m.n}`);
+  return lines;
+}
+
 /** First non-empty line of a gh failure (its stderr, else the error message). */
 function firstErrorLine(err) {
   const text = String((err && err.stderr) || '').trim() || String((err && err.message) || err || 'unknown error');
@@ -1081,6 +1321,7 @@ function parseArgs(argv) {
   let json = false;
   let overlap = false;
   let cr = false;
+  let body = false;
   let reviewer = null;
   let repo = DEFAULT_REPO;
   const numbers = [];
@@ -1090,6 +1331,7 @@ function parseArgs(argv) {
     if (a === '--json') json = true;
     else if (a === '--overlap') overlap = true;
     else if (a === '--cr') cr = true;
+    else if (a === '--body') body = true;
     else if (a === '--reviewer' || a.startsWith('--reviewer=')) {
       const value = a === '--reviewer' ? list[++i] : a.slice('--reviewer='.length);
       if (value == null || !LOGIN_PATTERN.test(String(value))) return { usageError: `bad --reviewer value (not a GitHub login): ${clean(value)}` };
@@ -1108,7 +1350,7 @@ function parseArgs(argv) {
   }
   if (numbers.length === 0) return { usageError: 'no PR number given' };
   if (reviewer != null && !cr) return { usageError: '--reviewer needs --cr' };
-  return { json, overlap, cr, reviewer, repo, numbers };
+  return { json, overlap, cr, body, reviewer, repo, numbers };
 }
 
 /**
@@ -1130,12 +1372,13 @@ function runCli(argv, deps = {}) {
   const queues = new Map(); // base branch -> fetchQueue result, one set of queue reads per repo and base
   const results = args.numbers.map((n) => {
     try {
-      const pr = fetchPr(n, args.repo, deps, { timeline: args.cr });
+      const pr = fetchPr(n, args.repo, deps, { timeline: args.cr || args.body });
       const base = String((pr.view && pr.view.baseRefName) || '');
       if (!queues.has(base)) queues.set(base, fetchQueue(args.repo, base, deps));
       const overlap = args.overlap ? fetchOverlap(args.repo, pr.view, deps) : null;
       const cr = args.cr ? fetchCr(n, args.repo, pr, args.reviewer, deps) : null;
-      return { repo: args.repo, ...derive({ ...pr, queue: queues.get(base), overlap, cr }) };
+      const body = args.body ? fetchBody(n, args.repo, pr, deps) : null;
+      return { repo: args.repo, ...derive({ ...pr, queue: queues.get(base), overlap, cr, body }) };
     } catch (err) {
       failed = true;
       return { repo: args.repo, number: Number(n), error: firstErrorLine(err) };
@@ -1147,30 +1390,37 @@ function runCli(argv, deps = {}) {
     out.write(ascii + '\n');
   } else {
     const blocks = results.map((d) => (d.error ? `${clean(d.repo)}#${clean(d.number)} ERROR: ${clean(d.error)}` : formatText(d)));
-    out.write(blocks.join('\n\n') + '\n\n' + FOOTER + '\n' + (args.cr ? CR_FOOTER + '\n' : ''));
+    out.write(blocks.join('\n\n') + '\n\n' + FOOTER + '\n' + (args.cr || args.body ? CR_FOOTER + '\n' : ''));
   }
   return failed ? 1 : 0;
 }
 
 module.exports = {
   ballLineOf: ballLine,
+  bodyLines,
   chooseCr,
+  classifyBodyShas,
   clean,
   crLines,
   derive,
   deriveActivity,
+  deriveBody,
   deriveCr,
   deriveDismissals,
   deriveOverlap,
   deriveQueue,
   deriveRerequests,
+  fetchBody,
+  fetchCr,
   fetchOverlap,
   fetchPr,
   fetchQueue,
   firstErrorLine,
   formatText,
+  knownShas,
   parseChecklist,
   runCli,
+  selfTestBinding,
 };
 
 if (require.main === module) process.exitCode = runCli(process.argv.slice(2));
