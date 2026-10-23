@@ -256,7 +256,7 @@ function runCli(argv, deps = {}) {
   } catch (err) {
     d = { repo: args.repo, cwd, number: Number(args.number), ok: false, error: firstErrorLine(err) };
   }
-  if (args.json) out.write(JSON.stringify(d, null, 2).replace(/[\u007f-￿]/g, (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0')) + '\n');
+  if (args.json) out.write(JSON.stringify(d, null, 2).replace(/[\u007f-\uffff]/g, (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0')) + '\n');
   else out.write((d.headRepo !== undefined ? formatText(d) : `${clean(d.repo)}#${clean(d.number)} ERROR: ${clean(d.error)}`) + '\n');
   return d.ok ? 0 : 1;
 }

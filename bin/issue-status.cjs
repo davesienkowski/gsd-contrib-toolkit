@@ -447,7 +447,7 @@ function runCli(argv, deps = {}) {
   if (args.json) {
     // Always an array (possibly empty); the --author note goes to stderr so the JSON shape never changes.
     if (listNote) errOut.write(listNote + '\n');
-    const ascii = JSON.stringify(results, null, 2).replace(/[\u007f-￿]/g, (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+    const ascii = JSON.stringify(results, null, 2).replace(/[\u007f-\uffff]/g, (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
     out.write(ascii + '\n');
   } else {
     const blocks = results.map((d) => (d.error ? `${clean(d.repo)}#${clean(d.number)} ERROR: ${clean(d.error)}` : formatText(d)));

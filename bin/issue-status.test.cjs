@@ -129,7 +129,7 @@ test('encoding: logins compare case-insensitively; mentions in code, inline code
 });
 
 test('encoding: hostile GitHub strings print ASCII-only (controls dropped, non-ASCII as ?)', () => {
-  const d = issueStatus.derive({ issue: ISSUE({ title: 'a\u001b[31mredé' }), timeline: [C('trek-e', 't', 'café \u0007bell')] });
+  const d = issueStatus.derive({ issue: ISSUE({ title: 'a\u001b[31mred\u00e9' }), timeline: [C('trek-e', 't', 'caf\u00e9 \u0007bell')] });
   const text = issueStatus.formatText({ repo: 'o/r', ...d });
   assert.ok(/^[\x0a\x20-\x7e]*$/.test(text), text);
   assert.ok(text.includes('"a[31mred?"'), text);
