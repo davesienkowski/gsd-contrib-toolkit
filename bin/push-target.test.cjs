@@ -30,9 +30,9 @@ const B = 'b'.repeat(40);
 const PULL = (over = {}) =>
   Object.assign({ number: 5119, state: 'open', maintainer_can_modify: true, head: { repo: { full_name: 'davesienkowski/gsd-core' }, ref: 'feat/5104-x', sha: A } }, over);
 const REMOTES = [
-  { name: 'backup', url: 'https://github.com/davesienkowski/gsd-core-experiments.git' },
-  { name: 'fork', url: 'https://github.com/davesienkowski/gsd-core.git' },
-  { name: 'origin', url: 'https://github.com/open-gsd/gsd-core.git' },
+  { name: 'backup', url: 'https://github.com/davesienkowski/gsd-core-experiments.git', pushUrls: ['https://github.com/davesienkowski/gsd-core-experiments.git'] },
+  { name: 'fork', url: 'https://github.com/davesienkowski/gsd-core.git', pushUrls: ['https://github.com/davesienkowski/gsd-core.git'] },
+  { name: 'origin', url: 'https://github.com/open-gsd/gsd-core.git', pushUrls: ['https://github.com/open-gsd/gsd-core.git'] },
 ];
 
 test('parseRemoteUrl: https, ssh and scp forms, .git, trailing slash and case all name the same repo', () => {
@@ -82,10 +82,16 @@ test('verdict: not a fast-forward prints a lease pinned to the tip read now, nev
   for (const c of d.commands) assert.ok(!/--force(\s|$)/.test(c));
 });
 
-test('verdict: unknown ancestry prints both commands and says to fetch first', () => {
+test('round 2 (Major 2): unknown ancestry prints the fetch step and a plain push only, never a lease', () => {
   const d = pt.derive({ pr: PULL(), remotes: REMOTES, remoteTip: A, localHead: B, ancestor: null });
   assert.equal(d.verdict, 'unknown');
-  assert.equal(d.commands.length, 2);
+  assert.deepEqual(d.commands, ['git push fork HEAD:feat/5104-x']);
+  assert.deepEqual(d.firstSteps, ['git fetch fork feat/5104-x']);
+  for (const c of [...d.commands, ...d.firstSteps]) assert.ok(!c.includes('--force'), c);
+  const text = pt.formatText({ repo: 'open-gsd/gsd-core', ...d });
+  assert.match(text, /^ {2}first: git fetch fork feat\/5104-x$/m);
+  assert.match(text, /^ {2}warning: the remote has commits this checkout has not fetched; /m);
+  assert.ok(!text.includes('--force-with-lease'), text);
 });
 
 test('empty: branch absent on the remote is a plain push; no matching remote and a deleted head repo are errors', () => {
@@ -101,9 +107,63 @@ test('empty: branch absent on the remote is a plain push; no matching remote and
 });
 
 test('ordering: two remotes naming head.repo pick the first in git remote -v order and list the other', () => {
-  const d = pt.derive({ pr: PULL(), remotes: [...REMOTES, { name: 'fork2', url: 'git@github.com:davesienkowski/gsd-core.git' }], remoteTip: A, localHead: A, ancestor: null });
+  const d = pt.derive({ pr: PULL(), remotes: [...REMOTES, { name: 'fork2', url: 'git@github.com:davesienkowski/gsd-core.git', pushUrls: ['git@github.com:davesienkowski/gsd-core.git'] }], remoteTip: A, localHead: A, ancestor: null });
   assert.equal(d.remote, 'fork');
   assert.deepEqual(d.alternatives, ['fork2']);
+});
+
+test('round 2 (Major 1): a remote whose push URL names another repo is rejected with the reason; a clean one is used', () => {
+  const bad = { name: 'fork', url: 'https://github.com/davesienkowski/gsd-core.git', pushUrls: ['https://github.com/open-gsd/gsd-core.git'] };
+  let d = pt.derive({ pr: PULL(), remotes: [bad], remoteTip: null, localHead: '', ancestor: null });
+  assert.equal(d.ok, false);
+  assert.match(d.error, /no usable remote for davesienkowski\/gsd-core/);
+  assert.deepEqual(d.rejected, [{ name: 'fork', reason: 'push URL https://github.com/open-gsd/gsd-core.git names open-gsd/gsd-core, not davesienkowski/gsd-core' }]);
+  // every push URL must name head.repo: one good and one bad push URL still rejects
+  d = pt.derive({ pr: PULL(), remotes: [{ ...bad, pushUrls: ['git@github.com:davesienkowski/gsd-core.git', 'https://github.com/open-gsd/gsd-core.git'] }], remoteTip: null, localHead: '', ancestor: null });
+  assert.equal(d.ok, false);
+  // a second remote with matching fetch and push URLs is chosen, and the rejection is still reported
+  const good = { name: 'fork2', url: 'git@github.com:davesienkowski/gsd-core.git', pushUrls: ['git@github.com:davesienkowski/gsd-core.git'] };
+  d = pt.derive({ pr: PULL(), remotes: [bad, good], remoteTip: A, localHead: A, ancestor: null });
+  assert.equal(d.ok, true);
+  assert.equal(d.remote, 'fork2');
+  assert.equal(d.rejected.length, 1);
+  assert.match(pt.formatText({ repo: 'o/r', ...d }), /^ {2}rejected: fork \(push URL https:\/\/github\.com\/open-gsd\/gsd-core\.git names open-gsd\/gsd-core, not davesienkowski\/gsd-core\)$/m);
+  // no push URL read at all is a rejection too (fail closed)
+  d = pt.derive({ pr: PULL(), remotes: [{ ...bad, pushUrls: [] }], remoteTip: null, localHead: '', ancestor: null });
+  assert.equal(d.ok, false);
+});
+
+test('round 2 (Major 1): a scratch repo with fetch URL on the fork and pushurl on open-gsd is rejected, using real git', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'push-target-repo-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const g = (...a) => spawnSync('git', ['-C', dir, ...a], { encoding: 'utf8' });
+  g('init', '-q');
+  g('remote', 'add', 'fork', 'https://github.com/davesienkowski/gsd-core.git');
+  g('config', 'remote.fork.pushurl', 'https://github.com/open-gsd/gsd-core.git');
+  const calls = [];
+  const git = (args, cwd) => {
+    calls.push(args);
+    if (args[0] === 'ls-remote' || args[0] === 'merge-base') throw new Error('no network read expected for a rejected remote');
+    return pt.defaultGit(args, cwd);
+  };
+  const d = pt.resolve('5119', 'open-gsd/gsd-core', dir, { gh: () => PULL(), git });
+  assert.equal(d.ok, false, JSON.stringify(d));
+  assert.match(d.rejected[0].reason, /push URL https:\/\/github\.com\/open-gsd\/gsd-core\.git names open-gsd\/gsd-core/);
+  assert.deepEqual(calls[1], ['remote', 'get-url', '--push', '--all', 'fork']);
+});
+
+test('round 2 (nit): a remote name starting with - is never used, so it cannot reach git as an option', () => {
+  const d = pt.derive({ pr: PULL(), remotes: [{ name: '--upload-pack=./x.sh', url: 'https://github.com/davesienkowski/gsd-core.git', pushUrls: ['https://github.com/davesienkowski/gsd-core.git'] }], remoteTip: null, localHead: '', ancestor: null });
+  assert.equal(d.ok, false);
+  assert.match(d.rejected[0].reason, /starts with -/);
+  assert.throws(() => pt.defaultGit(['remote', 'get-url', '--push', '--all', '--upload-pack=x'], '/nowhere'), /refuses/);
+});
+
+test('round 2 (nit): --help prints the usage and exits 0 with no call', (t) => {
+  const r = runCli(t, ['--help'], { pull: PULL(), gitScript: GIT_OK });
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /^usage: push-target /m);
+  assert.equal(r.ghLog.length + r.gitLog.length, 0);
 });
 
 test('safety: the default git runner refuses every verb but the four reads, and remote anything but -v', () => {
@@ -113,6 +173,7 @@ test('safety: the default git runner refuses every verb but the four reads, and 
   const calls = [];
   const fakeGit = (args) => {
     calls.push(args);
+    if (args[0] === 'remote' && args[1] === 'get-url') return { status: 0, stdout: 'https://github.com/davesienkowski/gsd-core.git\n', stderr: '' };
     if (args[0] === 'remote') return { status: 0, stdout: 'fork\thttps://github.com/davesienkowski/gsd-core.git (fetch)\n', stderr: '' };
     if (args[0] === 'ls-remote') return { status: 0, stdout: `${A}\trefs/heads/feat/5104-x\n`, stderr: '' };
     if (args[0] === 'rev-parse') return { status: 0, stdout: (args[1] === '--abbrev-ref' ? 'feat/5104-x' : B) + '\n', stderr: '' };
@@ -121,7 +182,7 @@ test('safety: the default git runner refuses every verb but the four reads, and 
   };
   const d = pt.resolve('5119', 'open-gsd/gsd-core', '/nowhere', { gh: () => PULL(), git: fakeGit });
   assert.equal(d.verdict, 'unknown');
-  assert.deepEqual(calls, [['remote', '-v'], ['ls-remote', 'fork', 'refs/heads/feat/5104-x'], ['rev-parse', 'HEAD'], ['rev-parse', '--abbrev-ref', 'HEAD'], ['merge-base', '--is-ancestor', A, 'HEAD']]);
+  assert.deepEqual(calls, [['remote', '-v'], ['remote', 'get-url', '--push', '--all', 'fork'], ['ls-remote', 'fork', 'refs/heads/feat/5104-x'], ['rev-parse', 'HEAD'], ['rev-parse', '--abbrev-ref', 'HEAD'], ['merge-base', '--is-ancestor', A, 'HEAD']]);
   assert.equal(d.branchMatches, true);
 });
 
@@ -145,7 +206,7 @@ let a = process.argv.slice(2);
 if (a[0] === '-C') a = a.slice(2);
 fs.appendFileSync(${JSON.stringify(gitLog)}, JSON.stringify(a) + '\\n');
 const s = ${JSON.stringify(gitScript)};
-const key = a[0] === 'remote' && a[1] === '-v' ? 'remote' : a[0] === 'rev-parse' && a[1] === '--abbrev-ref' ? 'branch' : a[0];
+const key = a[0] === 'remote' && a[1] === '-v' ? 'remote' : a[0] === 'remote' && a[1] === 'get-url' ? 'pushurl:' + a[4] : a[0] === 'rev-parse' && a[1] === '--abbrev-ref' ? 'branch' : a[0];
 if (!['remote', 'ls-remote', 'rev-parse', 'merge-base'].includes(a[0]) || !(key in s)) { fs.appendFileSync(${JSON.stringify(gitLog)}, 'REFUSED ' + JSON.stringify(a) + '\\n'); process.exitCode = 99; }
 else { const [code, out] = s[key]; process.stdout.write(out); process.exitCode = code; }
 `
@@ -170,6 +231,7 @@ else { const [code, out] = s[key]; process.stdout.write(out); process.exitCode =
 
 const GIT_OK = {
   remote: [0, 'origin\thttps://github.com/open-gsd/gsd-core.git (fetch)\nfork\thttps://github.com/davesienkowski/gsd-core.git (fetch)\n'],
+  'pushurl:fork': [0, 'https://github.com/davesienkowski/gsd-core.git\n'],
   'ls-remote': [0, `${A}\trefs/heads/feat/5104-x\n`],
   'rev-parse': [0, B + '\n'],
   branch: [0, 'feat/5104-x\n'],
@@ -185,7 +247,7 @@ test('end to end: one gh GET and the four git reads print the remote, the verdic
   assert.match(r.stdout, /^ {2}push: git push fork HEAD:feat\/5104-x$/m);
   assert.deepEqual(r.ghLog.map((l) => JSON.parse(l)), [['api', 'repos/open-gsd/gsd-core/pulls/5119']]);
   assert.ok(!r.gitLog.some((l) => l.startsWith('REFUSED')), r.gitLog.join(' | '));
-  assert.deepEqual(r.gitLog.map((l) => JSON.parse(l)[0]), ['remote', 'ls-remote', 'rev-parse', 'rev-parse', 'merge-base']);
+  assert.deepEqual(r.gitLog.map((l) => JSON.parse(l)[0]), ['remote', 'remote', 'ls-remote', 'rev-parse', 'rev-parse', 'merge-base']);
   assert.ok(!/local branch is/.test(r.stdout), 'no branch note when the branch matches');
 });
 

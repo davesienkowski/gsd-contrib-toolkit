@@ -177,8 +177,8 @@ test('end to end: closed linked PRs get one pr view each and no pr-status read; 
   const r = run(t, ['4649']);
   assert.equal(r.status, 0, r.stderr);
   noRefusals(r);
-  assert.match(r.stdout, /^ {2}pr: #4955 CLOSED closes this issue /m);
-  assert.match(r.stdout, /^ {2}pr: #5079 CLOSED closes this issue /m);
+  assert.match(r.stdout, /^ {2}pr: #4955 CLOSED would have closed this issue \(closed unmerged\) /m);
+  assert.match(r.stdout, /^ {2}pr: #5079 CLOSED would have closed this issue \(closed unmerged\) /m);
   const prCalls = r.log.map((l) => JSON.parse(l)).filter((c) => c[0] === 'pr');
   assert.equal(prCalls.length, 2);
   assert.ok(!r.log.some((l) => l.includes('/reviews')), 'no pr-status read for a closed PR');
@@ -257,4 +257,74 @@ test('idempotency: two runs print byte-identical output and log the same reads',
   assert.equal(a.stdout, b.stdout);
   assert.deepEqual(a.log, b.log);
   noRefusals(a);
+});
+
+// --- round 2 (independent review, Major 3): a non-author comment's @mentions decide the ball ---
+
+/** The captured #4649 thread as it stood at time `cut` (events after it dropped). */
+function cut4649(cut) {
+  const fx = load('issue-4649-captured.json');
+  return { issue: fx.issue, timeline: fx.timeline.filter((e) => !e.created_at || e.created_at <= cut) };
+}
+
+test('round 2 replay #4649 at 2026-10-02T17:00Z: forfrossen (assignee) asked @trek-e last, so trek-e owes, not the author', () => {
+  const d = issueStatus.derive(cut4649('2026-10-02T17:00:00Z'));
+  assert.equal(d.newest.login, 'forfrossen');
+  assert.equal(d.ball.owner, 'mentioned');
+  assert.deepEqual(d.ball.logins, ['trek-e']);
+});
+
+test('round 2 replay #4649 at 2026-10-02T23:45Z: trek-e answered @forfrossen last, so forfrossen owes, not the author', () => {
+  const d = issueStatus.derive(cut4649('2026-10-02T23:45:00Z'));
+  assert.equal(d.newest.login, 'trek-e');
+  assert.equal(d.ball.owner, 'mentioned');
+  assert.deepEqual(d.ball.logins, ['forfrossen']);
+});
+
+test('round 2: a non-author comment that mentions nobody, only itself, or only the author puts the ball on the author', () => {
+  for (const body of ['plain question?', 'as @trek-e I think', 'ping @dave']) {
+    const d = issueStatus.derive({ issue: ISSUE(), timeline: [C('trek-e', 't1', body)] });
+    assert.equal(d.ball.owner, 'author', body);
+  }
+  // mentions the author and someone else: both are named
+  const d = issueStatus.derive({ issue: ISSUE(), timeline: [C('trek-e', 't1', '@Dave and @alice please')] });
+  assert.equal(d.ball.owner, 'mentioned');
+  assert.deepEqual(d.ball.logins, ['dave', 'alice']);
+});
+
+test('round 2: a later comment from the mentioned login clears it; bots never answer or ask', () => {
+  let d = issueStatus.derive({ issue: ISSUE(), timeline: [C('trek-e', 't1', '@alice can you check'), C('github-actions[bot]', 't2', '@trek-e auto')] });
+  assert.deepEqual(d.ball.logins, ['alice'], 'the bot comment is ignored');
+  d = issueStatus.derive({ issue: ISSUE(), timeline: [C('trek-e', 't1', '@alice can you check'), C('alice', 't2', 'done')] });
+  assert.equal(d.ball.owner, 'author', 'alice answered; her comment mentions nobody');
+});
+
+test('round 2: the assignee does not move the ball on its own', () => {
+  const d = issueStatus.derive({ issue: ISSUE({ assignees: [{ login: 'forfrossen' }] }), timeline: [C('trek-e', 't1', 'approved')] });
+  assert.equal(d.ball.owner, 'author');
+});
+
+test('round 2 (nits): an @mention inside an HTML comment does not count; --limit without --author and --help', (t) => {
+  assert.deepEqual(issueStatus.mentionsIn('<!-- @hidden -->\nhi @shown'), ['shown']);
+  let r = run(t, ['--limit', '5', '1']);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /--limit needs --author/);
+  r = run(t, ['--help']);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /^usage: issue-status /m);
+  assert.equal(r.log.length, 0);
+});
+
+test('round 2 (minor): closes wording follows the PR state: open closes, merged closed, closed unmerged would have closed', (t) => {
+  const fx = (n, state, mergedAt) => ({ provenance: { source: 'synthetic', edits: 'pr view only' }, view: { number: n, state, title: `pr ${n}`, mergedAt, closedAt: null, closingIssuesReferences: [{ number: 900103 }] }, reviews: [], checks: [] });
+  const xref = (n) => ({ event: 'cross-referenced', source: { issue: { number: n, state: 'closed', title: 'x', repository: { full_name: 'open-gsd/gsd-core' }, pull_request: { merged_at: null } } } });
+  const dir = fixturesWith(t, {
+    'i.json': { provenance: { source: 'synthetic', edits: 'issue with three closing PRs' }, issue: ISSUE({ number: 900103 }), timeline: [xref(900201), xref(900202)] },
+    'm.json': fx(900201, 'MERGED', '2026-10-01T00:00:00Z'),
+    'c.json': fx(900202, 'CLOSED', null),
+  });
+  const r = run(t, ['900103'], dir);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^ {2}pr: #900201 MERGED merged closed this issue /m);
+  assert.match(r.stdout, /^ {2}pr: #900202 CLOSED would have closed this issue \(closed unmerged\) /m);
 });
