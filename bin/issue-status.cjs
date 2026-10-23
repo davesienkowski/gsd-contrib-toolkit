@@ -37,14 +37,23 @@
  * order). Logins compare case-insensitively.
  *   - The number is a PR, or the issue is not open -> no ball.
  *   - No human comment -> MAINTAINERS (nobody has answered the issue).
- *   - The newest human comment is not the author's -> AUTHOR owes a reply to that commenter.
+ *   - The newest human comment is not the author's (round 2 review, Major 3):
+ *       it @mentions logins other than its writer, and not only the author -> MENTIONED <those logins>
+ *       (the author too when named beside others);
+ *       it mentions nobody, only its writer, or only the author -> AUTHOR owes a reply to that commenter.
  *   - The newest is the author's and it @mentions logins with no comment after it -> MENTIONED <logins>.
- *     Mentions inside fenced code, inline code and quoted (>) lines do not count; nor does the author.
  *   - Else -> MAINTAINERS (the author commented last and asked nobody by name).
- * A label, an approval or an open PR is printed but never moves the ball: the agent reads those itself.
- * A cross-reference is printed as "references"; "closes" only when the PR's closingIssuesReferences
- * names this issue (a mention is not a closing link). Cross-references from another repo are listed
- * with their repo and never read.
+ * A later comment from a mentioned login clears it, because that comment becomes the newest one and is
+ * read by the same rule. Mentions inside fenced code, inline code, HTML comments and quoted (>) lines
+ * do not count. A bot comment is ignored entirely (it neither asks nor answers).
+ * A label, an approval, an assignee or an open PR is printed but never moves the ball: the agent reads
+ * those itself. A comment on a linked PR is not read, so an author who answered there still reads as
+ * AUTHOR owes.
+ * A cross-reference is printed as "references"; when the PR's closingIssuesReferences names this issue
+ * it is "closes this issue" (open), "closed this issue" (merged) or "would have closed this issue
+ * (closed unmerged)" (a mention is not a closing link). Linked PRs come from `cross-referenced` events
+ * only: a PR attached through the Development sidebar with no textual mention is not listed.
+ * Cross-references from another repo are listed with their repo and never read.
  *
  * No shell: execFileSync with argv arrays; numbers are validated as digits. Node built-ins only.
  *
@@ -104,6 +113,7 @@ function pagesToArray(pages, what) {
 /** The @logins a comment body names, outside fenced code, inline code and quoted lines; lowercased, in order. */
 function mentionsIn(body) {
   const text = String(body || '')
+    .replace(/<!--[\s\S]*?(-->|$)/g, ' ')
     .replace(/```[\s\S]*?(```|$)/g, ' ')
     .replace(/~~~[\s\S]*?(~~~|$)/g, ' ')
     .split('\n')
@@ -183,7 +193,12 @@ function derive({ issue, timeline, repo }) {
   if (isPr) ball = { owner: 'n/a', logins: [], reason: 'is a pull request, use pr-status' };
   else if (state !== 'OPEN') ball = { owner: 'n/a', logins: [], reason: `state ${state || 'unknown'}` };
   else if (!newest) ball = { owner: 'maintainers', logins: [], reason: 'no human comment yet' };
-  else if (!isAuthor(newest)) ball = { owner: 'author', logins: [author], reason: `newest comment is by ${newest.login}`, to: newest.login };
+  else if (!isAuthor(newest)) {
+    const asked = newest.mentions.filter((m) => m !== lower(newest.login));
+    if (asked.length && !(asked.length === 1 && asked[0] === lower(author))) {
+      ball = { owner: 'mentioned', logins: asked, reason: `newest comment ${newest.createdAt} by ${newest.login} @mentions them` };
+    } else ball = { owner: 'author', logins: [author], reason: `newest comment is by ${newest.login}`, to: newest.login };
+  }
   else if (unanswered.length) ball = { owner: 'mentioned', logins: unanswered, reason: `author's newest comment ${newest.createdAt} @mentions them and they have not commented since` };
   else ball = { owner: 'maintainers', logins: [], reason: 'the author commented last and @mentioned nobody who has not answered' };
 
@@ -351,7 +366,9 @@ function formatText(d) {
       continue;
     }
     let link;
-    if (p.closes === true) link = 'closes this issue';
+    if (p.closes === true && p.merged) link = 'closed this issue';
+    else if (p.closes === true && p.state === 'CLOSED') link = 'would have closed this issue (closed unmerged)';
+    else if (p.closes === true) link = 'closes this issue';
     else if (p.closes === false) link = 'references (does not close)';
     else if (p.error) link = `references (closing: unknown, read failed: ${clean(p.error)})`;
     else link = 'references (closing not read: --no-prs)';
@@ -371,6 +388,8 @@ function parseArgs(argv) {
   let limit = DEFAULT_LIMIT;
   const numbers = [];
   const list = Array.isArray(argv) ? argv : [];
+  if (list.some((a) => a === '--help' || a === '-h')) return { help: true };
+  let limitGiven = false;
   const valueOf = (a, name, i) => (a === name ? list[i + 1] : a.slice(name.length + 1));
   for (let i = 0; i < list.length; i += 1) {
     const a = String(list[i]);
@@ -391,6 +410,7 @@ function parseArgs(argv) {
       if (a === '--limit') i += 1;
       if (v == null || !/^[0-9]+$/.test(String(v)) || Number(v) < 1 || Number(v) > MAX_LIMIT) return { usageError: `--limit must be 1 to ${MAX_LIMIT}: ${clean(v)}` };
       limit = Number(v);
+      limitGiven = true;
     } else if (/^[0-9]+$/.test(a)) {
       const n = a.replace(/^0+/, '');
       if (n === '') return { usageError: `issue number must be 1 or more: ${a}` };
@@ -398,6 +418,7 @@ function parseArgs(argv) {
     } else return { usageError: `not an issue number or flag: ${clean(a)}` };
   }
   if (numbers.length === 0 && !author) return { usageError: 'no issue number or --author given' };
+  if (limitGiven && !author) return { usageError: '--limit needs --author' };
   return { json, prs, repo, author, limit, numbers };
 }
 
@@ -412,6 +433,10 @@ function runCli(argv, deps = {}) {
   const errOut = deps.stderr || process.stderr;
   const gh = deps.gh || defaultGh;
   const args = parseArgs(argv);
+  if (args.help) {
+    out.write(USAGE + '\n');
+    return 0;
+  }
   if (args.usageError) {
     errOut.write(`issue-status: ${args.usageError}\n${USAGE}\n`);
     return 2;

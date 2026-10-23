@@ -12,25 +12,32 @@
  *
  *   node bin/push-target.cjs [--json] [--repo owner/name] [--cwd <git checkout>] <pr-number>
  *
- * CONTRACT - read-only. One gh read and at most four git reads, all in --cwd (default: the process cwd):
+ * CONTRACT - read-only. One gh read and these git reads, all in --cwd (default: the process cwd):
  *   1. gh api "repos/R/pulls/N"                       (REST GET: head.repo.full_name, head.ref, head.sha)
- *   2. git -C <cwd> remote -v                          (fetch URLs only)
+ *   2. git -C <cwd> remote -v                          (fetch URLs)
+ *   2b. git -C <cwd> remote get-url --push --all <r>   (every push URL, for each remote whose fetch URL matches)
  *   3. git -C <cwd> ls-remote <remote> refs/heads/<ref>   (reads the remote; no fetch, no local ref change)
  *   4. git -C <cwd> rev-parse HEAD, and git -C <cwd> rev-parse --abbrev-ref HEAD (the local branch name)
  *   5. git -C <cwd> merge-base --is-ancestor <remote tip> HEAD   (only when the tips differ)
- * The git runner refuses any other git verb, so push, fetch and remote add are unreachable. No gh write
+ * The git runner refuses any other git verb (and `remote` in any other form), so push, fetch and remote
+ * add are unreachable. No gh write
  * verb, no `gh api -X/--method/-f/-F/--input`, no `gh api graphql`.
  *
- * Remote matching: a remote matches when its fetch URL, parsed as https://, http://, ssh://, git:// or
- * scp-style user@host:path on host github.com (or www.github.com), names head.repo.full_name, compared
- * case-insensitively with any trailing .git or / dropped. An ssh host alias (Host github-work in
+ * Remote matching: a remote is used only when its fetch URL AND every one of its push URLs, each parsed
+ * as https://, http://, ssh://, git:// or scp-style user@host:path on host github.com (or
+ * www.github.com), name head.repo.full_name, compared case-insensitively with any trailing .git or /
+ * dropped. `git push <remote>` goes to the push URLs, so a remote whose pushurl names another repo is
+ * rejected and the reason printed (round 2 review, Major 1). A remote name starting with - is rejected
+ * too, so it can never reach git as an option. An ssh host alias (Host github-work in
  * ~/.ssh/config) does not match: the output then lists every remote so the agent can choose by hand.
  * Several matches -> the first in `git remote -v` order, the others listed.
  *
  * Verdict (local HEAD vs the remote tip read now):
  *   up to date | fast-forward -> plain push    | branch not on remote -> plain push (creates it)
  *   not a fast-forward        -> git push --force-with-lease=<ref>:<remote tip> <remote> HEAD:<ref>
- *   unknown (the remote tip is not in the local objects) -> both commands, and "fetch it first"
+ *   unknown (the remote tip is not in the local objects) -> "first: git fetch <remote> <ref>", a plain
+ *     push and a warning; never a lease: a lease pinned to a tip nobody here has seen would discard the
+ *     unseen commits (round 2 review, Major 2). Re-run after the fetch to get a real verdict.
  * When the local branch name differs from head.ref (another branch, or a detached HEAD) a note says so:
  * the printed command pushes HEAD, so check that HEAD is the PR's work before running it, above all a lease.
  * A bare --force is never printed. The lease pins the tip read at run time, so a push made by anyone
@@ -48,6 +55,7 @@ const { clean, firstErrorLine } = require('./pr-status.cjs');
 const DEFAULT_REPO = 'open-gsd/gsd-core';
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const GIT_READ_VERBS = new Set(['remote', 'ls-remote', 'rev-parse', 'merge-base']);
+const REMOTE_NAME = /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/;
 const USAGE = 'usage: push-target [--json] [--repo owner/name] [--cwd <git checkout>] <pr-number>  (default repo ' + DEFAULT_REPO + ')';
 
 function defaultGh(args) {
@@ -58,7 +66,12 @@ function defaultGh(args) {
 /** Default git runner: read verbs only, argv array, no shell; returns { status, stdout, stderr }. */
 function defaultGit(args, cwd) {
   if (!GIT_READ_VERBS.has(args[0])) throw new Error(`push-target refuses git ${args[0]}: read verbs only`);
-  if (args[0] === 'remote' && !(args.length === 2 && args[1] === '-v')) throw new Error('push-target runs only git remote -v');
+  if (args[0] === 'remote') {
+    const list = args.length === 2 && args[1] === '-v';
+    const getUrl = args.length === 5 && args[1] === 'get-url' && args[2] === '--push' && args[3] === '--all';
+    if (getUrl && String(args[4]).startsWith('-')) throw new Error('push-target refuses a remote name starting with -');
+    if (!list && !getUrl) throw new Error('push-target runs only git remote -v and git remote get-url --push --all <name>');
+  }
   const r = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 60000, env: Object.assign({}, process.env, { GIT_TERMINAL_PROMPT: '0' }) });
   if (r.error) throw r.error;
   return { status: r.status, stdout: String(r.stdout || ''), stderr: String(r.stderr || '') };
@@ -127,9 +140,20 @@ function derive({ pr, remotes, remoteTip, localHead, ancestor, localBranch }) {
     maintainerCanModify: pr && pr.maintainer_can_modify != null ? Boolean(pr.maintainer_can_modify) : null,
   };
   if (!headRepo) return { ...base, ok: false, error: 'head repository deleted (head.repo is null): nothing to push to' };
-  const matches = (remotes || []).filter((r) => parseRemoteUrl(r.url) === headRepo.toLowerCase());
-  if (!matches.length) {
+  const want = headRepo.toLowerCase();
+  const byFetch = (remotes || []).filter((r) => parseRemoteUrl(r.url) === want);
+  if (!byFetch.length) {
     return { ...base, ok: false, error: `no local remote names ${headRepo}`, remotes: remotes || [] };
+  }
+  const rejected = [];
+  const matches = [];
+  for (const r of byFetch) {
+    const why = rejectReason(r, want);
+    if (why) rejected.push({ name: r.name, reason: why });
+    else matches.push(r);
+  }
+  if (!matches.length) {
+    return { ...base, ok: false, error: `no usable remote for ${headRepo}`, rejected, remotes: remotes || [] };
   }
   const remote = matches[0];
   let verdict;
@@ -141,23 +165,42 @@ function derive({ pr, remotes, remoteTip, localHead, ancestor, localBranch }) {
   const plain = `git push ${q(remote.name)} HEAD:${q(ref)}`;
   const lease = remoteTip ? `git push --force-with-lease=${q(ref)}:${remoteTip} ${q(remote.name)} HEAD:${q(ref)}` : null;
   let commands;
+  let firstSteps = [];
   if (verdict === 'not a fast-forward') commands = [lease];
-  else if (verdict === 'unknown') commands = [plain, lease];
-  else commands = [plain];
+  else if (verdict === 'unknown') {
+    // Never a lease here: it would be pinned to a tip whose commits this checkout has not seen.
+    firstSteps = [`git fetch ${q(remote.name)} ${q(ref)}`];
+    commands = [plain];
+  } else commands = [plain];
   return {
     ...base,
     ok: true,
     remote: remote.name,
     remoteUrl: remote.url,
     alternatives: matches.slice(1).map((r) => r.name),
+    rejected,
+    pushUrls: remote.pushUrls || [],
     remoteTip,
     localHead,
     verdict,
     githubHeadMatchesRemote: remoteTip ? remoteTip === base.githubHead : null,
     localBranch: localBranch == null ? null : String(localBranch),
     branchMatches: localBranch == null ? null : String(localBranch) === ref,
+    firstSteps,
     commands,
   };
+}
+
+/** Why a fetch-matched remote cannot be used, or null: a bad name, no push URL, or a push URL naming another repo. */
+function rejectReason(r, want) {
+  if (!REMOTE_NAME.test(String(r.name || ''))) return `remote name ${r.name} starts with - or holds odd characters`;
+  const urls = Array.isArray(r.pushUrls) ? r.pushUrls : [];
+  if (!urls.length) return 'no push URL read';
+  for (const u of urls) {
+    const named = parseRemoteUrl(u);
+    if (named !== want) return `push URL ${u} names ${named || 'no GitHub repo'}, not ${want}`;
+  }
+  return null;
 }
 
 function short(sha) {
@@ -167,11 +210,14 @@ function short(sha) {
 function formatText(d) {
   const lines = [];
   lines.push(`${clean(d.repo)}#${clean(d.number)} ${clean(d.state)} head ${clean(d.headRepo || '(deleted)')}:${clean(d.ref)} (GitHub head ${clean(short(d.githubHead))})`);
+  const rejectedLines = () => (d.rejected || []).forEach((x) => lines.push(`  rejected: ${clean(x.name)} (${clean(x.reason)})`));
   if (!d.ok) {
     lines.push(`  ERROR: ${clean(d.error)}`);
+    rejectedLines();
     if (d.remotes) for (const r of d.remotes) lines.push(`  remote: ${clean(r.name)} ${clean(r.url)}`);
     return lines.join('\n');
   }
+  rejectedLines();
   lines.push(`  remote: ${clean(d.remote)} (${clean(d.remoteUrl)})${d.alternatives.length ? `; also names it: ${d.alternatives.map(clean).join(', ')}` : ''}`);
   if (d.maintainerCanModify === false) lines.push('  note: maintainer_can_modify is false (only the head repo owner can push)');
   if (d.state && d.state !== 'OPEN') lines.push(`  note: the PR is ${clean(d.state)}`);
@@ -179,7 +225,10 @@ function formatText(d) {
   lines.push(`  remote tip: ${clean(tip)}; local HEAD: ${clean(short(d.localHead))}; ${clean(d.verdict)}`);
   if (d.githubHeadMatchesRemote === false) lines.push(`  note: GitHub's PR head ${clean(short(d.githubHead))} differs from the remote tip (a push GitHub has not processed yet, or another remote)`);
   if (d.branchMatches === false) lines.push(`  note: the local branch is ${clean(d.localBranch)}, not ${clean(d.ref)}: the command pushes HEAD, so confirm HEAD is this PR's work first`);
-  if (d.verdict === 'unknown') lines.push(`  note: the remote tip is not in the local objects; run git fetch ${clean(d.remote)} ${clean(d.ref)} and re-run before choosing`);
+  if (d.verdict === 'unknown') {
+    lines.push('  warning: the remote has commits this checkout has not fetched; fetch, look at them, and re-run push-target before any forced push');
+  }
+  for (const c of d.firstSteps || []) lines.push(`  first: ${clean(c)}`);
   for (const c of d.commands) lines.push(`  push: ${clean(c)}`);
   lines.push('  (printed only; push-target never pushes)');
   return lines.join('\n');
@@ -191,6 +240,7 @@ function parseArgs(argv) {
   let cwd = null;
   const numbers = [];
   const list = Array.isArray(argv) ? argv : [];
+  if (list.some((a) => a === '--help' || a === '-h')) return { help: true };
   for (let i = 0; i < list.length; i += 1) {
     const a = String(list[i]);
     if (a === '--json') json = true;
@@ -230,7 +280,13 @@ function resolve(number, repo, cwd, deps = {}) {
   const remotes = parseRemotes(must(['remote', '-v']));
   const ref = String((pr.head && pr.head.ref) || '');
   const headRepo = pr.head && pr.head.repo && pr.head.repo.full_name;
-  const match = headRepo ? remotes.find((r) => parseRemoteUrl(r.url) === String(headRepo).toLowerCase()) : null;
+  // Every push URL of each fetch-matched remote (git push uses those, not the fetch URL).
+  for (const r of remotes) {
+    if (!headRepo || parseRemoteUrl(r.url) !== String(headRepo).toLowerCase() || !REMOTE_NAME.test(r.name)) continue;
+    r.pushUrls = must(['remote', 'get-url', '--push', '--all', r.name]).split('\n').map((l) => l.trim()).filter(Boolean);
+  }
+  const pick = headRepo ? derive({ pr, remotes, remoteTip: null, localHead: '', ancestor: null }) : null;
+  const match = pick && pick.ok ? remotes.find((r) => r.name === pick.remote) : null;
   let remoteTip = null;
   let localHead = '';
   let ancestor = null;
@@ -252,6 +308,10 @@ function runCli(argv, deps = {}) {
   const out = deps.stdout || process.stdout;
   const errOut = deps.stderr || process.stderr;
   const args = parseArgs(argv);
+  if (args.help) {
+    out.write(USAGE + '\n');
+    return 0;
+  }
   if (args.usageError) {
     errOut.write(`push-target: ${args.usageError}\n${USAGE}\n`);
     return 2;
@@ -268,6 +328,6 @@ function runCli(argv, deps = {}) {
   return d.ok ? 0 : 1;
 }
 
-module.exports = { defaultGit, derive, parseLsRemote, parseRemotes, parseRemoteUrl, resolve, runCli, GIT_READ_VERBS };
+module.exports = { defaultGit, derive, formatText, parseLsRemote, parseRemotes, parseRemoteUrl, resolve, runCli, GIT_READ_VERBS };
 
 if (require.main === module) process.exitCode = runCli(process.argv.slice(2));
