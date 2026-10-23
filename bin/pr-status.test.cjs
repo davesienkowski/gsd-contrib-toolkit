@@ -1029,12 +1029,15 @@ test('2u4 cr: no change request prints cr: none, makes no inline read and still 
 test('2u4 cr: --reviewer limits the choice (login compared case-insensitively); a reviewer with no change request reads cr: none', (t) => {
   const none = runThroughStub(t, ['--cr', '--reviewer', 'alice', '900043']);
   assert.equal(none.status, 0, none.stderr);
+  noRefusal(none);
   assert.equal(crBlock(none.stdout)[0], '  cr: none (no CHANGES_REQUESTED review by a non-bot non-author user named alice)');
   assert.ok(!none.log.some((l) => l.includes('/comments')));
   assert.match(none.stdout, /^ {2}rerequest: trek-e not requested; .* RE-REQUEST NEEDED$/m);
   const upper = runThroughStub(t, ['--cr', '--reviewer', 'TREK-E', '900043']);
+  noRefusal(upper);
   assert.equal(crBlock(upper.stdout)[0].slice(0, 40), '  cr: review 5608091717 by trek-e on 8ce');
   const alice = runThroughStub(t, ['--cr', '--reviewer', 'alice', '900045']);
+  noRefusal(alice);
   assert.match(alice.stdout, /^ {2}cr: review 900045002 by alice /m, 'alice CR is chosen when only alice counts');
 });
 
@@ -1065,6 +1068,7 @@ test('2u4 cr: failed timeline and inline reads print unknown lines and the exit 
 test('2u4 cr: a change request with no Findings heading prints checklist: none with the url, and no activity reads none', (t) => {
   const r = runThroughStub(t, ['--cr', '900049']);
   assert.equal(r.status, 0, r.stderr);
+  noRefusal(r);
   const url = 'https://github.com/open-gsd/gsd-core/pull/900049#pullrequestreview-900049001';
   assert.deepEqual(crBlock(r.stdout), [
     `  cr: review 900049001 by trek-e on 5a5a049 (head) 2026-10-21T10:00:00Z ${url}`,
@@ -1076,9 +1080,13 @@ test('2u4 cr: a change request with no Findings heading prints checklist: none w
 });
 
 test('2u4 cr: --json carries cr (null without the flag) with the chosen review, the checklist, inline, activity and rerequest', (t) => {
-  const off = JSON.parse(runThroughStub(t, ['--json', '900043']).stdout)[0];
+  const offRun = runThroughStub(t, ['--json', '900043']);
+  noRefusal(offRun);
+  const off = JSON.parse(offRun.stdout)[0];
   assert.equal(off.cr, null);
-  const [d] = JSON.parse(runThroughStub(t, ['--json', '--cr', '900043']).stdout);
+  const onRun = runThroughStub(t, ['--json', '--cr', '900043']);
+  noRefusal(onRun);
+  const [d] = JSON.parse(onRun.stdout);
   assert.equal(d.cr.chosen.id, '5608091717');
   assert.equal(d.cr.chosen.onHead, false);
   assert.equal(d.cr.checklist.status, 'matched');
@@ -1128,6 +1136,7 @@ test('2u4 body: the 5192 capture reports the Self-test report bound to the head 
 test('2u4 body: the 5119 capture has no Self-test report; 1830f5210 reads pr commit (not former head), two former heads, five unresolved', (t) => {
   const r = runThroughStub(t, ['--body', '900043']);
   assert.equal(r.status, 0, r.stderr);
+  noRefusal(r);
   const check = ' unresolved (may be an older base or an unrelated commit: check)';
   assert.deepEqual(bodyBlock(r.stdout), [
     '  body: shas 0 head, 0 base, 1 pr commit, 2 former head, 0 earlier commit, 0 ambiguous, 5 unresolved ' + BODY_TAIL.replace('%s', 'f2aedc2d1'),
@@ -1169,12 +1178,14 @@ test('2u4 body: every token class, uppercase and duplicate tokens, ignored runs,
 
 test('2u4 body: an empty body is all zero with Self-test none; a json block that is not JSON reads unparsable', (t) => {
   const empty = runThroughStub(t, ['--body', '900046']);
+  noRefusal(empty);
   assert.deepEqual(bodyBlock(empty.stdout), [
     '  body: shas 0 head, 0 base, 0 pr commit, 0 former head, 0 earlier commit, 0 ambiguous, 0 unresolved ' + BODY_TAIL.replace('%s', '5a5a04600'),
     '  body: Self-test report none',
     '  body: counts checked: files-changed phrases only (changedFiles 1)',
   ]);
   const bad = runThroughStub(t, ['--body', '900049']);
+  noRefusal(bad);
   assert.ok(bodyBlock(bad.stdout).includes('  body: Self-test report unparsable JSON'), bad.stdout);
 });
 
@@ -1232,8 +1243,12 @@ test('2u4 body: the Self-test extraction follows upstream (heading of any level,
 });
 
 test('2u4 body: --json carries body (null without the flag) with counts, tokens, selfTest and the files-changed mismatches', (t) => {
-  assert.equal(JSON.parse(runThroughStub(t, ['--json', '900048']).stdout)[0].body, null);
-  const [d] = JSON.parse(runThroughStub(t, ['--json', '--body', '900048']).stdout);
+  const offRun = runThroughStub(t, ['--json', '900048']);
+  noRefusal(offRun);
+  assert.equal(JSON.parse(offRun.stdout)[0].body, null);
+  const onRun = runThroughStub(t, ['--json', '--body', '900048']);
+  noRefusal(onRun);
+  const [d] = JSON.parse(onRun.stdout);
   assert.equal(d.body.counts.ambiguous, 1);
   assert.equal(d.body.selfTest.status, 'stale');
   assert.equal(d.body.changedFiles, 2);
@@ -1263,4 +1278,15 @@ test('2u4 idempotency: two runs with --cr --body print byte-identical output and
     const call = JSON.parse(l);
     assert.ok(['pr view', 'pr checks'].includes(call.slice(0, 2).join(' ')) || call[0] === 'api', `read-only verb: ${l}`);
   }
+});
+
+test('2u4 rerequest: a review consumes a request only when submitted strictly later than the request (equal time does not)', () => {
+  const view = { headRefOid: 'h'.repeat(40), author: { login: 'author' }, reviewRequests: [] };
+  const req = { event: 'review_requested', created_at: '2026-10-21T10:00:00Z', actor: { login: 'author' }, requested_reviewer: { login: 'trek-e' } };
+  const review = (t) => [[{ id: 1, user: { login: 'trek-e', type: 'User' }, state: 'CHANGES_REQUESTED', submitted_at: t, commit_id: 'c'.repeat(40) }]];
+  const [same] = prStatus.deriveRerequests(view, review('2026-10-21T10:00:00Z'), [req]);
+  assert.equal(same.ending.kind, 'open', 'a review at the request time does not consume it');
+  const [later] = prStatus.deriveRerequests(view, review('2026-10-21T10:00:01Z'), [req]);
+  assert.deepEqual(later.ending, { kind: 'consumed', id: '1', state: 'CHANGES_REQUESTED', time: '2026-10-21T10:00:01Z' });
+  assert.equal(later.needed, true);
 });
