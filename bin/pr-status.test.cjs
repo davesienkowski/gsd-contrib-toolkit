@@ -1099,3 +1099,168 @@ test('2u4 cr: without --cr and --body, no fixture triggers an inline-comments or
   assert.ok(!r.stdout.includes(CR_FOOTER));
   assert.ok(!/^ {2}(cr|checklist|inline|activity|rerequest)\b/m.test(r.stdout));
 });
+
+// --- quick 261023-2u4: pr-status --body (body sha classes, the Self-test report binding, files-changed phrases) ---
+
+const BODY_TAIL = '(compared against head %s; base is the base sha GitHub last recorded for the PR, not the live base tip)';
+
+function bodyBlock(stdout) {
+  return stdout.split('\n').filter((l) => /^ {2}body: /.test(l) || /^ {4}L\d+ /.test(l));
+}
+
+test('2u4 body: the 5192 capture reports the Self-test report bound to the head and one unresolved token', (t) => {
+  const r = runThroughStub(t, ['--body', '900044']);
+  assert.equal(r.status, 0, r.stderr);
+  noRefusal(r);
+  assert.deepEqual(bodyBlock(r.stdout), [
+    '  body: shas 8 head, 8 base, 0 pr commit, 0 former head, 0 earlier commit, 0 ambiguous, 1 unresolved ' + BODY_TAIL.replace('%s', 'aff15bafb'),
+    '    L44 067a4d1c6c unresolved (may be an older base or an unrelated commit: check)',
+    '  body: Self-test report bound to the head',
+    '  body: counts checked: files-changed phrases only (changedFiles 22)',
+  ]);
+  assert.ok(r.stdout.endsWith(CR_FOOTER + '\n'), 'the R8 footer line follows the default footer');
+  const views = r.log.map((l) => JSON.parse(l)).filter((c) => c[0] === 'pr' && c[1] === 'view');
+  assert.deepEqual(views[1], ['pr', 'view', '900044', '--repo', 'open-gsd/gsd-core', '--json', 'body,baseRefOid,changedFiles']);
+  assert.equal(r.log.filter((l) => l.includes('/issues/900044/timeline')).length, 1, '--body reads the timeline once');
+  assert.ok(!r.log.some((l) => l.includes('/comments')), 'no inline read without --cr');
+});
+
+test('2u4 body: the 5119 capture has no Self-test report; 1830f5210 reads pr commit (not former head), two former heads, five unresolved', (t) => {
+  const r = runThroughStub(t, ['--body', '900043']);
+  assert.equal(r.status, 0, r.stderr);
+  const check = ' unresolved (may be an older base or an unrelated commit: check)';
+  assert.deepEqual(bodyBlock(r.stdout), [
+    '  body: shas 0 head, 0 base, 1 pr commit, 2 former head, 0 earlier commit, 0 ambiguous, 5 unresolved ' + BODY_TAIL.replace('%s', 'f2aedc2d1'),
+    '    L19 a1c7bc74b' + check,
+    '    L35 62549bf24' + check,
+    '    L55 472cfb257 former head',
+    '    L55 755bf26f0' + check,
+    '    L112 8cea5f843 former head',
+    '    L112 812ddb5fe' + check,
+    '    L121 1830f5210 pr commit',
+    '    L121 26387bc83' + check,
+    '  body: Self-test report none',
+    '  body: counts checked: files-changed phrases only (changedFiles 2)',
+  ]);
+});
+
+test('2u4 body: every token class, uppercase and duplicate tokens, ignored runs, a comment-hidden block, STALE and a files-changed mismatch', (t) => {
+  const r = runThroughStub(t, ['--body', '900048']);
+  assert.equal(r.status, 0, r.stderr);
+  noRefusal(r);
+  const head = 'aaaa048' + '0'.repeat(33);
+  assert.deepEqual(bodyBlock(r.stdout), [
+    '  body: shas 2 head, 1 base, 3 pr commit, 3 former head, 1 earlier commit, 1 ambiguous, 1 unresolved ' + BODY_TAIL.replace('%s', 'aaaa04800'),
+    '    L2 cccc04800 pr commit',
+    '    L2 cccc048 pr commit',
+    '    L3 dddd048 ambiguous',
+    '    L3 eeee048 former head',
+    '    L3 ffff048000 former head',
+    '    L3 abab0480 earlier commit',
+    '    L4 deadbee unresolved (may be an older base or an unrelated commit: check)',
+    '    L4 cccc04800 pr commit',
+    '    L14 eeee048000000000000000000000000000000000 former head',
+    `  body: Self-test report STALE (head_sha EEEE048000000000000000000000000000000000, head ${head})`,
+    '  body: counts checked: files-changed phrases only (changedFiles 2)',
+    '    L5 "3 files changed" says 3',
+  ]);
+  assert.ok(!/1234567890|a{41}/.test(bodyBlock(r.stdout).join('\n')), 'an all-digit token and a 41-hex run are not tokens');
+});
+
+test('2u4 body: an empty body is all zero with Self-test none; a json block that is not JSON reads unparsable', (t) => {
+  const empty = runThroughStub(t, ['--body', '900046']);
+  assert.deepEqual(bodyBlock(empty.stdout), [
+    '  body: shas 0 head, 0 base, 0 pr commit, 0 former head, 0 earlier commit, 0 ambiguous, 0 unresolved ' + BODY_TAIL.replace('%s', '5a5a04600'),
+    '  body: Self-test report none',
+    '  body: counts checked: files-changed phrases only (changedFiles 1)',
+  ]);
+  const bad = runThroughStub(t, ['--body', '900049']);
+  assert.ok(bodyBlock(bad.stdout).includes('  body: Self-test report unparsable JSON'), bad.stdout);
+});
+
+test('2u4 body: failed timeline, inline and body reads print three unknown lines and the exit code stays 0', (t) => {
+  const r = runThroughStub(t, ['--cr', '--body', '900047']);
+  assert.equal(r.status, 0, r.stderr);
+  noRefusal(r);
+  const unknown = r.stdout.split('\n').filter((l) => /unknown \(read failed: /.test(l));
+  assert.deepEqual(unknown, [
+    '  cr: inline unknown (read failed: gh: Server Error (HTTP 503))',
+    '  cr: activity and rerequest unknown (read failed: gh: Server Error (HTTP 502))',
+    '  body: unknown (read failed: gh: Server Error (HTTP 504))',
+  ]);
+});
+
+test('2u4 body: a body read that succeeds while the timeline read fails says which classes could not be known', () => {
+  const fx = loadFixture('body-classes-synthetic.json');
+  const b = prStatus.deriveBody({ view: fx.view, reviews: fx.reviews, timeline: null, timelineError: 'gh: boom', bodyView: fx.bodyView });
+  const lines = prStatus.bodyLines(b);
+  assert.ok(lines.includes('  body: timeline unknown (read failed: gh: boom); former heads come from the reviews only and earlier commits are not known'), lines.join('\n'));
+  assert.equal(b.counts['earlier commit'], 0);
+});
+
+test('2u4 body: a sha known in several roles takes the first class in the order head, base, pr commit, former head, earlier commit', () => {
+  const h = 'a'.repeat(40);
+  const c = 'c'.repeat(40);
+  const known = prStatus.knownShas({
+    view: { headRefOid: h.toUpperCase(), commits: [{ oid: c }, { oid: h }] },
+    reviews: [[{ commit_id: c }]],
+    timeline: [{ event: 'head_ref_force_pushed', commit_id: h }, { event: 'committed', sha: c }],
+    baseRefOid: 'b'.repeat(40),
+  });
+  assert.equal(known.get(h), 'head');
+  assert.equal(known.get(c), 'pr commit');
+  assert.equal(known.get('b'.repeat(40)), 'base');
+  const { tokens } = prStatus.classifyBodyShas(`x ${'A'.repeat(9)} ${'c'.repeat(7)}\n${'c'.repeat(7)} ${'c'.repeat(7)} 9999999`, known);
+  assert.deepEqual(tokens, [
+    { line: 1, token: 'aaaaaaaaa', cls: 'head' },
+    { line: 1, token: 'ccccccc', cls: 'pr commit' },
+    { line: 2, token: 'ccccccc', cls: 'pr commit' },
+  ]);
+});
+
+test('2u4 body: the Self-test extraction follows upstream (heading of any level, ** removed, fence-aware, comments skipped, first complete block)', () => {
+  const H = 'f'.repeat(40);
+  const st = (body) => prStatus.selfTestBinding(body, H).status;
+  assert.equal(st('no heading\n```json\n{"head_sha":"' + H + '"}\n```'), 'none');
+  assert.equal(st('## Self-test report\n```json\n{"head_sha":"' + H + '"}'), 'none', 'an unclosed block is not complete');
+  assert.equal(st('## Self-test report\ntext\n## Next\n```json\n{"head_sha":"' + H + '"}\n```'), 'none', 'the section ends at a same-level heading');
+  assert.equal(st('## Self-test report\n### Detail\n```json title="r"\n{"head_sha":"' + H.toUpperCase() + '"}\n```'), 'bound', 'a deeper heading stays in the section; head_sha compares case-insensitively');
+  assert.equal(st('### **Self-test Report** ###\n```sh\n# not a heading\n```\n```json\n{"head_sha":"' + H + '"}\n```'), 'bound', 'bold, closing hashes, a # inside a non-json fence');
+  assert.equal(st('## Self-test report\n<!--\n```json\n{"head_sha":"' + H + '"}\n```\n-->\n'), 'none', 'a block inside an HTML comment is skipped');
+  assert.equal(st('## Self-test report\n```json\n{"schema":1}\n```'), 'no-head-sha');
+  assert.deepEqual(prStatus.selfTestBinding('## Self-test report\n~~~json\n{"head_sha":"abc"}\n~~~', H), { status: 'stale', headSha: 'abc' });
+});
+
+test('2u4 body: --json carries body (null without the flag) with counts, tokens, selfTest and the files-changed mismatches', (t) => {
+  assert.equal(JSON.parse(runThroughStub(t, ['--json', '900048']).stdout)[0].body, null);
+  const [d] = JSON.parse(runThroughStub(t, ['--json', '--body', '900048']).stdout);
+  assert.equal(d.body.counts.ambiguous, 1);
+  assert.equal(d.body.selfTest.status, 'stale');
+  assert.equal(d.body.changedFiles, 2);
+  assert.deepEqual(d.body.filesChanged, [{ line: 5, phrase: '3 files changed', n: 3 }]);
+});
+
+test('2u4 reads: --cr --body on 900043 makes exactly one timeline read, one inline read for 5608091717 and one body view', (t) => {
+  const r = runThroughStub(t, ['--cr', '--body', '900043']);
+  assert.equal(r.status, 0, r.stderr);
+  noRefusal(r);
+  const calls = r.log.map((l) => JSON.parse(l));
+  assert.equal(calls.filter((c) => c.some((a) => a.includes('/timeline'))).length, 1);
+  assert.deepEqual(calls.filter((c) => c.some((a) => a.includes('/comments'))), [['api', '--paginate', '--slurp', 'repos/open-gsd/gsd-core/pulls/900043/reviews/5608091717/comments?per_page=100']]);
+  assert.equal(calls.filter((c) => c.includes('body,baseRefOid,changedFiles')).length, 1);
+  assert.equal(r.stdout.split(CR_FOOTER).length - 1, 1, 'the R8 line prints once');
+});
+
+test('2u4 idempotency: two runs with --cr --body print byte-identical output and log the same GET reads, none refused', (t) => {
+  const args = ['--cr', '--body', '900043', '900044', '900045', '900048'];
+  const a = runThroughStub(t, args);
+  const b = runThroughStub(t, args);
+  assert.equal(a.status, 0, a.stderr);
+  assert.equal(a.stdout, b.stdout);
+  assert.deepEqual(a.log, b.log);
+  noRefusal(a);
+  for (const l of a.log) {
+    const call = JSON.parse(l);
+    assert.ok(['pr view', 'pr checks'].includes(call.slice(0, 2).join(' ')) || call[0] === 'api', `read-only verb: ${l}`);
+  }
+});
