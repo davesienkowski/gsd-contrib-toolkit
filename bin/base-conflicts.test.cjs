@@ -225,6 +225,10 @@ test('base-conflicts safety: the default git runner throws before spawning for e
   }
   assert.throws(() => bc.defaultGit(['log'], nowhere, { GIT_DIR: '/x' }), /refuses to set GIT_DIR/);
   assert.deepEqual([...bc.GIT_READ_VERBS].sort(), ['log', 'merge-base', 'merge-tree', 'rev-list', 'rev-parse']);
+  // ls-remote runs only as exactly `ls-remote <remote> refs/heads/<branch>` (round 3 review: base tip)
+  for (const args of [['ls-remote', 'origin'], ['ls-remote', '--upload-pack=x', 'refs/heads/next'], ['ls-remote', '-x', 'refs/heads/next'], ['ls-remote', 'origin', 'refs/tags/v1'], ['ls-remote', 'origin', 'refs/heads/-x'], ['ls-remote', 'origin', 'refs/heads/next', 'extra']]) {
+    assert.throws(() => bc.defaultGit(args, nowhere), /base-conflicts refuses git/, args.join(' '));
+  }
 });
 
 test('base-conflicts object store: two runs are byte-identical and leave count-objects unchanged; a plain merge-tree grows it', (t) => {
@@ -281,13 +285,14 @@ function runPr(t, dir, args, pull) {
 }
 
 test('base-conflicts --pr: the base defaults to <remote>/<base.ref> for the remote naming the repo; head and base mismatches warn; one gh GET', (t) => {
+  // --offline: the upstream remote is a github.com URL, so the base-tip ls-remote would reach the network
   const { dir } = conflictRepo(t);
   git(dir, 'remote', 'add', 'fork', 'https://github.com/someone/gsd-core.git');
   git(dir, 'remote', 'add', 'upstream', 'https://github.com/Open-GSD/gsd-core.git');
   git(dir, 'update-ref', 'refs/remotes/upstream/next', git(dir, 'rev-parse', 'next'));
   git(dir, 'checkout', '-q', 'feat');
   const pull = { number: 5192, base: { ref: 'next' }, head: { sha: 'f'.repeat(40), ref: 'fix/x' } };
-  const r = runPr(t, dir, ['--repo', 'open-gsd/gsd-core', '--pr', '5192'], pull);
+  const r = runPr(t, dir, ['--offline', '--repo', 'open-gsd/gsd-core', '--pr', '5192'], pull);
   assert.equal(r.status, 3, r.stdout + r.stderr);
   assert.match(r.stdout, /^pr: open-gsd\/gsd-core#5192 base next head f{9}$/m);
   assert.match(r.stdout, new RegExp(`^base: upstream/next ${git(dir, 'rev-parse', 'next')}$`, 'm'));
@@ -296,10 +301,10 @@ test('base-conflicts --pr: the base defaults to <remote>/<base.ref> for the remo
   assert.ok(!r.log.some((l) => l.startsWith('REFUSED')));
   // an explicit base on another branch warns
   git(dir, 'update-ref', 'refs/remotes/upstream/main', git(dir, 'rev-parse', 'next'));
-  const other = runPr(t, dir, ['--repo', 'open-gsd/gsd-core', '--pr', '5192', '--base', 'upstream/main'], pull);
+  const other = runPr(t, dir, ['--offline', '--repo', 'open-gsd/gsd-core', '--pr', '5192', '--base', 'upstream/main'], pull);
   assert.match(other.stdout, /^ {2}warning: the base ref upstream\/main names branch main, but the PR's base is next$/m);
   // the head matching the PR prints no head warning
-  const match = runPr(t, dir, ['--repo', 'open-gsd/gsd-core', '--pr', '5192'], { ...pull, head: { sha: git(dir, 'rev-parse', 'feat') } });
+  const match = runPr(t, dir, ['--offline', '--repo', 'open-gsd/gsd-core', '--pr', '5192'], { ...pull, head: { sha: git(dir, 'rev-parse', 'feat') } });
   assert.ok(!/warning: the head/.test(match.stdout), match.stdout);
 });
 
@@ -328,9 +333,63 @@ test('base-conflicts --json carries base, head, mergeBase, ahead, behind, clean,
   const r = run(['--json', '--cwd', dir, '--base', 'next', '--head', 'feat']);
   assert.equal(r.status, 3);
   const d = JSON.parse(r.stdout);
-  assert.deepEqual(Object.keys(d).sort(), ['ahead', 'base', 'behind', 'clean', 'conflicts', 'head', 'mergeBase', 'pr', 'warnings']);
+  assert.deepEqual(Object.keys(d).sort(), ['ahead', 'base', 'baseTip', 'behind', 'clean', 'conflicts', 'head', 'mergeBase', 'pr', 'warnings']);
+  assert.deepEqual(d.baseTip, { checked: false, reason: 'next is not <remote>/<branch> of a configured remote' });
   assert.equal(d.base.sha, git(dir, 'rev-parse', 'next'));
   assert.equal(d.clean, false);
   assert.deepEqual(d.conflicts, [{ path: 'a.txt', listed: true, head: [`${h} feat edits a`], headMore: 0, base: [`${b} next edits a`], baseMore: 0 }]);
   assert.deepEqual(d.warnings, []);
+});
+
+/** An upstream repo and a clone of it (origin = the upstream path), with a feat branch in the clone. */
+function cloned(t) {
+  const up = repo(t);
+  const parent = scratch(t, 'base-conflicts-clone-');
+  const dir = path.join(parent, 'c');
+  git(parent, 'clone', '-q', up, dir);
+  git(dir, 'checkout', '-qb', 'feat');
+  commit(dir, 'a.txt', 'feat\n', 'feat edits a');
+  return { up, dir };
+}
+
+test('base-conflicts base tip (round 3 review): a <remote>/<branch> base is compared with the remote tip by ls-remote; a stale one warns with the fetch', (t) => {
+  const { up, dir } = cloned(t);
+  const fresh = run(['--cwd', dir, '--base', 'origin/next']);
+  assert.equal(fresh.status, 0, fresh.stdout + fresh.stderr);
+  const tip = git(up, 'rev-parse', 'next');
+  assert.match(fresh.stdout, new RegExp(`^ {2}base tip: origin next ${tip.slice(0, 9)} \\(the local base is the remote tip\\)$`, 'm'));
+  assert.deepEqual(fresh.calls.filter((c) => c[0] === 'ls-remote'), [['ls-remote', 'origin', 'refs/heads/next']]);
+  // the upstream moves; the clone has not fetched
+  commit(up, 'b.txt', 'moved\n', 'upstream moves');
+  const moved = git(up, 'rev-parse', 'next');
+  const stale = run(['--cwd', dir, '--base', 'origin/next']);
+  assert.equal(stale.status, 0, 'the answer is still given, for the local base');
+  assert.match(stale.stdout, new RegExp(`^ {2}warning: the local base origin/next \\(${tip.slice(0, 9)}\\) is not the remote tip ${moved.slice(0, 9)}: this answer is for the local base; first: git fetch origin next$`, 'm'));
+  assert.equal(git(dir, 'rev-parse', 'origin/next'), tip, 'nothing was fetched');
+  const j = JSON.parse(run(['--json', '--cwd', dir, '--base', 'origin/next']).stdout);
+  assert.deepEqual(j.baseTip, { checked: true, remote: 'origin', branch: 'next', tip: moved, current: false });
+});
+
+test('base-conflicts base tip: --offline skips ls-remote; a branch gone from the remote and a failed ls-remote are named, never "current"', (t) => {
+  const { up, dir } = cloned(t);
+  const off = run(['--offline', '--cwd', dir, '--base', 'origin/next']);
+  assert.equal(off.status, 0);
+  assert.match(off.stdout, /^ {2}base tip: not checked \(--offline\)$/m);
+  assert.ok(!off.calls.some((c) => c[0] === 'ls-remote'), JSON.stringify(off.calls));
+  // the remote no longer has the branch
+  git(up, 'checkout', '-qb', 'other');
+  git(up, 'branch', '-qD', 'next');
+  const gone = run(['--cwd', dir, '--base', 'origin/next']);
+  assert.match(gone.stdout, /^ {2}warning: the remote origin has no branch next: this answer is for the local base origin\/next$/m);
+  // ls-remote fails (injected): unknown, with the error
+  const failed = run(['--cwd', dir, '--base', 'origin/next'], {
+    git: (args, cwd, env) => (args[0] === 'ls-remote' ? { status: 128, stdout: '', stderr: 'fatal: could not read from remote\n' } : bc.defaultGit(args, cwd, env)),
+  });
+  assert.equal(failed.status, 0);
+  assert.match(failed.stdout, /^ {2}base tip: unknown \(git ls-remote failed: fatal: could not read from remote\)$/m);
+  // a ref whose first segment is not a configured remote is not checked and makes no ls-remote call
+  git(dir, 'update-ref', 'refs/remotes/nosuch/next', git(dir, 'rev-parse', 'origin/next'));
+  const notRemote = run(['--cwd', dir, '--base', 'nosuch/next']);
+  assert.ok(!notRemote.calls.some((c) => c[0] === 'ls-remote'));
+  assert.ok(!/base tip/.test(notRemote.stdout), notRemote.stdout);
 });
