@@ -846,3 +846,10 @@ test('w9m overlap: a failed compare read prints overlap unknown with the error, 
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /^ {2}overlap: unknown \(read failed: /m);
 });
+
+test('w9m overlap: a PR file list at the GitHub 3000-file cap marks the overlap truncated', () => {
+  const pr = Array.from({ length: 3000 }, (_, i) => ({ filename: `p${i}.js` }));
+  const o = prStatus.deriveOverlap({ base: 'next', behindBy: 1, aheadBy: 1, mergeBase: 'b'.repeat(40), baseCommits: 1, prFiles: pr, baseFiles: [{ filename: 'other.js' }] });
+  assert.equal(o.truncated, true);
+  assert.equal(o.prTruncated, true);
+});

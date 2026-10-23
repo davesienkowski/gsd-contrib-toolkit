@@ -245,6 +245,12 @@ test('repo: --repo reaches every read and is named in every header', (t) => {
   for (const c of r.log.map((l) => JSON.parse(l))) assert.ok(c.some((a) => a.includes('other/repo')), c.join(' '));
 });
 
+test('ordering: issue blocks print in argv order, a repeated number prints once', (t) => {
+  const r = run(t, ['--no-prs', '5120', '4649', '5120']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual([...r.stdout.matchAll(/^open-gsd\/gsd-core#(\d+) /gm)].map((m) => m[1]), ['5120', '4649']);
+});
+
 test('idempotency: two runs print byte-identical output and log the same reads', (t) => {
   const a = run(t, ['5120', '4649']);
   const b = run(t, ['5120', '4649']);
