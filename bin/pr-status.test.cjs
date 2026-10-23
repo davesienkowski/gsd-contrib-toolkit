@@ -124,7 +124,7 @@ test('end to end: one captured change-requested PR through a stub gh that sees o
 // --- Task 2: every scenario, --json, --repo, usage, ERROR, UNKNOWN re-read, sanitizing, footer ---
 
 const ALL_FIXTURES = fs.readdirSync(FIXTURES_DIR).filter((f) => f.endsWith('.json')).sort();
-const FOOTER_START = 'Snapshot is point-in-time (three separate gh reads per PR, and separate merge-queue reads per base branch); re-run before any write.';
+const FOOTER_START = 'Snapshot is point-in-time (three separate gh reads per PR, and separate merge-queue reads per base branch; plus a timeline read when a review was dismissed, and files and compare reads with --overlap); re-run before any write.';
 
 function isPrintableAscii(s) {
   return /^[\t\n\x20-\x7e]*$/.test(s);
@@ -193,7 +193,7 @@ test('end to end: every scenario prints in argv order, footer once, ASCII only, 
   assert.ok(isPrintableAscii(r.stdout), 'text output is printable ASCII');
   for (const call of r.log.map((l) => JSON.parse(l))) {
     if (call[0] === 'pr') assert.equal(call[call.indexOf('--repo') + 1], 'open-gsd/gsd-core', `--repo on ${call.join(' ')}`);
-    else assert.match(call.find((a) => a.startsWith('repos/')), /^repos\/open-gsd\/gsd-core\/(pulls\/\d+\/reviews\?per_page=100|rules\/branches\/next\?per_page=100|rulesets\?includes_parents=true&per_page=100)$/);
+    else assert.match(call.find((a) => a.startsWith('repos/')), /^repos\/open-gsd\/gsd-core\/(pulls\/\d+\/reviews\?per_page=100|issues\/\d+\/timeline\?per_page=100|rules\/branches\/next\?per_page=100|rulesets\?includes_parents=true&per_page=100)$/);
   }
 });
 
@@ -708,4 +708,148 @@ test('N4 (nits gate): the --json queue object in unknown mode is exactly base, m
   assert.equal(d.queue.mode, 'unknown', JSON.stringify(d.queue));
   assert.deepEqual(Object.keys(d.queue).sort(), ['base', 'error', 'mode'], JSON.stringify(d.queue));
   assert.equal(typeof d.queue.error, 'string');
+});
+
+// --- quick 261022-w9m: dismissal messages from the timeline, and the opt-in --overlap reads ---
+
+test('w9m dismissed: each DISMISSED review prints a dismissed line with its timeline message, in submitted_at order', (t) => {
+  const r = runThroughStub(t, ['900040']);
+  assert.equal(r.status, 0, r.stderr);
+  const lines = r.stdout.split('\n').filter((l) => l.startsWith('  dismissed: '));
+  assert.deepEqual(lines, [
+    '  dismissed: alice review 900040003 on 22fccc0; message unknown (no review_dismissed event for this review on the timeline)',
+    '  dismissed: trek-e CHANGES_REQUESTED review 900040002 on 22fccc0 by trek-e 2026-10-23T00:55:59Z: "Withdrawn: review produced outside the required /review-open-prs procedure; run is being restarted."',
+  ]);
+  const timelineReads = r.log.filter((l) => l.includes('/issues/900040/timeline'));
+  assert.equal(timelineReads.length, 1, 'one timeline read');
+  assert.ok(!r.log.some((l) => l.startsWith('REFUSED')), r.log.join(' | '));
+});
+
+test('w9m dismissed: a PR with no DISMISSED review makes no timeline read and prints no dismissed line', (t) => {
+  const r = runThroughStub(t, ['5235', '900020']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(!r.log.some((l) => l.includes('/timeline')), r.log.join(' | '));
+  assert.ok(!/^ {2}dismissed: /m.test(r.stdout));
+});
+
+test('w9m dismissed: a failed timeline read names the failure on the dismissed line and never fails the PR', (t) => {
+  const r = runThroughStub(t, ['900041']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^ {2}dismissed: trek-e review 900040002 on 22fccc0; message unknown \(timeline read failed: gh: Server Error \(HTTP 502\)\)$/m);
+  assert.match(r.stdout, /^ {2}ball: MAINTAINER re-approval needed/m);
+});
+
+test('w9m dismissed: --json carries the dismissals with the message, actor and time', (t) => {
+  const r = runThroughStub(t, ['--json', '900040']);
+  const [d] = JSON.parse(r.stdout);
+  assert.equal(d.dismissals.length, 2);
+  assert.deepEqual(
+    { ...d.dismissals[1] },
+    {
+      login: 'trek-e',
+      reviewId: '900040002',
+      commitId: '22fccc0e5c6dc2d0a6ca14416737aa53e9a25690',
+      submittedAt: '2026-10-23T00:50:25Z',
+      originalState: 'CHANGES_REQUESTED',
+      actor: 'trek-e',
+      dismissedAt: '2026-10-23T00:55:59Z',
+      message: 'Withdrawn: review produced outside the required /review-open-prs procedure; run is being restarted.',
+      found: true,
+      readError: null,
+    }
+  );
+  assert.equal(d.overlap, null, 'overlap is null without --overlap');
+});
+
+test('w9m dismissed: a long or multi-line message prints on one line, cut at 300 characters', () => {
+  const [x] = prStatus.deriveDismissals(
+    [{ id: 1, user: { login: 'a' }, state: 'DISMISSED', submitted_at: 't', commit_id: 'c' }],
+    [{ event: 'review_dismissed', actor: { login: 'b' }, created_at: 'u', dismissed_review: { state: 'approved', review_id: 1, dismissal_message: 'line one\n\nline two ' + 'x'.repeat(400) } }],
+    null
+  );
+  const d = { number: 1, state: 'OPEN', head: '', checks: { total: 0, counts: {}, failing: [], pending: [] }, reviewers: [], requested: [], ball: { owner: 'none', blockers: [] }, dismissals: [x] };
+  const line = prStatus.formatText(d).split('\n').find((l) => l.startsWith('  dismissed: '));
+  assert.ok(line.includes('"line one line two xxx'), line);
+  assert.ok(line.endsWith('..."'), line);
+});
+
+test('w9m overlap: --overlap on the 5119 capture prints behind 13, 95 base files, 2 PR files and no overlap', (t) => {
+  const r = runThroughStub(t, ['--overlap', '900042']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^ {2}overlap: next is 13 commit\(s\) past the merge base 26387bc83; 95 base file\(s\) changed, 2 PR file\(s\); overlapping files: none$/m);
+  const calls = r.log.map((l) => JSON.parse(l));
+  const paths = calls.filter((c) => c[0] === 'api').map((c) => c.find((a) => a.startsWith('repos/')));
+  assert.ok(paths.includes('repos/open-gsd/gsd-core/pulls/900042/files?per_page=100'), paths.join(' '));
+  assert.ok(paths.includes('repos/open-gsd/gsd-core/compare/next...1830f52109c5f3875b5709a8b0d9140cee7ee23f'), paths.join(' '));
+  assert.ok(paths.includes('repos/open-gsd/gsd-core/compare/26387bc83d9ddc6cbea04946ff0fe5871e8830d0...next'), paths.join(' '));
+  assert.ok(!r.log.some((l) => l.startsWith('REFUSED')), r.log.join(' | '));
+});
+
+test('w9m overlap: without --overlap no files or compare read is made', (t) => {
+  const r = runThroughStub(t, ['900042']);
+  assert.ok(!r.log.some((l) => l.includes('/compare/') || l.includes('/files')), r.log.join(' | '));
+  assert.ok(!/^ {2}overlap: /m.test(r.stdout));
+});
+
+const HEX = (c) => c.repeat(40);
+
+function overlapGh(map) {
+  return (args) => {
+    const p = args.find((a) => a.startsWith('repos/'));
+    if (!(p in map)) throw Object.assign(new Error('not found'), { stderr: 'gh: Not Found (HTTP 404)' });
+    if (map[p] instanceof Error) throw map[p];
+    return map[p];
+  };
+}
+
+test('w9m overlap: a base that has not moved reads behind 0 and none, with no base compare read', () => {
+  const calls = [];
+  const gh = overlapGh({
+    'repos/o/r/pulls/7/files?per_page=100': [[{ filename: 'a.js' }]],
+    [`repos/o/r/compare/next...${HEX('a')}`]: { behind_by: 0, ahead_by: 1, merge_base_commit: { sha: HEX('b') } },
+  });
+  const o = prStatus.fetchOverlap('o/r', { number: 7, baseRefName: 'next', headRefOid: HEX('a') }, { gh: (a) => (calls.push(a), gh(a)) });
+  assert.equal(o.behindBy, 0);
+  assert.deepEqual(o.overlap, []);
+  assert.equal(calls.length, 2);
+  const d = { number: 7, state: 'OPEN', head: '', checks: { total: 0, counts: {}, failing: [], pending: [] }, reviewers: [], requested: [], ball: { owner: 'none', blockers: [] }, overlap: o };
+  assert.match(prStatus.formatText(d), /overlap: next is 0 commit\(s\) past the merge base bbbbbbbbb; overlapping files: none \(the base has not moved\)/);
+});
+
+test('w9m overlap: overlapping files (renames on either side included) print sorted, and a 300-file base list is a lower bound', () => {
+  const base = Array.from({ length: 298 }, (_, i) => ({ filename: `f${i}.js` }));
+  base.push({ filename: 'z.js' }, { filename: 'new.js', previous_filename: 'm.js' });
+  const gh = overlapGh({
+    'repos/o/r/pulls/7/files?per_page=100': [[{ filename: 'z.js' }, { filename: 'm.js' }, { filename: 'other.js' }]],
+    [`repos/o/r/compare/next...${HEX('a')}`]: { behind_by: 4, ahead_by: 1, merge_base_commit: { sha: HEX('b') } },
+    [`repos/o/r/compare/${HEX('b')}...next`]: { total_commits: 4, files: base },
+  });
+  const o = prStatus.fetchOverlap('o/r', { number: 7, baseRefName: 'next', headRefOid: HEX('a') }, { gh });
+  assert.deepEqual(o.overlap, ['m.js', 'z.js']);
+  assert.equal(o.truncated, true);
+  const d = { number: 7, state: 'OPEN', head: '', checks: { total: 0, counts: {}, failing: [], pending: [] }, reviewers: [], requested: [], ball: { owner: 'none', blockers: [] }, overlap: o };
+  const text = prStatus.formatText(d);
+  assert.match(text, /overlapping files: at least 2 \(truncated\)\n {4}m\.js\n {4}z\.js/);
+  // the same truncated list with no overlap is unknown beyond the listed files, never a plain none
+  const o2 = prStatus.deriveOverlap({ base: 'next', behindBy: 4, aheadBy: 1, mergeBase: HEX('b'), baseCommits: 4, prFiles: [{ filename: 'q.js' }], baseFiles: base });
+  const t2 = prStatus.formatText({ ...d, overlap: o2 });
+  assert.match(t2, /overlapping files: none among the listed base files, unknown beyond them \(truncated\)/);
+  assert.ok(!/overlapping files: none$/m.test(t2));
+});
+
+test('w9m overlap: a failed compare read prints overlap unknown with the error, never none, and exit stays 0', (t) => {
+  const o = prStatus.fetchOverlap('o/r', { number: 7, baseRefName: 'next', headRefOid: HEX('a') }, { gh: overlapGh({ 'repos/o/r/pulls/7/files?per_page=100': [[]] }) });
+  assert.deepEqual(o, { base: 'next', error: 'gh: Not Found (HTTP 404)' });
+  const bad = prStatus.fetchOverlap('o/r', { number: 7, baseRefName: 'next;rm', headRefOid: HEX('a') }, { gh: () => assert.fail('no read for a bad base name') });
+  assert.match(bad.error, /base branch name not usable/);
+  const r = runThroughStub(t, ['--overlap', '5235']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^ {2}overlap: unknown \(read failed: /m);
+});
+
+test('w9m overlap: a PR file list at the GitHub 3000-file cap marks the overlap truncated', () => {
+  const pr = Array.from({ length: 3000 }, (_, i) => ({ filename: `p${i}.js` }));
+  const o = prStatus.deriveOverlap({ base: 'next', behindBy: 1, aheadBy: 1, mergeBase: 'b'.repeat(40), baseCommits: 1, prFiles: pr, baseFiles: [{ filename: 'other.js' }] });
+  assert.equal(o.truncated, true);
+  assert.equal(o.prTruncated, true);
 });

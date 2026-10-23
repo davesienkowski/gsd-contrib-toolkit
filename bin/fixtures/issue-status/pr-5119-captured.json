@@ -1,0 +1,831 @@
+{
+  "provenance": {
+    "source": "captured open-gsd/gsd-core#5119 2026-10-23T03:24Z",
+    "edits": "none: the pr view (pr-status fields plus closingIssuesReferences, title, mergedAt, closedAt), reviews and checks as read",
+    "checksExit": 0
+  },
+  "view": {
+    "author": {
+      "id": "MDQ6VXNlcjMwMzc3NTk=",
+      "is_bot": false,
+      "login": "davesienkowski",
+      "name": "Rezolv"
+    },
+    "baseRefName": "next",
+    "closedAt": null,
+    "closingIssuesReferences": [
+      {
+        "id": "I_kwDOSk3_ZM8AAAABTttrhg",
+        "number": 5104,
+        "repository": {
+          "id": "R_kgDOSk3_ZA",
+          "name": "gsd-core",
+          "owner": {
+            "id": "O_kgDOERpJfg",
+            "login": "open-gsd"
+          }
+        },
+        "url": "https://github.com/open-gsd/gsd-core/issues/5104"
+      }
+    ],
+    "commits": [
+      {
+        "authoredDate": "2026-09-29T17:00:17Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T06:50:29Z",
+        "messageBody": "…unction variable targets\n\nAxis 2 of lint-state-write-path-drift (findRawStateWrites) now scans the\ncomment-stripped text joined across lines, so an fs.writeFileSync call\nwrapped after its \"(\" no longer captures an empty target. A target that is\nneither statePath nor a STATE.md literal is resolved through same-function\nassignments, at most MAX_TARGET_RESOLUTION_HOPS (4) deep. A for...of or\ndestructuring binding stops resolution as unresolved, so the scan cannot\npick up a same-named const from a sibling block.\n\nThe real tree stays at 0 findings. The known raw writer at\nsrc/roadmap-upgrade.cts:2328 is still not caught: its file name is a Map key\nbuilt in another function (miss 3), which trek-e ruled a separate #4629\nchild.\n\nRefs #4629",
+        "messageHeadline": "ci(#5104): the raw STATE.md write guard sees wrapped calls and same-f…",
+        "oid": "fca4fa1a1df6df6f1133c222d7b8c14f463a18f3"
+      },
+      {
+        "authoredDate": "2026-10-03T00:29:15Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T06:50:29Z",
+        "messageBody": "…md join tail\n\nReview round on the Axis 2 raw STATE.md write guard:\n\n- The write's own line is read up to the call's column, so\n  `const p = path.join(dir, 'STATE.md'); fs.writeFileSync(p, c)` resolves.\n  Statements are read last to first, a right-hand side ends at its own\n  `;`, `p += x` is followed, and the next hop resumes before the followed statement, so a chain on\n  one line resolves.\n- Rule: that line (and a hop's cut line) is read only when it is plain\n  statements. A line with `{`, `}`, `=>`, `function` or `for` is not read, and\n  Axis 2 behaves on it exactly as before: telling a closure's enclosing\n  variable from a shadowing parameter or block-scoped sibling needs a\n  scope analysis, and four review passes found false positives in each\n  approximation.\n- A `path.join`/`path.resolve` (including `path.posix`/`path.win32`)\n  whose last segment is a literal file name is decided by that literal,\n  so a directory derived from statePath joined with 'ROADMAP.md' is no\n  longer flagged (no allowlist could clear it, ADR-4629 Decision 5). A\n  trailing comma is ignored; a '' or '.' tail names no file.\n- Arrow functions and methods stay non-boundaries (stopping there would\n  hide writes inside closures); the sibling-body cost is pinned as a\n  `limit:` row.\n- Template interpolations are extracted by brace depth; CRLF input\n  resolves variable targets (`.` never matched the trailing `\\r`).\n- Tests: a row per finding and per review probe, `rule:` and `limit:`\n  rows pinning the line rule, MAX-1 on the hop bound, and a fast-check\n  property over names, filler, call shape, statePath-derived\n  directories, and line endings.",
+        "messageHeadline": "ci(#5104): resolve same-line targets and stop at a literal non-STATE.…",
+        "oid": "60a2fa177bdce1279716d3b5ac5babadea175b04"
+      },
+      {
+        "authoredDate": "2026-10-07T02:57:40Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageBody": "… name is not a raw STATE.md write\n\nReview round 3 (5436531471) m2: `const n = 'ROADMAP.md'; fs.writeFileSync(path.join(d, n), c)`\nwith d derived from statePath was reported RAW_STATE_WRITE, and with no allowlist\n(ADR-4629 Decision 5) nobody could clear it. A path.join/path.resolve now resolves its\nlast argument through the same-function resolver (spending hops), and when that\nreaches a string literal that names a file, the literal alone decides. Every other\ntail (a parameter, member, call, spread, interpolated template, conditional, '' or\n'.', a module-level constant, an exhausted hop budget) falls through to the previous\nrule unchanged, so the guard reports nothing less than before: across 56 probe shapes\nthe only changes are the five intended clears.\n\nStill reported, and pinned as known gaps: an unresolved tail on a statePath-derived\ndirectory (`path.join(d, name)`, `${name}.json`), where the written file is not visible\nin the function.\n\nm3: the limit rows assert today's output beside the correct verdict and fail loudly\nwhen a fix changes either, instead of passing assertions on known-wrong verdicts\n(CONTRIBUTING.md forbids `todo` tests).",
+        "messageHeadline": "ci(#5104): a join whose last argument resolves to a non-STATE.md file…",
+        "oid": "66100a6fa9ff61444e848dcd8d158003c0016990"
+      },
+      {
+        "authoredDate": "2026-10-09T17:05:03Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageBody": "…e axis's call-match limits\n\nReview round 4, M1: the join-tail pre-check let the nearest textual\nassignment decide, so `let n = 'STATE.md'; if (x) n = 'ROADMAP.md';`\ncleared a write that can land on STATE.md. A tail identifier is now\nfollowed only through `const` declarations; a `let`, `var` or bare\nassignment leaves the whole expression to decide, as before the\npre-check. The two reviewer probes are reported again, and a `let`\nthat is never reassigned is pinned as a known false positive.\n\nm2-m4: the axis matches only a literal `fs.writeFileSync(` over\n`stripComments` output, which does not track strings or regex\nliterals. The function header now says so, and the tests pin the\nstring/regex `//` misses, the string false positive and two other\nwrite APIs as known gaps.",
+        "messageHeadline": "ci(#5104): follow a join tail only through const bindings, and pin th…",
+        "oid": "0ad283d6ab51e6f531c99723f351464a1c8410df"
+      },
+      {
+        "authoredDate": "2026-10-10T20:57:31Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageBody": "…frontmatter-write scans\n\nThe shared assignment regex required `name =`, so `const p: string =\npath.join(dir, 'STATE.md')` never bound `p` and the raw-write axis read 0\non the headline shape in the TypeScript it scans. A `const`/`let`/`var`\ndeclaration may now carry an annotation before `=` (generics, unions,\nrecord types). The annotation is read only after a declaration keyword\nand holds no `=` or `;`, so object keys, `==`/`===` comparisons and\n`let p: T; q = x` still bind nothing.\n\nThe regex is shared with Axis 3, so a parity row now pins that both axes\nread the same binding grammar. Real tree: rawWriteViolations 0; Axis 3\nfindings and its resolver output at all 47 stateReplaceField( sites in\nsrc/ are unchanged.",
+        "messageHeadline": "ci(#5104): a typed declaration binds its name for both raw-write and …",
+        "oid": "d9a208ad4c872b68a4e38361e99c7808792624b3"
+      },
+      {
+        "authoredDate": "2026-10-10T21:00:41Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageBody": "…r clears a raw STATE.md write\n\nThe raw-write axis took the nearest textual binding and ignored block and\narrow scope, so `const n = 'ROADMAP.md'` inside a closed `if` block or\narrow body cleared `fs.writeFileSync(path.join(d, n), c)` where `n` is a\nparameter or an outer `const n = 'STATE.md'`.\n\nFail-safe minimum fix, not a scope tracker: a binding decides only when no\n`{`, `}` or `=>` lies between the end of its right-hand side and the write\nin the comment-stripped text. Past such a boundary, a const join tail no\nlonger clears (the whole-expression rule decides, as before the tail\npre-check), and the target chain keeps searching for an earlier binding of\nthe same name instead of stopping at the first one that misses STATE.md.\nA binding that reaches STATE.md still reports at once, so closure writes\nare unchanged. The rule only removes clears.\n\nThe const check is now anchored at the match start, so a later `const` in\nthe same statement span cannot mark a `let` as `const`.\n\nNew rows: the sibling-block probe (multi-line, one-line block, arrow\nbody), the outer-STATE/inner-ROADMAP shadow (directory from statePath and\nfrom a plain parameter, and through the write target), controls for a\nbinding in the write's own body, a by-design row for the new fallback\n(a const before a block that holds the write), and the whole-function\none-line probe as a known scope gap. Real tree: rawWriteViolations 0.",
+        "messageHeadline": "ci(#5104): a binding in a closed sibling block or arrow body no longe…",
+        "oid": "912529942b03389663d8ff3a79e804878d897917"
+      },
+      {
+        "authoredDate": "2026-10-10T21:04:40Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageBody": "…llback from known defects\n\nCharacterization only; no guard behavior changes.\n\n- The findRawStateWrites header now lists every verified false negative\n  (data built in another function, a module-level constant, a body on the\n  write's own line, a chain past the hop bound, the unseen call shapes)\n  and every verified false positive, and names the by-design fallback.\n- Known-gap rows (expected plus currentBuggyOutput) for the one-line\n  function and one-line arrow, a module-level STATE_FILENAME constant, a\n  file name returned by another function, fs.appendFileSync,\n  fs.renameSync(tmp, statePath), fs.writeFile, nfs.writeFileSync,\n  require('fs').writeFileSync, `fs . writeFileSync`, fs?.writeFileSync and\n  fs['writeFileSync'].\n- A known false-positive table: same-name arrow parameter shadowing (two\n  forms), a target derived from the state file, and a STATE.md.bak\n  literal.\n- The parameter and interpolated-template join tails move from\n  KNOWN_TAIL_GAPS to BY_DESIGN_FALLBACKS, which asserts current output\n  only: there the correct verdict is unknown, not wrong.\n- MAX - 1 / MAX / MAX + 1 rows for the join-tail chain, built from the\n  exported MAX_TARGET_RESOLUTION_HOPS.\n- Rows for joinLastSegment, splitStatements and templateInterpolations,\n  through findRawStateWrites (they are not exported).\n- The gap-loop comment now says the following deepStrictEqual, not\n  notDeepStrictEqual, is what fails loudly when a fix lands; review-round\n  process comments are removed.",
+        "messageHeadline": "ci(#5104): record every verified raw-write gap and split by-design fa…",
+        "oid": "c80530f14ea818c05d047fc303ff81b9f430b1f4"
+      },
+      {
+        "authoredDate": "2026-10-10T21:05:50Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageBody": "…l binds its name\n\n`const p: { dir: string; file: string } | string = path.join(dir,\n'STATE.md')` read 0: the annotation excluded `;`, which an object type\nholds between its members. The annotation may now hold one level of\nbraces whose body is read whole; `;` and `=` outside braces still end\nit, so `let p: T; q = x` binds nothing. Rows added to the typed\ndeclaration test and the Axis 2 / Axis 3 parity table. Real tree:\nrawWriteViolations 0; Axis 3 output unchanged at all 47 sites.",
+        "messageHeadline": "ci(#5104): an object-literal type annotation holding a semicolon stil…",
+        "oid": "3a0d13c85afcd86292f74f69b1408e3de00cb35c"
+      },
+      {
+        "authoredDate": "2026-10-10T21:07:35Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageBody": "…d shadowed declarations\n\nThe existing property drew only `const` plus path.join(<dir>, '<literal>')\nover shapes the resolver was built for, so it could not have caught the\ntyped-declaration or sibling-block misses.\n\nA second property states its oracle from the spec: a write whose target\ncan be STATE.md is reported once at its own line, and a write whose every\npossible target is another known file is not. It draws const/let/var,\nfive type annotations, a chain of 1..MAX_TARGET_RESOLUTION_HOPS\ndeclarations, a closed sibling block that redeclares the target as\nROADMAP.md, a wrapped call, filler and CRLF. Against the previous head it\nfails (shrunk counterexample: const, depth 1, dir, shadow); here it passes\non seeds 42, 1, 2, 3, 7, 11, 99, 1234 and 2026.\n\nThe RESERVED set shared by both properties now holds the JS/TS reserved\nand keyword-like words (function, class, return, typeof, await, ...) and\nevery name the fixtures already use.",
+        "messageHeadline": "ci(#5104): widen the raw-write property to typed, let/var, chained an…",
+        "oid": "507d50b64ad28f0fd2c9d645a005aaa5a0f56c23"
+      },
+      {
+        "authoredDate": "2026-10-10T21:12:13Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageBody": "…dule state\n\nThe per-name assignment regexes lived in a module-level Map that grew\nacross every scanned file. They now live in the context that one\nfindRawStateWrites call already threads through the resolver, and\nnearestTargetBinding looks its pair up once per call instead of once per\nline. No verdict changes.\n\nMeasured on N unresolved writes in one function (best of 3): 500 writes\n138 ms before, 128 ms after; 2000 writes 2210 ms before, 2085 ms after;\n5000 writes 14134 ms before, 11068 ms after. The quadratic cost of\nper-call backward resolution is unchanged; the AST follow-up (#5279)\nreplaces it.",
+        "messageHeadline": "ci(#5104): keep the raw-write binding regex cache per call, not in mo…",
+        "oid": "40fafa453a7d27c795b8fd8fee0bd0e9f375b5b1"
+      },
+      {
+        "authoredDate": "2026-10-10T21:14:39Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageBody": "…known gaps\n\nThe no-worse harness re-ran two misses reported in earlier rounds and\nfound neither pinned nor listed: a `;` inside a template nested in\nanother template's interpolation ends a right-hand side early, and\n`p = fs.writeFileSync(p, c)` reads its target's binding as empty. Both\nread 0 on the previous head and on this one. They are now known-gap rows\n(expected plus currentBuggyOutput) and listed among the verified false\nnegatives in the findRawStateWrites header. No behavior change.",
+        "messageHeadline": "ci(#5104): pin the nested-template and self-assigned-write misses as …",
+        "oid": "41ddc5e0ef098b99c8ef5b500b039f8b631c6c82"
+      },
+      {
+        "authoredDate": "2026-10-12T00:33:15Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageBody": "… and as rows\n\nThe header's false-positive list now names the arrow parameter read as an\nassignment and the sibling arrow body, both already pinned. It states that\nthe body-boundary test is textual, so an unrelated closed block, an object\nliteral, a callback or a `${}` interpolation also stops a const tail from\nclearing a write; four by-design rows pin that. Four known-gap rows pin\nmissed writes: a declaration whose value starts on the next line (typed and\nuntyped), an annotation with nested braces, and a `;` inside a\nstring-literal type.",
+        "messageHeadline": "ci(#5104): record the remaining verified raw-write gaps in the header…",
+        "oid": "57f6a8737b52b372db31684ff854a5b29c667c59"
+      },
+      {
+        "authoredDate": "2026-10-16T06:06:58Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageBody": "…euse nearestPrecedingAssignment\n\nReview 5512635344 (Majors 1 and 2, Minor 1):\n\n- Axis 2 now resolves a target through nearestPrecedingAssignment itself,\n  extended with opt-in options (typed, stopAtPatternBinding, withLine).\n  Axis 3 passes no options, so its regex and verdicts are unchanged.\n  nearestTargetBinding, lastBindingInText and the binding regex cache are gone.\n- Removed, moved to #5279: the join-tail pre-check (joinLastSegment,\n  fileNameLiteral, resolvedJoinFileTail), CRLF normalization, the\n  template-interpolation parser, += handling, and same-line statement\n  splitting (splitStatements, statementSpans, CUT_LINE_BODY_RE). With the\n  join tail gone there is one resolver, one hop budget.\n- Kept, as requested in earlier rounds: multi-line capture, the bounded\n  hop count, the for...of / destructuring stop, the write's own line read\n  up to the call, the body-boundary rule, and typed declarations.\n- Each shape the cut gives up is a known-gap row with its correct verdict.",
+        "messageHeadline": "ci(#5104): cut the raw-write guard back to the approved Layer 1 and r…",
+        "oid": "ee634124fb22c8e2f31ab6b51a452692ec1ba12b"
+      },
+      {
+        "authoredDate": "2026-10-16T06:07:08Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageBody": "…not proof\n\nReview 5512635344, Minor 3: the file header's Axis 2 paragraph now states\nthat a zero from this line scan does not prove no raw STATE.md writer\nremains, and points at findRawStateWrites' list of verified misses\n(ADR-3408 Decision 5) and the syntax-tree follow-up, #5279.",
+        "messageHeadline": "ci(#5104): say in the guard header that the raw-write axis's zero is …",
+        "oid": "ef53941428cf07ece35f2cd50c19ac3b64428dd0"
+      },
+      {
+        "authoredDate": "2026-10-16T06:12:05Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageBody": "…s it closed\n\n- Known-gap rows (false positives) for three shapes whose verdict moved\n  with the cut: a one-line top-level function's parameter resolved into an\n  earlier function, a bare `x =>` arrow parameter shadowing an outer\n  variable, and a `for` header's loop-scoped `let` earlier on the write's\n  line. The findRawStateWrites header lists them.\n- One positive row for three shapes that were known misses before the cut\n  and now report: an assignment and write in a one-line block, in a\n  one-line arrow body, and a reassignment in a closed block on the write's\n  line.",
+        "messageHeadline": "ci(#5104): pin the verdicts the scope cut moved, and assert the misse…",
+        "oid": "859d07b2439d8572ce301fa40c4c69a1372f20b4"
+      },
+      {
+        "authoredDate": "2026-10-16T14:10:18Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageBody": "…not exported\n\nWithout the export, fc.integer({ max: undefined }) draws unbounded chain\nlengths and the run dies out of memory instead of failing. Asserting the\nexport first makes the fail-first run against next's guard report its\nfailures (24 of 82) with no shim.",
+        "messageHeadline": "ci(#5104): fail the raw-write property at once when the hop bound is …",
+        "oid": "f2152b54e2f3660862af69cb9cb2e8863189209f"
+      },
+      {
+        "authoredDate": "2026-10-18T00:53:33Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageBody": "…tay bounded\n\nEvery hop of resolvesToStatePath branched over each identifier of a\nright-hand side, with no record of what it had already resolved. A file\nwith 60 `let vN = v0 + ... + v59;` lines, each followed by `{ }`, and\n`fs.writeFileSync(v0 + ... + v59, c)` took 112 s to scan locally (20.4 s\nin review 5558390402).\n\nEach name's lookup is now memoized per write on (name, line, hops left),\nin a context findRawStateWrites makes fresh per write, never in module\nstate. The verdict depends only on those and the scanned lines, so no\nverdict moves: the old and new script agree on all 650 tracked files\nthat call fs.writeFileSync (964 findings, 0 differences). The 60-name\nfile now scans in about 1.1 s locally.\n\nfindRawStateWrites takes an optional stats object and reports\nassignmentLookups, the nearestPrecedingAssignment calls it made (the\ncount is overwritten per call, not accumulated). A new row bounds that\ncount on the crafted shape at 20 names without a clock: 33215 calls\nwithout the memo (the row fails), 1694 with it, against a bound of\n2 * N * (N + 1) * MAX_TARGET_RESOLUTION_HOPS = 3360 (at\nMAX_TARGET_RESOLUTION_HOPS = 4).\n\nThe bound is per write only. Residuals, measured locally:\n- Cost scales with the number of writes, because the memo is rebuilt per\n  write: the 60-name file with the write line repeated 40 times took\n  48.6 s (634960 lookups).\n- The assignment regex prefix backtracks on a long whitespace run: one\n  40000-space line holding the name, plus one write, took 0.9 s (80000\n  spaces: 3.1 s); with 20 writes, 17.6 s. origin/next's Axis 2 took 2 to\n  8 ms on the same inputs.",
+        "messageHeadline": "ci(#5104): memoize raw-write target resolution so lookups per write s…",
+        "oid": "aa5057534ac7a478e88437d0f389be146d1c1b25"
+      },
+      {
+        "authoredDate": "2026-10-21T18:27:46Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageBody": "…hared across a file's writes\n\nA line holding a variable's name and a long whitespace run stalled the\nraw-write scan, and the cost of a file grew with its number of writes.\nOne `const p<40000 spaces>x;` line followed by 20 writes took 10.8 s\nlocally, 22.6 s in review.\n\n- The assignment regex matched `(?:^|[^.\\w$])(?:const|let|var)?\\s*NAME`,\n  so every position of a whitespace run could start a match and\n  backtrack over the rest of the run. Each match now starts at the name\n  and a lookbehind reads the text before it; the language and the\n  captured right-hand side are unchanged, and Axis 3 reads through the\n  same regex. The typed form `[^=;]+?\\s*=` is written `[^=;]+=` (same\n  language). The for...of binding regex had the same overlap\n  (`\\s+(.+?)\\s+of\\b`); it now reads `(.*?\\S)\\s+of\\b` after taking the\n  keyword's whitespace whole, which reads the same pattern.\n- nearestPrecedingAssignment takes an opt-in `cache`, one per file for\n  Axis 2: each line is read at most once per name across every write,\n  and the write's own line, cut at the call, is read per write\n  (`firstLine`, never cached).\n- A name's verdict below a write's line depends on the write only\n  through whether a body boundary lies after that line, so those\n  verdicts are shared by every write in the file, keyed on that flag.\n  The boundary rule reads a per-file count of boundary lines instead of\n  joining the lines between per write.\n- findRawStateWrites no longer throws on a null `stats`, and reports\n  `linesRead` beside `assignmentLookups`.\n\nProbe, before -> after (local, ms): the whitespace line with N = 1, 5,\n20 writes: 508, 2590, 10791 -> 5, 3, 6. Same with a type annotation:\n1023 -> 4 (N = 1); with a for...of header: 985 -> 4 (N = 1); the\nfor...of header with the run also after its keyword did not finish in\n300 s before, 5 ms now. The 60-name shape with 40 writes: 24334 -> 106.\nOne assignment, `{ }` and 8000 writes: 6633 -> 32.\n\nOld and new script compared: every tracked .cts/.cjs/.ts/.js/.mjs file,\neach line read for each identifier on it with no options and with the\nAxis 2 options, plus findRawStateWrites and findUnstrippedContentWrites\nper file (1715 files, 12.2M comparisons); 4.5M comparisons over 150000\nfuzzed lines; 2.4M fuzzed binding lines; 150000 fuzzed files (44512\nwith findings). 0 differences. Mutants of the assignment regex, the loop regex\nand the shared verdict key each show differences in the same harness.\n\nNew rows: lines read are bounded on a 200-write file (the row fails\nwithout the cache); lookups are bounded on a 50-write branching file\n(19950 lookups before, 1379 now, bound 1880); five whitespace shapes\nkeep their verdicts (time is not asserted); a null or undefined `stats`\nchanges no finding. The work-bound comment states the rule, not a\nreview.\n\nNot bounded: a line holding many writes is read once per write, and a\ncall left open takes the rest of the file as its target. 8000 writes on\none 200 KB line: 2209 -> 627 ms; 8000 open calls on one line: 6341 ->\n5292 ms.",
+        "messageHeadline": "ci(#5104): keep raw-write target resolution linear in each line and s…",
+        "oid": "a2bf696880db7e51793f5078bf1fd281e236ae87"
+      },
+      {
+        "authoredDate": "2026-10-21T18:52:18Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageBody": "…nator after a whitespace run stays linear\n\nThe assignment tail `\\s*=\\s*([^=].*)$` kept the quadratic shape the\nprefix had: `.` does not match `\\r`, U+2028 or U+2029, so when one\nfollows a long whitespace run after `=`, each shorter run is tried and\nrescanned up to it. `const p =<40000 spaces>x;\\r` cost 1613 ms per read\non the previous head (32255 ms with 20 writes), and 531 ms per file\nafter the per-file cache. origin/next's Axis 3 reads through the same\ntail (2268 ms for one such line there).\n\n- assignmentHeadRegex matches up to the `=` and its whole whitespace\n  run (a lookahead and backreference, as no possessive quantifier\n  exists). assignedValue then decides the old tail from that one\n  position: the capture could only start at the end of the run, or one\n  character before it when that end is `=` or the end of the line, and\n  `.*$` holds only when no line terminator follows. A failed head\n  resumes one character on. The result is unchanged.\n- findRawStateWrites reports `assignmentMatches`, the heads decided.\n\nProbe, before (472cfb257) -> after (ms): `\\r` ending, N = 1 and 20\nwrites: 1613, 32255 -> 1, 1; U+2028 ending: 1822, 36356 -> 1, 1.\n\nOld and new script compared again, with `\\r`, U+2028, U+2029 and\n`=` runs added to the fuzz alphabet: 1715 files (12.2M comparisons),\n4.5M comparisons over 150000 fuzzed lines, 150000 fuzzed files, 2.4M\nfuzzed binding lines: 0 differences. Four mutants (a stricter keyword\nform, a greedy loop pattern, the shared verdict key without its\nboundary flag, and an off-by-one in the tail decision) show 7156,\n38836, 23 and 186 differences.\n\nRows: a `\\r` or U+2028 run decides at most one head per occurrence of\nthe name, with verdicts pinned; two writes across a `}` keep different\nverdicts (pins the boundary flag in the shared key). Two test comments\nthat cited a review now state the rule.\n\nThe header now also discloses a line that repeats a declaration or\n`for` header of the name many times as quadratic in that line (180 KB of\n`const p: `: 4485 -> 1659 ms; 260 KB of `for (const p `: 3331 -> 3573\nms).",
+        "messageHeadline": "ci(#5104): decide the assignment tail once per match, so a line termi…",
+        "oid": "3d2bcfc8cf6451272eb7bda7f88b149f02f80968"
+      },
+      {
+        "authoredDate": "2026-10-22T06:49:22Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T07:01:50Z",
+        "messageBody": "…st the cap as unresolved\n\nA call left open took the rest of the file as its first argument, once per\ncall, and each of many writes on one line re-read the line before it, so\nboth shapes cost time quadratic in the file or the line.\n\n- MAX_RAW_WRITE_TEXT_LENGTH (4096, exported) bounds both reads. The longest\n  first argument of a write over the 1715 tracked script and source files\n  is 115 characters and the longest line before a call 129, so the cap is\n  over 30 times either.\n- A write past the cap is not resolved. It is reported as\n  raw_state_write_unresolved on the raw-write axis, at most once per line,\n  so the cap adds reports and never drops one.\n- captureFirstArg takes an optional limit and reads at most limit + 1\n  characters. The line before the call is measured before it is sliced.\n- A finding's source is built once per line.\n- The stats seam gains argumentChars and ownLineChars. New rows pin the cap\n  at limit - 1, limit and limit + 1 for both reads, count the work for\n  calls left open and for many writes on one line, and run the CLI on a\n  call left open.\n- The header now describes the cap and lists what it does not bound.",
+        "messageHeadline": "ci(#5104): cap the text read for one raw write, and report a write pa…",
+        "oid": "f02fbaa543456dd77b676a77e4f1244da21a0876"
+      },
+      {
+        "authoredDate": "2026-10-22T06:49:29Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T07:01:50Z",
+        "messageBody": "…racter\n\nThe row that ends a whitespace run with a line terminator held a raw\nU+2028 in its string literal. It is valid JavaScript but invisible in\nreview and trips invisible-character scanners. The escape is the same\nstring. A code-point scan of the guard and its test file finds no other\ninvisible character.",
+        "messageHeadline": "ci(#5104): write the U+2028 in a test row as an escape, not a raw cha…",
+        "oid": "4df1cd120c7921b35bdceb9572d5c77442716e67"
+      },
+      {
+        "authoredDate": "2026-10-22T07:13:47Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T07:42:32Z",
+        "messageBody": "…he writes past the budget as unresolved\n\nShapes of the resolver this change adds still cost time superlinear in a\nfile: many writes that each name a different variable, where each name's\nfirst lookup read back to the enclosing named function (distinct names x\nlines); a line that repeats a typed head, a for header or a destructuring\nhead, where each repeat scanned to the end of the line; many writes that\nre-read one wide right-hand side; and writes that walk every earlier\nassignment of their name past body boundaries.\n\n- MAX_RAW_WRITE_RESOLVER_WORK (250000000, exported) bounds the work of\n  resolving one file's writes. Over the 1728 tracked script and source\n  files the most any file takes is 8186334 (tests/state.test.cjs, 1 MB),\n  and in src/ 160872 (src/commands.cts), so the budget is over 30 times\n  the first.\n- Charged: each write's argument and line before the call, by length; each\n  nearestPrecedingAssignment call, LOOKUP_WORK (64) plus the name; each line\n  it reads, by lineReadWork: its length plus LINE_READ_WORK (32), times one\n  more than its count of ':', '(', '[' and '{' when it holds the name,\n  since each of those can start a scan to the end of the line; and each\n  assignment right-hand side it resolves, by length.\n- assignmentVerdict keeps an assignment's verdict below the write's line\n  for later writes, under the same boundary flag as the other shared\n  verdicts, so a wide right-hand side is read once. The assignment head\n  regex is built once per name.\n- A charge that would pass the budget is not made and its read is not\n  done. The write that ran out and every later write in the file are\n  reported as raw_state_write_unresolved, at most once per line.\n- The budget is opt-in through the cache, so Axis 3's reads are unchanged.\n- The stats seam gains resolverWork. New rows pin the budget at\n  limit - 1, limit and limit + 1, count the work for distinct names, each\n  repeated head, a shared right-hand side and boundary walks, and check\n  that a write after the budget is spent is still reported.\n- The header describes the budget in place of the shapes it left\n  unbounded.",
+        "messageHeadline": "ci(#5104): bound the raw-write resolver's work per file, and report t…",
+        "oid": "2c42633be6928338f60a493533c0df0077bfb7f6"
+      },
+      {
+        "authoredDate": "2026-10-22T07:59:20Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T08:08:00Z",
+        "messageBody": "…d the name in linear time\n\nThe resolver budget charged a line read by the line's length, but the\nassignment head regex starts with the name, so where the name nearly\nmatches at every offset (a run of 'a' read for the name 'aaa...') one read\ncost line length x name length. Two lines of 100000 'a's and 100 writes of\n4000-character names took 22 s and spent a quarter of the budget.\nString#includes has the same cost for a name with a repeated half.\n\n- A line read under the budget finds the name's offsets with\n  Knuth-Morris-Pratt (nameOccurrences), linear in the line, in place of\n  includes. The head regex and the pattern-binding regex run sticky at\n  those offsets only, which finds the same matches as the global scan.\n- lineReadWork charges (line length + LINE_READ_WORK + occurrences x name\n  length) x (1 + count of ':', '(', '[' and '{') when the name occurs, and\n  line length + LINE_READ_WORK when it does not.\n- Each name's regexes and failure table are built once (nameReader).\n- Over the 1728 tracked script and source files the most any file now\n  takes is 8267472 (tests/state.test.cjs) and in src/ 163185\n  (src/commands.cts); MAX_RAW_WRITE_RESOLVER_WORK stays 250000000, 30.2\n  and 1532 times those.\n- A counted row pins the per-occurrence charge and the review's shape; the\n  budget limit rows follow the new charge.\n- Axis 3 does not pass a cache, so its reads are unchanged.\n- The text cap's comment now cites the measurement after the rebase: over\n  the 1728 tracked files the longest first argument and the longest line\n  before a call are each 129 characters. The cap commit's message keeps\n  the figures measured before the rebase, over 1715 files (115 and 129).",
+        "messageHeadline": "ci(#5104): charge a resolver read per occurrence of the name, and fin…",
+        "oid": "47d6b60d88baa1cdd42df83d6af0fb8a1e3bd6ee"
+      },
+      {
+        "authoredDate": "2026-10-22T08:32:41Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T08:41:22Z",
+        "messageBody": "…ved name, and search for names with indexOf\n\nEach new name compiles its own regexes (about 70 us and 7 KB for a short\nname, 350 us and 30 KB for a 256-character one), and that was not charged:\none distinct short name per write spent the budget in 44 s and 3.8 GB, and\n4000-character distinct names ran out of heap inside findRawStateWrites,\nwhich is a crash, not a reported write.\n\n- Building a name's reader is charged READER_WORK (10000) plus\n  READER_WORK_PER_CHAR (128) per character. The charge also bounds the\n  memory the readers hold for the rest of the file.\n- MAX_RESOLVED_NAME_LENGTH (256): a longer name is charged as the whole\n  budget, so its write and every later write in the file are reported\n  unresolved. Over the 1728 tracked script and source files the longest\n  name the resolver looks up is 32 characters (27 in src/), and the longest\n  identifier in src/ is 52.\n- With names that short, the native indexOf search is cheap on the\n  adversarial patterns probed (self-overlapping, near-miss, periodic and\n  Fibonacci names up to 256 characters on 1 MB lines), so the\n  Knuth-Morris-Pratt search is removed and indexOf is used again.\n  The search for a name on a line stops once its occurrences could no\n  longer be charged, so the read that runs out of budget does not first\n  list every occurrence.\n- The stats seam gains readersBuilt. New rows: one reader per distinct name,\n  charged by length, for short and long names; and the name cap at\n  limit - 1, limit and limit + 1. The text-cap row pads its name with\n  spaces, so it no longer depends on the name cap.\n- Over the 1728 tracked files the most any file now takes is 9315920\n  (tests/state.test.cjs) and in src/ 308033 (src/commands.cts), so the\n  budget of 250000000 is 26.8 and 812 times those. The most readers any\n  file builds is 110 (18 in src/).",
+        "messageHeadline": "ci(#5104): charge building a name's reader, cap the length of a resol…",
+        "oid": "e990312bda03db64808701c20ace200def239a79"
+      },
+      {
+        "authoredDate": "2026-10-22T14:08:45Z",
+        "authors": [
+          {
+            "email": "dave@sienkowski.com",
+            "id": "MDQ6VXNlcjMwMzc3NTk=",
+            "login": "davesienkowski",
+            "name": "Dave"
+          }
+        ],
+        "committedDate": "2026-10-22T14:08:45Z",
+        "messageBody": "identifiersIn dropped quoted strings with\n/'(?:[^'\\\\]|\\\\.)*'|\"(?:[^\"\\\\]|\\\\.)*\"/g, which, from every quote with no\ncloser, scans to the end of the text and fails, then tries the next quote.\nA run of escaped quotes therefore cost time quadratic in its length, but was\ncharged by length. A template literal of escaped quotes reaches it as one\nargument (the argument capture treats a backtick as a string; this regex\ndoes not). Nested writes sharing one such literal took 26.6 s for a 999 KB\nfile, and one 400 KB right-hand side took 37.8 s.\n\n- stripQuotedStrings gives the same result in one pass. A quote with no\n  closer records where its failed scan stopped, and quotes of the same kind\n  before that point are not tried: the failed scan passed each of them as\n  the escaped half of a backslash pair, so a scan from one stops at the\n  same point. A backslash before a line terminator also stops a scan, as\n  `.` does not match one.\n- Same output as the regex on 2500000 fuzzed strings (quotes of both\n  kinds, backslash runs, \\n, \\r, U+2028, U+2029, backticks) and on every\n  line and whole file of the 1728 tracked files.\n- The backtick handling is unchanged in both places.\n- The stats seam gains stringScanChars. A counted row puts a run of 1000\n  escaped quotes in a target and in a right-hand side; each character is\n  examined at most three times.",
+        "messageHeadline": "ci(#5104): strip quoted strings from a resolved expression in one pass",
+        "oid": "1830f52109c5f3875b5709a8b0d9140cee7ee23f"
+      }
+    ],
+    "headRefOid": "1830f52109c5f3875b5709a8b0d9140cee7ee23f",
+    "isDraft": false,
+    "mergeStateStatus": "UNSTABLE",
+    "mergeable": "MERGEABLE",
+    "mergedAt": null,
+    "number": 5119,
+    "reviewDecision": "",
+    "reviewRequests": [
+      {
+        "__typename": "User",
+        "login": "Solvely-Colin"
+      },
+      {
+        "__typename": "User",
+        "login": "jeremymcs"
+      }
+    ],
+    "state": "OPEN",
+    "title": "ci(#5104): the raw STATE.md write guard sees wrapped calls and same-function variable targets",
+    "updatedAt": "2026-10-23T00:55:59Z"
+  },
+  "reviews": [
+    [
+      {
+        "id": 5371427149,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-09-30T20:09:16Z",
+        "commit_id": "82b577714e71d1754e3adb306f76f402f5b3dbe8"
+      },
+      {
+        "id": 5436531471,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-07T01:24:40Z",
+        "commit_id": "250b5a4f58714dc1ebe7be161678a6236edeefca"
+      },
+      {
+        "id": 5471174433,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-09T14:08:14Z",
+        "commit_id": "081d4df03881014f1e9a62f389f401f8ecda745b"
+      },
+      {
+        "id": 5477112603,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-10T02:25:39Z",
+        "commit_id": "fad8de39927a6a86cc6bc34c6b205f579dcc042e"
+      },
+      {
+        "id": 5477747649,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-10T05:16:02Z",
+        "commit_id": "fad8de39927a6a86cc6bc34c6b205f579dcc042e"
+      },
+      {
+        "id": 5512635344,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-14T03:15:07Z",
+        "commit_id": "3a6b4fb958fd1332f67db6739f96380fe77799fb"
+      },
+      {
+        "id": 5558390402,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-17T15:07:48Z",
+        "commit_id": "a7257be6f9061a1d06d2dd8b395ec8eeedb85bdf"
+      },
+      {
+        "id": 5563197184,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-18T13:34:06Z",
+        "commit_id": "472cfb2575a713232006dc9e7969d53699d1aede"
+      },
+      {
+        "id": 5608091717,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-22T01:07:53Z",
+        "commit_id": "8cea5f84340014990a78ac2053f0739d6983c6aa"
+      },
+      {
+        "id": 5622671659,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "DISMISSED",
+        "submitted_at": "2026-10-23T00:50:25Z",
+        "commit_id": "1830f52109c5f3875b5709a8b0d9140cee7ee23f"
+      }
+    ]
+  ],
+  "checks": [
+    {
+      "bucket": "fail",
+      "completedAt": "2026-10-23T00:56:14Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39881051090/job/120178240870",
+      "name": "Reviewed or maintainer",
+      "state": "FAILURE",
+      "workflow": "Reviewed or Maintainer"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-23T00:50:37Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39880499465/job/120176459147",
+      "name": "dismiss-unauthorized-approval",
+      "state": "SUCCESS",
+      "workflow": "Dismiss Unauthorized PR Approvals"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T15:09:03Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140221/job/119905164651",
+      "name": "Required tests",
+      "state": "SUCCESS",
+      "workflow": "Tests"
+    },
+    {
+      "bucket": "skipping",
+      "completedAt": "2026-10-22T15:02:53Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140221/job/119901821690",
+      "name": "Publish emitted-baseline artifact",
+      "state": "SKIPPED",
+      "workflow": "Tests"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T15:08:57Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140221/job/119901737928",
+      "name": "Coverage gate (merged shards)",
+      "state": "SUCCESS",
+      "workflow": "Tests"
+    },
+    {
+      "bucket": "skipping",
+      "completedAt": "2026-10-22T14:44:07Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798271415/job/119895714463",
+      "name": "validate-target",
+      "state": "SKIPPED",
+      "workflow": "PR Target Validator"
+    },
+    {
+      "bucket": "skipping",
+      "completedAt": "2026-10-22T14:43:14Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140229/job/119895330965",
+      "name": "auto-merge",
+      "state": "SKIPPED",
+      "workflow": "Dependabot Auto-Merge"
+    },
+    {
+      "bucket": "skipping",
+      "completedAt": "2026-10-22T14:43:39Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140221/job/119894521363",
+      "name": "test (inert CI)",
+      "state": "SKIPPED",
+      "workflow": "Tests"
+    },
+    {
+      "bucket": "skipping",
+      "completedAt": "2026-10-22T14:43:39Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140221/job/119894433087",
+      "name": "conformance test (${{ matrix.os }}, ${{ matrix.node-version }}${{ ((matrix.shard && format(', shard {0}', matrix.shard)) || '') }})",
+      "state": "SKIPPED",
+      "workflow": "Tests"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:44:44Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798271429/job/119891432604",
+      "name": "default-flip-documentation",
+      "state": "SUCCESS",
+      "workflow": "Default Flip Documentation"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:44:40Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798271554/job/119891340143",
+      "name": "Issue link required",
+      "state": "SUCCESS",
+      "workflow": "Require Issue Link"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:44:34Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798271412/job/119891339682",
+      "name": "Pull request template format",
+      "state": "SUCCESS",
+      "workflow": "PR Template Format"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:44:35Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798271396/job/119891339286",
+      "name": "Self-test report",
+      "state": "SUCCESS",
+      "workflow": "Self-test Report"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:44:28Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798271655/job/119891339838",
+      "name": "validate-title",
+      "state": "SUCCESS",
+      "workflow": "PR Title Validator"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:44:17Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798271429/job/119891336735",
+      "name": "PR mergeability / mergeability",
+      "state": "SUCCESS",
+      "workflow": "Default Flip Documentation"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T15:02:53Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140221/job/119891074469",
+      "name": "test (ubuntu-latest, 24, shard 3/3)",
+      "state": "SUCCESS",
+      "workflow": "Tests"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:45:24Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140221/job/119891074631",
+      "name": "QA loop walk (smell ratchet)",
+      "state": "SUCCESS",
+      "workflow": "Tests"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:50:53Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140221/job/119891074576",
+      "name": "test (ubuntu-latest, 24, shard 1/3)",
+      "state": "SUCCESS",
+      "workflow": "Tests"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:44:30Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140205/job/119891136749",
+      "name": "security",
+      "state": "SUCCESS",
+      "workflow": "Security Scan"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:44:16Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140221/job/119891074417",
+      "name": "plugin-validate",
+      "state": "SUCCESS",
+      "workflow": "Tests"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:44:18Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140221/job/119891074405",
+      "name": "test (ubuntu-latest, 24)",
+      "state": "SUCCESS",
+      "workflow": "Tests"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:45:13Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140221/job/119891074275",
+      "name": "lint-tests",
+      "state": "SUCCESS",
+      "workflow": "Tests"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:59:28Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140221/job/119891074294",
+      "name": "test (ubuntu-latest, 24, shard 2/3)",
+      "state": "SUCCESS",
+      "workflow": "Tests"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:43:41Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140227/job/119891034478",
+      "name": "check-branch",
+      "state": "SUCCESS",
+      "workflow": "Validate Branch Name"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:44:05Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140268/job/119891038219",
+      "name": "docs-lint",
+      "state": "SUCCESS",
+      "workflow": "Docs Required"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:43:46Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140215/job/119890944924",
+      "name": "changeset-lint",
+      "state": "SUCCESS",
+      "workflow": "Changeset Required"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:43:45Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140205/job/119890849734",
+      "name": "PR mergeability / mergeability",
+      "state": "SUCCESS",
+      "workflow": "Security Scan"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:43:38Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140221/job/119890848780",
+      "name": "PR mergeability / mergeability",
+      "state": "SUCCESS",
+      "workflow": "Tests"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:43:38Z",
+      "link": "https://socket.dev",
+      "name": "Socket Security: Pull Request Alerts",
+      "state": "SUCCESS",
+      "workflow": ""
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:43:34Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140268/job/119890848572",
+      "name": "PR mergeability / mergeability",
+      "state": "SUCCESS",
+      "workflow": "Docs Required"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:43:35Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140221/job/119890848569",
+      "name": "Base branch health",
+      "state": "SUCCESS",
+      "workflow": "Tests"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:43:34Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140227/job/119890848174",
+      "name": "PR mergeability / mergeability",
+      "state": "SUCCESS",
+      "workflow": "Validate Branch Name"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:43:37Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140221/job/119890848255",
+      "name": "Detect test scope",
+      "state": "SUCCESS",
+      "workflow": "Tests"
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:43:31Z",
+      "link": "https://socket.dev/dashboard/org/open-gsd/sbom/1f4eeac6-b8b6-4751-bde8-ec2510ccc28f",
+      "name": "Socket Security: Project Report",
+      "state": "SUCCESS",
+      "workflow": ""
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:43:58Z",
+      "link": "https://dashboard.gitguardian.com",
+      "name": "GitGuardian Security Checks",
+      "state": "SUCCESS",
+      "workflow": ""
+    },
+    {
+      "bucket": "pass",
+      "completedAt": "2026-10-22T14:43:24Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798140215/job/119890846438",
+      "name": "PR mergeability / mergeability",
+      "state": "SUCCESS",
+      "workflow": "Changeset Required"
+    },
+    {
+      "bucket": "fail",
+      "completedAt": "2026-10-22T14:43:27Z",
+      "link": "https://github.com/open-gsd/gsd-core/actions/runs/39798136977/job/119890834734",
+      "name": "Reviewed or maintainer",
+      "state": "FAILURE",
+      "workflow": "Reviewed or Maintainer"
+    }
+  ]
+}
