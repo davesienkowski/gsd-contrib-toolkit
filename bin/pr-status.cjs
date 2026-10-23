@@ -38,7 +38,8 @@
  *   8. gh api --paginate --slurp "repos/R/issues/N/timeline?per_page=100"   (review_dismissed events carry
  *      the actor, the time and dismissal_message, which the reviews listing does not)
  * and, only with --overlap (quick 261022-w9m), three more REST GETs per PR:
- *   9. gh api --paginate --slurp "repos/R/pulls/N/files?per_page=100"   (the PR's files, at most 3000)
+ *   9. gh api --paginate --slurp "repos/R/pulls/N/files?per_page=100"   (the PR's files; GitHub lists at
+ *      most 3000, so a 3000-file list also makes the overlap a lower bound)
  *  10. gh api "repos/R/compare/<base>...<head sha>"   (behind_by and the merge base)
  *  11. gh api "repos/R/compare/<merge base>...<base>"   (files the base changed since the merge base; GitHub
  *      lists at most 300, so a 300-file list makes the overlap a lower bound); skipped when behind_by is 0
@@ -94,6 +95,7 @@ const MAX_BUFFER = 64 * 1024 * 1024; // review listings carry full bodies; 1 MiB
 const UNKNOWN_RETRY_MS = 2000;
 const MERGE_CAVEAT = 'Update branch at merge time; never --admin';
 const COMPARE_FILE_CAP = 300; // GitHub's compare endpoint lists at most 300 files
+const PR_FILE_CAP = 3000; // GitHub's pulls/N/files lists at most 3000 files
 const BRANCH_PATTERN = /^[A-Za-z0-9._/-]+$/;
 const MAX_MESSAGE = 300; // a dismissal message is printed on one line, cut at this length
 
@@ -234,6 +236,7 @@ function deriveOverlap({ base, behindBy, aheadBy, mergeBase, baseCommits, prFile
   const moved = filePaths(baseFiles);
   const overlap = [...pr].filter((p) => moved.has(p)).sort();
   const listed = Array.isArray(baseFiles) ? baseFiles.length : 0;
+  const prTruncated = (Array.isArray(prFiles) ? prFiles.length : 0) >= PR_FILE_CAP;
   return {
     base,
     behindBy,
@@ -241,7 +244,9 @@ function deriveOverlap({ base, behindBy, aheadBy, mergeBase, baseCommits, prFile
     mergeBase,
     baseCommits,
     baseFiles: listed,
-    truncated: listed >= COMPARE_FILE_CAP,
+    truncated: listed >= COMPARE_FILE_CAP || prTruncated,
+    baseTruncated: listed >= COMPARE_FILE_CAP,
+    prTruncated,
     prFiles: Array.isArray(prFiles) ? prFiles.length : 0,
     overlap,
   };
@@ -611,7 +616,8 @@ function overlapLines(o) {
   if (o.error) return [`  overlap: unknown (read failed: ${clean(o.error)})`];
   const head = `  overlap: ${clean(o.base)} is ${o.behindBy} commit(s) past the merge base ${clean(short(o.mergeBase, 9))}`;
   if (o.behindBy === 0) return [`${head}; overlapping files: none (the base has not moved)`];
-  const files = `${o.baseFiles} base file(s) changed${o.truncated ? ' (list truncated by GitHub)' : ''}, ${o.prFiles} PR file(s)`;
+  const cut = ' (list truncated by GitHub)';
+  const files = `${o.baseFiles} base file(s) changed${o.baseTruncated ? cut : ''}, ${o.prFiles} PR file(s)${o.prTruncated ? cut : ''}`;
   if (o.overlap.length === 0 && o.truncated) {
     return [`${head}; ${files}; overlapping files: none among the listed base files, unknown beyond them (truncated)`];
   }
