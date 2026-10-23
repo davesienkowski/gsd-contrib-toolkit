@@ -10,7 +10,7 @@
  * head SHA, mergeable + mergeStateStatus, the current checks, every reviewer's latest state with the
  * commit it was on, the requested reviewers and one ball line.
  *
- *   node bin/pr-status.cjs [--json] [--repo owner/name] <n...>
+ *   node bin/pr-status.cjs [--json] [--overlap] [--repo owner/name] <n...>
  *
  * Text output is plain ASCII (every GitHub-sourced string has C0 controls and DEL dropped and any
  * other non-ASCII character replaced by ?), PR blocks print in argv order and end with one footer:
@@ -34,6 +34,15 @@
  *      no merge_queue)
  *   6. gh api "repos/R/rulesets/<id>" for each branch ruleset in evaluate mode (the list carries no rules)
  *   7. gh api "repos/R" only when an evaluate merge_queue ruleset targets ~DEFAULT_BRANCH
+ * plus, only when the reviews hold a DISMISSED review (quick 261022-w9m), one more REST GET per PR:
+ *   8. gh api --paginate --slurp "repos/R/issues/N/timeline?per_page=100"   (review_dismissed events carry
+ *      the actor, the time and dismissal_message, which the reviews listing does not)
+ * and, only with --overlap (quick 261022-w9m), three more REST GETs per PR:
+ *   9. gh api --paginate --slurp "repos/R/pulls/N/files?per_page=100"   (the PR's files, at most 3000)
+ *  10. gh api "repos/R/compare/<base>...<head sha>"   (behind_by and the merge base)
+ *  11. gh api "repos/R/compare/<merge base>...<base>"   (files the base changed since the merge base; GitHub
+ *      lists at most 300, so a 300-file list makes the overlap a lower bound); skipped when behind_by is 0
+ * A failed timeline or overlap read is named on its own line and never fails the PR block or the exit code.
  * Any queue read that fails makes the mode `unknown` with the error named; it never fails the PR block
  * or the exit code (fail open to informational). Known limit: a queue configured through classic branch
  * protection rather than a ruleset is not visible to these reads.
@@ -75,14 +84,18 @@ const CHECK_FIELDS = 'name,state,bucket,workflow,completedAt,link';
 const BUCKETS = Object.freeze(['pass', 'fail', 'pending', 'skipping', 'cancel']);
 const IGNORED_REVIEW_STATES = new Set(['COMMENTED', 'PENDING']);
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-const USAGE = 'usage: pr-status [--json] [--repo owner/name] <pr-number...>  (default repo ' + DEFAULT_REPO + ')';
+const USAGE = 'usage: pr-status [--json] [--overlap] [--repo owner/name] <pr-number...>  (default repo ' + DEFAULT_REPO + ')';
 const FOOTER =
-  'Snapshot is point-in-time (three separate gh reads per PR, and separate merge-queue reads per base branch); re-run before any write. ' +
+  'Snapshot is point-in-time (three separate gh reads per PR, and separate merge-queue reads per base branch; ' +
+  'plus a timeline read when a review was dismissed, and files and compare reads with --overlap); re-run before any write. ' +
   'A change request answered without a new commit (retitle, comment) still reads as author owes unless ' +
   'the reviewer was re-requested: check the timeline.';
 const MAX_BUFFER = 64 * 1024 * 1024; // review listings carry full bodies; 1 MiB (the default) is not enough
 const UNKNOWN_RETRY_MS = 2000;
 const MERGE_CAVEAT = 'Update branch at merge time; never --admin';
+const COMPARE_FILE_CAP = 300; // GitHub's compare endpoint lists at most 300 files
+const BRANCH_PATTERN = /^[A-Za-z0-9._/-]+$/;
+const MAX_MESSAGE = 300; // a dismissal message is printed on one line, cut at this length
 
 /** The three read-only argv arrays for one PR. */
 function ghArgs(number, repo) {
@@ -90,6 +103,7 @@ function ghArgs(number, repo) {
     view: ['pr', 'view', String(number), '--repo', repo, '--json', VIEW_FIELDS],
     reviews: ['api', '--paginate', '--slurp', `repos/${repo}/pulls/${number}/reviews?per_page=100`],
     checks: ['pr', 'checks', String(number), '--repo', repo, '--json', CHECK_FIELDS],
+    timeline: ['api', '--paginate', '--slurp', `repos/${repo}/issues/${number}/timeline?per_page=100`],
   };
 }
 
@@ -139,6 +153,16 @@ function fetchPr(number, repo, deps = {}) {
   }
   const pages = gh(args.reviews);
   const reviews = Array.isArray(pages) ? pages.flat() : [];
+  // The dismissal message lives only on the timeline's review_dismissed event: read it only when needed.
+  let timeline = null;
+  let timelineError = null;
+  if (reviews.some((r) => r && r.state === 'DISMISSED')) {
+    try {
+      timeline = pagesToArray(gh(args.timeline), 'timeline');
+    } catch (err) {
+      timelineError = firstErrorLine(err);
+    }
+  }
   let checks;
   try {
     checks = gh(args.checks);
@@ -150,7 +174,115 @@ function fetchPr(number, repo, deps = {}) {
     else if (err && /no checks reported/i.test(String(err.stderr || ''))) checks = [];
     else throw err;
   }
-  return { view, reviews, checks: Array.isArray(checks) ? checks : [] };
+  return { view, reviews, checks: Array.isArray(checks) ? checks : [], timeline, timelineError };
+}
+
+/**
+ * Read the PR's files and the base branch's movement since the merge base (REST GETs only), for --overlap.
+ * Any failure yields { error }: fail open to informational, never a thrown PR error and never "none".
+ *
+ * @param {string} repo owner/name
+ * @param {{number: (string|number), baseRefName: string, headRefOid: string}} view
+ * @param {{gh?: Function}} [deps]
+ * @returns {object} { base, behindBy, aheadBy, mergeBase, baseCommits, baseFiles, truncated, prFiles, overlap } or { base, error }
+ */
+function fetchOverlap(repo, view, deps = {}) {
+  const gh = deps.gh || defaultGh;
+  const v = view || {};
+  const base = String(v.baseRefName || '');
+  const head = String(v.headRefOid || '');
+  try {
+    if (!BRANCH_PATTERN.test(base)) throw new Error(`base branch name not usable in a compare path: ${base}`);
+    if (!/^[0-9a-f]{40}$/.test(head)) throw new Error('no 40-hex head SHA in the PR view');
+    const prFiles = pagesToArray(gh(['api', '--paginate', '--slurp', `repos/${repo}/pulls/${v.number}/files?per_page=100`]), 'pulls files');
+    const cmp = gh(['api', `repos/${repo}/compare/${base}...${head}`]) || {};
+    const mergeBase = String((cmp.merge_base_commit && cmp.merge_base_commit.sha) || '');
+    if (!/^[0-9a-f]{40}$/.test(mergeBase)) throw new Error('compare reply has no merge base');
+    const behindBy = Number(cmp.behind_by);
+    if (!Number.isInteger(behindBy) || behindBy < 0) throw new Error('compare reply has no behind_by');
+    let baseFiles = [];
+    let baseCommits = 0;
+    if (behindBy > 0) {
+      const moved = gh(['api', `repos/${repo}/compare/${mergeBase}...${base}`]) || {};
+      if (!Array.isArray(moved.files)) throw new Error('base compare reply has no files list');
+      baseFiles = moved.files;
+      baseCommits = Number(moved.total_commits) || behindBy;
+    }
+    return deriveOverlap({ base, behindBy, aheadBy: Number(cmp.ahead_by) || 0, mergeBase, baseCommits, prFiles, baseFiles });
+  } catch (err) {
+    return { base, error: firstErrorLine(err) };
+  }
+}
+
+/** Every path a compare/pulls file entry names (its filename, plus previous_filename for a rename). */
+function filePaths(files) {
+  const out = new Set();
+  for (const f of Array.isArray(files) ? files : []) {
+    if (f && f.filename) out.add(String(f.filename));
+    if (f && f.previous_filename) out.add(String(f.previous_filename));
+  }
+  return out;
+}
+
+/**
+ * Pure overlap verdict: the PR paths the base also changed since the merge base, sorted.
+ *
+ * @returns {{base: string, behindBy: number, aheadBy: number, mergeBase: string, baseCommits: number, baseFiles: number, truncated: boolean, prFiles: number, overlap: string[]}}
+ */
+function deriveOverlap({ base, behindBy, aheadBy, mergeBase, baseCommits, prFiles, baseFiles }) {
+  const pr = filePaths(prFiles);
+  const moved = filePaths(baseFiles);
+  const overlap = [...pr].filter((p) => moved.has(p)).sort();
+  const listed = Array.isArray(baseFiles) ? baseFiles.length : 0;
+  return {
+    base,
+    behindBy,
+    aheadBy,
+    mergeBase,
+    baseCommits,
+    baseFiles: listed,
+    truncated: listed >= COMPARE_FILE_CAP,
+    prFiles: Array.isArray(prFiles) ? prFiles.length : 0,
+    overlap,
+  };
+}
+
+/**
+ * Pure dismissal list: every DISMISSED review (bots and the author included, since a dismissal is a fact
+ * about the review, not a verdict), in submitted_at order (stable), joined to its timeline
+ * review_dismissed event by review id. timeline null = not read (timelineError names why).
+ */
+function deriveDismissals(reviews, timeline, timelineError) {
+  const flat = (Array.isArray(reviews) ? reviews : []).flat();
+  const dismissed = flat
+    .map((r, i) => ({ r, i }))
+    .filter(({ r }) => r && r.state === 'DISMISSED' && r.user && r.user.login);
+  dismissed.sort((a, b) => {
+    const ta = String(a.r.submitted_at || '');
+    const tb = String(b.r.submitted_at || '');
+    return ta < tb ? -1 : ta > tb ? 1 : a.i - b.i;
+  });
+  const events = new Map();
+  for (const e of Array.isArray(timeline) ? timeline : []) {
+    const dr = e && e.event === 'review_dismissed' && e.dismissed_review;
+    if (dr && dr.review_id != null) events.set(String(dr.review_id), e);
+  }
+  return dismissed.map(({ r }) => {
+    const e = r.id == null ? null : events.get(String(r.id));
+    const dr = e ? e.dismissed_review : null;
+    return {
+      login: String(r.user.login),
+      reviewId: r.id == null ? null : String(r.id),
+      commitId: String(r.commit_id || ''),
+      submittedAt: String(r.submitted_at || ''),
+      originalState: dr && dr.state ? String(dr.state).toUpperCase() : null,
+      actor: e && e.actor && e.actor.login ? String(e.actor.login) : null,
+      dismissedAt: e && e.created_at ? String(e.created_at) : null,
+      message: dr && dr.dismissal_message != null ? String(dr.dismissal_message) : null,
+      found: Boolean(e),
+      readError: timeline == null ? timelineError || 'timeline not read' : null,
+    };
+  });
 }
 
 /**
@@ -294,7 +426,7 @@ function summarizeChecks(checks) {
  *   page-nested; queue is a fetchQueue/deriveQueue result for the PR's base (absent input = not read)
  * @returns {object} snapshot with checks summary, reviewers, requested, queue and ball
  */
-function derive({ view, reviews, checks, queue }) {
+function derive({ view, reviews, checks, queue, timeline, timelineError, overlap }) {
   const v = view || {};
   const head = String(v.headRefOid || '');
   const authorLogin = lower(v.author && v.author.login);
@@ -358,6 +490,8 @@ function derive({ view, reviews, checks, queue }) {
     ball,
     reviewDecision: v.reviewDecision == null ? null : String(v.reviewDecision),
     decisionNote: decisionNote(v.reviewDecision, latest),
+    dismissals: deriveDismissals(reviews, timeline === undefined ? null : timeline, timelineError || null),
+    overlap: overlap || null, // null = --overlap not given
   };
 }
 
@@ -462,6 +596,30 @@ function ballLine(d) {
   return null; // n/a: draft or not OPEN prints its state and no ball
 }
 
+/** One line per dismissed review: who, which review, who dismissed it, when, and the message. */
+function dismissalLine(x) {
+  const what = `${clean(x.login)} ${x.originalState ? clean(x.originalState) + ' ' : ''}review ${clean(x.reviewId || '?')} on ${clean(short(x.commitId, 7))}`;
+  if (x.readError) return `  dismissed: ${what}; message unknown (timeline read failed: ${clean(x.readError)})`;
+  if (!x.found) return `  dismissed: ${what}; message unknown (no review_dismissed event for this review on the timeline)`;
+  let msg = clean(String(x.message == null ? '' : x.message).replace(/\s+/g, ' ').trim());
+  if (msg.length > MAX_MESSAGE) msg = msg.slice(0, MAX_MESSAGE) + '...';
+  return `  dismissed: ${what} by ${clean(x.actor || '?')} ${clean(x.dismissedAt || '?')}: "${msg || '(empty message)'}"`;
+}
+
+/** The --overlap line(s): how far the base moved since the merge base and which PR files it also changed. */
+function overlapLines(o) {
+  if (o.error) return [`  overlap: unknown (read failed: ${clean(o.error)})`];
+  const head = `  overlap: ${clean(o.base)} is ${o.behindBy} commit(s) past the merge base ${clean(short(o.mergeBase, 9))}`;
+  if (o.behindBy === 0) return [`${head}; overlapping files: none (the base has not moved)`];
+  const files = `${o.baseFiles} base file(s) changed${o.truncated ? ' (list truncated by GitHub)' : ''}, ${o.prFiles} PR file(s)`;
+  if (o.overlap.length === 0 && o.truncated) {
+    return [`${head}; ${files}; overlapping files: none among the listed base files, unknown beyond them (truncated)`];
+  }
+  if (o.overlap.length === 0) return [`${head}; ${files}; overlapping files: none`];
+  const label = o.truncated ? `at least ${o.overlap.length} (truncated)` : String(o.overlap.length);
+  return [`${head}; ${files}; overlapping files: ${label}`, ...o.overlap.map((p) => `    ${clean(p)}`)];
+}
+
 /** The per-PR queue line: the base branch's merge-queue mode as read this run. */
 function queueLine(q) {
   const base = clean(q.base) || '-';
@@ -515,11 +673,13 @@ function formatText(d) {
     const where = r.onHead ? 'head' : 'older commit';
     lines.push(`  review: ${clean(r.login)} ${clean(r.state)} on ${clean(short(r.commitId, 7))} (${where}) ${clean(r.submittedAt)}`);
   }
+  for (const x of d.dismissals || []) lines.push(dismissalLine(x));
   lines.push(`  requested: ${d.requested.length ? d.requested.map(clean).join(', ') : 'none'}`);
   const bl = ballLine(d);
   if (bl) lines.push(bl);
   if (d.mergeStateStatus === 'BEHIND') lines.push(behindNote(d.queue));
   if (d.decisionNote) lines.push(`  note: ${clean(d.decisionNote)}`);
+  if (d.overlap) lines.push(...overlapLines(d.overlap));
   return lines.join('\n');
 }
 
@@ -532,12 +692,14 @@ function firstErrorLine(err) {
 /** Parse argv into { json, repo, numbers } or { usageError }. */
 function parseArgs(argv) {
   let json = false;
+  let overlap = false;
   let repo = DEFAULT_REPO;
   const numbers = [];
   const list = Array.isArray(argv) ? argv : [];
   for (let i = 0; i < list.length; i += 1) {
     const a = String(list[i]);
     if (a === '--json') json = true;
+    else if (a === '--overlap') overlap = true;
     else if (a === '--repo' || a.startsWith('--repo=')) {
       const value = a === '--repo' ? list[++i] : a.slice('--repo='.length);
       if (value == null || !REPO_PATTERN.test(String(value))) return { usageError: `bad --repo value: ${clean(value)}` };
@@ -550,7 +712,7 @@ function parseArgs(argv) {
     else return { usageError: `not a PR number or flag: ${clean(a)}` };
   }
   if (numbers.length === 0) return { usageError: 'no PR number given' };
-  return { json, repo, numbers };
+  return { json, overlap, repo, numbers };
 }
 
 /**
@@ -575,7 +737,8 @@ function runCli(argv, deps = {}) {
       const pr = fetchPr(n, args.repo, deps);
       const base = String((pr.view && pr.view.baseRefName) || '');
       if (!queues.has(base)) queues.set(base, fetchQueue(args.repo, base, deps));
-      return { repo: args.repo, ...derive({ ...pr, queue: queues.get(base) }) };
+      const overlap = args.overlap ? fetchOverlap(args.repo, pr.view, deps) : null;
+      return { repo: args.repo, ...derive({ ...pr, queue: queues.get(base), overlap }) };
     } catch (err) {
       failed = true;
       return { repo: args.repo, number: Number(n), error: firstErrorLine(err) };
@@ -592,6 +755,6 @@ function runCli(argv, deps = {}) {
   return failed ? 1 : 0;
 }
 
-module.exports = { derive, deriveQueue, fetchPr, fetchQueue, formatText, runCli };
+module.exports = { clean, derive, deriveDismissals, deriveOverlap, deriveQueue, fetchOverlap, fetchPr, fetchQueue, firstErrorLine, formatText, runCli };
 
 if (require.main === module) process.exitCode = runCli(process.argv.slice(2));
