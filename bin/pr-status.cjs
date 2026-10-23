@@ -755,6 +755,6 @@ function runCli(argv, deps = {}) {
   return failed ? 1 : 0;
 }
 
-module.exports = { clean, derive, deriveDismissals, deriveOverlap, deriveQueue, fetchOverlap, fetchPr, fetchQueue, firstErrorLine, formatText, runCli };
+module.exports = { ballLineOf: ballLine, clean, derive, deriveDismissals, deriveOverlap, deriveQueue, fetchOverlap, fetchPr, fetchQueue, firstErrorLine, formatText, runCli };
 
 if (require.main === module) process.exitCode = runCli(process.argv.slice(2));
