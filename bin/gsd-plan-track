@@ -6,7 +6,8 @@
 #                  incapable of leaking .planning into an upstream PR.
 #
 # MODEL (see DESIGN-planning-tracking.md, and the explore session 2026-08-07)
-#   * One bare repo: ~/.gsd-planning.git, remote 'planning' -> gsd-core-planning (private).
+#   * One bare repo: ~/.gsd-planning.git, remote 'planning' -> a private repo named by
+#     GSD_PLAN_REMOTE or git config gsd.planRemote (no built-in default; init refuses without one).
 #   * BRANCH PER PLANNING ROOT: the main checkout -> 'main'; each worktree that has its
 #     OWN .planning -> 'wt/<worktree-name>'. A worktree with no local .planning REMAPS to
 #     the main root (GSD's own resolveWorktreeContext behavior) -> 'main'.
@@ -29,7 +30,13 @@ set -uo pipefail
 GITDIR="${GSD_PLAN_GITDIR:-$HOME/.gsd-planning.git}"
 PLAN_DIR="${GSD_PLAN_DIR:-.planning}"
 REMOTE_NAME="planning"
-REMOTE_URL="${GSD_PLAN_REMOTE:-https://github.com/davesienkowski/gsd-core-planning.git}"
+# No built-in URL: private .planning history must only ever go to a repo the user named.
+# Precedence: GSD_PLAN_REMOTE (non-empty), then git config gsd.planRemote, else empty (init refuses).
+if [ -n "${GSD_PLAN_REMOTE:-}" ]; then
+  REMOTE_URL="$GSD_PLAN_REMOTE"
+else
+  REMOTE_URL="$(git config --get gsd.planRemote 2>/dev/null || true)"
+fi
 MAIN_CHECKOUT="${GSD_PLAN_WORKTREE:-$HOME/repos/gsd-core}"
 
 # Pathspecs excluded from tracking: regenerable / transient / bulky.
@@ -102,6 +109,7 @@ cmd_init(){
   [ -d "$MAIN_CHECKOUT/$PLAN_DIR" ] || die "no $PLAN_DIR/ in $MAIN_CHECKOUT"
   git -C "$MAIN_CHECKOUT" check-ignore "$PLAN_DIR" >/dev/null 2>&1 || die "HYRUM GUARD: code repo no longer ignores $PLAN_DIR - unsafe"
   if [ -d "$GITDIR" ]; then warn "Already initialized at $GITDIR."; exit 0; fi
+  [ -n "$REMOTE_URL" ] || die "no planning remote configured. Set GSD_PLAN_REMOTE=<url>, or run: git config --global gsd.planRemote <url> (the URL of a PRIVATE repo you own)"
 
   say "Initializing planning repo:"
   say "  git-dir  : $GITDIR"
@@ -120,7 +128,7 @@ cmd_init(){
     && ok "  main branch initialized." || die "initial snapshot failed"
   say
   warn "REMOTE NOT PUSHED YET. Create the private repo, then push (both yours to run):"
-  say  "  gh repo create davesienkowski/gsd-core-planning --private --description 'gsd-core .planning history'"
+  say  "  gh repo create <owner>/<name> --private --description 'gsd-core .planning history'"
   say  "  gsd-plan-track push"
 }
 
@@ -150,7 +158,8 @@ cmd_auto_commit(){
 
 cmd_push(){
   require_init
-  warn "Pushing ALL planning branches to the PRIVATE remote ($REMOTE_URL)."
+  local url; url="$(pg remote get-url "$REMOTE_NAME" 2>/dev/null)" || url="(remote '$REMOTE_NAME' has no URL)"
+  warn "Pushing ALL planning branches to the PRIVATE remote ($url)."
   if [ "${ASSUME_YES:-0}" != 1 ]; then
     printf '%sContinue? [y/N] %s' "$c_yel" "$c_rst"; read -r r || exit 1
     case "$r" in y|Y|yes|YES) ;; *) say "Aborted."; exit 1 ;; esac
@@ -209,6 +218,7 @@ SAFETY
   ignoring $PLAN_DIR (hyrum guard).
 
 Config (env): GSD_PLAN_GITDIR, GSD_PLAN_DIR, GSD_PLAN_REMOTE, GSD_PLAN_WORKTREE
+Config (git): gsd.planRemote, used when GSD_PLAN_REMOTE is unset (init needs one of the two)
 EOF
 }
 

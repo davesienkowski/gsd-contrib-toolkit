@@ -827,7 +827,9 @@ test('commandTargetsGsdCore: a -f title=x field token is NOT mistaken for an env
 });
 
 // --- Integration against the REAL gsd-core checkout when present ---
-const REAL_GSD_CORE = '/home/dave/repos/gsd-core';
+// Evaluated once at module load: the F3 tests change HOME inside their bodies, and os.homedir()
+// reads HOME at call time. GSD_CORE_ROOT overrides; without a checkout there the test skips.
+const REAL_GSD_CORE = process.env.GSD_CORE_ROOT || path.join(os.homedir(), 'repos', 'gsd-core');
 const hasRealCore =
   fs.existsSync(path.join(REAL_GSD_CORE, 'scripts')) &&
   fs.existsSync(path.join(REAL_GSD_CORE, 'gsd-core', 'bin', 'lib'));
