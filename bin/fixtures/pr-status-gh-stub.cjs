@@ -11,7 +11,10 @@
  * appends its argv as one JSON line to $PR_STATUS_STUB_LOG. Any other verb, and any -X / --method / -f /
  * -F / --field / --raw-field / --input / graphql argument, appends a REFUSED line and exits 99, so a test
  * can prove pr-status stays read-only. A number with no fixture exits 1 with gh's not-found message.
- * The timeline, files and compare reads (quick 261022-w9m) are documented at servePrExtra below.
+ * The timeline, files and compare reads (quick 261022-w9m) are documented at servePrExtra below. The
+ * issue-status reads (same quick) come from fixtures with an `issue` key: `gh api repos/O/R/issues/N` ->
+ * fx.issue, its timeline as above, and `gh issue list --repo R --author A --state open --json number
+ * --limit N` -> the open non-PR issue fixtures of that author, newest number first.
  */
 
 const fs = require('node:fs');
@@ -69,12 +72,13 @@ function serveQueue(apiPath, slurp) {
 /**
  * The per-PR reads added by quick 261022-w9m, served from the PR's own fixture:
  *   repos/O/R/issues/N/timeline[?...]  -> fx.timeline (default []); provenance.timelineFail = stderr, exit 1
+ *   repos/O/R/pulls/N                  -> fx.pull (push-target's REST pull read), else 404
  *   repos/O/R/pulls/N/files[?...]      -> fx.files (default [])
  *   repos/O/R/compare/<a>...<b>        -> fx.compare["<a>...<b>"] from the fixture whose compare map has that key,
  *                                         else 404; provenance.compareFail = stderr, exit 1
  * With --slurp the body is wrapped in one page. Returns null for any other path.
  */
-function servePrExtra(apiPath, slurp, fixtures) {
+function servePrExtra(apiPath, slurp, fixtures, issues) {
   const [p] = apiPath.split('?');
   const out = (body) => {
     process.stdout.write(JSON.stringify(slurp ? [body] : body) + '\n');
@@ -86,10 +90,15 @@ function servePrExtra(apiPath, slurp, fixtures) {
   };
   let m;
   if ((m = /^repos\/[^/]+\/[^/]+\/issues\/(\d+)\/timeline$/.exec(p))) {
-    const fx = fixtures.get(m[1]);
+    const fx = fixtures.get(m[1]) || (issues && issues.get(m[1]));
     if (!fx) return fail('gh: Not Found (HTTP 404)');
     if (fx.provenance && fx.provenance.timelineFail) return fail(fx.provenance.timelineFail);
     return out(fx.timeline || []);
+  }
+  if ((m = /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)$/.exec(p))) {
+    const fx = fixtures.get(m[1]);
+    if (!fx || !fx.pull) return fail('gh: Not Found (HTTP 404)');
+    return out(fx.pull);
   }
   if ((m = /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/files$/.exec(p))) {
     const fx = fixtures.get(m[1]);
@@ -125,10 +134,12 @@ function main() {
     if (BAD.has(a) || /^(-X|--method=|--field=|--raw-field=|--input=)/.test(a) || /graphql/i.test(a)) return refuse('mutating-or-graphql-arg');
   }
   const fixtures = new Map();
+  const issues = new Map(); // issue-status fixtures (quick 261022-w9m), indexed by issue.number
   for (const f of fs.readdirSync(process.env.PR_STATUS_STUB_FIXTURES)) {
     if (!f.endsWith('.json')) continue;
     const fx = JSON.parse(fs.readFileSync(path.join(process.env.PR_STATUS_STUB_FIXTURES, f), 'utf8'));
     if (fx && fx.view && fx.view.number != null) fixtures.set(String(fx.view.number), fx);
+    if (fx && fx.issue && fx.issue.number != null) issues.set(String(fx.issue.number), fx);
   }
   const notFound = (n) => {
     process.stderr.write('GraphQL: Could not resolve to a PullRequest with the number of ' + n + '. (repository.pullRequest)\n');
@@ -147,11 +158,36 @@ function main() {
     if (fx.checks != null) process.stdout.write(JSON.stringify(fx.checks) + '\n');
     return done(prov.checksExit || 0);
   }
+  if (argv[0] === 'issue' && argv[1] === 'list') {
+    // gh issue list --repo R --author A --state open --json number --limit N: open, non-PR issue fixtures by author
+    const flag = (name) => (argv.indexOf(name) >= 0 ? argv[argv.indexOf(name) + 1] : null);
+    if (flag('--state') !== 'open' || flag('--json') !== 'number' || !flag('--author') || !flag('--repo')) return refuse('unexpected-issue-list-args');
+    const author = String(flag('--author')).toLowerCase();
+    const limit = Number(flag('--limit') || 30);
+    const out = [...issues.values()]
+      .map((fx) => fx.issue)
+      .filter((i) => String(i.state).toLowerCase() === 'open' && !i.pull_request && i.user && String(i.user.login).toLowerCase() === author)
+      .map((i) => ({ number: i.number }))
+      .sort((a, b) => b.number - a.number)
+      .slice(0, limit);
+    process.stdout.write(JSON.stringify(out) + '\n');
+    return done(0);
+  }
   if (argv[0] === 'api') {
     const apiPath = argv.find((a) => a.startsWith('repos/')) || '';
     const queue = serveQueue(apiPath, argv.includes('--slurp'));
     if (queue !== null) return queue;
-    const extra = servePrExtra(apiPath, argv.includes('--slurp'), fixtures);
+    const im = /^repos\/[^/]+\/[^/]+\/issues\/(\d+)$/.exec(apiPath.split('?')[0]);
+    if (im) {
+      const fx = issues.get(im[1]);
+      if (!fx) {
+        process.stderr.write('gh: Not Found (HTTP 404)\n');
+        return done(1);
+      }
+      process.stdout.write(JSON.stringify(fx.issue) + '\n');
+      return done(0);
+    }
+    const extra = servePrExtra(apiPath, argv.includes('--slurp'), fixtures, issues);
     if (extra !== null) return extra;
     const m = /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/reviews(\?.*)?$/.exec(apiPath);
     if (!m) return refuse('unknown-api-path');
