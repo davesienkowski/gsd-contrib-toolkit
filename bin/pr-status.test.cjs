@@ -1140,6 +1140,7 @@ test('2u4 body: the 5119 capture has no Self-test report; 1830f5210 reads pr com
   const check = ' unresolved (may be an older base or an unrelated commit: check)';
   assert.deepEqual(bodyBlock(r.stdout), [
     '  body: shas 0 head, 0 base, 1 pr commit, 2 former head, 0 earlier commit, 0 ambiguous, 5 unresolved ' + BODY_TAIL.replace('%s', 'f2aedc2d1'),
+    '  body: no token names the head f2aedc2d1',
     '    L19 a1c7bc74b' + check,
     '    L35 62549bf24' + check,
     '    L55 472cfb257 former head',
@@ -1181,6 +1182,7 @@ test('2u4 body: an empty body is all zero with Self-test none; a json block that
   noRefusal(empty);
   assert.deepEqual(bodyBlock(empty.stdout), [
     '  body: shas 0 head, 0 base, 0 pr commit, 0 former head, 0 earlier commit, 0 ambiguous, 0 unresolved ' + BODY_TAIL.replace('%s', '5a5a04600'),
+    '  body: no token names the head 5a5a04600',
     '  body: Self-test report none',
     '  body: counts checked: files-changed phrases only (changedFiles 1)',
   ]);

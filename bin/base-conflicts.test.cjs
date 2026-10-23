@@ -26,7 +26,7 @@ const bc = require('./base-conflicts.cjs');
 
 const SCRIPT = path.join(__dirname, 'base-conflicts.cjs');
 const GH_STUB = path.join(__dirname, 'fixtures', 'pr-status-gh-stub.cjs');
-const FOOT = '  (read-only: the trial merge wrote only to a temp object dir, now removed; nothing fetched, checked out or written)';
+const FOOT = '  (read-only: no new object, ref, index or worktree change; the trial merge wrote new objects only to a temp object dir, now removed, and may have refreshed the mtime of objects the repo already holds; nothing fetched)';
 
 /** The test's own git (never the tool's runner): hooks off, a fixed identity, no signing. */
 function git(dir, ...args) {
@@ -194,7 +194,7 @@ test('base-conflicts: two refs with no merge base exit 1 with the git error', (t
   assert.ok(!r.calls.some((c) => c[0] === 'merge-tree'));
 });
 
-test('base-conflicts: a --base, --head or --pr value that is not usable exits 2 with no git call', (t) => {
+test('base-conflicts: a --base, --head or --pr value that is not usable exits 2 with no git call', () => {
   for (const args of [['--base', '-x'], ['--head', '--upload-pack=x'], ['--base'], ['--head', 'a b'], ['--pr', '12a'], ['--pr', '0'], ['--repo', 'o/r'], ['--bogus']]) {
     const r = run(args, { gh: () => assert.fail('no gh call') });
     assert.equal(r.status, 2, `${JSON.stringify(args)}: exit 2`);
@@ -224,6 +224,20 @@ test('base-conflicts safety: the default git runner throws before spawning for e
     assert.throws(() => bc.defaultGit(args, nowhere), /base-conflicts refuses git/, args.join(' '));
   }
   assert.throws(() => bc.defaultGit(['log'], nowhere, { GIT_DIR: '/x' }), /refuses to set GIT_DIR/);
+  // review F2: every git call runs with lazy fetch off, prompts off and literal pathspecs; repo-redirecting vars dropped
+  const saved = process.env.GIT_DIR;
+  process.env.GIT_DIR = '/elsewhere';
+  try {
+    const env = bc.gitEnv({ GIT_OBJECT_DIRECTORY: '/tmp/x' });
+    assert.equal(env.GIT_NO_LAZY_FETCH, '1');
+    assert.equal(env.GIT_TERMINAL_PROMPT, '0');
+    assert.equal(env.GIT_LITERAL_PATHSPECS, '1');
+    assert.equal(env.GIT_OBJECT_DIRECTORY, '/tmp/x');
+    assert.ok(!('GIT_DIR' in env));
+  } finally {
+    if (saved === undefined) delete process.env.GIT_DIR;
+    else process.env.GIT_DIR = saved;
+  }
   assert.deepEqual([...bc.GIT_READ_VERBS].sort(), ['log', 'merge-base', 'merge-tree', 'rev-list', 'rev-parse']);
   // ls-remote runs only as exactly `ls-remote <remote> refs/heads/<branch>` (round 3 review: base tip)
   for (const args of [['ls-remote', 'origin'], ['ls-remote', '--upload-pack=x', 'refs/heads/next'], ['ls-remote', '-x', 'refs/heads/next'], ['ls-remote', 'origin', 'refs/tags/v1'], ['ls-remote', 'origin', 'refs/heads/-x'], ['ls-remote', 'origin', 'refs/heads/next', 'extra']]) {

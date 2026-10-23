@@ -22,8 +22,9 @@
  *      only on the head = ahead)
  *   5. git merge-tree --write-tree --name-only --no-messages -z <base sha> <head sha>   with
  *      GIT_OBJECT_DIRECTORY=<a fresh temp dir> and GIT_ALTERNATE_OBJECT_DIRECTORIES=<common dir>/objects, so
- *      the merge's tree and blob objects go to the temp dir (removed afterwards) and the repo's object store
- *      is not written; -z reads a path with a quote, backslash, newline or non-ASCII byte verbatim (R7)
+ *      the merge's new objects go to the temp dir (removed afterwards). git writes no new object to the repo's
+ *      store, but may refresh the mtime of objects the repo already holds (utime only, no content change; round 3
+ *      review F1). Refs, the index and the worktree are untouched. -z reads a path with a quote, backslash, newline or non-ASCII byte verbatim (R7)
  *   6. per conflicting path (the first 50) and side: git log -n 10 --format=%h %s <merge base>..<side sha> --
  *      <path>, and git rev-list --count <merge base>..<side sha> -- <path> for "+K more"
  *   7. git remote -v (exact form), with --pr and no --base, and for the base-tip check below
@@ -39,8 +40,9 @@
  * `remote -v` and `ls-remote <remote> refs/heads/<branch>` (no name starting with -), and throws before
  * spawning for anything else. It drops GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE,
  * GIT_COMMON_DIR, GIT_OBJECT_DIRECTORY and GIT_ALTERNATE_OBJECT_DIRECTORIES from the inherited env (so -C
- * decides the repo), and sets GIT_TERMINAL_PROMPT=0 and GIT_LITERAL_PATHSPECS=1 (a path is never pathspec
- * magic). A --base or --head value or a remote name starting with - never reaches git. No gh write verb, no
+ * decides the repo), and sets GIT_TERMINAL_PROMPT=0, GIT_LITERAL_PATHSPECS=1 (a path is never pathspec
+ * magic) and GIT_NO_LAZY_FETCH=1 (no on-demand blob fetch in a partial clone; git 2.44+, so on older git
+ * "never fetches" holds in a full clone only). A --base or --head value or a remote name starting with - never reaches git. No gh write verb, no
  * `gh api -X/--method/-f/-F/--input`, no `gh api graphql`. Node built-ins only; argv arrays, no shell.
  *
  * Exit: 0 clean, 3 conflicts, 1 a read failed / a ref is missing / no remote names the repo, 2 usage.
@@ -86,19 +88,28 @@ function defaultGh(args) {
  *
  * @returns {{status: number, stdout: string, stderr: string}}
  */
+/** The env of every git call: the inherited env minus the repo-redirecting variables, plus the safety settings. */
+function gitEnv(extraEnv) {
+  const env = Object.assign({}, process.env);
+  for (const k of SCRUBBED_ENV) delete env[k];
+  env.GIT_TERMINAL_PROMPT = '0';
+  env.GIT_LITERAL_PATHSPECS = '1';
+  // In a partial (promisor) clone, merge-tree, log and rev-list would fetch missing blobs on demand; this turns
+  // that off (git 2.44 and later honour it; older git ignores it), so "never fetches" holds there too (review F2).
+  env.GIT_NO_LAZY_FETCH = '1';
+  for (const [k, v] of Object.entries(extraEnv || {})) {
+    if (!ALLOWED_EXTRA_ENV.has(k)) throw new Error(`base-conflicts refuses to set ${k} for git`);
+    env[k] = String(v);
+  }
+  return env;
+}
+
 function defaultGit(args, cwd, extraEnv) {
   const list = Array.isArray(args) ? args.map(String) : [];
   const remoteList = list.length === 2 && list[0] === 'remote' && list[1] === '-v';
   const lsRemote = list.length === 3 && list[0] === 'ls-remote' && REMOTE_NAME.test(list[1]) && /^refs\/heads\/[A-Za-z0-9._\/][A-Za-z0-9._\/-]*$/.test(list[2]) && !list[2].slice('refs/heads/'.length).startsWith('-');
   if (!remoteList && !lsRemote && !GIT_READ_VERBS.has(list[0])) throw new Error(`base-conflicts refuses git ${list.slice(0, 2).join(' ')}: read verbs only`);
-  const env = Object.assign({}, process.env);
-  for (const k of SCRUBBED_ENV) delete env[k];
-  env.GIT_TERMINAL_PROMPT = '0';
-  env.GIT_LITERAL_PATHSPECS = '1';
-  for (const [k, v] of Object.entries(extraEnv || {})) {
-    if (!ALLOWED_EXTRA_ENV.has(k)) throw new Error(`base-conflicts refuses to set ${k} for git`);
-    env[k] = String(v);
-  }
+  const env = gitEnv(extraEnv);
   const r = spawnSync('git', ['-C', String(cwd), ...list], { encoding: 'utf8', timeout: 120000, maxBuffer: MAX_BUFFER, env });
   if (r.error) throw r.error;
   return { status: r.status, stdout: String(r.stdout || ''), stderr: String(r.stderr || '') };
@@ -228,7 +239,8 @@ function resolve(o, cwd, deps = {}) {
   const counts = must(['rev-list', '--left-right', '--count', `${baseSha}...${headSha}`]).trim().split(/\s+/).map(Number);
   if (counts.length !== 2 || !counts.every(Number.isInteger)) throw new Error('rev-list --left-right --count reply is not two counts');
   const [behind, ahead] = counts;
-  // The trial merge writes its objects only to a per-run temp object dir (the repo's store is read as an alternate).
+  // The trial merge writes its new objects only to a per-run temp object dir (the repo's store is read as an
+  // alternate); git may still refresh the mtime of objects the repo already holds (review F1).
   const tmp = fs.mkdtempSync(path.join(deps.tmpdir || os.tmpdir(), 'base-conflicts-'));
   let mt;
   try {
@@ -326,7 +338,7 @@ function formatText(d) {
     const unlisted = d.conflicts.filter((c) => !c.listed).length;
     if (unlisted) lines.push(`  (per-path commits listed for the first ${MAX_PATHS_WITH_COMMITS} paths; ${unlisted} path(s) listed without commits)`);
   }
-  lines.push('  (read-only: the trial merge wrote only to a temp object dir, now removed; nothing fetched, checked out or written)');
+  lines.push('  (read-only: no new object, ref, index or worktree change; the trial merge wrote new objects only to a temp object dir, now removed, and may have refreshed the mtime of objects the repo already holds; nothing fetched)');
   return lines.join('\n');
 }
 
@@ -361,6 +373,6 @@ function runCli(argv, deps = {}) {
   return d.clean ? 0 : 3;
 }
 
-module.exports = { GIT_READ_VERBS, defaultGit, fetchHint, formatText, parseArgs, parseMergeTree, resolve, runCli };
+module.exports = { GIT_READ_VERBS, defaultGit, gitEnv, fetchHint, formatText, parseArgs, parseMergeTree, resolve, runCli };
 
 if (require.main === module) process.exitCode = runCli(process.argv.slice(2));

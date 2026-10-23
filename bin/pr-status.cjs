@@ -1291,6 +1291,8 @@ function bodyLines(b) {
   lines.push(
     `  body: shas ${counts} (compared against head ${clean(short(b.head, 9))}; base is the base sha GitHub last recorded for the PR, not the live base tip)`
   );
+  // review F6: say outright when the body never names the current head (a body written for an earlier head)
+  if (b.counts.head === 0) lines.push(`  body: no token names the head ${clean(short(b.head, 9))}`);
   for (const t of b.tokens) {
     if (t.cls === 'head' || t.cls === 'base') continue;
     const check = t.cls === 'unresolved' ? ' (may be an older base or an unrelated commit: check)' : '';
