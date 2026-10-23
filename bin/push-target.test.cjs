@@ -115,13 +115,14 @@ test('safety: the default git runner refuses every verb but the four reads, and 
     calls.push(args);
     if (args[0] === 'remote') return { status: 0, stdout: 'fork\thttps://github.com/davesienkowski/gsd-core.git (fetch)\n', stderr: '' };
     if (args[0] === 'ls-remote') return { status: 0, stdout: `${A}\trefs/heads/feat/5104-x\n`, stderr: '' };
-    if (args[0] === 'rev-parse') return { status: 0, stdout: B + '\n', stderr: '' };
+    if (args[0] === 'rev-parse') return { status: 0, stdout: (args[1] === '--abbrev-ref' ? 'feat/5104-x' : B) + '\n', stderr: '' };
     if (args[0] === 'merge-base') return { status: 128, stdout: '', stderr: 'fatal: Not a valid commit name' };
     throw new Error('unexpected ' + args.join(' '));
   };
   const d = pt.resolve('5119', 'open-gsd/gsd-core', '/nowhere', { gh: () => PULL(), git: fakeGit });
   assert.equal(d.verdict, 'unknown');
-  assert.deepEqual(calls, [['remote', '-v'], ['ls-remote', 'fork', 'refs/heads/feat/5104-x'], ['rev-parse', 'HEAD'], ['merge-base', '--is-ancestor', A, 'HEAD']]);
+  assert.deepEqual(calls, [['remote', '-v'], ['ls-remote', 'fork', 'refs/heads/feat/5104-x'], ['rev-parse', 'HEAD'], ['rev-parse', '--abbrev-ref', 'HEAD'], ['merge-base', '--is-ancestor', A, 'HEAD']]);
+  assert.equal(d.branchMatches, true);
 });
 
 function runCli(t, args, { pull, gitScript }) {
@@ -144,7 +145,7 @@ let a = process.argv.slice(2);
 if (a[0] === '-C') a = a.slice(2);
 fs.appendFileSync(${JSON.stringify(gitLog)}, JSON.stringify(a) + '\\n');
 const s = ${JSON.stringify(gitScript)};
-const key = a[0] === 'remote' && a[1] === '-v' ? 'remote' : a[0];
+const key = a[0] === 'remote' && a[1] === '-v' ? 'remote' : a[0] === 'rev-parse' && a[1] === '--abbrev-ref' ? 'branch' : a[0];
 if (!['remote', 'ls-remote', 'rev-parse', 'merge-base'].includes(a[0]) || !(key in s)) { fs.appendFileSync(${JSON.stringify(gitLog)}, 'REFUSED ' + JSON.stringify(a) + '\\n'); process.exitCode = 99; }
 else { const [code, out] = s[key]; process.stdout.write(out); process.exitCode = code; }
 `
@@ -171,6 +172,7 @@ const GIT_OK = {
   remote: [0, 'origin\thttps://github.com/open-gsd/gsd-core.git (fetch)\nfork\thttps://github.com/davesienkowski/gsd-core.git (fetch)\n'],
   'ls-remote': [0, `${A}\trefs/heads/feat/5104-x\n`],
   'rev-parse': [0, B + '\n'],
+  branch: [0, 'feat/5104-x\n'],
   'merge-base': [0, ''],
 };
 
@@ -183,7 +185,16 @@ test('end to end: one gh GET and the four git reads print the remote, the verdic
   assert.match(r.stdout, /^ {2}push: git push fork HEAD:feat\/5104-x$/m);
   assert.deepEqual(r.ghLog.map((l) => JSON.parse(l)), [['api', 'repos/open-gsd/gsd-core/pulls/5119']]);
   assert.ok(!r.gitLog.some((l) => l.startsWith('REFUSED')), r.gitLog.join(' | '));
-  assert.deepEqual(r.gitLog.map((l) => JSON.parse(l)[0]), ['remote', 'ls-remote', 'rev-parse', 'merge-base']);
+  assert.deepEqual(r.gitLog.map((l) => JSON.parse(l)[0]), ['remote', 'ls-remote', 'rev-parse', 'rev-parse', 'merge-base']);
+  assert.ok(!/local branch is/.test(r.stdout), 'no branch note when the branch matches');
+});
+
+test('end to end: a local branch other than head.ref (or a detached HEAD) prints a note before the command', (t) => {
+  for (const name of ['main', 'HEAD']) {
+    const r = runCli(t, ['5119'], { pull: PULL(), gitScript: { ...GIT_OK, branch: [0, name + '\n'], 'merge-base': [1, ''] } });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, new RegExp(`^ {2}note: the local branch is ${name}, not feat/5104-x: the command pushes HEAD, so confirm HEAD is this PR's work first$`, 'm'));
+  }
 });
 
 test('end to end: no matching remote exits 1 and lists the remotes; a bad --repo or two numbers exit 2 with no call', (t) => {
