@@ -1,0 +1,131 @@
+{
+  "provenance": {
+    "source": "synthetic from cr-5192-captured.json",
+    "edits": "one APPROVED review by alice on the head and one COMMENTED review by trek-e; alice requested once on the timeline; trek-e requested now; empty PR body",
+    "checksExit": 0,
+    "expected": {
+      "owner": "reviewer"
+    }
+  },
+  "view": {
+    "number": 900046,
+    "state": "OPEN",
+    "isDraft": false,
+    "author": {
+      "login": "davesienkowski"
+    },
+    "headRefOid": "5a5a046000000000000000000000000000000000",
+    "baseRefName": "next",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "BLOCKED",
+    "reviewDecision": "APPROVED",
+    "reviewRequests": [
+      {
+        "__typename": "User",
+        "login": "trek-e"
+      }
+    ],
+    "commits": [
+      {
+        "oid": "5a5a046000000000000000000000000000000000",
+        "committedDate": "2026-10-20T00:00:00Z",
+        "messageHeadline": "commit 1"
+      }
+    ],
+    "updatedAt": "2026-10-23T00:00:00Z"
+  },
+  "reviews": [
+    [
+      {
+        "id": 900046001,
+        "user": {
+          "login": "alice",
+          "type": "User"
+        },
+        "state": "APPROVED",
+        "submitted_at": "2026-10-21T10:00:00Z",
+        "commit_id": "5a5a046000000000000000000000000000000000",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/900046#pullrequestreview-900046001",
+        "body": ""
+      },
+      {
+        "id": 900046002,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "COMMENTED",
+        "submitted_at": "2026-10-21T11:00:00Z",
+        "commit_id": "5a5a046000000000000000000000000000000000",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/900046#pullrequestreview-900046002",
+        "body": "note"
+      }
+    ]
+  ],
+  "checks": [],
+  "timeline": [
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-20T10:00:00Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "alice"
+      }
+    },
+    {
+      "event": "reviewed",
+      "id": 900046001,
+      "user": {
+        "login": "alice",
+        "type": "User"
+      },
+      "state": "approved",
+      "submitted_at": "2026-10-21T10:00:00Z",
+      "commit_id": "5a5a046000000000000000000000000000000000",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/900046#pullrequestreview-900046001"
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-21T10:30:00Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "reviewed",
+      "id": 900046002,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "commented",
+      "submitted_at": "2026-10-21T11:00:00Z",
+      "commit_id": "5a5a046000000000000000000000000000000000",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/900046#pullrequestreview-900046002"
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-21T12:00:00Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    }
+  ],
+  "reviewComments": {},
+  "bodyView": {
+    "body": "",
+    "baseRefOid": "5a5a0b6000000000000000000000000000000000",
+    "changedFiles": 1
+  }
+}

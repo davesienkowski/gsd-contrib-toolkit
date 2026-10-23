@@ -15,6 +15,9 @@
  * issue-status reads (same quick) come from fixtures with an `issue` key: `gh api repos/O/R/issues/N` ->
  * fx.issue, its timeline as above, and `gh issue list --repo R --author A --state open --json number
  * --limit N` -> the open non-PR issue fixtures of that author, newest number first.
+ * The --cr and --body reads (quick 261023-2u4): `gh api ... repos/O/R/pulls/N/reviews/<id>/comments` (at
+ * servePrExtra below) and `gh pr view N ... --json body,baseRefOid,changedFiles` -> fx.bodyView (absent ->
+ * gh's not-found message, exit 1; provenance.bodyFail = stderr, exit 1). Every other `pr view` returns fx.view.
  */
 
 const fs = require('node:fs');
@@ -76,6 +79,9 @@ function serveQueue(apiPath, slurp) {
  *   repos/O/R/pulls/N/files[?...]      -> fx.files (default [])
  *   repos/O/R/compare/<a>...<b>        -> fx.compare["<a>...<b>"] from the fixture whose compare map has that key,
  *                                         else 404; provenance.compareFail = stderr, exit 1
+ *   repos/O/R/pulls/N/reviews/<id>/comments[?...] -> fx.reviewComments[<id>] (default []);
+ *                                         provenance.reviewCommentsFail = stderr, exit 1 (quick 261023-2u4; matched
+ *                                         here, before the reviews regex in main, which would refuse it)
  * With --slurp the body is wrapped in one page. Returns null for any other path.
  */
 function servePrExtra(apiPath, slurp, fixtures, issues) {
@@ -104,6 +110,12 @@ function servePrExtra(apiPath, slurp, fixtures, issues) {
     const fx = fixtures.get(m[1]);
     if (!fx) return fail('gh: Not Found (HTTP 404)');
     return out(fx.files || []);
+  }
+  if ((m = /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/reviews\/(\d+)\/comments$/.exec(p))) {
+    const fx = fixtures.get(m[1]);
+    if (!fx) return fail('gh: Not Found (HTTP 404)');
+    if (fx.provenance && fx.provenance.reviewCommentsFail) return fail(fx.provenance.reviewCommentsFail);
+    return out((fx.reviewComments && fx.reviewComments[m[2]]) || []);
   }
   if ((m = /^repos\/[^/]+\/[^/]+\/compare\/(.+)$/.exec(p))) {
     for (const fx of fixtures.values()) {
@@ -149,6 +161,16 @@ function main() {
     const n = argv[2];
     const fx = fixtures.get(n);
     if (!fx) return notFound(n);
+    if (argv[1] === 'view' && argv[argv.indexOf('--json') + 1] === 'body,baseRefOid,changedFiles') {
+      // The --body read (quick 261023-2u4): a separate view with only the body fields.
+      if (fx.provenance && fx.provenance.bodyFail) {
+        process.stderr.write(fx.provenance.bodyFail + '\n');
+        return done(1);
+      }
+      if (!fx.bodyView) return notFound(n);
+      process.stdout.write(JSON.stringify(fx.bodyView) + '\n');
+      return done(0);
+    }
     if (argv[1] === 'view') {
       process.stdout.write(JSON.stringify(fx.view) + '\n');
       return done(0);

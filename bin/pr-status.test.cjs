@@ -853,3 +853,249 @@ test('w9m overlap: a PR file list at the GitHub 3000-file cap marks the overlap 
   assert.equal(o.truncated, true);
   assert.equal(o.prTruncated, true);
 });
+
+// --- quick 261023-2u4: pr-status --cr (the latest change request's checklist, the activity since it, the re-request trace) ---
+
+const CR_FOOTER =
+  "With --cr or --body: the timeline, the chosen change request's inline comments and the body view are further separate reads, so the head can move between them; re-run before any write.";
+
+/** The lines of one PR block that start with one of the --cr prefixes, in print order. */
+function crBlock(stdout) {
+  return stdout.split('\n').filter((l) => /^ {2}(cr|checklist|inline|activity|rerequest)\b/.test(l) || l.startsWith('    [ ] '));
+}
+
+function noRefusal(r) {
+  assert.ok(!r.log.some((l) => l.startsWith('REFUSED')), `stub refused a call: ${r.log.filter((l) => l.startsWith('REFUSED')).join(' | ')}`);
+}
+
+/** The review body of one captured review, from the 5119/5192 fixtures. */
+function capturedBody(id) {
+  for (const f of ['cr-5119-captured.json', 'cr-5192-captured.json']) {
+    const r = loadFixture(f).reviews.flat().find((x) => String(x.id) === String(id));
+    if (r) return r.body;
+  }
+  throw new Error(`no captured review ${id}`);
+}
+
+test('2u4 cr: the 5119 capture chooses 5608091717, notes the dismissed 5622671659, prints 4 matching items, the activity since it and RE-REQUEST NEEDED', (t) => {
+  const r = runThroughStub(t, ['--cr', '900043']);
+  assert.equal(r.status, 0, r.stderr);
+  noRefusal(r);
+  const url = 'https://github.com/open-gsd/gsd-core/pull/5119';
+  const lines = crBlock(r.stdout);
+  const items = lines.filter((l) => l.startsWith('    [ ] '));
+  assert.deepEqual(items.map((l) => l.split(' ').slice(4, 7).join(' ')), ['[ ] Minor 1.', '[ ] Nit 2.', '[ ] Nit 3.', '[ ] Nit 4.']);
+  assert.ok(items[0].startsWith('    [ ] Minor 1. (adversarial, reproduced; severity is judgment) '), items[0]);
+  assert.equal(items[0].length, '    [ ] Minor '.length + 200, 'an item is cut to 200 characters after cleaning');
+  assert.equal(items[3], '    [ ] Nit 4. Carried Nit 5 (ADR-4629 guard-table refs `:606,564`): author declined; see Follow-ups.');
+  assert.deepEqual(
+    lines.filter((l) => !l.startsWith('    [ ] ')),
+    [
+      `  cr: review 5608091717 by trek-e on 8cea5f8 (older commit) 2026-10-22T01:07:53Z ${url}#pullrequestreview-5608091717`,
+      '  cr: note: newer review 5622671659 by trek-e was dismissed by trek-e 2026-10-23T00:55:59Z (originally CHANGES_REQUESTED); not counted',
+      '  checklist (4 items; matches the verdict counts 0 Blocker, 0 Major, 1 Minor, 3 Nit)',
+      '  inline: none',
+      '  activity: 25 commit(s) pushed, last 1830f52',
+      '  activity: force-pushed by davesienkowski to 1830f52',
+      `  activity: commented davesienkowski 2026-10-22T14:44:22Z ${url}#issuecomment-6343575001`,
+      '  activity: review requested by davesienkowski -> trek-e',
+      '  activity: reviewed trek-e DISMISSED review 5622671659 on 1830f52',
+      '  activity: review 5622671659 dismissed by trek-e',
+      '  activity: 1 commit(s) pushed, last f2aedc2',
+      `  activity: commented davesienkowski 2026-10-23T04:46:54Z ${url}#issuecomment-6357609343`,
+      '  rerequest: trek-e not requested; the 2026-10-22T14:44:36Z request by davesienkowski was consumed by review 5622671659 (DISMISSED) at 2026-10-23T00:50:25Z RE-REQUEST NEEDED',
+    ]
+  );
+  // The default block is unchanged around the --cr lines, and the R8 footer line follows the default footer.
+  assert.match(r.stdout, /^ {2}ball: REVIEWER owes a first review \(requests pending: Solvely-Colin, jeremymcs\)$/m);
+  assert.ok(r.stdout.endsWith(FOOTER_START + ' A change request answered without a new commit (retitle, comment) still reads as author owes unless the reviewer was re-requested: check the timeline.\n' + CR_FOOTER + '\n'), r.stdout.slice(-600));
+  const calls = r.log.map((l) => JSON.parse(l));
+  assert.equal(calls.filter((c) => c.includes('repos/open-gsd/gsd-core/issues/900043/timeline?per_page=100')).length, 1, 'one timeline read');
+  assert.deepEqual(
+    calls.filter((c) => c.some((a) => /\/comments/.test(a))),
+    [['api', '--paginate', '--slurp', 'repos/open-gsd/gsd-core/pulls/900043/reviews/5608091717/comments?per_page=100']],
+    'one inline-comments read, for the chosen review'
+  );
+  assert.ok(!calls.some((c) => c.includes('body,baseRefOid,changedFiles')), 'no body view without --body');
+});
+
+test('2u4 cr: the 5192 capture chooses 5563209291 with 13 items matching "Blocker 0, Major 1, Minor 7, Nit 5" and trek-e requested now', (t) => {
+  const r = runThroughStub(t, ['--cr', '900044']);
+  assert.equal(r.status, 0, r.stderr);
+  noRefusal(r);
+  const lines = crBlock(r.stdout);
+  assert.equal(lines[0], '  cr: review 5563209291 by trek-e on 35bf07e (older commit) 2026-10-18T13:37:59Z https://github.com/open-gsd/gsd-core/pull/5192#pullrequestreview-5563209291');
+  assert.equal(lines[1], '  checklist (13 items; matches the verdict counts Blocker 0, Major 1, Minor 7, Nit 5)');
+  const sev = lines.filter((l) => l.startsWith('    [ ] ')).map((l) => l.split(' ')[6]);
+  assert.deepEqual(sev, ['Major', ...Array(7).fill('Minor'), ...Array(5).fill('Nit')]);
+  assert.ok(lines.every(isPrintableAscii), 'the em dash in the bold labels prints as ?');
+  assert.ok(lines.includes('  activity: 27 commit(s) pushed, last aff15ba'), lines.join('\n'));
+  assert.equal(lines[lines.length - 1], '  rerequest: trek-e requested now (since 2026-10-23T04:47:18Z by davesienkowski)');
+});
+
+test('2u4 cr parser: the captured bodies give 6, 13, none (no heading), unparsed 7 vs 5, none (no items) and 6 with no counts', () => {
+  const p = (id) => prStatus.parseChecklist(capturedBody(id));
+  const a = p(5436531471);
+  assert.equal(a.status, 'matched');
+  assert.equal(a.items.length, 6);
+  assert.deepEqual(a.items.map((i) => i.severity), ['Minor', 'Minor', 'Minor', 'Nit', 'Nit', 'Nit']);
+  assert.equal(a.verdict.text, '0 Blocker, 0 Major, 3 Minor, 3 Nit');
+  const b = p(5477738387);
+  assert.equal(b.status, 'matched');
+  assert.equal(b.items.length, 13, 'bold **Major 1 ...** labels are items');
+  assert.deepEqual(b.items.map((i) => i.severity), ['Major', ...Array(6).fill('Minor'), ...Array(6).fill('Nit')]);
+  assert.equal(b.verdict.text, 'Blocker 0, Major 1, Minor 6, Nit 6');
+  const c = p(5512635344);
+  assert.equal(c.status, 'none');
+  assert.equal(c.reason, 'no Findings heading');
+  const d = p(5563197184);
+  assert.equal(d.status, 'unparsed');
+  assert.equal(d.structural, 7);
+  assert.equal(d.verdict.sum, 5);
+  assert.deepEqual(d.items, [], 'an unparsed checklist lists no items');
+  const e = p(5471174433);
+  assert.equal(e.status, 'none');
+  assert.equal(e.reason, 'the Findings section holds no recognised items', 'R2: M1/m1 prefixes are not item markers');
+  const f = p(5471157051);
+  assert.equal(f.status, 'nocounts', 'R1: a line naming only "Minor 1" twice is no verdict');
+  assert.equal(f.items.length, 6);
+});
+
+test('2u4 cr parser: R1 stops a line\'s count group at a repeated severity; severity words match case-insensitively with an optional plural', () => {
+  const body = [
+    '## FINDINGS',
+    '**MINORS**',
+    '- a',
+    '  - detail, indented, not an item',
+    '```',
+    '- inside a fence, not an item',
+    '```',
+    '### nits',
+    '* b',
+    '#### Notes',
+    '- c, a lower heading stays in the section',
+    '## Next',
+    '- d, after the section',
+    'Verdict: 1 minor, 2 NITS. The open items are Minor 1 and Nit 2 and Minor 3.',
+  ].join('\n');
+  const k = prStatus.parseChecklist(body);
+  assert.equal(k.status, 'matched', JSON.stringify(k));
+  assert.deepEqual(k.items.map((i) => [i.severity, i.text]), [['Minor', '- a'], ['Nit', '* b'], ['Nit', '- c, a lower heading stays in the section']]);
+  assert.equal(k.verdict.sum, 3);
+  assert.equal(k.verdict.text, '1 minor, 2 NITS');
+  const mismatch = prStatus.parseChecklist('### Findings\n1. one\n2. two\n\nChanges requested (0 Blocker, 0 Major, 1 Minor, 0 Nit).');
+  assert.equal(mismatch.status, 'unparsed');
+  assert.deepEqual([mismatch.structural, mismatch.verdict.sum], [2, 1]);
+});
+
+test('2u4 cr: the choice is stable on equal times (later-listed wins), excludes a Bot and the author; inline lines; activity strictly after; team wording', (t) => {
+  const r = runThroughStub(t, ['--cr', '900045']);
+  assert.equal(r.status, 0, r.stderr);
+  noRefusal(r);
+  const lines = crBlock(r.stdout);
+  assert.deepEqual(lines, [
+    '  cr: review 900045003 by bob on 5d5d045 (older commit) 2026-10-21T10:00:00Z https://github.com/open-gsd/gsd-core/pull/900045#pullrequestreview-900045003',
+    '  checklist (2 items; matches the verdict counts 0 Blocker, 0 Major, 1 Minor, 1 Nit)',
+    '    [ ] Minor 1. first minor finding',
+    '    [ ] Nit 2. a nit',
+    '  inline: bin/a.cjs:12 outdated anchor second line',
+    '  inline: bin/b.cjs:7 [31mred[0m caf? ' + 'y'.repeat(120 - '[31mred[0m caf? '.length),
+    '  activity: 1 commit(s) pushed, last 5c5c045',
+    '  activity: force-pushed by davesienkowski to 5a5a045',
+    '  activity: review requested by davesienkowski -> team core-maintainers',
+    '  activity: reviewed dependabot[bot] CHANGES_REQUESTED review 900045004 on 5a5a045',
+    '  activity: commented davesienkowski 2026-10-22T10:30:00Z https://github.com/open-gsd/gsd-core/pull/900045#issuecomment-900045901',
+    '  activity: reviewed davesienkowski CHANGES_REQUESTED review 900045005 on 5a5a045',
+    '  rerequest: alice not requested; never requested on the timeline re-request unknown (team core-maintainers requested; membership not resolved)',
+    '  rerequest: bob not requested; the 2026-10-19T09:00:01Z request by davesienkowski was consumed by review 900045003 (CHANGES_REQUESTED) at 2026-10-21T10:00:00Z re-request unknown (team core-maintainers requested; membership not resolved)',
+    '  rerequest: trek-e not requested; the 2026-10-20T12:00:00Z request by davesienkowski was removed by davesienkowski at 2026-10-20T13:00:00Z re-request unknown (team core-maintainers requested; membership not resolved)',
+  ]);
+  assert.ok(!r.stdout.includes('\u001b'), 'no ESC reaches the terminal');
+  assert.equal(r.log.filter((l) => l.includes('/reviews/900045003/comments')).length, 1);
+});
+
+test('2u4 cr: no change request prints cr: none, makes no inline read and still prints the re-request lines', (t) => {
+  const r = runThroughStub(t, ['--cr', '900046']);
+  assert.equal(r.status, 0, r.stderr);
+  noRefusal(r);
+  assert.deepEqual(crBlock(r.stdout), [
+    '  cr: none (no CHANGES_REQUESTED review by a non-bot non-author user)',
+    '  rerequest: alice not requested; the 2026-10-20T10:00:00Z request by davesienkowski was consumed by review 900046001 (APPROVED) at 2026-10-21T10:00:00Z',
+    '  rerequest: trek-e requested now (since 2026-10-21T12:00:00Z by davesienkowski)',
+  ]);
+  assert.ok(!r.log.some((l) => l.includes('/comments')), r.log.join(' | '));
+});
+
+test('2u4 cr: --reviewer limits the choice (login compared case-insensitively); a reviewer with no change request reads cr: none', (t) => {
+  const none = runThroughStub(t, ['--cr', '--reviewer', 'alice', '900043']);
+  assert.equal(none.status, 0, none.stderr);
+  assert.equal(crBlock(none.stdout)[0], '  cr: none (no CHANGES_REQUESTED review by a non-bot non-author user named alice)');
+  assert.ok(!none.log.some((l) => l.includes('/comments')));
+  assert.match(none.stdout, /^ {2}rerequest: trek-e not requested; .* RE-REQUEST NEEDED$/m);
+  const upper = runThroughStub(t, ['--cr', '--reviewer', 'TREK-E', '900043']);
+  assert.equal(crBlock(upper.stdout)[0].slice(0, 40), '  cr: review 5608091717 by trek-e on 8ce');
+  const alice = runThroughStub(t, ['--cr', '--reviewer', 'alice', '900045']);
+  assert.match(alice.stdout, /^ {2}cr: review 900045002 by alice /m, 'alice CR is chosen when only alice counts');
+});
+
+test('2u4 cr usage: --reviewer without --cr, or a value that is not a GitHub login, exits 2 with no gh call', (t) => {
+  for (const args of [['--reviewer', 'trek-e', '900043'], ['--cr', '--reviewer', 'not a login', '900043'], ['--cr', '--reviewer', '-x', '900043'], ['--cr', '--reviewer', 'a'.repeat(40), '900043'], ['--cr', '900043', '--reviewer']]) {
+    const r = runThroughStub(t, args);
+    assert.equal(r.status, 2, `${JSON.stringify(args)}: exit 2`);
+    assert.match(r.stderr, /usage: pr-status /);
+    assert.equal(r.log.length, 0, `${JSON.stringify(args)}: no gh call`);
+  }
+});
+
+test('2u4 cr: failed timeline and inline reads print unknown lines and the exit code stays 0', (t) => {
+  const r = runThroughStub(t, ['--cr', '900047']);
+  assert.equal(r.status, 0, r.stderr);
+  noRefusal(r);
+  assert.deepEqual(crBlock(r.stdout), [
+    '  cr: review 900047001 by trek-e on 5a5a047 (older commit) 2026-10-21T10:00:00Z https://github.com/open-gsd/gsd-core/pull/900047#pullrequestreview-900047001',
+    '  checklist (2 items; matches the verdict counts 0 Blocker, 0 Major, 1 Minor, 1 Nit)',
+    '    [ ] Minor 1. first minor finding',
+    '    [ ] Nit 2. a nit',
+    '  cr: inline unknown (read failed: gh: Server Error (HTTP 503))',
+    '  cr: activity and rerequest unknown (read failed: gh: Server Error (HTTP 502))',
+  ]);
+  assert.match(r.stdout, /^ {2}ball: REVIEWER trek-e owes a re-review/m, 'the PR block still prints');
+});
+
+test('2u4 cr: a change request with no Findings heading prints checklist: none with the url, and no activity reads none', (t) => {
+  const r = runThroughStub(t, ['--cr', '900049']);
+  assert.equal(r.status, 0, r.stderr);
+  const url = 'https://github.com/open-gsd/gsd-core/pull/900049#pullrequestreview-900049001';
+  assert.deepEqual(crBlock(r.stdout), [
+    `  cr: review 900049001 by trek-e on 5a5a049 (head) 2026-10-21T10:00:00Z ${url}`,
+    `  checklist: none (no Findings heading); read the review ${url}`,
+    '  inline: none',
+    '  activity: none since the change request',
+    '  rerequest: trek-e not requested; never requested on the timeline',
+  ]);
+});
+
+test('2u4 cr: --json carries cr (null without the flag) with the chosen review, the checklist, inline, activity and rerequest', (t) => {
+  const off = JSON.parse(runThroughStub(t, ['--json', '900043']).stdout)[0];
+  assert.equal(off.cr, null);
+  const [d] = JSON.parse(runThroughStub(t, ['--json', '--cr', '900043']).stdout);
+  assert.equal(d.cr.chosen.id, '5608091717');
+  assert.equal(d.cr.chosen.onHead, false);
+  assert.equal(d.cr.checklist.status, 'matched');
+  assert.equal(d.cr.checklist.items.length, 4);
+  assert.deepEqual(d.cr.inline, []);
+  assert.deepEqual(d.cr.activity[0], { kind: 'commits', count: 25, last: '1830f52109c5f3875b5709a8b0d9140cee7ee23f' });
+  assert.equal(d.cr.rerequest.length, 1);
+  assert.equal(d.cr.rerequest[0].needed, true);
+  assert.equal(d.cr.notes[0].id, '5622671659');
+});
+
+test('2u4 cr: without --cr and --body, no fixture triggers an inline-comments or body read, and the footer has no R8 line', (t) => {
+  const numbers = ALL_FIXTURES.map((f) => String(loadFixture(f).view.number)).filter((n) => n !== '900017');
+  const r = runThroughStub(t, numbers);
+  assert.equal(r.status, 0, r.stderr);
+  noRefusal(r);
+  assert.ok(!r.log.some((l) => l.includes('/comments') || l.includes('body,baseRefOid,changedFiles')), r.log.filter((l) => l.includes('comments')).join(' | '));
+  assert.ok(!r.stdout.includes(CR_FOOTER));
+  assert.ok(!/^ {2}(cr|checklist|inline|activity|rerequest)\b/m.test(r.stdout));
+});
