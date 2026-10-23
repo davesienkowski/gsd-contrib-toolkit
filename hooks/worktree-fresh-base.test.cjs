@@ -2410,7 +2410,7 @@ test('ENF-25 BL-02 e2e (fx2c): next mid-bisect in W, origin advanced -> deny; ne
 
 // ── MA-01: arm (fetch / move) only when origin parses as open-gsd/gsd-core ──
 
-for (const url of ['https://github.com/davesienkowski/gsd-core-experiments.git', 'git@github.com:someone/gsd-core.git', '/srv/other-origin.git', null]) {
+for (const url of ['https://github.com/davesienkowski/gsd-core-sandbox.git', 'git@github.com:someone/gsd-core.git', '/srv/other-origin.git', null]) {
   test('ENF-25 MA-01: origin ' + JSON.stringify(url) + ' is not open-gsd/gsd-core -> allow with ZERO fetch, symref, rev-parse and CAS', () => {
     const { deps, calls } = scenario({ originUrl: url });
     const d = runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps);
@@ -2463,7 +2463,7 @@ for (const url of [
 }
 
 test('F9 R4 guard: ENF-25 MA-01: a dot-segment FORK origin stays out of scope (zero fetch)', () => {
-  const { deps, calls } = scenario({ originUrl: 'https://github.com/x/../davesienkowski/gsd-core-experiments.git' });
+  const { deps, calls } = scenario({ originUrl: 'https://github.com/x/../davesienkowski/gsd-core-sandbox.git' });
   assert.strictEqual(runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps).permissionDecision, 'allow');
   assert.strictEqual(calls.fetchOrigin, 0);
 });

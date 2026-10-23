@@ -465,7 +465,7 @@ test('CF-05: echo hi && git log (read-only chain) → allow (must-still-allow)',
 //      fork, origin -> upstream, any other name throws (rule c). `F10: ` fails before the fix;
 //      `F10 guard: ` holds before and after. ----
 
-const F10_FORK = 'https://github.com/davesienkowski/gsd-core-experiments.git';
+const F10_FORK = 'https://github.com/davesienkowski/gsd-core-sandbox.git';
 const F10_UPSTREAM = 'https://github.com/open-gsd/gsd-core.git';
 
 /** Counted lookup world plus counted readers, in the armed (no-marker) state. */
@@ -659,7 +659,7 @@ test('F10 guard: `git commit -m x && git push backup y` -> deny (git commit is o
 // ---- quick-261007-rni F9 R4: R4 changes reach lint-ci-marker through classifyPushTarget.
 //      `F9 R4: ` fails before the R4 fix; `F9 R4 guard: ` holds both. ----
 {
-  const LIT = 'https://github.com/davesienkowski/gsd-core-experiments';
+  const LIT = 'https://github.com/davesienkowski/gsd-core-sandbox';
   for (const [cmd, map, kind] of [
     // ADVERSARIAL-R3 R3-A: remote."<literal URL>".pushurl = upstream (planted by an earlier call)
     ['git push ' + LIT + ' fix/x', { [LIT]: [F10_UPSTREAM] }, 'R4'],

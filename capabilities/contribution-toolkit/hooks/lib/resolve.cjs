@@ -791,7 +791,7 @@ const GSD_CORE_REPO = 'gsd-core';
  * lowercases before any comparison). Frozen: a future rename or transfer of gsd-core must be added
  * here (recorded residual); any other repo under the open-gsd org is handled by push-target's org rule.
  *
- * Evidence, 2026-10-08T03:59Z, read-only, run from /home/dave/repos/gsd-contrib-toolkit.
+ * Evidence, 2026-10-08T03:59Z, read-only, run from a gsd-contrib-toolkit checkout.
  * Candidates: gsd-core's package.json repository/homepage/bugs (all open-gsd/gsd-core), README /
  * CHANGELOG / docs / .github links and `git log -p` of package.json + README.md, which name
  * open-gsd/get-shit-done-redux, GSD-redux/get-shit-done-redux, gsd-build/get-shit-done and

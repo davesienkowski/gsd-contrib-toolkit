@@ -219,7 +219,7 @@ test('F10 guard: githooks-seal stays armed on a fork push (--no-verify and an un
     },
     resolvePushUrls: () => {
       calls.lookups += 1;
-      return ['https://github.com/davesienkowski/gsd-core-experiments.git'];
+      return ['https://github.com/davesienkowski/gsd-core-sandbox.git'];
     },
   };
   const a = runGithooksGate(input('git push --no-verify backup fix/x'), deps(lookups));

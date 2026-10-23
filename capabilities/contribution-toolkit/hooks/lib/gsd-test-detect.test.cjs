@@ -74,7 +74,7 @@ const VARIANTS = [
   ['time (detector-local peel)', 'time gsd-test'],
   ['time -p (detector-local peel)', 'time -p gsd-test'],
   ['FOO=1 nohup sudo (stacked)', 'FOO=1 nohup sudo gsd-test'],
-  ['absolute path', '/home/dave/.local/bin/gsd-test'],
+  ['absolute path', '/home/user/.local/bin/gsd-test'],
   ['relative path', './gsd-test'],
   ['quoted program', '"gsd-test" -head HEAD', (d) => assert.strictEqual(d.flags.head, 'HEAD')],
   ['bash -c', 'bash -c "gsd-test -head HEAD"', (d) => {
@@ -516,7 +516,7 @@ for (const cmd of WALKER_UNCERTAIN) {
 
 const UNCERTAIN_INPUTS = [
   'gsd-test --bench "x',
-  '/home/dave/.local/bin/gsd-test --bench "x',
+  '/home/user/.local/bin/gsd-test --bench "x',
   "env -S 'gsd-test --head HEAD'",
   `bash -c "bash -c 'bash -c gsd-test'"`,
   `bash -c 'gsd-test --head "x'`,

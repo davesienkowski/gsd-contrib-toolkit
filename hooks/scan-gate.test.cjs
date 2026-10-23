@@ -302,7 +302,7 @@ test('F10 guard: scan-gate stays armed on a fork push (`git push backup fix/x`, 
       },
       resolvePushUrls: () => {
         calls.lookups += 1;
-        return ['https://github.com/davesienkowski/gsd-core-experiments.git'];
+        return ['https://github.com/davesienkowski/gsd-core-sandbox.git'];
       },
     })
   );

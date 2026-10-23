@@ -9,8 +9,9 @@
  *
  *   1. the snippet is valid JSON in the harness `{hooks:{<event>:[{matcher,hooks:[...]}]}}` shape
  *   2. EVERY wired hook (the Phase-3 eight Bash gates + the Phase-4 lint-ci-marker + scan-gate,
- *      plus binlib-edit + protocol-reminder) appears exactly once, each command referencing
- *      its hooks/<name>.cjs by an ABSOLUTE path
+ *      plus binlib-edit + protocol-reminder) appears exactly once, each command running node
+ *      from PATH against its hooks/<name>.cjs by a double-quoted path that is either absolute
+ *      or rooted at a literal $HOME/ (the hook shell expands $HOME inside double quotes only)
  *   3. matchers are correct: Bash gates under "Bash", binlib-edit under "Write|Edit",
  *      protocol-reminder under "UserPromptSubmit", and the two-matcher gate worktree-fresh-base
  *      (ENF-25) under BOTH "Bash" and "EnterWorktree" (one registration each)
@@ -123,13 +124,45 @@ test('every entry has the harness {matcher, hooks:[{type:command, command, timeo
   }
 });
 
-test('each command runs node against an ABSOLUTE hooks/<name>.cjs path', () => {
+/**
+ * A wired hook path must not depend on the hook shell's cwd: it is either absolute, or rooted at
+ * the exact literal prefix $HOME/ (which the shell expands inside the double quotes the snippet
+ * uses). Near forms such as ${HOME}/, $HOMEX/, ~/ (not expanded inside quotes), other variables,
+ * and relative paths are rejected, so only the one form the snippet uses is accepted.
+ */
+function isRootedHookPath(p) {
+  return typeof p === 'string' && (path.isAbsolute(p) || p.startsWith('$HOME/'));
+}
+
+test('isRootedHookPath accepts absolute and literal-$HOME/ paths and rejects near forms', () => {
+  // Single-quoted literals on purpose: a template literal holding ${HOME} would interpolate.
+  const accepted = [
+    '/abs/hooks/a.cjs',
+    '$HOME/repos/gsd-contrib-toolkit/hooks/a.cjs',
+  ];
+  const rejected = [
+    '',
+    'hooks/a.cjs',
+    './hooks/a.cjs',
+    '../hooks/a.cjs',
+    '~/repos/x/hooks/a.cjs',
+    '${HOME}/repos/x/hooks/a.cjs',
+    '$HOMEX/hooks/a.cjs',
+    '$TOOLKIT/hooks/a.cjs',
+  ];
+  for (const p of accepted) assert.equal(isRootedHookPath(p), true, `accepts ${JSON.stringify(p)}`);
+  for (const p of rejected) assert.equal(isRootedHookPath(p), false, `rejects ${JSON.stringify(p)}`);
+});
+
+test('each command runs node against an absolute or $HOME-rooted hooks/<name>.cjs path', () => {
   const snip = loadSnippet();
   for (const { command } of allCommands(snip)) {
-    // shape: "<abs node>" "<abs ...>/hooks/<name>.cjs"
+    // shape: node "$HOME/<...>/hooks/<name>.cjs" (node from PATH; the path in DOUBLE quotes so
+    // the hook shell expands $HOME), or the older "<abs node>" "<abs ...>/hooks/<name>.cjs"
     const m = command.match(/"([^"]+\/hooks\/[a-z0-9-]+\.cjs)"/i);
     assert.ok(m, `command references a quoted hooks/*.cjs path: ${command}`);
-    assert.ok(path.isAbsolute(m[1]), `hook path is absolute: ${m[1]}`);
+    assert.ok(isRootedHookPath(m[1]),
+      `hook path must be absolute or rooted at a literal $HOME/: ${m[1]}`);
     assert.ok(/node(\.exe)?"?\s/i.test(command) || /\/node"/.test(command),
       `command invokes node: ${command}`);
   }

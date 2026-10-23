@@ -195,7 +195,7 @@ The toolkit taught the treadmill trek-e is retiring:
   before the first release that carries it. It is in no release tag (the latest is v2.7) and reached the
   published main on 2026-10-21 (origin/main at 3254623). No consumer was found via the paths searched:
   `git grep` of the toolkit (only `bin/pr-status.cjs`, its test and three fixtures), `grep -r` of
-  `~/repos` with `.git` and `node_modules` excluded (including dev-env and orca-gsd-plugin; only two
+  `~/repos` with `.git` and `node_modules` excluded (including the private dev-environment and Orca plugin repos; only two
   gsd-core-notes gate reports mention it), and `~/.claude/{skills,commands,hooks}` and `~/.gsd`. A
   consumer outside Dave's machine cannot be ruled out; it would now see the key absent rather than a
   wrong value. The queue object is now exactly `base`, `mode` and `ruleset` (`base`, `mode` and `error`

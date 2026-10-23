@@ -161,7 +161,7 @@ test('hasSentinel identity: the updated makeFixtureRoot fixture still resolves (
 // usually starts with `cd <worktree> && git commit`, so the effective cwd is the cd
 // target, not the hook's process.cwd().
 
-const BASE = '/home/dave/repos/gsd-core';
+const BASE = '/home/user/repos/gsd-core';
 
 test('commandStartDir: no cd → returns the base cwd', () => {
   const parsed = parseCommand('git commit -m "x"');
@@ -169,10 +169,10 @@ test('commandStartDir: no cd → returns the base cwd', () => {
 });
 
 test('commandStartDir: leading `cd <abs> && git` → returns the cd target', () => {
-  const parsed = parseCommand('cd /home/dave/repos/gsd-core-1549-pr-title && git commit -m "x"');
+  const parsed = parseCommand('cd /home/user/repos/gsd-core-1549-pr-title && git commit -m "x"');
   assert.strictEqual(
     res.commandStartDir(parsed, BASE),
-    '/home/dave/repos/gsd-core-1549-pr-title'
+    '/home/user/repos/gsd-core-1549-pr-title'
   );
 });
 
@@ -180,7 +180,7 @@ test('commandStartDir: relative cd resolves against the base cwd', () => {
   const parsed = parseCommand('cd ../gsd-core-1549-pr-title && git commit -m "x"');
   assert.strictEqual(
     res.commandStartDir(parsed, BASE),
-    '/home/dave/repos/gsd-core-1549-pr-title'
+    '/home/user/repos/gsd-core-1549-pr-title'
   );
 });
 
@@ -324,10 +324,10 @@ test('F3 guard (HOME reassignment): export HOME=/x && git -C "$HOME" commit keep
 });
 
 test('commandStartDir: multiple cd segments → the last one wins', () => {
-  const parsed = parseCommand('cd /tmp && cd /home/dave/repos/gsd-core-1549-pr-title && git commit');
+  const parsed = parseCommand('cd /tmp && cd /home/user/repos/gsd-core-1549-pr-title && git commit');
   assert.strictEqual(
     res.commandStartDir(parsed, BASE),
-    '/home/dave/repos/gsd-core-1549-pr-title'
+    '/home/user/repos/gsd-core-1549-pr-title'
   );
 });
 
@@ -348,23 +348,23 @@ test('commandStartDir: missing baseCwd → defaults to process.cwd()', () => {
 const FGC = { followGitC: true };
 
 test('commandStartDir: default FOLLOWS `git -C`', () => {
-  const parsed = parseCommand('git -C /home/dave/repos/gsd-handover push origin main');
-  assert.strictEqual(res.commandStartDir(parsed, BASE), '/home/dave/repos/gsd-handover');
+  const parsed = parseCommand('git -C /home/user/repos/gsd-handover push origin main');
+  assert.strictEqual(res.commandStartDir(parsed, BASE), '/home/user/repos/gsd-handover');
 });
 
 test('commandStartDir: {followGitC:false} opts OUT — resolves base (commit-convention over-deny)', () => {
-  const parsed = parseCommand('git -C /home/dave/repos/gsd-handover commit -m "x"');
+  const parsed = parseCommand('git -C /home/user/repos/gsd-handover commit -m "x"');
   assert.strictEqual(res.commandStartDir(parsed, BASE, { followGitC: false }), BASE);
 });
 
 test('commandStartDir(followGitC): `git -C <abs>` → returns the -C target', () => {
-  const parsed = parseCommand('git -C /home/dave/repos/gsd-handover push origin main');
-  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/dave/repos/gsd-handover');
+  const parsed = parseCommand('git -C /home/user/repos/gsd-handover push origin main');
+  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/user/repos/gsd-handover');
 });
 
 test('commandStartDir(followGitC): relative `git -C` resolves against the base cwd', () => {
   const parsed = parseCommand('git -C ../gsd-handover push');
-  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/dave/repos/gsd-handover');
+  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/user/repos/gsd-handover');
 });
 
 test('commandStartDir(followGitC): a SUBCOMMAND -C (git log -C) is NOT a chdir', () => {
@@ -373,18 +373,18 @@ test('commandStartDir(followGitC): a SUBCOMMAND -C (git log -C) is NOT a chdir',
 });
 
 test('commandStartDir(followGitC): a global -C before a subcommand -C uses only the global one', () => {
-  const parsed = parseCommand('git -C /home/dave/repos/gsd-handover log -C 50');
-  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/dave/repos/gsd-handover');
+  const parsed = parseCommand('git -C /home/user/repos/gsd-handover log -C 50');
+  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/user/repos/gsd-handover');
 });
 
 test('commandStartDir(followGitC): multiple global -C apply cumulatively', () => {
-  const parsed = parseCommand('git -C /home/dave/repos -C gsd-handover push');
-  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/dave/repos/gsd-handover');
+  const parsed = parseCommand('git -C /home/user/repos -C gsd-handover push');
+  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/user/repos/gsd-handover');
 });
 
 test('commandStartDir(followGitC): `git -c k=v -C <abs>` skips the -c value and follows -C', () => {
-  const parsed = parseCommand('git -c user.name=x -C /home/dave/repos/gsd-handover push');
-  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/dave/repos/gsd-handover');
+  const parsed = parseCommand('git -c user.name=x -C /home/user/repos/gsd-handover push');
+  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/user/repos/gsd-handover');
 });
 
 test('resolveRootForCommand(followGitC): `git -C <non-gsd-core>` from a gsd-core cwd → null', () => {
@@ -827,7 +827,9 @@ test('commandTargetsGsdCore: a -f title=x field token is NOT mistaken for an env
 });
 
 // --- Integration against the REAL gsd-core checkout when present ---
-const REAL_GSD_CORE = '/home/dave/repos/gsd-core';
+// Evaluated once at module load: the F3 tests change HOME inside their bodies, and os.homedir()
+// reads HOME at call time. GSD_CORE_ROOT overrides; without a checkout there the test skips.
+const REAL_GSD_CORE = process.env.GSD_CORE_ROOT || path.join(os.homedir(), 'repos', 'gsd-core');
 const hasRealCore =
   fs.existsSync(path.join(REAL_GSD_CORE, 'scripts')) &&
   fs.existsSync(path.join(REAL_GSD_CORE, 'gsd-core', 'bin', 'lib'));
@@ -1375,8 +1377,8 @@ test('F9 R3: UPSTREAM_ALIASES lists the two GitHub redirect names of open-gsd/gs
   }
 
   test('F9 R4: a dot-segment / escaped FORK URL parses as the fork (the server collapses it too)', () => {
-    assert.deepStrictEqual(res.parseOwnerRepo('https://github.com/x/../davesienkowski/gsd-core-experiments.git'),
-      { owner: 'davesienkowski', repo: 'gsd-core-experiments', host: 'github.com' });
+    assert.deepStrictEqual(res.parseOwnerRepo('https://github.com/x/../davesienkowski/gsd-core-sandbox.git'),
+      { owner: 'davesienkowski', repo: 'gsd-core-sandbox', host: 'github.com' });
     assert.deepStrictEqual(res.parseOwnerRepo('https://github.com/dave/gsd%2Dcore-fork.git'),
       { owner: 'dave', repo: 'gsd-core-fork', host: 'github.com' });
   });
@@ -1440,7 +1442,7 @@ test('F9 R3: UPSTREAM_ALIASES lists the two GitHub redirect names of open-gsd/gs
   for (const cmd of [
     'gh issue create --repo gsd-build/get-shit-done --title x --body y',
     'gh issue create --repo open-gsd/gsd-test-runner --title x --body y',
-    'gh issue create --repo davesienkowski/gsd-core-experiments --title x --body y',
+    'gh issue create --repo davesienkowski/gsd-core-sandbox --title x --body y',
   ]) {
     test('F9 R4 guard: `' + cmd + '` is still not upstream on the gh path (not an alias)', () => {
       const parsed = parseCommandForGates(cmd);

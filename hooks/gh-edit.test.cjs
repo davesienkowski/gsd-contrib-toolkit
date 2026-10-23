@@ -13,7 +13,7 @@ const assert = require('node:assert');
 
 const { runEditGate } = require('./gh-edit.cjs');
 
-// PORTABILITY (2026-07-30): these LIVE requires were hardcoded to `/home/dave/repos/gsd-core/...`,
+// PORTABILITY (2026-07-30): these LIVE requires were hardcoded to an absolute home path (`~/repos/gsd-core/...`),
 // so this file only ever loaded on one machine — CI surfaced it as `Cannot find module` on the
 // first run. Resolve the checkout the way the rest of the toolkit does (GSD_CORE_ROOT, then
 // ~/repos/gsd-core, then ~/gsd-core) and SKIP the whole LIVE-backed file when none is reachable.

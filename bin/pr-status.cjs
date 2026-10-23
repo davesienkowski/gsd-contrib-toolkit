@@ -6,7 +6,7 @@
  *
  * Why: the sweep (skills/maintainer-review-sweep) re-derived PR state and ball-in-court by hand from
  * prose ("re-fetch live state"), which is where stale-snapshot and wrong-ball mistakes came from
- * (collab audit 2026-10-07 rec 8; dev-env quick 261007-fnu). This prints that snapshot per PR:
+ * (collab audit 2026-10-07 rec 8; a dev-environment quick task, 261007-fnu). This prints that snapshot per PR:
  * head SHA, mergeable + mergeStateStatus, the current checks, every reviewer's latest state with the
  * commit it was on, the requested reviewers and one ball line.
  *

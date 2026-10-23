@@ -853,7 +853,7 @@ test('F9 R4: a pre-rename clone `git push origin fix/1-x` (origin = the GSD-redu
 });
 
 for (const url of [
-  'https://github.com/x/../davesienkowski/gsd-core-experiments.git',
+  'https://github.com/x/../davesienkowski/gsd-core-sandbox.git',
   'https://github.com/gsd-build/get-shit-done.git',
   'https://github.com/dave/gsd%2Dcore-fork.git',
 ]) {
@@ -866,7 +866,7 @@ for (const url of [
 // positive pins (backup = a fork remote)
 for (const cmd of ['git push backup fix/x', 'git push backup fix/x 2>&1 | tail -5', 'git -C /tmp/gsd-core push backup x']) {
   test('F9 R4 guard: pin `' + cmd + '` (backup = fork) -> allow', () => {
-    const d = runContainmentGate(input(cmd), deps({ remoteUrl: () => 'https://github.com/davesienkowski/gsd-core-experiments.git', currentBranch: () => 'fix/x' }));
+    const d = runContainmentGate(input(cmd), deps({ remoteUrl: () => 'https://github.com/davesienkowski/gsd-core-sandbox.git', currentBranch: () => 'fix/x' }));
     assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
   });
 }

@@ -31,8 +31,9 @@ retains atomic commits and `.planning`; handle worktrees; never leak `.planning`
 
 Twin git-dirs over one working tree, one bare planning repo, a branch per planning root.
 
-- Planning repo: `~/.gsd-planning.git` (bare), remote `planning` ->
-  `https://github.com/davesienkowski/gsd-core-planning.git` (private). NO origin/fork.
+- Planning repo: `~/.gsd-planning.git` (bare), remote `planning` -> a private GitHub repo set by
+  `GSD_PLAN_REMOTE` or `git config gsd.planRemote` (no built-in default; `init` refuses without
+  one). NO origin/fork.
 - Branch per root: main checkout -> `main`; each worktree with its own `.planning` ->
   `wt/<worktree-name>` (name = basename of the worktree git-dir, unique per repo); a worktree
   without local `.planning` remaps to `main`. Resolution mirrors GSD's own rule.

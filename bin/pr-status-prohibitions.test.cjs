@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * bin/pr-status-prohibitions.test.cjs — the two test-tier prohibitions of dev-env quick 261007-fnu, as
+ * bin/pr-status-prohibitions.test.cjs — the two test-tier prohibitions of a dev-environment quick task, 261007-fnu, as
  * SUBJECT-INJECTABLE negative tests (the gsd-core #1279 GSD_PROHIB_SUBJECT convention, as in
  * hooks/review-artifact-prohibitions.test.cjs).
  *
