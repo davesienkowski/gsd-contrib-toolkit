@@ -11,6 +11,7 @@
  * appends its argv as one JSON line to $PR_STATUS_STUB_LOG. Any other verb, and any -X / --method / -f /
  * -F / --field / --raw-field / --input / graphql argument, appends a REFUSED line and exits 99, so a test
  * can prove pr-status stays read-only. A number with no fixture exits 1 with gh's not-found message.
+ * The timeline, files and compare reads (quick 261022-w9m) are documented at servePrExtra below.
  */
 
 const fs = require('node:fs');
@@ -65,6 +66,48 @@ function serveQueue(apiPath, slurp) {
   return done(0);
 }
 
+/**
+ * The per-PR reads added by quick 261022-w9m, served from the PR's own fixture:
+ *   repos/O/R/issues/N/timeline[?...]  -> fx.timeline (default []); provenance.timelineFail = stderr, exit 1
+ *   repos/O/R/pulls/N/files[?...]      -> fx.files (default [])
+ *   repos/O/R/compare/<a>...<b>        -> fx.compare["<a>...<b>"] from the fixture whose compare map has that key,
+ *                                         else 404; provenance.compareFail = stderr, exit 1
+ * With --slurp the body is wrapped in one page. Returns null for any other path.
+ */
+function servePrExtra(apiPath, slurp, fixtures) {
+  const [p] = apiPath.split('?');
+  const out = (body) => {
+    process.stdout.write(JSON.stringify(slurp ? [body] : body) + '\n');
+    return done(0);
+  };
+  const fail = (msg) => {
+    process.stderr.write(msg + '\n');
+    return done(1);
+  };
+  let m;
+  if ((m = /^repos\/[^/]+\/[^/]+\/issues\/(\d+)\/timeline$/.exec(p))) {
+    const fx = fixtures.get(m[1]);
+    if (!fx) return fail('gh: Not Found (HTTP 404)');
+    if (fx.provenance && fx.provenance.timelineFail) return fail(fx.provenance.timelineFail);
+    return out(fx.timeline || []);
+  }
+  if ((m = /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/files$/.exec(p))) {
+    const fx = fixtures.get(m[1]);
+    if (!fx) return fail('gh: Not Found (HTTP 404)');
+    return out(fx.files || []);
+  }
+  if ((m = /^repos\/[^/]+\/[^/]+\/compare\/(.+)$/.exec(p))) {
+    for (const fx of fixtures.values()) {
+      if (fx.compare && Object.prototype.hasOwnProperty.call(fx.compare, m[1])) {
+        if (fx.provenance && fx.provenance.compareFail) return fail(fx.provenance.compareFail);
+        return out(fx.compare[m[1]]);
+      }
+    }
+    return fail('gh: Not Found (HTTP 404)');
+  }
+  return null;
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const log = process.env.PR_STATUS_STUB_LOG;
@@ -108,6 +151,8 @@ function main() {
     const apiPath = argv.find((a) => a.startsWith('repos/')) || '';
     const queue = serveQueue(apiPath, argv.includes('--slurp'));
     if (queue !== null) return queue;
+    const extra = servePrExtra(apiPath, argv.includes('--slurp'), fixtures);
+    if (extra !== null) return extra;
     const m = /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/reviews(\?.*)?$/.exec(apiPath);
     if (!m) return refuse('unknown-api-path');
     const fx = fixtures.get(m[1]);
