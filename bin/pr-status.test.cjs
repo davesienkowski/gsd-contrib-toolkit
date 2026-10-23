@@ -884,7 +884,7 @@ test('2u4 cr: the 5119 capture chooses 5608091717, notes the dismissed 562267165
   const url = 'https://github.com/open-gsd/gsd-core/pull/5119';
   const lines = crBlock(r.stdout);
   const items = lines.filter((l) => l.startsWith('    [ ] '));
-  assert.deepEqual(items.map((l) => l.split(' ').slice(4, 7).join(' ')), ['[ ] Minor 1.', '[ ] Nit 2.', '[ ] Nit 3.', '[ ] Nit 4.']);
+  assert.deepEqual(items.map((l) => l.split(' ').slice(4, 8).join(' ')), ['[ ] Minor 1.', '[ ] Nit 2.', '[ ] Nit 3.', '[ ] Nit 4.']);
   assert.ok(items[0].startsWith('    [ ] Minor 1. (adversarial, reproduced; severity is judgment) '), items[0]);
   assert.equal(items[0].length, '    [ ] Minor '.length + 200, 'an item is cut to 200 characters after cleaning');
   assert.equal(items[3], '    [ ] Nit 4. Carried Nit 5 (ADR-4629 guard-table refs `:606,564`): author declined; see Follow-ups.');
