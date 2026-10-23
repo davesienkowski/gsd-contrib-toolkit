@@ -16,7 +16,7 @@
  *   1. gh api "repos/R/pulls/N"                       (REST GET: head.repo.full_name, head.ref, head.sha)
  *   2. git -C <cwd> remote -v                          (fetch URLs only)
  *   3. git -C <cwd> ls-remote <remote> refs/heads/<ref>   (reads the remote; no fetch, no local ref change)
- *   4. git -C <cwd> rev-parse HEAD
+ *   4. git -C <cwd> rev-parse HEAD, and git -C <cwd> rev-parse --abbrev-ref HEAD (the local branch name)
  *   5. git -C <cwd> merge-base --is-ancestor <remote tip> HEAD   (only when the tips differ)
  * The git runner refuses any other git verb, so push, fetch and remote add are unreachable. No gh write
  * verb, no `gh api -X/--method/-f/-F/--input`, no `gh api graphql`.
@@ -31,6 +31,8 @@
  *   up to date | fast-forward -> plain push    | branch not on remote -> plain push (creates it)
  *   not a fast-forward        -> git push --force-with-lease=<ref>:<remote tip> <remote> HEAD:<ref>
  *   unknown (the remote tip is not in the local objects) -> both commands, and "fetch it first"
+ * When the local branch name differs from head.ref (another branch, or a detached HEAD) a note says so:
+ * the printed command pushes HEAD, so check that HEAD is the PR's work before running it, above all a lease.
  * A bare --force is never printed. The lease pins the tip read at run time, so a push made by anyone
  * after this read makes git refuse the forced push instead of overwriting it.
  *
@@ -112,7 +114,7 @@ function q(s) {
  * @param {{pr: object, remotes: {name: string, url: string}[], remoteTip: (string|null), localHead: string, ancestor: (boolean|null)}} input
  *   ancestor = remote tip is an ancestor of HEAD (null = unknown: the tip is not in the local objects)
  */
-function derive({ pr, remotes, remoteTip, localHead, ancestor }) {
+function derive({ pr, remotes, remoteTip, localHead, ancestor, localBranch }) {
   const head = (pr && pr.head) || {};
   const headRepo = head.repo && head.repo.full_name ? String(head.repo.full_name) : null;
   const ref = String(head.ref || '');
@@ -152,6 +154,8 @@ function derive({ pr, remotes, remoteTip, localHead, ancestor }) {
     localHead,
     verdict,
     githubHeadMatchesRemote: remoteTip ? remoteTip === base.githubHead : null,
+    localBranch: localBranch == null ? null : String(localBranch),
+    branchMatches: localBranch == null ? null : String(localBranch) === ref,
     commands,
   };
 }
@@ -174,6 +178,7 @@ function formatText(d) {
   const tip = d.remoteTip ? short(d.remoteTip) : '(branch absent)';
   lines.push(`  remote tip: ${clean(tip)}; local HEAD: ${clean(short(d.localHead))}; ${clean(d.verdict)}`);
   if (d.githubHeadMatchesRemote === false) lines.push(`  note: GitHub's PR head ${clean(short(d.githubHead))} differs from the remote tip (a push GitHub has not processed yet, or another remote)`);
+  if (d.branchMatches === false) lines.push(`  note: the local branch is ${clean(d.localBranch)}, not ${clean(d.ref)}: the command pushes HEAD, so confirm HEAD is this PR's work first`);
   if (d.verdict === 'unknown') lines.push(`  note: the remote tip is not in the local objects; run git fetch ${clean(d.remote)} ${clean(d.ref)} and re-run before choosing`);
   for (const c of d.commands) lines.push(`  push: ${clean(c)}`);
   lines.push('  (printed only; push-target never pushes)');
@@ -229,16 +234,18 @@ function resolve(number, repo, cwd, deps = {}) {
   let remoteTip = null;
   let localHead = '';
   let ancestor = null;
+  let localBranch = null;
   if (match) {
     if (!/^[A-Za-z0-9._\/-]+$/.test(ref) || ref.startsWith('-')) throw new Error(`head ref not usable: ${ref}`);
     remoteTip = parseLsRemote(must(['ls-remote', match.name, `refs/heads/${ref}`]), ref);
     localHead = must(['rev-parse', 'HEAD']).trim();
+    localBranch = must(['rev-parse', '--abbrev-ref', 'HEAD']).trim();
     if (remoteTip && remoteTip !== localHead) {
       const r = git(['merge-base', '--is-ancestor', remoteTip, 'HEAD'], cwd);
       ancestor = r.status === 0 ? true : r.status === 1 ? false : null; // 128: the tip is not in the local objects
     }
   }
-  return derive({ pr, remotes, remoteTip, localHead, ancestor });
+  return derive({ pr, remotes, remoteTip, localHead, ancestor, localBranch });
 }
 
 function runCli(argv, deps = {}) {
