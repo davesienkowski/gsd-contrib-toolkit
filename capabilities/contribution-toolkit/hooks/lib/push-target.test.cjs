@@ -26,8 +26,8 @@ const pt = require('./push-target.cjs');
 const { parseCommandForGates } = require('./argv.cjs');
 const { classifyAction } = require('./classify.cjs');
 
-const FORK = 'https://github.com/davesienkowski/gsd-core-experiments.git';
-const FORK_SCP = 'git@github.com:davesienkowski/gsd-core-experiments.git';
+const FORK = 'https://github.com/davesienkowski/gsd-core-sandbox.git';
+const FORK_SCP = 'git@github.com:davesienkowski/gsd-core-sandbox.git';
 const UPSTREAM = 'https://github.com/open-gsd/gsd-core.git';
 const TOOLKIT = 'https://github.com/davesienkowski/gsd-contrib-toolkit.git';
 
@@ -1055,7 +1055,7 @@ for (const u of ['https://github.com/open-gsd/gsd-core/x/..', 'https://github.co
 }
 
 test('F9 R4: a dot-segment fork literal is now a correct `other` (the server collapses the segments too)', () => {
-  assert.deepStrictEqual(classify('git push https://github.com/x/../davesienkowski/gsd-core-experiments.git x', {}).r, { target: 'other', unresolved: null });
+  assert.deepStrictEqual(classify('git push https://github.com/x/../davesienkowski/gsd-core-sandbox.git x', {}).r, { target: 'other', unresolved: null });
 });
 
 test('F9 R4 guard: a literal with a reserved escape (`%2F`) or a fragment stays rule c', () => {
@@ -1076,7 +1076,7 @@ test('F9 R4: a literal fork URL aliased by remote."<URL>".pushurl to upstream ->
 });
 
 test('F9 R4: the ADVERSARIAL-R3 R3-A shape (literal without `.git`, alias to upstream) -> gsd-core', () => {
-  const lit = 'https://github.com/davesienkowski/gsd-core-experiments';
+  const lit = 'https://github.com/davesienkowski/gsd-core-sandbox';
   const { r } = classify('git push ' + lit + ' fix/x', { lookup: (dir, name) => (name === lit ? ['https://github.com/open-gsd/gsd-core.git'] : defaultLookup(dir, name)) });
   assert.deepStrictEqual(r, { target: 'gsd-core', unresolved: null });
 });
@@ -1163,7 +1163,7 @@ test('F9 R4: resolvePushUrlsLive and classifyPushTarget against a hermetic repo 
     fs.mkdirSync(repo);
     git(repo, 'init', '-q');
     git(repo, 'remote', 'add', 'backup', FORK);
-    const ALIASED = 'https://github.com/davesienkowski/gsd-core-experiments';
+    const ALIASED = 'https://github.com/davesienkowski/gsd-core-sandbox';
     git(repo, 'config', 'remote.' + ALIASED + '.pushurl', UPSTREAM);
     assert.deepStrictEqual(pt.resolvePushUrlsLive(repo, ALIASED), [UPSTREAM]);
     let thrown = null;

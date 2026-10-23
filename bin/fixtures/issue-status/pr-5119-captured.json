@@ -1,7 +1,7 @@
 {
   "provenance": {
     "source": "captured open-gsd/gsd-core#5119 2026-10-23T03:24Z",
-    "edits": "none: the pr view (pr-status fields plus closingIssuesReferences, title, mergedAt, closedAt), reviews and checks as read",
+    "edits": "author email fields redacted to redacted@example.invalid; nothing else edited: the pr view (pr-status fields plus closingIssuesReferences, title, mergedAt, closedAt), reviews and checks as read",
     "checksExit": 0
   },
   "view": {
@@ -33,7 +33,7 @@
         "authoredDate": "2026-09-29T17:00:17Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -48,7 +48,7 @@
         "authoredDate": "2026-10-03T00:29:15Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -63,7 +63,7 @@
         "authoredDate": "2026-10-07T02:57:40Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -78,7 +78,7 @@
         "authoredDate": "2026-10-09T17:05:03Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -93,7 +93,7 @@
         "authoredDate": "2026-10-10T20:57:31Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -108,7 +108,7 @@
         "authoredDate": "2026-10-10T21:00:41Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -123,7 +123,7 @@
         "authoredDate": "2026-10-10T21:04:40Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -138,7 +138,7 @@
         "authoredDate": "2026-10-10T21:05:50Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -153,7 +153,7 @@
         "authoredDate": "2026-10-10T21:07:35Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -168,7 +168,7 @@
         "authoredDate": "2026-10-10T21:12:13Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -183,7 +183,7 @@
         "authoredDate": "2026-10-10T21:14:39Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -198,7 +198,7 @@
         "authoredDate": "2026-10-12T00:33:15Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -213,7 +213,7 @@
         "authoredDate": "2026-10-16T06:06:58Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -228,7 +228,7 @@
         "authoredDate": "2026-10-16T06:07:08Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -243,7 +243,7 @@
         "authoredDate": "2026-10-16T06:12:05Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -258,7 +258,7 @@
         "authoredDate": "2026-10-16T14:10:18Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -273,7 +273,7 @@
         "authoredDate": "2026-10-18T00:53:33Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -288,7 +288,7 @@
         "authoredDate": "2026-10-21T18:27:46Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -303,7 +303,7 @@
         "authoredDate": "2026-10-21T18:52:18Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -318,7 +318,7 @@
         "authoredDate": "2026-10-22T06:49:22Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -333,7 +333,7 @@
         "authoredDate": "2026-10-22T06:49:29Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -348,7 +348,7 @@
         "authoredDate": "2026-10-22T07:13:47Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -363,7 +363,7 @@
         "authoredDate": "2026-10-22T07:59:20Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -378,7 +378,7 @@
         "authoredDate": "2026-10-22T08:32:41Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"
@@ -393,7 +393,7 @@
         "authoredDate": "2026-10-22T14:08:45Z",
         "authors": [
           {
-            "email": "dave@sienkowski.com",
+            "email": "redacted@example.invalid",
             "id": "MDQ6VXNlcjMwMzc3NTk=",
             "login": "davesienkowski",
             "name": "Dave"

@@ -30,7 +30,7 @@ const B = 'b'.repeat(40);
 const PULL = (over = {}) =>
   Object.assign({ number: 5119, state: 'open', maintainer_can_modify: true, head: { repo: { full_name: 'davesienkowski/gsd-core' }, ref: 'feat/5104-x', sha: A } }, over);
 const REMOTES = [
-  { name: 'backup', url: 'https://github.com/davesienkowski/gsd-core-experiments.git', pushUrls: ['https://github.com/davesienkowski/gsd-core-experiments.git'] },
+  { name: 'backup', url: 'https://github.com/davesienkowski/gsd-core-sandbox.git', pushUrls: ['https://github.com/davesienkowski/gsd-core-sandbox.git'] },
   { name: 'fork', url: 'https://github.com/davesienkowski/gsd-core.git', pushUrls: ['https://github.com/davesienkowski/gsd-core.git'] },
   { name: 'origin', url: 'https://github.com/open-gsd/gsd-core.git', pushUrls: ['https://github.com/open-gsd/gsd-core.git'] },
 ];
@@ -50,10 +50,10 @@ test('parseRemoteUrl: https, ssh and scp forms, .git, trailing slash and case al
     assert.equal(pt.parseRemoteUrl(u), 'davesienkowski/gsd-core', u);
   }
   // look-alikes and non-GitHub hosts do not match
-  assert.equal(pt.parseRemoteUrl('https://github.com/davesienkowski/gsd-core-experiments.git'), 'davesienkowski/gsd-core-experiments');
+  assert.equal(pt.parseRemoteUrl('https://github.com/davesienkowski/gsd-core-sandbox.git'), 'davesienkowski/gsd-core-sandbox');
   assert.equal(pt.parseRemoteUrl('https://gitlab.com/davesienkowski/gsd-core.git'), null);
   assert.equal(pt.parseRemoteUrl('git@github-work:davesienkowski/gsd-core.git'), null, 'an ssh host alias is not resolved');
-  assert.equal(pt.parseRemoteUrl('/home/dave/repos/gsd-core'), null);
+  assert.equal(pt.parseRemoteUrl('/home/user/repos/gsd-core'), null);
   assert.equal(pt.parseRemoteUrl('https://github.com/davesienkowski/gsd-core/extra'), null);
 });
 

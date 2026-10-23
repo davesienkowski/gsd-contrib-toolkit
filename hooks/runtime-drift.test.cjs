@@ -383,7 +383,7 @@ for (const cmd of [
 // ───────────── quick-261007-rni F9: key a git push on its push TARGET (Revision 1 four-way rule) ─────────────
 //
 // Observed 2026-10-07: `git push backup fix/x` from a gsd-core session (backup = the
-// davesienkowski/gsd-core-experiments fork) was blocked as a push to open-gsd/gsd-core. Per segment:
+// davesienkowski/gsd-core-sandbox fork) was blocked as a push to open-gsd/gsd-core. Per segment:
 // (a) an open-gsd/gsd-core target URL arms from any dir; (b) every target URL another repo, with no
 // push-redirect channel, does not arm; (c) an unresolvable, indeterminate or redirected target keeps
 // the pre-F9 cwd rule and the deny says why; (d) no repository keeps the pre-F9 cwd rule. gh's
@@ -397,7 +397,7 @@ for (const cmd of [
   const path = require('node:path');
   const { pushSegmentDirs, resolveRootForCommand } = require('./lib/resolve.cjs');
 
-  const FORK = 'https://github.com/davesienkowski/gsd-core-experiments.git';
+  const FORK = 'https://github.com/davesienkowski/gsd-core-sandbox.git';
   const UPSTREAM = 'https://github.com/open-gsd/gsd-core.git';
   const TOOLKIT = 'https://github.com/davesienkowski/gsd-contrib-toolkit.git';
   const REMOTES = { backup: [FORK], origin: [UPSTREAM] };
@@ -483,12 +483,12 @@ for (const cmd of [
   // F9 R4 (item 2) FLIPPED the lookup count 0 -> 1: a literal is first looked up as a remote NAME
   // (git exits 2, "No such remote", so the literal itself is classified).
   test('F9: the literal fork scp URL from a gsd-core cwd -> allow after one remote-name lookup', () => {
-    const cmd = 'git push git@github.com:davesienkowski/gsd-core-experiments.git x';
+    const cmd = 'git push git@github.com:davesienkowski/gsd-core-sandbox.git x';
     const lookup = lookupMap(REMOTES);
     const { deps, calls } = f9World({ resolvePushUrls: lookup });
     assertAllow(runRuntimeDriftGate(input(cmd), deps), calls, cmd);
     assert.strictEqual(calls.resolvePushUrls, 1);
-    assert.deepStrictEqual(lookup.log.map((e) => e[1]), ['git@github.com:davesienkowski/gsd-core-experiments.git']);
+    assert.deepStrictEqual(lookup.log.map((e) => e[1]), ['git@github.com:davesienkowski/gsd-core-sandbox.git']);
   });
 
   test('F9: `git -C <A> push backup x` from base B looks backup up in A only -> allow', () => {
@@ -1069,7 +1069,7 @@ for (const cmd of [
     const DOTP = 'https://github.com/x/../open-gsd/gsd-core.git';
     const DOT1 = 'https://github.com/./open-gsd/gsd-core.git';
     const PCTP = 'https://github.com/%6Fpen-gsd/gsd-core.git';
-    const LIT = 'https://github.com/davesienkowski/gsd-core-experiments';
+    const LIT = 'https://github.com/davesienkowski/gsd-core-sandbox';
     // [label, command, lookup map, decision when the command runs from a non-gsd-core cwd, R4 or guard]
     const R4_ROWS = [
       // REVIEW-R3 CR-01: dot segments (ENF-21 denied these here already; rule a now arms everywhere)
@@ -1131,7 +1131,7 @@ for (const cmd of [
       'git push backup fix/x',
       'git push backup fix/x 2>&1 | tail -5',
       'git -C ' + FIX + ' push backup x',
-      'git push git@github.com:davesienkowski/gsd-core-experiments.git x',
+      'git push git@github.com:davesienkowski/gsd-core-sandbox.git x',
       'cd ./sub && git push backup x',
       'git -C docs push backup x',
     ]) {

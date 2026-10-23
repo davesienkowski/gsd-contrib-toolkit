@@ -66,7 +66,7 @@ function deps(over = {}) {
     {
       env: {},
       now: () => '2026-07-29T12:00:00.000Z',
-      cwd: () => '/home/dave/repos/gsd-core',
+      cwd: () => '/home/user/repos/gsd-core',
     },
     over
   );
@@ -81,7 +81,7 @@ function post(over = {}) {
         session_id: 'sess-abc',
         tool_use_id: 'toolu_01',
         tool_name: 'Read',
-        cwd: '/home/dave/repos/gsd-core',
+        cwd: '/home/user/repos/gsd-core',
         duration_ms: 42,
         tool_input: { file_path: '/etc/hosts' },
         tool_response: { file: { numLines: 12 } },
@@ -100,7 +100,7 @@ function fail(over = {}) {
         session_id: 'sess-abc',
         tool_use_id: 'toolu_02',
         tool_name: 'Bash',
-        cwd: '/home/dave/repos/gsd-core',
+        cwd: '/home/user/repos/gsd-core',
         duration_ms: 7,
         is_interrupt: false,
         tool_input: { command: 'ls /nope' },
@@ -120,7 +120,7 @@ test('a PostToolUse payload records outcome "ok"', () => {
   assert.strictEqual(rec.session_id, 'sess-abc');
   assert.strictEqual(rec.tool_use_id, 'toolu_01');
   assert.strictEqual(rec.duration_ms, 42);
-  assert.strictEqual(rec.cwd, '/home/dave/repos/gsd-core');
+  assert.strictEqual(rec.cwd, '/home/user/repos/gsd-core');
   assert.strictEqual(rec.ts, '2026-07-29T12:00:00.000Z');
   assert.ok(!('error_kind' in rec), 'a success carries no error_kind');
 });
@@ -270,7 +270,7 @@ test('errorKind keeps a class token and refuses anything path/token/secret-shape
   assert.strictEqual(errorKind({ code: 'ENOENT', message: 'nope' }), 'ENOENT');
   assert.strictEqual(errorKind({ name: 'AbortError' }), 'AbortError');
   // A leading token that is a path, a URL, an assignment or an opaque blob is DROPPED.
-  assert.strictEqual(errorKind('/home/dave/secret/path failed'), null);
+  assert.strictEqual(errorKind('/home/user/secret/path failed'), null);
   assert.strictEqual(errorKind('https://api.github.com/x 404'), null);
   assert.strictEqual(errorKind('TOKEN=ghp_abcdefghijklmnopqrst nope'), null);
   assert.strictEqual(errorKind('ghp_abcdefghijklmnopqrstuvwx'), null);

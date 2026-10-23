@@ -15,7 +15,7 @@ const { runIssueGate } = require('./gh-issue-create.cjs');
 
 // The REAL live export shape, re-stated as a stub so the unit suite is hermetic:
 // evaluateVersionGate({labels, body}) -> {action:'skip'|'close', reason}.
-// PORTABILITY (2026-07-30): these LIVE requires were hardcoded to `/home/dave/repos/gsd-core/...`,
+// PORTABILITY (2026-07-30): these LIVE requires were hardcoded to an absolute home path (`~/repos/gsd-core/...`),
 // so this file only ever loaded on one machine — CI surfaced it as `Cannot find module` on the
 // first run. Resolve the checkout the way the rest of the toolkit does (GSD_CORE_ROOT, then
 // ~/repos/gsd-core, then ~/gsd-core) and SKIP the whole LIVE-backed file when none is reachable.

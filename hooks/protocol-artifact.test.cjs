@@ -967,7 +967,7 @@ test('a scaffold-write failure degrades to a plain deny, never to an allow', () 
 //    repo. Armed branch fix/1234-slug; backup -> the experiments fork, origin -> upstream, any
 //    other name throws (rule c). `F10: ` fails before the fix; `F10 guard: ` holds both ways. ──
 
-const F10_FORK = 'https://github.com/davesienkowski/gsd-core-experiments.git';
+const F10_FORK = 'https://github.com/davesienkowski/gsd-core-sandbox.git';
 const F10_UPSTREAM = 'https://github.com/open-gsd/gsd-core.git';
 const F10_DIR = '.gsd/contrib/fix-1234-slug/';
 
@@ -1121,7 +1121,7 @@ test('F10 guard: `git push backup x && gh issue create --repo open-gsd/gsd-core 
 // ── quick-261007-rni F9 R4: R4 changes reach protocol-artifact through classifyPushTarget.
 //    `F9 R4: ` fails before the R4 fix; `F9 R4 guard: ` holds both. ──
 {
-  const LIT = 'https://github.com/davesienkowski/gsd-core-experiments';
+  const LIT = 'https://github.com/davesienkowski/gsd-core-sandbox';
   for (const [cmd, map, kind] of [
     ['git push ' + LIT + ' fix/1234-slug', { [LIT]: [F10_UPSTREAM] }, 'R4'],
     ['git push ' + LIT + ' fix/1234-slug 2>&1 | tail -5', { [LIT]: [F10_UPSTREAM] }, 'R4'],
