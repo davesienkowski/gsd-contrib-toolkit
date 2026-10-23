@@ -99,7 +99,7 @@ const PR_FILE_CAP = 3000; // GitHub's pulls/N/files lists at most 3000 files
 const BRANCH_PATTERN = /^[A-Za-z0-9._/-]+$/;
 const MAX_MESSAGE = 300; // a dismissal message is printed on one line, cut at this length
 
-/** The three read-only argv arrays for one PR. */
+/** The read-only argv arrays for one PR (view, reviews, checks, and the timeline read only for a dismissed review). */
 function ghArgs(number, repo) {
   return {
     view: ['pr', 'view', String(number), '--repo', repo, '--json', VIEW_FIELDS],
