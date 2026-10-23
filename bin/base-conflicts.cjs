@@ -11,7 +11,7 @@
  * rebases or writes a ref, the index or a worktree: a missing base ref is reported with the fetch command
  * for Dave to run.
  *
- *   node bin/base-conflicts.cjs [--json] [--cwd <checkout>] [--base <ref>] [--head <ref>] [--repo owner/name --pr <n>]
+ *   node bin/base-conflicts.cjs [--json] [--offline] [--cwd <checkout>] [--base <ref>] [--head <ref>] [--repo owner/name --pr <n>]
  *
  * CONTRACT - read-only. Git reads, all as `git -C <cwd>` (default: the process cwd):
  *   1. git rev-parse --path-format=absolute --git-common-dir      (where the repo's objects live)
@@ -26,12 +26,18 @@
  *      is not written; -z reads a path with a quote, backslash, newline or non-ASCII byte verbatim (R7)
  *   6. per conflicting path (the first 50) and side: git log -n 10 --format=%h %s <merge base>..<side sha> --
  *      <path>, and git rev-list --count <merge base>..<side sha> -- <path> for "+K more"
- *   7. git remote -v (exact form), only with --pr and no --base
+ *   7. git remote -v (exact form), with --pr and no --base, and for the base-tip check below
+ *   8. git ls-remote <remote> refs/heads/<branch>   (exact form; reads the remote, changes no local ref) when the
+ *      base ref is <remote>/<branch> for a configured remote and --offline is not given: the remote's tip is
+ *      compared with the local base sha, and a local base that is not the remote tip is named with the fetch
+ *      for Dave (the conflict answer is for the local base). --offline skips it. (round 3 review: a stale
+ *      local origin/next read "clean" with no hint that next had moved)
  * plus, only with --pr, ONE gh read: gh api "repos/R/pulls/N" (REST GET: base.ref and head.sha), to default the
  * base to <remote>/<base.ref> for the first remote (in `git remote -v` order) whose fetch URL names R, and to
  * warn when the head is not the PR's head sha or the base ref names another branch.
- * The default git runner allows only rev-parse, merge-base, merge-tree, log, rev-list and the exact argv
- * `remote -v`, and throws before spawning for anything else. It drops GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE,
+ * The default git runner allows only rev-parse, merge-base, merge-tree, log, rev-list, the exact argv
+ * `remote -v` and `ls-remote <remote> refs/heads/<branch>` (no name starting with -), and throws before
+ * spawning for anything else. It drops GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE,
  * GIT_COMMON_DIR, GIT_OBJECT_DIRECTORY and GIT_ALTERNATE_OBJECT_DIRECTORIES from the inherited env (so -C
  * decides the repo), and sets GIT_TERMINAL_PROMPT=0 and GIT_LITERAL_PATHSPECS=1 (a path is never pathspec
  * magic). A --base or --head value or a remote name starting with - never reaches git. No gh write verb, no
@@ -63,7 +69,7 @@ const MAX_COMMITS = 10; // per path and side
 const MAX_PATHS_WITH_COMMITS = 50; // per-path commit lists for the first 50 paths only (T-2u4-06)
 const MAX_BUFFER = 64 * 1024 * 1024;
 const USAGE =
-  'usage: base-conflicts [--json] [--cwd <checkout>] [--base <ref>] [--head <ref>] [--repo owner/name --pr <n>]  (default base ' +
+  'usage: base-conflicts [--json] [--offline] [--cwd <checkout>] [--base <ref>] [--head <ref>] [--repo owner/name --pr <n>]  (default base ' +
   DEFAULT_BASE +
   ', or <remote>/<PR base> with --pr; default head HEAD; default repo ' +
   DEFAULT_REPO +
@@ -83,7 +89,8 @@ function defaultGh(args) {
 function defaultGit(args, cwd, extraEnv) {
   const list = Array.isArray(args) ? args.map(String) : [];
   const remoteList = list.length === 2 && list[0] === 'remote' && list[1] === '-v';
-  if (!remoteList && !GIT_READ_VERBS.has(list[0])) throw new Error(`base-conflicts refuses git ${list.slice(0, 2).join(' ')}: read verbs only`);
+  const lsRemote = list.length === 3 && list[0] === 'ls-remote' && REMOTE_NAME.test(list[1]) && /^refs\/heads\/[A-Za-z0-9._\/][A-Za-z0-9._\/-]*$/.test(list[2]) && !list[2].slice('refs/heads/'.length).startsWith('-');
+  if (!remoteList && !lsRemote && !GIT_READ_VERBS.has(list[0])) throw new Error(`base-conflicts refuses git ${list.slice(0, 2).join(' ')}: read verbs only`);
   const env = Object.assign({}, process.env);
   for (const k of SCRUBBED_ENV) delete env[k];
   env.GIT_TERMINAL_PROMPT = '0';
@@ -122,13 +129,14 @@ function fetchHint(ref) {
 
 /** Parse argv into options, { help } or { usageError }. */
 function parseArgs(argv) {
-  const o = { json: false, cwd: null, base: null, head: null, repo: DEFAULT_REPO, repoGiven: false, pr: null };
+  const o = { json: false, offline: false, cwd: null, base: null, head: null, repo: DEFAULT_REPO, repoGiven: false, pr: null };
   const list = Array.isArray(argv) ? argv.map(String) : [];
   if (list.some((a) => a === '--help' || a === '-h')) return { help: true };
   for (let i = 0; i < list.length; i += 1) {
     const a = list[i];
     const value = (name) => (a === name ? list[++i] : a.slice(name.length + 1));
     if (a === '--json') o.json = true;
+    else if (a === '--offline') o.offline = true;
     else if (a === '--cwd' || a.startsWith('--cwd=')) {
       const v = value('--cwd');
       if (v == null || v === '') return { usageError: 'bad --cwd value' };
@@ -204,8 +212,13 @@ function resolve(o, cwd, deps = {}) {
   if (!baseSha) return { pr, warnings, missing: { which: 'base', ref: baseRef, first: hint || fetchHint(baseRef) } };
   const headSha = sha(headRef);
   if (!headSha) return { pr, warnings, base: { ref: baseRef, sha: baseSha }, missing: { which: 'head', ref: headRef, first: null } };
+  const baseTip = checkBaseTip(baseRef, baseSha, o.offline, must, git, cwd);
+  if (baseTip.checked && baseTip.gone) warnings.push(`the remote ${baseTip.remote} has no branch ${baseTip.branch}: this answer is for the local base ${baseRef}`);
+  else if (baseTip.checked && !baseTip.current) {
+    warnings.push(`the local base ${baseRef} (${baseSha.slice(0, 9)}) is not the remote tip ${baseTip.tip.slice(0, 9)}: this answer is for the local base; first: git fetch ${baseTip.remote} ${baseTip.branch}`);
+  }
   if (pr && pr.head && lower(pr.head) !== headSha) warnings.push(`the head ${headRef} (${headSha.slice(0, 9)}) is not the PR's head ${pr.head.slice(0, 9)}: the answer is for the local head`);
-  const out = { pr, warnings, base: { ref: baseRef, sha: baseSha }, head: { ref: headRef, sha: headSha } };
+  const out = { pr, warnings, base: { ref: baseRef, sha: baseSha }, baseTip, head: { ref: headRef, sha: headSha } };
   const mbRun = git(['merge-base', baseSha, headSha], cwd);
   const mergeBase = String(mbRun.stdout || '').trim();
   if (mbRun.status !== 0 || !/^[0-9a-f]{40}$/.test(mergeBase)) {
@@ -247,6 +260,29 @@ function resolve(o, cwd, deps = {}) {
   return { ...out, mergeBase, ahead, behind, clean: mt.status === 0, conflicts };
 }
 
+/**
+ * The base-tip check (round 3 review): for a base ref <remote>/<branch> of a configured remote, read the remote's
+ * branch tip with `git ls-remote` (no fetch, no local ref change) and compare it with the local base sha.
+ * Returns { checked: false, reason } when not applicable or --offline, { checked: false, error } when ls-remote
+ * fails, else { checked: true, remote, branch, tip, current } (gone: true when the remote has no such branch).
+ */
+function checkBaseTip(baseRef, baseSha, offline, must, git, cwd) {
+  const at = String(baseRef).indexOf('/');
+  const remote = at > 0 ? baseRef.slice(0, at) : '';
+  const branch = at > 0 ? baseRef.slice(at + 1) : '';
+  const notRemote = { checked: false, reason: `${baseRef} is not <remote>/<branch> of a configured remote` };
+  if (!REMOTE_NAME.test(remote) || !BRANCH_PATTERN.test(branch) || branch.startsWith('-')) return notRemote;
+  if (offline) return { checked: false, reason: '--offline' };
+  if (!parseRemotes(must(['remote', '-v'])).some((r) => r.name === remote)) return notRemote;
+  const r = git(['ls-remote', remote, `refs/heads/${branch}`], cwd);
+  if (r.status !== 0) return { checked: false, error: `git ls-remote failed: ${firstErrorLine({ stderr: r.stderr, message: 'exit ' + r.status })}` };
+  const line = String(r.stdout || '').split('\n').find((l) => l.endsWith(`\trefs/heads/${branch}`));
+  if (!line) return { checked: true, remote, branch, tip: null, current: false, gone: true };
+  const tip = line.split('\t')[0].trim().toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(tip)) return { checked: false, error: 'git ls-remote reply has no sha' };
+  return { checked: true, remote, branch, tip, current: tip === baseSha };
+}
+
 function lower(s) {
   return String(s == null ? '' : s).toLowerCase();
 }
@@ -256,6 +292,10 @@ function formatText(d) {
   if (d.pr) lines.push(`pr: ${clean(d.pr.repo)}#${clean(d.pr.number)} base ${clean(d.pr.base)} head ${clean(String(d.pr.head).slice(0, 9) || '-')}`);
   if (d.base) lines.push(`base: ${clean(d.base.ref)} ${clean(d.base.sha)}`);
   if (d.head) lines.push(`head: ${clean(d.head.ref)} ${clean(d.head.sha)}`);
+  const bt = d.baseTip;
+  if (bt && bt.checked && bt.current) lines.push(`  base tip: ${clean(bt.remote)} ${clean(bt.branch)} ${clean(bt.tip.slice(0, 9))} (the local base is the remote tip)`);
+  else if (bt && bt.error) lines.push(`  base tip: unknown (${clean(bt.error)})`);
+  else if (bt && bt.reason === '--offline') lines.push('  base tip: not checked (--offline)');
   for (const w of d.warnings || []) lines.push(`  warning: ${clean(w)}`);
   if (d.missing) {
     lines.push(`  ERROR: the ${d.missing.which} ref ${clean(d.missing.ref)} is not found in this checkout`);
