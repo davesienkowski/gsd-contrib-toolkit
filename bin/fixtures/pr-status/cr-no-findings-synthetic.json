@@ -1,0 +1,75 @@
+{
+  "provenance": {
+    "source": "synthetic from cr-5119-captured.json",
+    "edits": "one CHANGES_REQUESTED review by trek-e on the head whose body has no Findings heading (shape of 5512635344); the body Self-test report block is not valid JSON",
+    "checksExit": 0,
+    "expected": {
+      "owner": "author",
+      "login": "trek-e"
+    }
+  },
+  "view": {
+    "number": 900049,
+    "state": "OPEN",
+    "isDraft": false,
+    "author": {
+      "login": "davesienkowski"
+    },
+    "headRefOid": "5a5a049000000000000000000000000000000000",
+    "baseRefName": "next",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "BLOCKED",
+    "reviewDecision": "CHANGES_REQUESTED",
+    "reviewRequests": [],
+    "commits": [
+      {
+        "oid": "5a5a049111111111111111111111111111111111",
+        "committedDate": "2026-10-20T00:00:00Z",
+        "messageHeadline": "commit 1"
+      },
+      {
+        "oid": "5a5a049000000000000000000000000000000000",
+        "committedDate": "2026-10-21T00:00:00Z",
+        "messageHeadline": "commit 2"
+      }
+    ],
+    "updatedAt": "2026-10-23T00:00:00Z"
+  },
+  "reviews": [
+    [
+      {
+        "id": 900049001,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-21T10:00:00Z",
+        "commit_id": "5a5a049000000000000000000000000000000000",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/900049#pullrequestreview-900049001",
+        "body": "**Summary.** Majors 1 and 2 are fixed.\n\n- Major 1: scope.\n\n**Verdict.** Changes requested. Blocker 0, Major 2, Minor 3, Nit 2.\n"
+      }
+    ]
+  ],
+  "checks": [],
+  "timeline": [
+    {
+      "event": "reviewed",
+      "id": 900049001,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-10-21T10:00:00Z",
+      "commit_id": "5a5a049000000000000000000000000000000000",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/900049#pullrequestreview-900049001"
+    }
+  ],
+  "reviewComments": {},
+  "bodyView": {
+    "body": "### Self-test report\n\n```json\n{\"head_sha\": not json}\n```\n",
+    "baseRefOid": "5a5a0b9000000000000000000000000000000000",
+    "changedFiles": 1
+  }
+}

@@ -1,0 +1,295 @@
+{
+  "provenance": {
+    "source": "synthetic from cr-5119-captured.json",
+    "edits": "event and review shapes from the 5119 capture; alice and bob CHANGES_REQUESTED with equal submitted_at (bob listed later wins), a newer CHANGES_REQUESTED by a Bot and one by the author (both excluded), trek-e requested, reviewed, re-requested and then removed; bob requested as \"Bob\" (case), alice never requested; a team review_requested event and the team in reviewRequests; two inline comments on bob review 900045003 (one with line null and original_line 12, one over 120 characters with an ESC sequence); a labeled event (not printed)",
+    "checksExit": 0,
+    "expected": {
+      "owner": "reviewer",
+      "login": "bob",
+      "reRequested": "unknown"
+    }
+  },
+  "view": {
+    "number": 900045,
+    "state": "OPEN",
+    "isDraft": false,
+    "author": {
+      "login": "davesienkowski"
+    },
+    "headRefOid": "5a5a045000000000000000000000000000000000",
+    "baseRefName": "next",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "BLOCKED",
+    "reviewDecision": "CHANGES_REQUESTED",
+    "reviewRequests": [
+      {
+        "__typename": "Team",
+        "slug": "core-maintainers",
+        "name": "Core Maintainers"
+      }
+    ],
+    "commits": [
+      {
+        "oid": "5a5a045000000000000000000000000000000000",
+        "committedDate": "2026-10-20T00:00:00Z",
+        "messageHeadline": "commit 1"
+      }
+    ],
+    "updatedAt": "2026-10-23T00:00:00Z"
+  },
+  "reviews": [
+    [
+      {
+        "id": 900045001,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-20T10:00:00Z",
+        "commit_id": "5d5d045111111111111111111111111111111111",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/900045#pullrequestreview-900045001",
+        "body": "## Review\n\n### Findings\n\n**Minor**\n1. first minor finding\n   - detail line, not an item\n\n**Nit**\n2. a nit\n\n### Verdict\nChanges requested (0 Blocker, 0 Major, 1 Minor, 1 Nit).\n"
+      },
+      {
+        "id": 900045002,
+        "user": {
+          "login": "alice",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-21T10:00:00Z",
+        "commit_id": "5d5d045111111111111111111111111111111111",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/900045#pullrequestreview-900045002",
+        "body": "## Review\n\n### Findings\n\n**Minor**\n1. first minor finding\n   - detail line, not an item\n\n**Nit**\n2. a nit\n\n### Verdict\nChanges requested (0 Blocker, 0 Major, 1 Minor, 1 Nit).\n"
+      },
+      {
+        "id": 900045003,
+        "user": {
+          "login": "bob",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-21T10:00:00Z",
+        "commit_id": "5d5d045111111111111111111111111111111111",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/900045#pullrequestreview-900045003",
+        "body": "## Review\n\n### Findings\n\n**Minor**\n1. first minor finding\n   - detail line, not an item\n\n**Nit**\n2. a nit\n\n### Verdict\nChanges requested (0 Blocker, 0 Major, 1 Minor, 1 Nit).\n"
+      },
+      {
+        "id": 900045004,
+        "user": {
+          "login": "dependabot[bot]",
+          "type": "Bot"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-22T10:00:00Z",
+        "commit_id": "5a5a045000000000000000000000000000000000",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/900045#pullrequestreview-900045004",
+        "body": "## Review\n\n### Findings\n\n**Minor**\n1. first minor finding\n   - detail line, not an item\n\n**Nit**\n2. a nit\n\n### Verdict\nChanges requested (0 Blocker, 0 Major, 1 Minor, 1 Nit).\n"
+      },
+      {
+        "id": 900045005,
+        "user": {
+          "login": "davesienkowski",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-22T11:00:00Z",
+        "commit_id": "5a5a045000000000000000000000000000000000",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/900045#pullrequestreview-900045005",
+        "body": "## Review\n\n### Findings\n\n**Minor**\n1. first minor finding\n   - detail line, not an item\n\n**Nit**\n2. a nit\n\n### Verdict\nChanges requested (0 Blocker, 0 Major, 1 Minor, 1 Nit).\n"
+      }
+    ]
+  ],
+  "checks": [],
+  "timeline": [
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-19T09:00:00Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-19T09:00:01Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "Bob"
+      }
+    },
+    {
+      "event": "reviewed",
+      "id": 900045001,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-10-20T10:00:00Z",
+      "commit_id": "5d5d045111111111111111111111111111111111",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/900045#pullrequestreview-900045001"
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-20T12:00:00Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "review_request_removed",
+      "created_at": "2026-10-20T13:00:00Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "reviewed",
+      "id": 900045002,
+      "user": {
+        "login": "alice",
+        "type": "User"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-10-21T10:00:00Z",
+      "commit_id": "5d5d045111111111111111111111111111111111",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/900045#pullrequestreview-900045002"
+    },
+    {
+      "event": "reviewed",
+      "id": 900045003,
+      "user": {
+        "login": "bob",
+        "type": "User"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-10-21T10:00:00Z",
+      "commit_id": "5d5d045111111111111111111111111111111111",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/900045#pullrequestreview-900045003"
+    },
+    {
+      "event": "committed",
+      "sha": "5a5a045000000000000000000000000000000000",
+      "committer": {
+        "date": "2026-10-21T10:00:00Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "5c5c045222222222222222222222222222222222",
+      "committer": {
+        "date": "2026-10-21T11:00:00Z"
+      }
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-21T12:00:00Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "5a5a045000000000000000000000000000000000"
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-21T12:30:00Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_team": {
+        "name": "Core Maintainers",
+        "slug": "core-maintainers"
+      }
+    },
+    {
+      "event": "reviewed",
+      "id": 900045004,
+      "user": {
+        "login": "dependabot[bot]",
+        "type": "Bot"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-10-22T10:00:00Z",
+      "commit_id": "5a5a045000000000000000000000000000000000",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/900045#pullrequestreview-900045004"
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-22T10:30:00Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 900045901,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/900045#issuecomment-900045901",
+      "body": "pushed"
+    },
+    {
+      "event": "labeled",
+      "created_at": "2026-10-22T10:40:00Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "label": {
+        "name": "x"
+      }
+    },
+    {
+      "event": "reviewed",
+      "id": 900045005,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-10-22T11:00:00Z",
+      "commit_id": "5a5a045000000000000000000000000000000000",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/900045#pullrequestreview-900045005"
+    }
+  ],
+  "reviewComments": {
+    "900045003": [
+      {
+        "id": 1,
+        "path": "bin/a.cjs",
+        "line": null,
+        "original_line": 12,
+        "body": "outdated anchor\nsecond line"
+      },
+      {
+        "id": 2,
+        "path": "bin/b.cjs",
+        "line": 7,
+        "original_line": 7,
+        "body": "\u001b[31mred\u001b[0m café yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+      }
+    ]
+  },
+  "bodyView": {
+    "body": "Fixes nothing.",
+    "baseRefOid": "5a5a0b5000000000000000000000000000000000",
+    "changedFiles": 1
+  }
+}

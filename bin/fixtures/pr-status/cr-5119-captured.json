@@ -1,0 +1,1004 @@
+{
+  "provenance": {
+    "source": "captured open-gsd/gsd-core#5119 2026-10-23T06:00Z",
+    "edits": "view.number renumbered 5119 -> 900043 (the stub indexes by view.number and 5119 already exists under issue-status); reviews, timeline and view.headRefOid/commits/reviewRequests and bodyView (body, baseRefOid, changedFiles) are the capture; synthesized: state OPEN, isDraft false, author davesienkowski, baseRefName next, mergeable MERGEABLE, mergeStateStatus BLOCKED, reviewDecision REVIEW_REQUIRED (the reading: trek-e latest DISMISSED), updatedAt, checks [] with checksExit 0, reviewComments {} (no inline comments were captured)",
+    "checksExit": 0,
+    "expected": {
+      "owner": "reviewer",
+      "reRequested": true
+    }
+  },
+  "view": {
+    "number": 900043,
+    "state": "OPEN",
+    "isDraft": false,
+    "author": {
+      "login": "davesienkowski"
+    },
+    "headRefOid": "f2aedc2d1d8ddbda3d7cd888b0d5bc93e138a789",
+    "baseRefName": "next",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "BLOCKED",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "reviewRequests": [
+      {
+        "__typename": "User",
+        "login": "Solvely-Colin"
+      },
+      {
+        "__typename": "User",
+        "login": "jeremymcs"
+      }
+    ],
+    "commits": [
+      {
+        "oid": "fca4fa1a1df6df6f1133c222d7b8c14f463a18f3",
+        "committedDate": "2026-10-22T06:50:29Z",
+        "messageHeadline": "ci(#5104): the raw STATE.md write guard sees wrapped calls and same-f…"
+      },
+      {
+        "oid": "60a2fa177bdce1279716d3b5ac5babadea175b04",
+        "committedDate": "2026-10-22T06:50:29Z",
+        "messageHeadline": "ci(#5104): resolve same-line targets and stop at a literal non-STATE.…"
+      },
+      {
+        "oid": "66100a6fa9ff61444e848dcd8d158003c0016990",
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageHeadline": "ci(#5104): a join whose last argument resolves to a non-STATE.md file…"
+      },
+      {
+        "oid": "0ad283d6ab51e6f531c99723f351464a1c8410df",
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageHeadline": "ci(#5104): follow a join tail only through const bindings, and pin th…"
+      },
+      {
+        "oid": "d9a208ad4c872b68a4e38361e99c7808792624b3",
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageHeadline": "ci(#5104): a typed declaration binds its name for both raw-write and …"
+      },
+      {
+        "oid": "912529942b03389663d8ff3a79e804878d897917",
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageHeadline": "ci(#5104): a binding in a closed sibling block or arrow body no longe…"
+      },
+      {
+        "oid": "c80530f14ea818c05d047fc303ff81b9f430b1f4",
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageHeadline": "ci(#5104): record every verified raw-write gap and split by-design fa…"
+      },
+      {
+        "oid": "3a0d13c85afcd86292f74f69b1408e3de00cb35c",
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageHeadline": "ci(#5104): an object-literal type annotation holding a semicolon stil…"
+      },
+      {
+        "oid": "507d50b64ad28f0fd2c9d645a005aaa5a0f56c23",
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageHeadline": "ci(#5104): widen the raw-write property to typed, let/var, chained an…"
+      },
+      {
+        "oid": "40fafa453a7d27c795b8fd8fee0bd0e9f375b5b1",
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageHeadline": "ci(#5104): keep the raw-write binding regex cache per call, not in mo…"
+      },
+      {
+        "oid": "41ddc5e0ef098b99c8ef5b500b039f8b631c6c82",
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageHeadline": "ci(#5104): pin the nested-template and self-assigned-write misses as …"
+      },
+      {
+        "oid": "57f6a8737b52b372db31684ff854a5b29c667c59",
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageHeadline": "ci(#5104): record the remaining verified raw-write gaps in the header…"
+      },
+      {
+        "oid": "ee634124fb22c8e2f31ab6b51a452692ec1ba12b",
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageHeadline": "ci(#5104): cut the raw-write guard back to the approved Layer 1 and r…"
+      },
+      {
+        "oid": "ef53941428cf07ece35f2cd50c19ac3b64428dd0",
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageHeadline": "ci(#5104): say in the guard header that the raw-write axis's zero is …"
+      },
+      {
+        "oid": "859d07b2439d8572ce301fa40c4c69a1372f20b4",
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageHeadline": "ci(#5104): pin the verdicts the scope cut moved, and assert the misse…"
+      },
+      {
+        "oid": "f2152b54e2f3660862af69cb9cb2e8863189209f",
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageHeadline": "ci(#5104): fail the raw-write property at once when the hop bound is …"
+      },
+      {
+        "oid": "aa5057534ac7a478e88437d0f389be146d1c1b25",
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageHeadline": "ci(#5104): memoize raw-write target resolution so lookups per write s…"
+      },
+      {
+        "oid": "a2bf696880db7e51793f5078bf1fd281e236ae87",
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageHeadline": "ci(#5104): keep raw-write target resolution linear in each line and s…"
+      },
+      {
+        "oid": "3d2bcfc8cf6451272eb7bda7f88b149f02f80968",
+        "committedDate": "2026-10-22T06:50:30Z",
+        "messageHeadline": "ci(#5104): decide the assignment tail once per match, so a line termi…"
+      },
+      {
+        "oid": "f02fbaa543456dd77b676a77e4f1244da21a0876",
+        "committedDate": "2026-10-22T07:01:50Z",
+        "messageHeadline": "ci(#5104): cap the text read for one raw write, and report a write pa…"
+      },
+      {
+        "oid": "4df1cd120c7921b35bdceb9572d5c77442716e67",
+        "committedDate": "2026-10-22T07:01:50Z",
+        "messageHeadline": "ci(#5104): write the U+2028 in a test row as an escape, not a raw cha…"
+      },
+      {
+        "oid": "2c42633be6928338f60a493533c0df0077bfb7f6",
+        "committedDate": "2026-10-22T07:42:32Z",
+        "messageHeadline": "ci(#5104): bound the raw-write resolver's work per file, and report t…"
+      },
+      {
+        "oid": "47d6b60d88baa1cdd42df83d6af0fb8a1e3bd6ee",
+        "committedDate": "2026-10-22T08:08:00Z",
+        "messageHeadline": "ci(#5104): charge a resolver read per occurrence of the name, and fin…"
+      },
+      {
+        "oid": "e990312bda03db64808701c20ace200def239a79",
+        "committedDate": "2026-10-22T08:41:22Z",
+        "messageHeadline": "ci(#5104): charge building a name's reader, cap the length of a resol…"
+      },
+      {
+        "oid": "1830f52109c5f3875b5709a8b0d9140cee7ee23f",
+        "committedDate": "2026-10-22T14:08:45Z",
+        "messageHeadline": "ci(#5104): strip quoted strings from a resolved expression in one pass"
+      },
+      {
+        "oid": "f2aedc2d1d8ddbda3d7cd888b0d5bc93e138a789",
+        "committedDate": "2026-10-23T03:07:24Z",
+        "messageHeadline": "ci(#5104): say a write after the budget is spent is reported unresolv…"
+      }
+    ],
+    "updatedAt": "2026-10-23T04:46:54Z"
+  },
+  "reviews": [
+    [
+      {
+        "id": 5371427149,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-09-30T20:09:16Z",
+        "commit_id": "82b577714e71d1754e3adb306f76f402f5b3dbe8",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#pullrequestreview-5371427149",
+        "body": "## Summary\n\nChanges requested. Axis 2 of the raw STATE.md write guard now sees wrapped calls and resolves variable targets, but the promised one-line shape is still missed and the new taint rule can flag writes that are not STATE.md.\n\n## Classification & gate compliance\n\n- Enhancement track. Linked issue #5104 carries `approved-enhancement` (Layer 1 approved in the issue thread). `Closes #5104` present, conventional title `ci(#5104):`, not a draft. Governing ADR: ADR-4629 Decision 5 (no allowlist) — honored.\n- Labels `area: workflow` + `no-changelog`; changeset lint reports no user-facing change, so no changeset is required. Branch is BEHIND `next` (MERGEABLE). Required checks (Tests, lint-tests, Required tests, changeset-lint, docs-lint) are SUCCESS at this head; earlier-run Changeset/Docs entries are CANCELLED and superseded by later SUCCESS runs.\n\n## Must-Have Acceptance Checklist (issue #5104, Layer 1)\n\n- [x] First argument captured across line breaks, over comment-stripped text.\n- [ ] Resolve a variable target through same-function assignments with bounded hops — **partly met**: a same-line assignment-plus-write is missed (Major 1).\n- [x] `for…of` / destructuring bindings are unresolved (two binding rows).\n- [x] Reuses the `nearestPrecedingAssignment` logic (`assignmentLineRe` shared).\n- [x] Axis 2 only, no `src/` change, no allowlist, no new dependency.\n- [x] Tests: wrapped, variable, sibling-block binding, negatives, real-tree control.\n- [ ] Miss 3 is out of scope per the ruling; the PR body says a separate #4629 child covers it but cites no issue number (Nit 2).\n\n## Findings\n\n### Major\n1. **(judgment + static trace)** `scripts/lint-state-write-path-drift.cjs` `findRawStateWrites` calls `resolvesToStatePath(stripped, lineIdx - 1, targetArg)`; the backward scan starts ABOVE the call line, so `const p = path.join(dir, 'STATE.md'); fs.writeFileSync(p, c);` on one line resolves to nothing and is not flagged. The PR body and issue fixture 3 list exactly this one-hop shape as caught. Every F4 positive row puts the assignment on its own line, so the gap is untested. Fix: scan from `lineIdx` inclusive, limited to text before the call's column, and add a one-line positive row.\n2. **(judgment)** `identifiersIn` + `resolvesToStatePath` treat any identifier on the right-hand side as tainting. `const dir = path.dirname(statePath); const p = path.join(dir, 'ROADMAP.md'); fs.writeFileSync(p, c)` is flagged `RAW_STATE_WRITE` although the file written is ROADMAP.md, and ADR-4629 Decision 5 forbids an allowlist, so the contributor has no way to clear it. No negative control covers a `statePath`-derived directory with a non-`STATE.md` literal tail. Fix: stop descent when a `path.join`/`resolve` tail is a literal that does not name STATE.md, or add the negative control and document the posture.\n\n### Minor\n3. `FUNCTION_DECL_LINE_RE` (`scripts/lint-state-write-path-drift.cjs:280`) matches only `function name(`. Arrow functions and class/object methods are not scope boundaries, so resolution can cross into a sibling body with a same-named variable (false positive); the new resolver is broader (up to 4 hops, every identifier) and the limit is untested for arrows/methods.\n4. Boundary coverage: the hop-bound test asserts `MAX` and `MAX+1` only; add `MAX-1` (limit-1, limit, limit+1).\n5. No `fast-check` property for what is now a text parser/resolver (`captureFirstArg`, `identifiersIn`, binding regexes), and no CRLF fixture.\n6. `identifiersIn` drops template interpolation with `\\$\\{[^}]*\\}`, so nested braces (`${f({a:1})}`) truncate and identifiers after the inner `}` are lost (false negative). Untested.\n\n### Nit\n7. Docs: \"Updated docs/\" is unchecked in the body and the PR relies on the exemption; consider a one-line note in the ADR-4629 guard table that Axis 2 now resolves same-function variables and still misses data-flow targets.\n8. The `no-changelog` label description says \"docs-only\", but the diff is a CI lint guard (valid per changeset lint). The Miss-3 follow-up child is not linked.\n9. Branch is BEHIND `next`; rebase before merge. A rebase clears base drift only; it does not retire findings 1-6.\n\n## Security\n\nNo ReDoS found: the assignment/loop/destructuring regexes are lazy and bounded by line length, with cost O(lines × identifiers × hops). Output still passes `sanitizeForReport`. No traversal or argv surface added.\n\n## Blast radius & risk tier\n\n`findRawStateWrites` is the Axis 2 scanner inside one lint script, with a test-side alias in `tests/state-write-path-drift-guard.test.cjs`; it runs in CI only and has no runtime callers. Not a central or bridge symbol.\n\n## Co-change completeness\n\nThe test file and script are both in the diff. No missing co-change file identified.\n\n### Memtrace Evidence\n\n- `get_impact` (`findRawStateWrites`, upstream, depth 2, branch `next`): ambiguous — two declarations (the script function at `scripts/lint-state-write-path-drift.cjs:627-652` and a test-side constant), so no traversal was run on a single anchor. Impact is bounded by reading: a CI lint function with no runtime callers.\n- `get_symbol_context` (`findRawStateWrites`): same ambiguity (2 candidates), no caller/callee rows returned. The documented contract on the script declaration (\"unratcheted, unexempted: any occurrence is a violation\") matches ADR-4629 Decision 5.\n- `recall_decision` (\"raw STATE.md write guard no allowlist lint-state-write-path-drift\"): returned only unrelated/indirect decisions (e.g. #3824 machine-readable state contract at step boundaries). No recorded decision contradicts this change. The result is statistically ranked, not a proof of absence.\n- `find_code_review_issues`: not run for this PR — the diff text could not be supplied to the tool in this session. Findings above come from the isolated reviewer's static analysis of the diff and from direct reads, not from this tool.\n\n## Verdict\n\nChanges requested (2 Major, 4 Minor, 3 Nit). CI is green on the required checks at this head, but that does not retire any finding above.\n"
+      },
+      {
+        "id": 5436531471,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-07T01:24:40Z",
+        "commit_id": "250b5a4f58714dc1ebe7be161678a6236edeefca",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#pullrequestreview-5436531471",
+        "body": "## Review — ci(#5104): the raw STATE.md write guard sees wrapped calls and same-function variable targets\n\nHead reviewed: `250b5a4f58714dc1ebe7be161678a6236edeefca`. Full diff read (scripts/lint-state-write-path-drift.cjs and tests/state-write-path-drift-guard.test.cjs).\n\n### Summary\nAxis 2 now captures wrapped calls and resolves variable targets with a bounded hop count. Review items 1, 2 (inline literal tail), 4, 5 and 6 from the 2026-09-30 review are fixed and verified by executing the code. Item 3 is declined and pinned, and a related false-positive class (m2) remains. Changes requested on the three Minor items below.\n\n### Classification & gate compliance\n- Enhancement track. #5104 is OPEN with `approved-enhancement`; `Closes #5104` present; conventional title; not draft; no competing open PR.\n- Scope: scripts/ + tests/ only, no src/ change, no allowlist, no dependency. Governing ADR-4629 Decision 5 honored.\n- No changeset (changeset-lint `ok_no_user_facing_changes`, `no-changelog` label); no docs (docs-lint green).\n- The issue said to reuse `nearestPrecedingAssignment`; only its regex is shared (`assignmentLineRe`), the resolver is a new `nearestTargetBinding`. Axis 3 unchanged.\n- CI at this head: 28 success, 5 skipped, 0 failed, 0 pending, 0 action_required runs. Branch is BEHIND by 1 (`82f7acdfa7`, CI budget history, does not touch the guard); clean rebase. A rebase fixes behind-ness only, not the findings below: `git fetch origin next && git rebase origin/next`.\n\n### Functional checklist / root-cause verdict\n- [x] Wrapped call captured over comment-stripped joined text (probe line numbers correct, CRLF equal to LF).\n- [x] Variable target resolved, bounded at MAX_TARGET_RESOLUTION_HOPS=4; MAX-1/MAX/MAX+1 tested.\n- [x] for...of / destructuring stop resolution (two rows).\n- [x] One-line `const p = path.join(dir,'STATE.md'); fs.writeFileSync(p,c)` flagged at line 2 (executed).\n- [x] `path.join(path.dirname(statePath),'ROADMAP.md')` not flagged (executed).\n- [x] Real tree via `--root`: rawWriteViolations 0.\n- Root cause: the scan was per-line and matched only the literal `statePath`/`STATE.md` text in the captured argument. The fix addresses that at the scanner, not by special-casing. Miss 3 (data-flow) stays open by ruling (#5120).\n\n### Blast radius\n`findRawStateWrites` runs only in `lint:ci` (guard script plus its test and the `--json` CLI). New export `MAX_TARGET_RESOLUTION_HOPS` only. Risk: low. Perf probes: 3000-hop chain 7 ms; 3000 writes 140 ms; 200k-char line 4 ms.\n\n### Co-change completeness\nGuard and test are both in the diff. No INVENTORY, CONTEXT.md, changeset or docs surface applies. ADR-4629 guard-table line refs remain stale (Nit n2, contributor declines ADR edits).\n\n### CodeGraph Evidence\n- `codegraph_impact` target `findRawStateWrites` (base index, run by orchestrator): 5 affected symbols — `findRawStateWrites` and its callers `collect`/`main` in `scripts/lint-state-write-path-drift.cjs`, the test file `tests/state-write-path-drift-guard.test.cjs`, and `scanMarkdownLetterAxisConsumers` in `scripts/lint-phase-id-drift.cjs` (likely a same-name symbol; not a runtime dependency). No runtime (non-lint) dependents. Low risk.\n- `codegraph_callers` target `nearestPrecedingAssignment` (run by orchestrator): 1 caller, `findUnstrippedContentWrites` (`scripts/lint-state-write-path-drift.cjs:531`). Its behavior is unchanged by `assignmentLineRe` (same regex string, verified by reading the diff).\n- `codegraph_callees` / `codegraph_node` were not run for this review; the callee list of `findRawStateWrites` (`stripComments`, `captureFirstArg`, `resolvesToStatePath`, `sanitizeForReport`) and the `literalJoinTail` characterization are from reading the diff.\nMemtrace unavailable: monthly query quota exhausted (20972/20933, resets 2026-10-20)\n\n### Test quality\nFail-first: the F4 rows target shapes that returned 0 on base (wrapped call, variable, one-line); PR body reports 8 failing against the unchanged guard. Property test discriminates STATE.md vs other files across shapes and CRLF. Boundaries covered. No wall-clock, no source-grep. Concern: `limit:` rows assert known-wrong verdicts (m3).\n\n### Prior review resolution (trek-e, 82b577714)\n1 fixed; 2 fixed for inline literal tails; 3 not fixed (declined, pinned); 4 fixed; 5 fixed; 6 fixed; 7 declined; 8 #5120 linked; 9 behind by 1.\n\n### Findings\n**Minor**\n- m1 (judgment, executed probes) `scripts/lint-state-write-path-drift.cjs` `nearestTargetBinding`: scope is line-based; arrows/methods are not boundaries and a one-line block/function is not read. Probes: sibling-arrow `p` resolves to another body's `STATE.md` variable (flagged); parameter shadowing on a prior line flagged; `if (c) { const p = ...STATE.md; fs.writeFileSync(p,c); }` not flagged. With no allowlist (ADR-4629 Decision 5) a false positive cannot be cleared. Fix: a brace-depth boundary tracker, or a maintainer ruling accepting the limit.\n- m2 (executed probe) `literalJoinTail` decides only an inline literal tail. `const d = path.dirname(statePath); const n = 'ROADMAP.md'; fs.writeFileSync(path.join(d, n), c)`, `path.join(d, name)` and `` path.join(d, `${name}.json`) `` are reported RAW_STATE_WRITE. Same unclearable class as prior Major 2. Fix: resolve an identifier tail through `nearestTargetBinding` and decide by its literal value.\n- m3 (judgment) `tests/state-write-path-drift-guard.test.cjs` `limit:` rows pin the false-positive verdicts above as passing assertions. Fix: assert the correct verdict after m1, or mark them `todo`.\n\n**Nit**\n- n1 PR body claims `npm test` passed and cites a gsd-test run on the pre-rebase head; the Node 22 failure claim is not independently verified.\n- n2 ADR-4629 guard-table note declined (review item 7).\n- n3 `no-changelog` label description says docs-only (review item 8).\n\n### Verdict\nRequest changes (0 Blocker, 0 Major, 3 Minor, 3 Nit). Substance is close and CI is green at this head; the branch also needs `git fetch origin next && git rebase origin/next` before merge.\n"
+      },
+      {
+        "id": 5471174433,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-09T14:08:14Z",
+        "commit_id": "081d4df03881014f1e9a62f389f401f8ecda745b",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#pullrequestreview-5471174433",
+        "body": "Automated maintainer re-review of head `081d4df038`. Zero-tolerance policy: every finding at any severity must be resolved before approval.\n\n# Re-review PR #5119 (head 081d4df03881014f1e9a62f389f401f8ecda745b, fetched this turn)\n\n## Summary\nAxis-2 now handles wrapped calls, same-function variable targets, one-line assign+write, CRLF, join-tail literal (inline and via resolved identifier). Executed probes show remaining false negatives introduced by the new join-tail pre-check (flow-insensitive literal), plus the documented scope limit (m1). Limitation: the test file could not be read (Memtrace-first guard denies Read/Bash on indexed source; codegraph does not index the test file in the worktree). Test-quality items are unverified except via PR-body claims and executed guard behavior.\n\n## State (gh pr view this turn)\nmergeable=MERGEABLE, mergeStateStatus=BEHIND, reviewDecision=CHANGES_REQUESTED, isDraft=false. Labels: area: workflow, no-changelog, review: changes requested. No non-success/non-skipped checks in statusCheckRollup. Behind origin/next (ed0f3fd558) by 5 commits (merge-base f2077e75a); none touch the 2 PR files (three-dot diff = only those 2 files; commits: #5253, #5247, #4935, #5093, #5092). Rebase: git fetch origin && git rebase origin/next.\n\n## Prior findings status (2026-10-07 01:24 review)\n- m1 sibling arrow/method/shadow scope: UNRESOLVED (declined, pinned). Executed: `const p=...STATE.md; fn((p)=>{ fs.writeFileSync(p,c) })` reports 1 (false positive; no allowlist per ADR-4629 D5 so uncleared).\n- m2 join tail via identifier: PARTIAL. `const n='ROADMAP.md'` cleared (scripts/lint-state-write-path-drift.cjs resolvedJoinFileTail). `path.join(d,name)` param and `${name}.json` remain reported (pinned as known gap). But new false negatives, see Findings M1.\n- m3 limit rows assert wrong verdicts: author says converted to known-gap table asserting today's output AND that it differs from correct verdict (unverified: test file unreadable). Still pins wrong verdicts as passing tests.\n- n1 PR body claims: author says corrected. Body now says gsd-test run predates review rounds; CI on head is authority. RESOLVED.\n- n2 ADR guard-table note: declined (ADR edits excluded). UNRESOLVED nit.\n- n3 no-changelog label description: not author's to change. Nit.\nEarlier 09-30 findings (one-line, dirname tail, MAX-1, fast-check, CRLF, nested braces): verified fixed by execution (onelinevar, join-dirname ROADMAP negative, crlf, 4hop flagged/5hop not).\n\n## Acceptance checklist (issue #5104 Layer 1, trek-e approval 2026-09-29)\n- [x] First arg across line breaks over comment-stripped text (wrapped, wrapped-with-comment, CRLF executed -> 1 each).\n- [~] Resolve non-statePath non-literal target via same-function assignments \"reusing the guard's existing nearestPrecedingAssignment\", bounded hops: resolver is a new nearestTargetBinding; only the regex (assignmentLineRe) is shared. Behavior met; \"reuse\" wording not literally. Bounded: 4-hop flagged, 5-hop not (executed).\n- [x] for...of / destructuring = unresolved (per PR; code lastBindingInText 'unresolved').\n- [x] Axis 2 only, no src/ change, no allowlist, no new dependency (diff = 2 files).\n- [~] Tests: failing-first, sibling-block, negatives, real-tree control claimed; not verified by reading.\n- Miss 3 out of scope (#5120 linked).\n\n## Findings\n### Major\nM1 scripts/lint-state-write-path-drift.cjs resolvedJoinFileTail/nearestTargetBinding (flow-insensitive literal decides): REGRESSION vs prior head 250b5a4f5 (by code trace: dir hop to statePath flagged before). Executed on head, all report 0 where STATE.md is written on a path:\n - `function f(statePath){const d=path.dirname(statePath); let n='STATE.md'; if (x) n='ROADMAP.md'; fs.writeFileSync(path.join(d,n),c);}` -> 0\n - same with `if (x) {\\n n='ROADMAP.md';\\n}` -> 0\n Nearest textual assignment wins; a conditional reassignment hides a real STATE.md write. Contradicts the guard's fail-safe posture (unknown must not resolve to safe) and the \"0 newly reported / no regressions\" claim, which only measures newly reported, not newly cleared beyond the 5 \"intended\". Fix: only let the pre-check clear when the identifier has exactly one binding in the function and that binding is a const (or no other assignment to the name exists in the function); otherwise fall back to whole-expression rule. Add a negative-control... positive row for the conditional reassign.\n### Minor\nm1 Scope limit (arrows/methods/params) unresolved; false positives uncleared with no allowlist. Author proposes AST Axis 2 as separate #4629 child: maintainer decision, but until filed the limit is a standing FP source. Request the child issue be filed/linked.\nm2 Pre-existing, adjacent, executed: wrapped call on a line after a string containing `//` (`const u='http://x'; fs.writeFileSync(\\n statePath,c);`) -> 0 (stripComments is string-unaware); regex literal `/\\//` same -> 0. Wrapped detection (this PR's purpose) is blind there. Fix inside stripComments (string/regex aware) or document.\nm3 Pre-existing, unchanged scope but unlisted in guard docs: only literal `fs.writeFileSync(` matches. `fs.writeFile`, `fs.promises.writeFile`, `fsp.writeFile`, `fs.appendFileSync`, destructured `writeFileSync`, `fs?.writeFileSync`, `fs['writeFileSync']`, `node:fs` alias all report 0 for statePath targets (executed). Not in #5104 scope; mention so the guard header does not overclaim (ADR-3408 D5 zero-is-not-proof).\nm4 False positive (executed): `\"fs.writeFileSync(statePath, c)\"` inside a string literal or template text reports 1.\nm5 Test-quality not verifiable here (file unreadable under guard): confirm no source-grep, no wall-clock, property is discriminating, limit rows not vacuous.\n### Nit\nn1 ADR-4629 guard-table stale line refs (author declines).\nn2 `no-changelog` label description says docs-only.\nn3 PR body checkboxes: platforms Linux only; body says docs not updated (exempt, internal lint).\n\n## Gates\nEnhancement track OK (approved-enhancement on #5104, Closes #5104, ci(#5104): title, not draft). ADR-4629 Decision 5 (no allowlist) honored. no-changelog justified: guard runs in lint:ci only, no user-facing surface (author reports changeset lint ok_no_user_facing_changes; not re-run here). No docs/INVENTORY/CONTEXT.md/hook registration needed (scripts only, no new file). Not run: recall_decision, find_code_review_issues (Memtrace quota exhausted); not run: lint/tests (forbidden).\n\n## Blast radius (codegraph_impact, main-checkout index, 5 symbols)\nfindRawStateWrites:627, collect:881, main:961 in the guard; tests file; scanMarkdownLetterAxisConsumers (lint-phase-id-drift.cjs:646, name-similar only). CI-only, no runtime dependents. Low. New export MAX_TARGET_RESOLUTION_HOPS only.\n\n## Behind-by / rebase\nBEHIND by 5; no overlap with PR files. Rebase clears behind-ness only.\n\n## Verdict\nChanges requested: 1 Major (M1 conditional-reassign false negative / regression), minors above. Probe script: scratchpad/probe.cjs (40 shapes).\n\n### Memtrace Evidence\nMemtrace quota was exhausted for this review run, so the graph-backed checks were NOT executed; this is stated rather than reported as passed:\n- `get_impact`: not run (quota). Blast radius above comes from codegraph where present.\n- `get_symbol_context`: not run (quota). Callers/callees were read via codegraph where present.\n- `recall_decision`: not run (quota). The recorded-decision gate was NOT evaluated; this is not a finding that no decision governs the change.\n- `find_code_review_issues`: not run (quota). The deterministic AST/YAML/cross-module pass did not execute; findings above are judgment-sourced unless marked deterministic.\n\nOpen findings remain, so no further CI is being spent on this head unless the remaining findings are Nit-only (CI already on record for this head is noted above). Address them; the fix push re-triggers CI once."
+      },
+      {
+        "id": 5477112603,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-10T02:25:39Z",
+        "commit_id": "fad8de39927a6a86cc6bc34c6b205f579dcc042e",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#pullrequestreview-5477112603",
+        "body": "## Review of head `fad8de39927a` — changes requested\n\n**Summary.** M1 is fixed: both of your probes are reported again on this head, and the \"can only add reports\" claim holds for this commit. One new Major remains in the same family, plus Minors and Nits.\n\n**Your four asks, verified**\n\n1. **Both M1 probes are reported** [executed with plain `node` against `findRawStateWrites`]. `let n='STATE.md'; if (x) n='ROADMAP.md'; write(path.join(d,n))` reports line 5; the braced variant, line 7; the `var` variant, line 5; and a `const m = n` alias of a reassigned `let`, line 6. The code path is `resolvedJoinFileTail` returning `null` when `!binding.isConst` (~L771), so `resolvesToStatePath` falls through to `targetsStatePath(expr)`. The one-line whole-function form still reads 0 (the cut-line rule), as you disclosed. I could not check the \"also 0 on `250b5a4f5`\" claim; it is consistent with the cut-line rule and with the pinned one-line-block rows.\n2. **\"Only removes clears, so it can only add reports\"** is true for this commit, relative to `081d4df03` and not to `next`: the single behavioral edit is `!binding.isConst` on the sole clear path, and returning `null` more often can only send more expressions to the existing report path. The 56-shape harness is therefore not needed for this claim. It does not make the *remaining* clears safe (Major 1).\n3. **m1-m4 and #5279.** m1 is filed as #5279. For m2 and m3 your instruction in the earlier review was \"fix inside `stripComments` or document\" and \"mention so the guard header does not overclaim\", and both are documented in the `findRawStateWrites` header and pinned in the `KNOWN_*_GAPS` tables, consistent with `CONTRIBUTING.md:766`. They are not findings against this head. Separately, #5279 is still `needs-triage`; that is yours to decide.\n4. **Fresh review:** below.\n\n**Classification and gates.** #5104 carries `enhancement` + `approved-enhancement` + `area: workflow`. `Closes #5104`; title `ci(#5104):`; not draft; ADR-4629 Decision 5 (no allowlist) honored. No changeset, with the `no-changelog` label and `changeset-lint` SUCCESS, which is consistent for scripts-and-tests-only CI lint. Two files, no `src/`. The script is already wired in `lint:ci` (`package.json:142`).\n\n**Tests.** Assertions read `findRawStateWrites` output; no source-grep, no wall-clock; a CRLF row is present; the CLI `--root` row asserts findings lines [5, 12]. The main resolution chain has MAX-1 / MAX / MAX+1 rows. The fast-check property is not vacuous: it builds three source shapes × CRLF/LF × filler × three directory expressions, and asserts the STATE.md variant yields exactly one finding at the exact line and the other-file variant yields zero. Its reach is `const` and `path.join(<dir>, '<literal>')` only.\n\n### Findings\n\n**Major 1 — false negative from the `const`-follow rule ignoring block scope** [verified, executed]\nThe rule takes the nearest textual `const` and ignores block and arrow scope. With `n` a parameter:\n\n```js\nfunction f(statePath, n){\n  const d=path.dirname(statePath);\n  if (x) {\n    const n = 'ROADMAP.md';\n    use(n);\n  }\n  fs.writeFileSync(path.join(d, n), c);   // n is the parameter, may be 'STATE.md'\n}\n```\n\nreports 0; the same happens with the `const n` inside a sibling arrow body. `nearestTargetBinding` stops only at named `function` declarations, and the `const` here is block-scoped to a closed sibling block. This is the same fail-safe contradiction as your M1 (a literal clears a write another binding could aim at STATE.md), reached through scope instead of reassignment. It predates this commit, has no pinned row, and is not among the acceptance rows listed for #5279.\nFix: clear only when the const's line is at the same brace depth as the write, or when no `{`, `}` or `=>` lies between the const line and the write; otherwise fall back to the whole-expression rule. At minimum pin it as a known-gap row and add it to #5279's acceptance. Severity is judgment, under the \"unknown must not resolve to safe\" posture applied to M1; the precondition (a same-named const in a closed sibling scope plus a parameter tail on a statePath-derived directory) is narrower than M1's.\n\n**Minor 2 — no limit-1/limit/limit+1 rows for the join-tail const chain** [verified by reading]. `resolvedJoinFileTail` spends `hopsLeft` and returns `null` on exhaustion, which reports. Only the target chain (`chainFixture`) has MAX-1 / MAX / MAX+1. Add a tail chain `n0=n1=…='ROADMAP.md'` at those three lengths.\n\n**Minor 3 — the exact one-line header-line shape is not its own pinned row** [verified]. `function f(statePath){ … }` on one line reads 0. The class is pinned as a one-line block; pin this exact shape too.\n\n**Nit 4.** The PR body is stale: \"37 rows\", \"52/52 pass\", and the gsd-test run \"predates the review rounds\"; the body states Linux only for platforms, which is accurate for what was run.\n\n**Nit 5.** The `notDeepStrictEqual(gap.currentBuggyOutput, gap.expected)` assertion compares two hard-coded literals from the table row, a table-integrity check. The row going loud when the guard is fixed comes from the next line, `deepStrictEqual(lines(gap.text), gap.currentBuggyOutput)`. The PR's wording attributes the loud break to the wrong assertion; behavior is correct and matches `CONTRIBUTING.md:766`.\n\n**Nit 6.** The property's `RESERVED` list omits `function`, a legal 8-character draw from `^[a-z][a-zA-Z0-9]{0,7}$`; `const function = …` would trip `CUT_LINE_BODY_RE`. Astronomically unlikely, but add it. Also a cosmetic mid-sentence reflow in the `resolvedJoinFileTail` docblock.\n\n**Nit 7.** `BEHIND` `next` by one commit; a merge or rebase clears that and is a CI condition.\n\n**Security.** No new file-reading, argv, subprocess or path-handling surface; report output still passes through `sanitizeForReport`; the new regexes are anchored per line and the hop bound is 4. The only relevant direction is the fail-open one in Major 1; the guard is advisory CI, not a runtime boundary.\n\n**Not verified.** I did not execute any test (local `node --test` is not permitted); fail-first rests on the author's RED 2 / GREEN 89 report, and CI is green on this head.\n\n**CI.** Head `fad8de39927a`: `Required tests`, `lint-tests`, the Ubuntu shards 1-3, `Coverage gate (merged shards)`, `changeset-lint`, `docs-lint`, `QA loop walk`, `Base branch health` and the policy checks are SUCCESS; `validate-target`, `auto-merge`, `conformance test (matrix)`, `test (inert CI)` and the emitted-baseline job are SKIPPED. No failed, pending or `action_required` rows.\n\n### CodeGraph Evidence\n\nMemtrace unavailable: monthly quota exhausted, so `get_impact`, `get_symbol_context`, `recall_decision` and `find_code_review_issues` were not run. The recorded-decision check was not evaluated beyond ADR-4629. The index is of the main checkout, so branch-new symbols are absent.\n\n- `codegraph_impact findRawStateWrites`: 5 symbols (`findRawStateWrites` at `scripts/lint-state-write-path-drift.cjs:627`, `collect` :881, `main` :961, `scanMarkdownLetterAxisConsumers` in `scripts/lint-phase-id-drift.cjs:646`, and the guard's test file).\n- `codegraph_callers findRawStateWrites`: `collect` (`scripts/lint-state-write-path-drift.cjs:881`) and `tests/state-write-path-drift-guard.test.cjs`.\n- Finding: CI-only, no runtime dependents; blast radius is low.\n\n### Verdict\n\nChanges requested. Blocker 0, Major 1, Minor 2, Nit 4.\n"
+      },
+      {
+        "id": 5477747649,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-10T05:16:02Z",
+        "commit_id": "fad8de39927a6a86cc6bc34c6b205f579dcc042e",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#pullrequestreview-5477747649",
+        "body": "## Review of head `fad8de39927a` — changes requested\n\n**Summary.** This is the full pass on the same head; the earlier review (02:25Z) is not edited. The M1 fix holds and the guard is clean on the real tree. Running `findRawStateWrites` on the head again confirms the block-scope Major and adds a second one in the same family: the guard misses the headline shape (a variable holding a STATE.md path) when the declaration carries a TypeScript type annotation, and the scanned sources are TypeScript. Blocker 0, Major 2, Minor 8, Nit 7.\n\n**Classification and gates.** #5104 carries `enhancement` + `approved-enhancement` + `area: workflow`. `Closes #5104`, title `ci(#5104):`, not draft. ADR gate: ADR-4629 Decision 5 (no allowlist, terminal guard) is honored; the guard-table line references in the ADR are stale (the author declined to update them earlier). No changeset, with the `no-changelog` label and `changeset-lint` SUCCESS, which is consistent for scripts-and-tests-only CI lint; no `docs/` surface. Two files, no `src/`; the script is wired in `lint:ci`.\n\n**Acceptance, #5104 Layer 1 (as approved)**\n1. Capture `fs.writeFileSync`'s first argument across line breaks over comment-stripped text — Met.\n2. Resolve a non-`statePath`, non-literal target through same-function assignments with a bounded hop count — **Partial**: Met for the chain with a 4-hop bound; the block-scope and typed-declaration holes (Majors 1 and 2) mean a real write reads 0.\n3. Treat a `for...of` or destructuring binding as unresolved — Met.\n4. Reuse `nearestPrecedingAssignment` — **Partial**: only the regex is shared (`assignmentLineRe`); the resolver is new (`nearestTargetBinding`), and the diff is about 1,060 lines against the issue's \"about 20 lines on top of the existing helpers\".\n5. Axis 2 only, no `src/` change, no allowlist, no dependency — Met.\n6. Failing-first fixtures per shape, a sibling-block fixture, negatives, a real-tree control — Met in shape; I did not verify a committed real-tree test (the delegated pass ran the guard against the real tree: exit 0, 0 raw writes).\n7. Miss 3 out of scope — Met; documented in the header.\n\n**Reproduction** (plain `node`, `findRawStateWrites(file, text)` on a copy of the head script; each row is the number of reported writes)\n\n| Source | Reports |\n|---|---|\n| `function f(d,c){ const p = path.join(d,'STATE.md'); fs.writeFileSync(p,c); }` (multi-line, untyped control) | 1 |\n| the same with `const p: string = …` | **0** |\n| the same with `let p: string = …` | **0** |\n| module-level `const STATE_FILENAME = 'STATE.md';` and `fs.writeFileSync(path.join(d, STATE_FILENAME), c)` | **0** |\n| `function f(statePath, n){ const d = path.dirname(statePath); if (x) { const n = 'ROADMAP.md'; use(n); } fs.writeFileSync(path.join(d, n), c); }` | **0** |\n\n### Findings\n\n**Major 1 — the `const`-follow rule ignores block and arrow scope: a literal in a closed sibling scope clears a real write** [verified: last row; carried] `nearestTargetBinding` stops only at named `function` declarations, so a `const n = 'ROADMAP.md'` inside a closed sibling block or arrow body hides a parameter `n` that may be `STATE.md`. A worse variant needs no parameter: an outer `const n = 'STATE.md'` followed by a closed-block `const n = 'ROADMAP.md'` and `write(join(d, n))` reads 0 although the write provably lands on STATE.md (the delegated pass's probes; the one-line-block and arrow-body variants also read 0). This is the same fail-safe contradiction as the earlier M1 (a literal must never clear a write another binding could aim at STATE.md), reached through scope instead of reassignment; it has no pinned row and is not in #5279's acceptance. Fix: clear only when the const's line is at the write's brace depth, or no `{`, `}` or `=>` lies between the const line and the write; otherwise fall to the whole-expression rule. At minimum pin it as a known-gap row and add it to #5279.\n\n**Major 2 — a TypeScript type annotation hides the binding: the guard misses `const p: string = path.join(d, 'STATE.md')`** [verified: rows 2-3; isolated pass rated this Major] `assignmentLineRe` (`scripts/lint-state-write-path-drift.cjs` ~491-492) requires `name\\s*=`, so `name: Type =` never matches and resolution returns unresolved, which reads as \"no STATE.md write\". The scanned sources (`src/*.cts`) are TypeScript, so the issue's headline shape is missed in the language the guard protects. The regex is shared with Axis 3, so allow an optional `:\\s*<type>` before `=`, re-run Axis 3's rows, and add fixtures for typed `const`/`let` and a typed join tail.\n\n**Minor 1 — no limit-1/limit/limit+1 rows for the join-tail chain** [verified] `chainFixture` covers `MAX_TARGET_RESOLUTION_HOPS` for the target chain only; `resolvedJoinFileTail` has its own `hopsLeft` budget (the delegated probe: `d = dirname(statePath)`, `n0 = 'ROADMAP.md'`, chain `n_k = n_{k-1}`, `write(join(d, n_h))`: h = 2 and 3 read 0, h = 4, 5, 6 read 1). Add a tail chain at the three lengths.\n\n**Minor 2 — the exact one-line function and arrow shapes are not pinned** [verified] `function w(){ const p = join(dir,'STATE.md'); fs.writeFileSync(p,c); }` and the one-line arrow read 0 (the cut-line rule); only the one-line `if` block (~:1166) is its own row.\n\n**Minor 3 — a module-level constant file name is a false negative that the header does not list** [verified: row 4; isolated pass] `const STATE_FILENAME = 'STATE.md'` outside the function, used inside it, reads 0; this is a more common real shape than the Map-key case the header lists.\n\n**Minor 4 — the header and the gap tables do not record the three verified gaps** [Standards pass, rated Major there] `findRawStateWrites`'s header lists only the Map-key miss plus the string/comment and write-API gaps, and says the tests pin each known gap; the typed declaration, the module constant and block shadowing have no characterization row (`CONTRIBUTING.md:766`: record known-broken behavior as `expected*` plus `currentBuggyOutput`), although the PR does this for 14 other shapes. With no allowlist (ADR-4629 Decision 5) an unrecorded false negative has no other record. Some `KNOWN_TAIL_GAPS` rows (\"parameter\", \"interpolated template\") are deliberate fallback behavior, not defects, and are filed under \"currently wrong\".\n\n**Minor 5 — property-test breadth** [Standards pass; verified for `RESERVED`] One `fc` property covers `const` plus `path.join(<dir>,'<literal>')` over three source shapes and four file names; it generates no wrapped calls, typed declarations, hop-chain depth, `let`/`var` or shadowing, which is why Majors 1 and 2 survive it, and it is built from the author's own resolver shapes. `RESERVED` omits `function`, a legal draw from `^[a-z][a-zA-Z0-9]{0,7}$` (`const function = …` would trip `CUT_LINE_BODY_RE`); `joinLastSegment`, `splitStatements` and `templateInterpolations` have no direct property.\n\n**Minor 6 — the path-tail pre-check changes the existing `statePath` verdict** [Spec pass, judgment] A tail that resolves to a non-STATE literal now returns false before `targetsStatePath` runs (`const n = 'ROADMAP.md'; path.join(statePathDir, n)` no longer reports), arguably correct; with no allowlist to recover from either error, please state the narrowed rule in the PR body and confirm it is intended.\n\n**Minor 7 — scope and the reuse requirement** [Spec pass, judgment] About 300 added script lines (a second resolver, `+=` handling, same-line statement splitting, template-interpolation parsing, a `CUT_LINE_BODY_RE` heuristic, CRLF normalization, a regex cache) against \"about 20 lines on top of the existing helpers\", and `nearestPrecedingAssignment` is not reused; `bindingRegexCache` is module-level mutable state; `resolvedJoinFileTail` and `resolvesToStatePath` each walk the binding chain with their own hop budget and `seen` handling.\n\n**Minor 8 — false-positive classes with no way to clear them** [isolated pass, verified] A shadowing parameter with the same name in an arrow or method (`const p = join(d,'STATE.md'); const w = (p) => { fs.writeFileSync(p,c); }` reports 1), targets derived from the state file's content or name (`const p = readIt(path.join(d,'STATE.md')); fs.writeFileSync(p,c)` reports 1), `STATE.md.bak` literals, and a string that spells the call; the current tree contains none of these shapes (scan 0), and ADR-4629 Decision 5 forbids an allowlist.\n\n**Nit 1** [verified] The documented-gap call shapes can be written by a contributor: `require('fs').writeFileSync(statePath,c)`, an alias (`nfs.writeFileSync`), destructured `writeFileSync`, `fs.promises.writeFile`, `fs.appendFileSync`, `fs . writeFileSync (`, and `fs.renameSync(tmp, statePath)` all read 0; a `//` inside a string on the same line hides the call (`const u='http://x'; fs.writeFileSync(statePath,c);` reads 0).\n**Nit 2** [verified] Per-call backward resolution is quadratic in the number of unresolved calls: 500 calls in one file take 84 ms, 2,000 take 713 ms, 5,000 take 5.2 s; not reachable on the current tree.\n**Nit 3** [verified] The PR body is stale (\"37 rows\", \"52/52 pass\", a gsd-test run that predates the review rounds).\n**Nit 4** [verified] `notDeepStrictEqual(gap.currentBuggyOutput, gap.expected)` compares two table literals; the \"loud when fixed\" break comes from the next `deepStrictEqual`, so the body attributes it to the wrong assertion.\n**Nit 5** [judgment] The shared `assignmentLineRe` couples Axis 3 to Axis 2, so a regex change for one silently alters the other; add a parity assertion (Generative Fix Divergence).\n**Nit 6** [judgment] Test comments still say \"review round 3/4\" (process noise in committed tests); `ADR-4629`'s guard-table line references are stale and the `no-changelog` label description says docs-only.\n**Nit 7** [verified] The branch is `BEHIND` `next` by one commit (a rebase is a CI condition; `next`'s commit touches neither file).\n\n**Security.** No new file-reading, argv, subprocess or path surface (applied inline over this diff); output still passes through `sanitizeForReport`; the new regexes are per line and the hop bound is 4. The only relevant direction is the fail-open one in Majors 1 and 2; the guard is advisory CI, not a runtime boundary.\n\n### Passes run\n| Pass | Result |\n|---|---|\n| ADR gate | read ADR-4629 Decision 5, ADR-3473 §8.6, ADR-3408 D5: consistent |\n| `/writing-documentation-with-diataxis` | not applicable: scripts and tests only, no `docs/` surface (applied inline) |\n| Functional checklist | acceptance table above |\n| `/qa-test-architect` | run; Minors 1, 2, 5, Nits 4 and 6 |\n| `/code-review` | run as two parallel sub-agents: Standards (Minors 4 and 5, Nit 5) and Spec (Minors 6 and 7, acceptance 4) |\n| `/security-review` | applied inline: no finding (CI-only guard) |\n| `/rubber-duck` | run; \"a literal must never clear a write another binding could aim at STATE.md\" fails for scope and for typed declarations |\n| `/codebase-design` | run; two partial parsers (`nearestTargetBinding`, `nearestPrecedingAssignment`) share one regex and neither owns \"which binding does this name refer to\" |\n| `/skills-from-the-artificer` (`consolidation-review`) | run; block below |\n| Isolated adversarial pass | run by a fresh agent with no prior context (about 140 crafted inputs); found Major 2 and Minors 3 and 8 |\n\n**Not run** (Memtrace is unavailable): the Deterministic Review Pass (`detect_changes`, `find_cross_module_issues`, `find_code_review_issues`, `find_yaml_rule_matches`, `review_github_pr`), `preflight_check`, risk tiering (`find_central_symbols`, `find_bridge_symbols`), the recorded-decision check (`recall_decision`, `governing_rules`) and the co-change gate. None is reported clean. I did not execute any test (local `node --test` is not permitted); Stryker is not among the rollup rows, so the 80% threshold is not evaluated.\n\n## Laws that apply\nSubject: PR #5119 makes the raw STATE.md write guard follow wrapped calls and same-function variable targets with text-based binding resolution.\n- **greenspuns-tenth-rule** — fired: the guard now reimplements scoping, hop-bounded binding resolution, statement splitting and template parsing with regexes over text (`nearestTargetBinding`, `lastBindingInText`, `CUT_LINE_BODY_RE`), which is an ad-hoc, partial JavaScript/TypeScript parser. Action: Majors 1 and 2; consider an existing parser over text heuristics.\n- **goodharts-law** — fired: a green guard and a green property test do not mean \"no raw STATE.md write exists\"; the generators never produce typed, shadowed or module-constant shapes. Action: Minor 5.\n- **postels-law** — fired: unresolved input is treated as \"not a write\" (lenient) where the guard's purpose requires \"unknown must not resolve to safe\"; the earlier M1 applied that to `let`/`var`, but scope and type annotations still resolve to safe. Action: Majors 1 and 2.\n- **hyrums-law** — fired: contributors will learn which shapes the guard passes and write that way, so the known-gap list becomes the interface; unrecorded gaps (Minor 4) are worse. Action: Minors 3 and 4.\n- **leaky-abstractions** — fired: the guard's text model leaks the language (TypeScript annotations, block scope, arrow bodies), which it cannot see. Action: Majors 1 and 2.\nConsidered and cleared: kerckhoffs-principle (advisory CI guard, not a runtime boundary), kernighans-law (covered by Minor 7), knuths-optimization-principle (the quadratic cost is Nit 2).\n\n**CI.** Head `fad8de39927a`: every row is SUCCESS or SKIPPED (`Required tests`, `lint-tests`, the Ubuntu shards, `Coverage gate`, `QA loop walk`, `changeset-lint`, `docs-lint`, `security`, and the policy checks); no failure, pending or `action_required` run. The branch is `BEHIND` `next` by one commit. I am not approving: the Majors need a push.\n\n### CodeGraph Evidence\n\nMemtrace unavailable: monthly quota exhausted and the server disconnected, so `get_impact`, `get_symbol_context`, `recall_decision` and `find_code_review_issues` were not run, and the recorded-decision check was not evaluated beyond ADR-4629.\n\n- `codegraph_impact findRawStateWrites`: 5 symbols (`findRawStateWrites` at `scripts/lint-state-write-path-drift.cjs:627`, `collect` :881, `main` :961, `scanMarkdownLetterAxisConsumers` in `scripts/lint-phase-id-drift.cjs:646`, and the guard's test file); `codegraph_callers`: `collect` and `tests/state-write-path-drift-guard.test.cjs`. The index is the main checkout, so branch-new symbols are absent and the head behavior was exercised through a copy of the head script.\n- Finding: CI-only with no runtime dependents, so the blast radius is low; the risk is a guard that reads green on shapes it cannot see.\n\n### Verdict\n\nChanges requested. Blocker 0, Major 2, Minor 8, Nit 7.\n"
+      },
+      {
+        "id": 5512635344,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-14T03:15:07Z",
+        "commit_id": "3a6b4fb958fd1332f67db6739f96380fe77799fb",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#pullrequestreview-5512635344",
+        "body": "## Review of head `3a6b4fb958fd` — changes requested (scope)\n\n**Summary.** Majors 1 and 2 from the last review are fixed (verified by running `findRawStateWrites` on the head: typed `const`/`let`, sibling-block and closure writes now report). CI at this head: every row SUCCESS or SKIPPED; branch is `BEHIND` next by 40 commits, rebase is clean. I am not approving: the diff goes well past what #5104 approved.\n\n**Classification and gates.** `approved-enhancement`, `Closes #5104`, `ci(#5104):`, not draft, ADR-4629 D5 honored, no changeset (`no-changelog`), scripts + tests only.\n\n**Scope against the issue (Layer 1: wrapped call capture; same-function resolution reusing `nearestPrecedingAssignment` with a bounded hop count; for...of/destructuring unresolved).**\n- Major 1: about 480 added script lines and about 1,070 test lines against \"about 20 lines\". Not in the issue: the join-tail pre-check (changes existing verdicts), the CRLF normalization, the template-interpolation parser, `+=` handling, same-line statement splitting. The typed-annotation grammar also changes Axis 3's regex (\"Axis 2 only\"). Items I requested (the boundary rule, typed declarations) may stay; the others should be removed or moved to their own issue first.\n- Major 2: the issue says to reuse `nearestPrecedingAssignment`; the PR adds `nearestTargetBinding` / `lastBindingInText` beside it. Only the regex is shared. Extend the existing helper, or record the waiver.\n- Minor: `resolvedJoinFileTail` and `resolvesToStatePath` each walk the chain with their own budget and `seen` set; fold into the single resolver. Minor: document the `ctx` shape. Minor: the header still lists module-level constants and one-line bodies as false negatives; fine as documented, but the guard's zero does not prove no raw writer remains.\n- Nit: PR body Testing section cites head `29f3b6e17` / 167 tests. Nit: rebase onto `next` (`git fetch origin && git rebase origin/next`).\n\n**Security.** No new read/argv/subprocess surface; CI-only advisory guard.\n**Verdict.** Changes requested. Blocker 0, Major 2, Minor 3, Nit 2.\n\n### Memtrace Evidence\nThe Memtrace MCP server was unavailable for this review (it failed to connect: `memtrace` not found in PATH), so no graph-backed check ran. None of the four checks below is a clean result.\n- `get_impact`: not run. Blast radius comes from reading the diff and grepping callers.\n- `get_symbol_context`: not run. Callers and callees of the changed symbols were checked by grep.\n- `recall_decision`: not run. The recorded-decision gate did not execute, so this does not show that no decision governs the change. ADRs and `CONTEXT.md` predicates were checked by grep instead.\n- `find_code_review_issues`: not run. The deterministic review pass did not run. A manual diff review stood in for it, so the findings above are judgment, not graph facts.\n"
+      },
+      {
+        "id": 5558390402,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-17T15:07:48Z",
+        "commit_id": "a7257be6f9061a1d06d2dd8b395ec8eeedb85bdf",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#pullrequestreview-5558390402",
+        "body": "## Review — ci(#5104): the raw STATE.md write guard sees wrapped calls and same-function variable targets\n\nHead reviewed: `a7257be6f9061a1d06d2dd8b395ec8eeedb85bdf` (gh pr view this turn: mergeable=MERGEABLE, mergeStateStatus=BEHIND, reviewDecision=CHANGES_REQUESTED). Re-review of trek-e's 2026-10-14 review 5512635344 (Majors 1-2, Minors 1-3, Nits) and the earlier rounds.\n\n### Summary\nThe scope cut landed. Prior Major 1 (scope), Major 2 (second resolver), Minors 1-3 and the rebase nit are resolved at this head. Delta reviewed in full (scripts/lint-state-write-path-drift.cjs +179/-25, tests/state-write-path-drift-guard.test.cjs +452). Two Minors remain from executed probes, plus two Nits. Zero tolerance applies, so changes requested.\n\n### Classification & gate compliance\n- Enhancement track; #5104 `approved-enhancement`; `Closes #5104`; title `ci(#5104):`; not draft; ADR-4629 Decision 5 (no allowlist) honored; ADR-3408 Decision 5 caveat now stated in the header.\n- Labels `area: workflow`, `no-changelog`; no changeset needed (CI-only guard). No docs/ change; no inventory surface.\n- PR body follows the Enhancement template. Branch is BEHIND next (merge-base 46a119f06, next at f7efbf110a); the two PR files are not touched on next, so the rebase is clean.\n\n### Prior findings at this head\n- Major 1 scope: FIXED. join-tail pre-check, CRLF normalization, template parser, `+=`, statement splitting are gone; each shape is a known-gap row. \n- Major 2 second resolver: FIXED. `nearestTargetBinding`/`lastBindingInText` removed; Axis 2 calls `nearestPrecedingAssignment` with opt-in options (typed, stopAtPatternBinding, withLine). Axis 3 passes none; the added `includes(varName)` skip cannot change Axis 3 (a line without the name cannot match `assignRe`).\n- Minor 1 single hop budget: FIXED (one `resolvesToStatePath`). Minor 2 ctx doc: moot (ctx removed). Minor 3 header caveat: FIXED (file header and function header). Nits: PR body head sha updated; rebase still outstanding (Nit 2 below).\n\n### Must-Have Acceptance Checklist (#5104 Layer 1)\n- [x] Wrapped call captured over comment-stripped joined text (executed: 1 finding at the call line).\n- [x] Variable target resolved through same-function assignments, bounded (MAX_TARGET_RESOLUTION_HOPS=4, exported; limit-1/limit/limit+1 rows).\n- [x] for...of / destructuring stop as unresolved (`bindsByPattern`).\n- [x] Reuses `nearestPrecedingAssignment`.\n- [x] Axis 2 only, no src/ change, no allowlist, no dependency.\n- [x] Tests: wrapped, variable, one-line, boundary rule, typed, hop bound, real-tree `--root`, property.\n- [x] Miss 3 (roadmap-upgrade) out of scope per ruling; #5120 and #5279 are cited.\n\n### Root-cause / functional verdict\nRoot cause: Axis 2 matched the literal `statePath`/`STATE.md` text of a per-line first argument, so a wrapped call yielded an empty target and a variable target was never followed. The fix is at the scanner (joined text + bounded resolver), not a special case. Executed probes at head: wrapped=1, one-line `const p = path.join(d,'STATE.md'); fs.writeFileSync(p,c)`=1, statePath-derived dir + ROADMAP.md tail=1 (documented by-design false positive), 5-hop chain=0 (documented bound).\n\n### Blast radius\nCI-only lint script (`lint:ci`); `findRawStateWrites` callers are `collect`/`main` in the same script and the test. Only new export: `MAX_TARGET_RESOLUTION_HOPS`. `nearestPrecedingAssignment` has one other caller (Axis 3), behavior unchanged without options. Risk low.\n\n### Co-change completeness\nScript and test both in the diff. No CONTEXT.md, docs, inventory or changeset surface applies.\n\n### Test quality\n- Fail-first: PR reports 24 of 82 fail with next's script; the property asserts the hop-bound export first, so it fails at once on base.\n- No source-grep, no wall-clock, no `todo`. One `fc.assert` property (line 1081) over typed declarations, const/let/var, chains up to the bound, wrapped calls and sibling-block redeclarations.\n- Known-gap rows assert `expected` beside `currentBuggyOutput`, so they fail loudly when a fix lands.\n- CRLF: no passing fixture; see Minor 2.\n\n### Memtrace Evidence\n- get_impact: UNAVAILABLE — Memtrace MCP failed to connect (ENOENT). Used `gh pr diff` and a caller read instead: `findRawStateWrites` callers `collect`/`main`; `nearestPrecedingAssignment` callers are Axis 3 and Axis 2.\n- get_symbol_context: UNAVAILABLE — Memtrace MCP failed to connect (ENOENT). Read both functions at the head sha.\n- recall_decision: UNAVAILABLE — Memtrace MCP failed to connect (ENOENT). ADR-4629 D5 and ADR-3408 D5 checked from the PR text and trek-e's prior reviews, not from the decision store.\n- find_code_review_issues: UNAVAILABLE — Memtrace MCP failed to connect (ENOENT). Manual diff review plus executed probes (script loaded in a scratch worktree of refs/prrev/5119, `node` script probes only, no `node --test`).\n\n### Security\nNo new file read, argv, subprocess or traversal surface; output still passes `sanitizeForReport`. See Minor 1 for a resource-use finding on hostile source text.\n\n### Findings\n**Minor**\n1. (executed probe, judgment on severity) scripts/lint-state-write-path-drift.cjs `resolvesToStatePath` (about line 705-718): the recursion branches over every identifier of the expression and, past a `{`/`}`/`=>` boundary, over every earlier binding of each name, to depth 4, with no visited set. A file with 60 `let vN = v0+...+v59;` lines each followed by `{ }`, then `fs.writeFileSync(v0+...+v59, c)`, took 20.4 s to scan with a 0 result. Source files are untrusted input to `lint:ci`; a fork PR can stall the lint job. Fix: memoize on `(name, fromLine, hopsLeft)` or cap total resolutions per write, and add a row with a time-free bound (count of `nearestPrecedingAssignment` calls via an injected seam, not wall clock).\n2. (executed probe, deterministic) CRLF source: `const p = path.join(d,'STATE.md');\\r\\nfs.writeFileSync(p,c)` reports 0. `nearestPrecedingAssignment`'s `([^=].*)$` does not match across `\\r`, so a Windows checkout with CRLF makes variable-target resolution blind while wrapped-call capture still works. The CRLF normalization was cut for scope (accepted), but it is listed neither as a known-gap row with its correct verdict nor in the `findRawStateWrites` header misses list was updated to say so only partially (header names it under \"a CRLF file\", but no `KNOWN_*` row pins it). Fix: add a known-gap row (expected 1, currentBuggyOutput 0), or make the capture `[^\\n]*` for Axis 2 via the options object.\n\n**Nit**\n3. Branch is BEHIND next (merge-base 46a119f06 vs f7efbf110a); `git fetch origin && git rebase origin/next` (no overlap with the 2 files).\n4. ADR-4629 guard-table line refs (`:606,564`) stay stale; contributor declined the edit in earlier rounds, still open as trek-e's Nit 7/n2.\n\n### CI\nLatest-per-name check runs for head a7257be6f: 0 non-success/non-skipped (35 SUCCESS, 7 SKIPPED, 3 CANCELLED earlier-run entries superseded by later SUCCESS reruns). action_required runs for this sha: 0. Pending: 0.\n\n### Verdict\nChanges requested (0 Blocker, 0 Major, 2 Minor, 2 Nit). Substance is close; the scope cut resolved the earlier Majors.\n"
+      },
+      {
+        "id": 5563197184,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-18T13:34:06Z",
+        "commit_id": "472cfb2575a713232006dc9e7969d53699d1aede",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#pullrequestreview-5563197184",
+        "body": "## Review — ci(#5104): the raw STATE.md write guard sees wrapped calls and same-function variable targets\n\nHead reviewed: `472cfb2575a713232006dc9e7969d53699d1aede` (gh pr view this turn: mergeable=MERGEABLE, mergeStateStatus=BEHIND, reviewDecision=CHANGES_REQUESTED).\n\n### Summary\nRe-review of trek-e's 2026-10-17 review (head `a7257be6f`, Minors 1-2, Nits 3-4). The delta since that review is one commit, `472cfb2575` (script +53/-12, test +25). Prior Minor 2 (CRLF known-gap row) is resolved. Prior Minor 1 (resolution cost on hostile source) is only partly resolved: the exponential branching is memoized, but an executed probe still stalls the guard on a hostile line. Zero tolerance applies, so changes requested.\n\n### Classification & gate compliance\n- Enhancement track. #5104 carries `enhancement` + `approved-enhancement` + `area: workflow`. Approval comment from trek-e scopes Layer 1 (Axis 2 only); the diff touches only `scripts/lint-state-write-path-drift.cjs` and `tests/state-write-path-drift-guard.test.cjs`.\n- `Closes #5104` present; title `ci(#5104):` conventional; not draft; branch `feat/5104-axis2-variable-and-multiline-target` matches `<prefix>/NNN-slug`; Enhancement template used.\n- Labels `no-changelog`, `area: workflow`, `review: changes requested`. CI-only guard, no changeset, no docs surface, no inventory surface. Consistent.\n- ADR-4629 Decision 5 (no allowlist) honored; ADR-3408 Decision 5 caveat is in the file header. Memtrace unavailable, so ADRs were checked from the issue and PR text.\n- Branch is BEHIND `origin/next` (merge-base `755bf26f0`, next at `274f8cae1`). `git diff 755bf26f0 origin/next` is empty for both PR files, so the rebase is clean.\n\n### Must-Have Acceptance Checklist (#5104 Layer 1)\n- [x] Wrapped `fs.writeFileSync` first argument captured over comment-stripped joined text.\n- [x] Non-`statePath`/non-literal target resolved through same-function assignments, bounded (`MAX_TARGET_RESOLUTION_HOPS` = 4, exported, limit-1/limit/limit+1 rows).\n- [x] `for...of` / destructuring binding stops resolution as unresolved.\n- [x] Reuses `nearestPrecedingAssignment` (opt-in options, Axis 3 passes none).\n- [x] Axis 2 only; no `src/` change, no allowlist, no new dependency.\n- [x] Failing-first fixtures, negatives, sibling-block fixture, real-tree control. Miss 3 correctly out of scope (#5120, #5279).\n- [ ] Not an issue criterion but an issue-stated posture (\"same string-match posture\"): the guard runs on untrusted source in `lint:ci`; see Minor 1.\n\n### Prior findings at this head (trek-e review of `a7257be6f`)\n- Minor 1 (hostile-source resolution cost): PARTLY FIXED. `resolvesToStatePath` now memoizes per write on (name, index, hopsLeft); the 20-name branching shape is bounded by a counted seam. Residuals remain, see Finding 1.\n- Minor 2 (CRLF known-gap row): FIXED. `tests/state-write-path-drift-guard.test.cjs:928-933` pins `expected: [3]` beside `currentBuggyOutput: []`.\n- Nit 3 (behind next): OPEN.\n- Nit 4 (ADR-4629 line refs `:606,564` stale): OPEN, author declined again; author suggests citing the symbol name instead.\n\n### Root-cause / functional verdict\nRoot cause (unchanged, verified): Axis 2 matched the literal `statePath`/`STATE.md` text of a per-line first argument, so a wrapped call produced an empty target and a variable target was never followed. The fix is in the scanner (joined text plus bounded resolver), not a special case.\n\nDelta check of `472cfb2575`: the memo key `name\\0index\\0hopsLeft` fully determines the verdict (inputs are `scanLines`, which is fixed per write, plus those three), so it changes no verdict. `findRawStateWrites(rel, text, stats = {})`: the only callers are `collect` (2 args) and the test file; no `.map(findRawStateWrites)` index-as-third-argument hazard. `stats.assignmentLookups` is reset per call. Executed at head (scratch worktree, `node` probe scripts only): shape from the bound row with N=20 and 40 writes: 67760 lookups, 317 ms, 0 findings; N=60, 1 write: 483 ms. The memo works for the shape it was built for.\n\n### Blast radius\nCI-only lint script (`lint:ci`). `findRawStateWrites` callers: `collect` and the test. `nearestPrecedingAssignment` callers: Axis 2 and Axis 3 (Axis 3 passes no options; unchanged). New exports: `MAX_TARGET_RESOLUTION_HOPS`. Risk low. Real-tree result stays `rawWriteViolations: 0` per CI.\n\n### Co-change completeness\nScript and test both in the diff. No CONTEXT.md, docs, changeset or inventory surface applies for a CI-only guard with `no-changelog`.\n\n### Test quality\n- Fail-first: author reports 25 of 83 tests fail with `next`'s script; the property asserts the hop-bound export first. The new bound row fails on any script lacking the `stats` seam (`typeof stats.assignmentLookups`), and per author's measurement fails without the memo (33215 vs bound 3360).\n- Bound row is counted, not timed; no wall-clock assertion. No source-grep, no `todo`. One `fc.assert` property (line 1106).\n- Known-gap rows assert `expected` beside `currentBuggyOutput` and that they differ.\n- The new bound row does not cover the whitespace-backtracking or many-writes shapes (Finding 1); the row's own comment says so.\n\n### Memtrace Evidence\n- get_impact: UNAVAILABLE — Memtrace MCP failed to connect (ENOENT). Used instead: `git grep` for `findRawStateWrites` callers (script and test only) and the diff of `nearestPrecedingAssignment` callers.\n- get_symbol_context: UNAVAILABLE — Memtrace MCP failed to connect (ENOENT). Read `resolvesToStatePath`, `nameResolvesToStatePath`, `findRawStateWrites` at the head sha from `git diff refs/prrev/5119~1 refs/prrev/5119`.\n- recall_decision: UNAVAILABLE — Memtrace MCP failed to connect (ENOENT). ADR-4629 D5 / ADR-3408 D5 taken from the issue, the PR body and trek-e's prior reviews, not the decision store.\n- find_code_review_issues: UNAVAILABLE — Memtrace MCP failed to connect (ENOENT). Manual diff review plus executed probe scripts (no `node --test`) in a scratch worktree of the head.\n\n### Security\nNo new file read, argv, subprocess or traversal surface; findings still pass `sanitizeForReport`. Resource use on hostile source text is the one open item (Finding 1): source files are untrusted input to `lint:ci` (CONTRIBUTING hostile-input rule), and a fork PR can stall the lint job.\n\n### CI\nLatest-per-name check runs for `472cfb2575`: 23 success, 5 skipped, 0 failing, 0 pending, 0 other non-success. `action_required` runs for this head sha: none (`[]`). Note: 28 check runs listed for this head versus 35 success + 7 skipped on `a7257be6f`; the maintainer should confirm the full matrix executed (the PR is BEHIND, and the count is lower).\n\n### Findings\n**Minor**\n1. (executed probe, deterministic; severity is judgment) `scripts/lint-state-write-path-drift.cjs` `resolvesToStatePath`/`nameResolvesToStatePath` (about lines 722-755) and the assignment regex used through `nearestPrecedingAssignment`: the memo is rebuilt for every write, and each lookup is a line scan whose regex backtracks on a long whitespace run. The doc comment states both residuals (\"Neither is bounded here\"). Executed at head: a single source line `  const p<40000 spaces>x;` followed by N copies of `fs.writeFileSync(p, c);` in one function: N=1 1179 ms, N=5 6369 ms, N=20 22581 ms, 0 findings. Same input on the whitespace placed after the `=` right-hand side: 3 ms, so the cost is in the binding regex prefix. The author's own numbers (40-write shape 48.6 s) agree. Source files are untrusted input to `lint:ci`; this is the same stall class as the earlier Minor 1. Fix: cache the binding lookup per file (key `name`, `from`) instead of per write, and make the regex prefix linear (for example `[ \\t]*` bounded or a `[^\\S\\n]` form shared with Axis 3, confirming identical Axis 3 verdicts), or cap the total lookups per file with a degraded verdict; add a counted-seam row for the many-writes shape. The author asked which of (b) per-file budget or (c) linear prefix to take; the maintainer must answer, and either is acceptable.\n2. (judgment) `scripts/lint-state-write-path-drift.cjs` `findRawStateWrites(rel, text, stats = {})`: a test-only seam sits in the production signature and its doc comment records that `null` throws and that the count is overwritten per call. Fix: accept `stats` and guard with `if (stats) stats.assignmentLookups = 0` (or default via a module-private counter), so `null` does not throw.\n\n**Nit**\n3. Branch is BEHIND `origin/next` (`274f8cae1`); `git fetch origin && git rebase origin/next` (no overlap with the two files).\n4. `tests/state-write-path-drift-guard.test.cjs` around line 768: the new row comment cites \"#5119 review 5558390402\" and \"when this row was added\" measurements. Review-round references in comments age badly (the author removed the same kind earlier); state the rule, not the review.\n5. ADR-4629 guard-table line refs (`:606,564`) are still stale; author declined again and suggested citing the symbol name. Still open from trek-e's earlier Nit.\n\n**Open author questions (unanswered, need the maintainer)**\n- (a) Restore only the inline-literal-tail stop so `path.join(path.dirname(statePath), 'ROADMAP.md')` through a variable stays unflagged, or keep it pinned as a documented known gap?\n- (b) vs (c) for the Finding 1 residuals.\n\n### Verdict\nChanges requested (0 Blocker, 0 Major, 2 Minor, 3 Nit). Substance is close; the exponential case is fixed and the CRLF gap is pinned. The remaining Minor is a reproducible stall on a hostile single line.\n"
+      },
+      {
+        "id": 5608091717,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-22T01:07:53Z",
+        "commit_id": "8cea5f84340014990a78ac2053f0739d6983c6aa",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#pullrequestreview-5608091717",
+        "body": "## Review — ci(#5104): the raw STATE.md write guard sees wrapped calls and same-function variable targets\n\nHead reviewed: `8cea5f84340014990a78ac2053f0739d6983c6aa` (`git rev-parse refs/prrev/5119` and `gh pr view 5119 --json headRefOid` both returned it this turn). Same call: `mergeable=MERGEABLE`, `mergeStateStatus=BLOCKED`, `reviewDecision=CHANGES_REQUESTED`. Checked this turn: `origin/next` is 9 commits ahead of the head; none of them touches `scripts/lint-state-write-path-drift.cjs` or `tests/state-write-path-drift-guard.test.cjs`, so the PR files do not conflict.\n\n### Summary\nRe-review of trek-e's 2026-10-18 review (head `472cfb257`, Minors 1-2, Nits 3-5). The delta is one rewrite of the assignment reader. The head split the backtracking assignment regex in two (`assignmentHeadRegex` + `assignedValue`) and added a per-file lookup cache. I confirmed the rewrite is behaviour-preserving and that the quadratic whitespace shapes are now linear. Prior Minor 2 is fixed and Nits 3 and 4 are done. Nit 5 stays declined. Prior Minor 1 is only partly fixed: the whitespace-run shapes I probed are now linear, but the author discloses that other hostile-line and hostile-file shapes remain superlinear. I reproduced one of them at file scale (about 12 s for a 228 KB file), see Finding 1. There is also one new Nit (a raw U+2028 in the test source). Changes requested.\n\n### Classification & gate compliance\n- Enhancement track. #5104 is OPEN with labels `enhancement`, `approved-enhancement`, `area: workflow`. Scope is Layer 1 (Axis 2 only). The diff touches only the script and its test file.\n- `Closes #5104` present. Title `ci(#5104):` is conventional. Not a draft. Branch `feat/5104-axis2-variable-and-multiline-target` matches `<prefix>/NNN-slug`. Enhancement template used. `Pull request template format`, `Issue link required`, `validate-title` and `check-branch` are SUCCESS.\n- Labels: `no-changelog`, `area: workflow`, `review: changes requested`. CI-only guard under `scripts/`, no changeset, no `docs/` surface, no `references/`/`workflows/` files, so no inventory update. Consistent with CLAUDE.md \"Missing Docs for Changesets\" (only Added/Changed/Deprecated/Removed changesets need docs, and there is no changeset). `changeset-lint` SUCCESS, and the author reports `ok_no_user_facing_changes`.\n- Competing PRs: `gh pr list --search \"5104 in:body\" --state open` returned only #5119. Follow-up #5279 (syntax-tree Axis 2) is OPEN and is the stated home for the verified misses.\n- ADR-4629 Decision 5 (no allowlist): honoured. No allowlist or exemption added. ADR-3408 Decision 5 caveat (zero is not proof) is in the Axis 2 header (diff `scripts/...:325-343` region).\n\n### Prior-finding reconciliation (trek-e review of 2026-10-18T13:34Z, head `472cfb257`)\n- **Minor 1, hostile-source resolution cost: PARTLY FIXED.**\n  - FIXED, probed at head: the whitespace-run shapes. `const p<40000 sp>x;` with 20 writes: 3 ms. `const p =<run>\\r` plus 20 writes: 6 ms. A 5000-write CRLF file: 20 ms. A 1 MB line holding 40000 writes: 47 ms. A 20000-line assignment file: 22 ms. These match the author's table in order of magnitude.\n  - OPEN: superlinear shapes the author discloses as unbounded. At file scale I measured an unclosed `fs.writeFileSync(` per line: 3000 lines 575 ms, 6000 lines 1950 ms, 12000 lines (228 KB) 11963 ms. See Finding 1.\n- **Minor 2, `stats = {}` null throw: FIXED.** The guard is `if (stats !== null && typeof stats === 'object')` in the diff at `findRawStateWrites`. Row `stats: null or undefined receives nothing` exists. Probe shows the default no longer throws.\n- **Nit 3, behind `next`: DONE at the time of the author's rebase, now stale again.** The head is 9 commits behind current `origin/next`, with no overlap on the PR files (checked above). A rebase is not required for correctness.\n- **Nit 4, review-round references in comments: FIXED.** `grep` for `review [0-9]{6,}`, `#5119 review`, `:606`, `:564` over both files at the head returned nothing.\n- **Nit 5, stale ADR-4629 guard-table line refs: DECLINED by the author.** Reason given: the ADR text is maintainer-owned, and the author suggests citing `findRawStateWrites` by name at the next amendment. The PR does not touch the ADR, so this is not a defect in the diff. It is the maintainer's call.\n- **Author Question (a), restore the inline-literal-tail stop, or keep `path.join(path.dirname(statePath), 'ROADMAP.md')` through a variable pinned as a known false positive?** The author recommends keeping it pinned. I verified the premise at the head: the inline form `fs.writeFileSync(path.join(path.dirname(statePath),\"ROADMAP.md\"), c)` is reported (`[1]`) because `targetsStatePath` matches `\\bstatePath\\b`, and the variable form is now reported too (`[3]`). Over-reporting is the guard's declared safe direction and the real tree is at 0. The pin is documented in the header and has a known-gap row. This is a maintainer decision; see Follow-ups.\n- **Check count (35+7 vs 28):** at the head, the rollup holds 28 distinct check names (the author says 29). Zero failures and zero pending. See CI.\n\n### Functional checklist / root-cause verdict\nRoot cause (unchanged, verified): Axis 2 matched the literal `statePath`/`STATE.md` text of a per-line first argument, so a wrapped call yielded an empty target and a variable target was never followed. The fix is in the scanner (comment-stripped joined text plus a bounded resolver that reuses `nearestPrecedingAssignment`), not a special case. One owner of the \"nearest assignment\" concept is kept: Axis 3 passes no options and still reads through the same function.\n\nMust-have criteria from #5104 Layer 1, verified in code and probes:\n- [x] Wrapped first argument: `fs.writeFileSync(\\n statePath,\\n c)` reports line 1.\n- [x] Variable target through same-function assignments, hop bound `MAX_TARGET_RESOLUTION_HOPS = 4`, exported, with limit-1/limit/limit+1 rows (test `bound: chains of MAX_TARGET_RESOLUTION_HOPS - 1 and exactly MAX lookups are reported, one more is not`).\n- [x] `for...of` and destructuring bindings stop resolution (probed the binding row's shapes via the tests' diff; `LOOP_BINDING_RE` rewrite verified equivalent in the author's differential and by my fuzz below).\n- [x] Reuses `nearestPrecedingAssignment`; Axis 3 unchanged.\n- [x] Axis 2 only, no `src/` change, no allowlist, no new dependency.\n- [x] Probe results at the head: `const name = \"STATE.md\"; const p = path.join(dir, name); fs.writeFileSync(p,c)` reports line 4. Template-literal and object-property targets report. A string that spells the call is reported (documented false positive).\n\nEquivalence of the regex split (my own check, not the author's): a 300000-line fuzz over single-line inputs (alphabet includes `\\r`, U+2028, U+2029, `=`, `==`, `:`, `;`, keywords, `p`, `pp`), comparing the pre-change formulation `(?:^|[^.\\w$])T\\s*=\\s*([^=].*)$` against `nearestPrecedingAssignment` at the head, untyped and typed: 600000 comparisons, 0 differences. The terminator logic in `assignedValue` is therefore sound for single lines. Multi-line behaviour is the unchanged loop plus the cache.\n\nCache/memo soundness (reasoned from the diff): `verdicts` is keyed on `name`, `index`, `hopsLeft`, and `boundaryAfterLine(index)`. Any deeper hop's boundary flag equals that flag OR a boundary on lines between the found line and `index`, which is write-independent. So sharing across writes with the same flag is sound. `known[j]` fill covers `i..index` (or `i..index-1` for the write's own line), which matches what the scan actually traversed. No defect found.\n\n### Blast radius\nCI-only lint script (`lint:ci`). `findRawStateWrites` callers: `collect` and the test file. `nearestPrecedingAssignment` callers: Axis 2 (new options) and Axis 3 (no options, verified equivalent). New export: `MAX_TARGET_RESOLUTION_HOPS`. Real tree: author reports `rawWriteViolations: 0`; CI `lint-tests` and `Required tests` are SUCCESS. Risk low, no product runtime path.\n\n### Co-change completeness\nScript and test are both in the diff. No `CONTEXT.md`, `docs/`, changeset, or inventory surface applies to a `no-changelog` CI guard. The header cross-reference to #5279 is present.\n\n### Test quality\n- Fail-first: the author reports red runs against `472cfb257` (4 tests fail on the counted seams plus the null `TypeError`) and with the cache disabled. The new rows assert counted quantities (`assignmentLookups`, `linesRead`, `assignmentMatches`) via the `stats` seam, not time. No wall-clock assertion, no source-grep, no `todo`. Not run by me (CI only).\n- Boundary rows at `limit-1`, `limit`, `limit+1` for the hop bound. One `fc.assert` property (`property: a write whose target can be STATE.md is reported through typed, let/var, chained, wrapped and shadowed declarations`) with a hop-bound-first precondition.\n- Known-gap rows assert the correct verdict beside `currentBuggyOutput` and that they differ.\n- The new whitespace row `whitespace: a long run of spaces...` asserts verdicts only (4000 spaces); that is acceptable for a no-clock policy, and the counted rows pin the matched-head count. The many-writes-on-one-line and unclosed-call shapes have no counted row (Finding 1).\n- CRLF-safe: the CRLF known-gap row is pinned, and the head-split is exercised with `\\r` and U+2028.\n\n### Memtrace Evidence\n- `get_impact` (target `findRawStateWrites`, repo `gsd-core`): returned `ambiguous: true`, `found: false`, `risk: \"UNKNOWN\"`, three candidate declarations on branch `fix/4378-seed-id-collision` (script lines 621-646 and 627-652, test line 62). No traversal was performed. The index is stale relative to `origin/next` and the PR head: the function sits at lines 621/627 there, versus about 875 at the head. Impact radius was derived instead from `git grep`-equivalent reading of the diff (callers: `collect` and the test).\n- `get_symbol_context` (target `nearestPrecedingAssignment`): returned `ambiguous: true` with two candidates (script lines 499-507 and 505-513, same stale branch). No callers/callees (0/0) because no traversal ran. Not a clean pass.\n- `recall_decision` (query \"raw STATE.md write guard Axis 2 no allowlist ADR-4629 Decision 5\"): returned ten ranked decisions (ADR-3626, ADR-612, ADR-1016, ADR-2207, ADR-3212, ADR-2866, ADR-2719, and others). None is ADR-4629 or ADR-3408. ADR-3212 \"The Lexical Seam\" is adjacent (safe pattern construction, line-terminator normalization) but I did not find a decision it forces onto this diff. ADR-4629 and ADR-3408 were checked from the issue, the PR text and `docs/adr/4629-state-write-intent-beyond-frontmatter.md` instead.\n- `find_code_review_issues` (`review_mode: online`, `max_candidates: 50`, `repo_id: gsd-core`): `_graph_state: \"ready\"`, `_raw_count: 0`, all four source counts 0. CAVEAT: the `diff` I passed was a placeholder, not the PR diff (the 1500-line diff was not inlined), so this zero is not evidence about the PR. Not checked: deterministic AST/YAML rule pass over the real diff.\n- `detect_changes`, `find_cross_module_issues`, `preflight_check`, `governing_rules`: not run; the index predates the head, so symbol-level mappings would target stale ranges.\n\n### Security\nNo new file read, argv, subprocess, or traversal surface. Findings still go through `sanitizeForReport`. The only open item is resource use on hostile source text (Finding 1); the scanned tree is `src/`, so a fork PR can add a file there. The failure mode is a stalled or timed-out `lint:ci` job (red, not green), not a silent pass. No regex-injection route: `escapeRegex(varName)` is applied in `assignmentHeadRegex` and `bindsByPattern`. No new dependency.\n\n### CI\n`gh pr view` this turn: 28 distinct check names, 0 failing, 0 pending, 0 `action_required`. Failing: none. SKIPPED: `auto-merge`, `validate-target` (x3), `test (inert CI)`, `conformance test (${{ matrix.os }}, ...)`, `Publish emitted-baseline artifact`. SUCCESS includes `test (ubuntu-latest, 24)` plus shards 1/3, 2/3, 3/3, `Coverage gate (merged shards)`, `Required tests`, `lint-tests`, `QA loop walk (smell ratchet)`, `changeset-lint`, `docs-lint`, `security`, `Base branch health`, `GitGuardian`, `Socket Security` (both). Surfaced verbatim for the maintainer: the conformance matrix job did not execute (SKIPPED) on this head, same as the prior head per the author. The maintainer decides whether that matters for a `scripts/`-only change.\n\n### Maintainer rulings\n- **Author Question (a): keep pinned.** The `path.join(path.dirname(statePath), 'ROADMAP.md')` variable form stays a pinned known false positive: it matches the inline form already reported on `next`, over-reporting is the guard's declared safe direction, the real tree is at 0, and restoring the literal-tail stop expands string-match logic beyond approved Layer 1 (the syntax-tree rewrite is #5279).\n- **Finding 1: option (b) is required now**, not a follow-up issue. A defect in the change's own new code is fixed in the change.\n\n### Findings\n\n**Minor**\n1. (adversarial, reproduced; severity is judgment) `scripts/lint-state-write-path-drift.cjs` `findRawStateWrites` + `captureFirstArg` + `identifiersIn`, and the header paragraph \"Not bounded here\" (diff lines 360-365): the whitespace-backtracking class is fixed, but the new joined-text scan makes Axis 2 superlinear in file size for an unclosed call, where the base was linear per line.\n   - Evidence, probe at the head: `function f(){\\n` + `fs.writeFileSync(\\n` x N + `}`: N=3000 575 ms, N=6000 1950 ms, N=12000 (228 KB) 11963 ms, `assignmentLookups` stays at N, so the cost is the per-write capture and the identifier extraction over the rest of the file, which the `stats` seam does not count. The growth from 6000 to 12000 is about 6x, steeper than quadratic. The author's own disclosed table (open calls: 136 KB on one line takes 5.3 s; about 5 minutes extrapolated at 1 MB) agrees.\n   - Why it matters: source files are untrusted input to `lint:ci` (CONTRIBUTING hostile-input rule), and the prior review treated this stall class as a Minor. The author now discloses it and offers a fail-closed cap as a follow-up rather than fixing it.\n   - Required fix (maintainer ruling): cap the first-argument length or the work per write with a degraded finding reason (fail closed), plus a counted row for the open-call and many-writes-on-one-line shapes. A follow-up issue is not accepted for this.\n\n**Nit**\n2. (judgment) `tests/state-write-path-drift-guard.test.cjs:854`: `for (const end of ['\\r', '<U+2028>'])` holds a RAW U+2028 character in source (verified by code-point scan; it is the only invisible character in the diff). It is valid JS but invisible in review and trips the invisible-unicode scanners. Fix: write it as the escape `' '`.\n3. Branch is 9 commits behind `origin/next` with no overlap on the PR files; `git fetch origin && git rebase origin/next` when convenient.\n4. Carried Nit 5 (ADR-4629 guard-table refs `:606,564`): author declined; see Follow-ups.\n\n### Verdict\nChanges requested (0 Blocker, 0 Major, 1 Minor, 3 Nit). Substance is sound: the regex split is behaviour-preserving (600000-comparison fuzz, 0 diffs), the whitespace shapes are linear, the counted bounds are pinned, and CI is green with the conformance job skipped. What remains is one resource-use Minor on a hostile file (fail-closed cap required, ruled above), and one raw-character Nit.\n"
+      },
+      {
+        "id": 5622671659,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "DISMISSED",
+        "submitted_at": "2026-10-23T00:50:25Z",
+        "commit_id": "1830f52109c5f3875b5709a8b0d9140cee7ee23f",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#pullrequestreview-5622671659",
+        "body": "# Review of PR #5119 - ci(#5104): the raw STATE.md write guard sees wrapped calls and same-function variable targets\n\nFresh state (gh pr view, this turn): headRefOid 1830f52109c5f3875b5709a8b0d9140cee7ee23f, mergeable=MERGEABLE, mergeStateStatus=BLOCKED, reviewDecision=CHANGES_REQUESTED.\n\n## Summary\nRound 4 head. The delta since the last maintainer review (head 8cea5f843) is the fail-closed bounds the maintainer ruled required (option b): MAX_RAW_WRITE_TEXT_LENGTH=4096, MAX_RAW_WRITE_RESOLVER_WORK=250000000, MAX_RESOLVED_NAME_LENGTH=256, a new RAW_STATE_WRITE_UNRESOLVED reason, per-name readers, a one-pass stripQuotedStrings, counted-stats rows, and the U+2028 escape. I found no defect that fails open, no correctness regression against base, and no hang on the shapes I probed. Remaining items are Nits only (3). Substance is clean.\n\nVerified by my own execution (node scripts, not node --test; helper scripts in the scratchpad):\n- Real tree: collect() on the head returns 0 findings in 266 ms.\n- Differential, 1728 tracked source/test files, base (origin/next) guard vs head, findRawStateWrites: 0 differences in src/, scripts/, gsd-core/, hooks/, bin/. 43 files in tests/ differ, all new RAW_STATE_WRITE reports from the intended wrapped-call/variable-target detection (tests/ is not scanned by collect()).\n- Adversarial probes at head (ms / outcome): 3000 dense lines with 600 `:`/`(` each, 21 MB: 4127 ms, 1 unresolved, work 245131682 (<= budget). 2000 dense lines + 2000 distinct-name writes, 14 MB: 1362 ms, 1983 unresolved. 5000 open `fs.writeFileSync(` + newline with backtick or quote: 72/91 ms. 3000-deep nested parens: 5 ms. 100000 `fs.writeFileSync(statePath,c)`: 287 ms, 100000 raw_state_write. Basic, template-literal and typed-variable targets are reported; CRLF and `\"STATE\"+\".md\"` are not (documented or out of Layer 1 scope).\n- Invisible-character scan of both files: only U+00A7, U+2014, U+2026, U+2500. No U+2028/2029/zero-width/bidi.\n- Cache soundness re-read: nearestPrecedingAssignment returns before filling `known` whenever chargeWork fails, so an aborted scan never poisons the cache; verdict memo keys include the boundary flag; once `exhausted` is set every later write short-circuits to unresolved.\n\n## Prior-findings status (maintainer review 5608091717 at 8cea5f843, plus carried items)\n| Finding | Status at head | Evidence |\n|---|---|---|\n| Minor 1: superlinear cost on an unclosed `fs.writeFileSync(` per line (option b: fail-closed cap + counted rows) | FIXED | scripts/lint-state-write-path-drift.cjs:912 (4096 text cap), :927 (work budget), :739 (name cap), :1287-1301 (cap and budget checks before any read, reportUnresolved dedupes per line). tests: cap/budget/counted rows at tests/state-write-path-drift-guard.test.cjs:1004-1170. My probe: 5000 open calls 72 ms, 12k-class shapes under 300 ms. |\n| Nit 2: raw U+2028 in test row | FIXED | invisible-char scan of the test file shows no U+2028/2029 |\n| Nit 3: behind next | NOT FIXED (re-stale) | `git rev-list --count HEAD..origin/next` = 8 at fetch time; none of the 8 touches the two PR files (git diff --name-only HEAD...origin/next filtered on both paths: empty) |\n| Nit 5: stale ADR-4629 guard-table line refs `:606,564` | DECLINED by author, maintainer-owned | PR does not touch the ADR; not a diff defect |\n| Question (a): keep variable-form `path.join(path.dirname(statePath), 'ROADMAP.md')` pinned as a known false positive | Pinned per maintainer ruling | KNOWN_TAIL_GAPS rows at tests/...guard.test.cjs:1261-1280 |\n\n## Classification & gate compliance\n- Linked issue #5104: labels enhancement, approved-enhancement, area: workflow; state OPEN. Enhancement track; PR uses the Enhancement template; `Closes #5104` present; conventional title `ci(#5104):`; not a draft.\n- CONTEXT/CONTRIBUTING: labels `no-changelog` + `area: workflow`; changeset-lint SUCCESS. The change is a lint-only guard under scripts/ with no user-facing surface, no changeset, no docs/ surface, no references/ or workflows/ files, so no INVENTORY update. `grep` for raw_state_write / RAW_STATE_WRITE / rawWriteViolations across CONTEXT.md and docs/ returns nothing, so no vocabulary or doc surface names the new reason.\n- Scope: Axis 2 plus opt-in options on nearestPrecedingAssignment (Axis 3 passes none; the Axis 3 row at test file :1227-1241 pins unchanged output). The round-3/4 bound machinery is large (script +757 lines) but is the maintainer-ruled fix for a defect in this PR's own new code; no src/ change, no allowlist (ADR-4629 Decision 5), no new dependency.\n- Competing PRs: `gh pr list --search \"5104 in:body\" --state open` returns only #5119.\n\n## Blast radius & risk\nCI-only guard (`lint:ci`). findRawStateWrites callers: collect() and the test file. nearestPrecedingAssignment callers: Axis 2 (new options) and Axis 3 (no options). New exports: MAX_TARGET_RESOLUTION_HOPS, MAX_RAW_WRITE_TEXT_LENGTH, MAX_RAW_WRITE_RESOLVER_WORK, MAX_RESOLVED_NAME_LENGTH, LOOKUP_WORK, READER_WORK, READER_WORK_PER_CHAR, lineReadWork (consumed by the test file). Risk low; the failure mode of the new bounds is extra reports (red lint), never a silent pass. Memtrace graph limitation: see Evidence.\n\n## Co-change completeness\nScript and test file are both in the diff. get_cochange_context returned no pairs (`No co-change pairs in the selected window`, memdb has no git_commit episodes for this window). No other file is implicated.\n\n### Memtrace Evidence\nLimitation: the Memtrace index is built from the base checkout on branch `fix/4378-seed-id-collision`, which predates this PR; it does not contain this PR's code. Nothing below proves the new code is clean.\n- `get_impact` (target `findRawStateWrites`, repo_id gsd-core): returned `ambiguous: true`, `found: false`, `risk: \"UNKNOWN\"`, three candidates (script :621-646, :627-652, test :62-74) on the stale branch; \"no dependency traversal was performed\". No blast-radius numbers available. Radius derived by reading the head: callers are collect() and the test file.\n- `get_symbol_context` (symbol `nearestPrecedingAssignment`, file_path scripts/lint-state-write-path-drift.cjs): returned `ambiguous: true`, two candidates (script :499-507, :505-513), callers 0 / callees 0 because no traversal ran. Not a clean pass.\n- `recall_decision` (query \"raw STATE.md write guard Axis 2 fail-closed bounds ... ADR-4629 ADR-3408\"): ten ranked decisions (ADR-3626, ADR-612, ADR-1016, ADR-2207, ADR-3212, ADR-3408 \"STATE.md Write Path - One Declared Policy, One Write Seam\", ADR-5328, others), `fact_status: statistically_ranked`. ADR-3408 is relevant and honored (the zero-is-not-proof caveat is in the Axis 2 header). ADR-4629 was not returned; checked from the issue/PR text. ADR-3212 (lexical seam, line-terminator normalization) is adjacent; the head documents its CRLF/U+2028 behavior as pinned known gaps.\n- `find_code_review_issues`: not run directly (the 1600-line diff was not inlined into a tool parameter; a placeholder diff would be meaningless). Equivalent run: `review_github_pr` with post:false, repoRoot = my detached worktree at the head, repoId gsd-core, reviewMode online, minSeverity low, maxComments 30. Returned `ok: true, graphState: \"ready\"`, sourceCounts {ast:1, cross_module:0, online:0, yaml:0}, one comment: Medium `map_key_unchecked` at scripts/lint-state-write-path-drift.cjs:1263 (`rawLines[index]`). I checked it: stripComments (lines 254-288) returns exactly one entry per input line and `joined` is `stripped.join('\\n')`, so `lineIdx` is always a valid index into `rawLines = text.split('\\n')`. False positive, not a finding. Posted nothing.\n- `governing_rules` (scripts/lint-state-write-path-drift.cjs): `governed: true`, one rule, ADR-443 (effort/fast-mode routing); unrelated to this file.\n- `detect_changes`, `find_cross_module_issues`, `find_yaml_rule_matches`, `find_ast_review_issues` (no .py), `preflight_check`: not run as direct calls; they need the unified diff inlined as a parameter or a post-head index, and the index predates the head. The review_github_pr pass above covers the AST/YAML/cross-module detectors against the real PR diff.\n\n## Findings\nNo Blocker, no Major, no Minor.\n\nNit\n1. [judgment] scripts/lint-state-write-path-drift.cjs:1287-1290 vs header :1219-1222 and test tests/state-write-path-drift-guard.test.cjs:1152-1169. After the budget is spent, a LATER write whose first argument literally names `statePath` is reported as `raw_state_write_unresolved`, not `raw_state_write` (the exhausted check precedes any argument read; the test pins `[7, RAW_STATE_WRITE_UNRESOLVED]` for `fs.writeFileSync(statePath, c)` in function b). Still reported (fails closed), but the reason string loses a definite violation, and the header says only writes \"not yet found to name the state path\" are downgraded. Fix: either state in the header that a literal `statePath` write after exhaustion is also labeled unresolved, or run the O(argument) `targetsStatePath` check on the capped argument before the exhausted short-circuit.\n2. [judgment] scripts/lint-state-write-path-drift.cjs:555-571 (nearestPrecedingAssignment doc) lists the cache shape as `{ byName, readers, linesRead, assignmentMatches, work, maxWork, exhausted }`, but the object built at :1251 also carries `stringScanChars`, which `stripQuotedStrings`/`identifiersIn` increment (:939-941, :998). Doc drift in a comment; add the field.\n3. [deterministic] Branch is 8 commits behind origin/next (no overlap on the PR files). `git fetch origin && git rebase origin/next` when convenient. (Carried Nit 5, ADR line refs, was declined by the author and is the maintainer's call.)\n\n## CI (gh pr view this turn, head 1830f52109c5f3875b5709a8b0d9140cee7ee23f)\n- FAILURE: `Reviewed or maintainer` (advisory; resolves on approval).\n- SKIPPED: auto-merge, validate-target (x2), `test (inert CI)`, `conformance test (${{ matrix.os }}, ${{ matrix.node-version }}${{ ((matrix.shard && format(', shard {0}', matrix.shard)) || '') }})`, `Publish emitted-baseline artifact`. The conformance matrix did not execute on this head; surfaced verbatim for the maintainer's call (same as prior head).\n- SUCCESS: test (ubuntu-latest, 24) and shards 1/3, 2/3, 3/3; Coverage gate (merged shards); Required tests; lint-tests; QA loop walk (smell ratchet); changeset-lint; docs-lint; default-flip-documentation; plugin-validate; security; Base branch health; check-branch; Detect test scope; Pull request template format; validate-title; Issue link required; PR mergeability (all); Self-test report; GitGuardian; Socket Security (both).\n- No pending, no action_required, no failing check other than the advisory one. I did not run gsd-test or node --test.\n\n## Verdict\nchanges-requested under the zero-tolerance policy (3 Nits, 0 Minor/Major/Blocker). The substance is sound; if the maintainer accepts Nits as non-blocking this is approvable once the advisory `Reviewed or maintainer` check resolves.\n"
+      }
+    ]
+  ],
+  "checks": [],
+  "timeline": [
+    {
+      "event": "review_requested",
+      "created_at": "2026-09-29T18:44:25Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-09-29T18:44:25Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "Solvely-Colin"
+      }
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-09-29T18:44:25Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "jeremymcs"
+      }
+    },
+    {
+      "event": "reviewed",
+      "commit_id": "82b577714e71d1754e3adb306f76f402f5b3dbe8",
+      "id": 5371427149,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-09-30T20:09:16Z",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#pullrequestreview-5371427149"
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-03T01:07:18Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "9d7950ec009484a54c9d76664714ff90a05ae8dd"
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-03T01:08:15Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 5963947288,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#issuecomment-5963947288",
+      "body": "@trek-e thanks. I pushed `9d7950ec0`, rebased onto `next` @ `62549bf24`.\n\n1. **Fixed.** The write's line is now read up to the call. A right-hand side ends at its own `;`, a one-line chain resolves, a"
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-03T01:08:23Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-05T21:59:50Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "250b5a4f58714dc1ebe7be161678a6236edeefca"
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-05T22:00:36Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6003936263,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#issuecomment-6003936263",
+      "body": "Rebased onto `next` @ `13d37238b` (it was 65 commits behind). No conflicts, and none of the commits since touch the guard or its test. No code change: `git range-diff` shows both commits identical. He"
+    },
+    {
+      "event": "reviewed",
+      "commit_id": "250b5a4f58714dc1ebe7be161678a6236edeefca",
+      "id": 5436531471,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-10-07T01:24:40Z",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#pullrequestreview-5436531471"
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-07T03:09:57Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "081d4df03881014f1e9a62f389f401f8ecda745b"
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-07T03:10:51Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6030107205,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#issuecomment-6030107205",
+      "body": "@trek-e thanks. I pushed `081d4df03`, rebased onto `next` @ `f2077e75a`.\n\n- **m2: fixed for a tail that resolves.** A `path.join`/`path.resolve` now resolves its last argument through the same-functio"
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-07T03:10:56Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "reviewed",
+      "commit_id": "081d4df03881014f1e9a62f389f401f8ecda745b",
+      "id": 5471174433,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-10-09T14:08:14Z",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#pullrequestreview-5471174433"
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-09T19:28:51Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "fad8de39927a6a86cc6bc34c6b205f579dcc042e"
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-09T19:37:58Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6087952614,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#issuecomment-6087952614",
+      "body": "@trek-e thanks. I pushed `fad8de399`, rebased onto `next` @ `ed0f3fd55`. The earlier commits carry over unchanged.\n\n- **M1: fixed.** A join tail identifier is now followed only through `const` declara"
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-09T19:37:59Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "review_request_removed",
+      "created_at": "2026-10-09T23:44:23Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-09T23:44:27Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "reviewed",
+      "commit_id": "fad8de39927a6a86cc6bc34c6b205f579dcc042e",
+      "id": 5477112603,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-10-10T02:25:39Z",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#pullrequestreview-5477112603"
+    },
+    {
+      "event": "reviewed",
+      "commit_id": "fad8de39927a6a86cc6bc34c6b205f579dcc042e",
+      "id": 5477747649,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-10-10T05:16:02Z",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#pullrequestreview-5477747649"
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-10T21:25:53Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "29f3b6e1721bf8bbf2d34712cd740555ac8ef248"
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-10T21:26:23Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6102347848,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#issuecomment-6102347848",
+      "body": "@trek-e thanks. I pushed `29f3b6e17`, rebased onto `next` @ `651bd2f5e`. The four earlier commits are unchanged; seven new commits sit on top.\n\n- **Major 1: fixed.** A binding can clear a write only w"
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-10T21:26:25Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-12T00:59:26Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6115878983,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#issuecomment-6115878983",
+      "body": "@trek-e one more commit, `3a6b4fb95`, with no behavior change. A further adversarial pass showed my last reply overstated Minor 4 (\"the header lists every verified false negative and false positive\"):"
+    },
+    {
+      "event": "reviewed",
+      "commit_id": "3a6b4fb958fd1332f67db6739f96380fe77799fb",
+      "id": 5512635344,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-10-14T03:15:07Z",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#pullrequestreview-5512635344"
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-16T14:15:17Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "a7257be6f9061a1d06d2dd8b395ec8eeedb85bdf"
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-16T14:15:43Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6217438021,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#issuecomment-6217438021",
+      "body": "Thanks. Head is now `a7257be6f`, rebased onto `next` (46a119f06).\n\nMajor 1: cut the join-tail pre-check, CRLF normalization, the template-interpolation parser, `+=` handling and same-line statement sp"
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-16T14:15:45Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "reviewed",
+      "commit_id": "a7257be6f9061a1d06d2dd8b395ec8eeedb85bdf",
+      "id": 5558390402,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-10-17T15:07:48Z",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#pullrequestreview-5558390402"
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-18T01:34:19Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "472cfb2575a713232006dc9e7969d53699d1aede"
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-18T01:35:00Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-18T01:35:13Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6244287550,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#issuecomment-6244287550",
+      "body": "Thanks for the re-review (5558390402). Head is now `472cfb257`, rebased onto next `755bf26f0` with no conflicts (nit 3). PR body refreshed (head, base, counts).\n\n- Minor 1: lookups are now memoized pe"
+    },
+    {
+      "event": "reviewed",
+      "commit_id": "472cfb2575a713232006dc9e7969d53699d1aede",
+      "id": 5563197184,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-10-18T13:34:06Z",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#pullrequestreview-5563197184"
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-21T19:48:07Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "8cea5f84340014990a78ac2053f0739d6983c6aa"
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-21T19:48:45Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6325062544,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#issuecomment-6325062544",
+      "body": "Review 5563197184 is addressed at `8cea5f843` (rebased on `next` `812ddb5fe`).\n\n- **Minor 1, fixed.** Chose (c) plus the per-file cache: a cap (b) cannot bound one lookup. Your probe locally, before -"
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-21T19:48:52Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "reviewed",
+      "commit_id": "8cea5f84340014990a78ac2053f0739d6983c6aa",
+      "id": 5608091717,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-10-22T01:07:53Z",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#pullrequestreview-5608091717"
+    },
+    {
+      "event": "committed",
+      "sha": "fca4fa1a1df6df6f1133c222d7b8c14f463a18f3",
+      "committer": {
+        "date": "2026-10-22T06:50:29Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "60a2fa177bdce1279716d3b5ac5babadea175b04",
+      "committer": {
+        "date": "2026-10-22T06:50:29Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "66100a6fa9ff61444e848dcd8d158003c0016990",
+      "committer": {
+        "date": "2026-10-22T06:50:30Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "0ad283d6ab51e6f531c99723f351464a1c8410df",
+      "committer": {
+        "date": "2026-10-22T06:50:30Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "d9a208ad4c872b68a4e38361e99c7808792624b3",
+      "committer": {
+        "date": "2026-10-22T06:50:30Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "912529942b03389663d8ff3a79e804878d897917",
+      "committer": {
+        "date": "2026-10-22T06:50:30Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "c80530f14ea818c05d047fc303ff81b9f430b1f4",
+      "committer": {
+        "date": "2026-10-22T06:50:30Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "3a0d13c85afcd86292f74f69b1408e3de00cb35c",
+      "committer": {
+        "date": "2026-10-22T06:50:30Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "507d50b64ad28f0fd2c9d645a005aaa5a0f56c23",
+      "committer": {
+        "date": "2026-10-22T06:50:30Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "40fafa453a7d27c795b8fd8fee0bd0e9f375b5b1",
+      "committer": {
+        "date": "2026-10-22T06:50:30Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "41ddc5e0ef098b99c8ef5b500b039f8b631c6c82",
+      "committer": {
+        "date": "2026-10-22T06:50:30Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "57f6a8737b52b372db31684ff854a5b29c667c59",
+      "committer": {
+        "date": "2026-10-22T06:50:30Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "ee634124fb22c8e2f31ab6b51a452692ec1ba12b",
+      "committer": {
+        "date": "2026-10-22T06:50:30Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "ef53941428cf07ece35f2cd50c19ac3b64428dd0",
+      "committer": {
+        "date": "2026-10-22T06:50:30Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "859d07b2439d8572ce301fa40c4c69a1372f20b4",
+      "committer": {
+        "date": "2026-10-22T06:50:30Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "f2152b54e2f3660862af69cb9cb2e8863189209f",
+      "committer": {
+        "date": "2026-10-22T06:50:30Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "aa5057534ac7a478e88437d0f389be146d1c1b25",
+      "committer": {
+        "date": "2026-10-22T06:50:30Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "a2bf696880db7e51793f5078bf1fd281e236ae87",
+      "committer": {
+        "date": "2026-10-22T06:50:30Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "3d2bcfc8cf6451272eb7bda7f88b149f02f80968",
+      "committer": {
+        "date": "2026-10-22T06:50:30Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "f02fbaa543456dd77b676a77e4f1244da21a0876",
+      "committer": {
+        "date": "2026-10-22T07:01:50Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "4df1cd120c7921b35bdceb9572d5c77442716e67",
+      "committer": {
+        "date": "2026-10-22T07:01:50Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "2c42633be6928338f60a493533c0df0077bfb7f6",
+      "committer": {
+        "date": "2026-10-22T07:42:32Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "47d6b60d88baa1cdd42df83d6af0fb8a1e3bd6ee",
+      "committer": {
+        "date": "2026-10-22T08:08:00Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "e990312bda03db64808701c20ace200def239a79",
+      "committer": {
+        "date": "2026-10-22T08:41:22Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "1830f52109c5f3875b5709a8b0d9140cee7ee23f",
+      "committer": {
+        "date": "2026-10-22T14:08:45Z"
+      }
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-22T14:43:08Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "1830f52109c5f3875b5709a8b0d9140cee7ee23f"
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-22T14:44:22Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6343575001,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#issuecomment-6343575001",
+      "body": "Review 5608091717 is addressed at `1830f5210` (rebased on `next` `26387bc83`).\n\n- **Finding 1, fixed (option b).** Three fail-closed bounds, all exported; the third, `MAX_RESOLVED_NAME_LENGTH`, is des"
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-22T14:44:36Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "reviewed",
+      "commit_id": "1830f52109c5f3875b5709a8b0d9140cee7ee23f",
+      "id": 5622671659,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "dismissed",
+      "submitted_at": "2026-10-23T00:50:25Z",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#pullrequestreview-5622671659"
+    },
+    {
+      "event": "review_dismissed",
+      "created_at": "2026-10-23T00:55:59Z",
+      "actor": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "dismissed_review": {
+        "state": "changes_requested",
+        "review_id": 5622671659,
+        "dismissal_message": "Withdrawn: review produced outside the required /review-open-prs procedure; run is being restarted."
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "f2aedc2d1d8ddbda3d7cd888b0d5bc93e138a789",
+      "committer": {
+        "date": "2026-10-23T03:07:24Z"
+      }
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-23T04:46:54Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6357609343,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5119#issuecomment-6357609343",
+      "body": "Review 5622671659 (head `1830f5210`) was dismissed with \"Withdrawn: review produced outside the required /review-open-prs procedure; run is being restarted.\" Nits 1 and 2 are fixed anyway and Nit 3 is"
+    }
+  ],
+  "reviewComments": {},
+  "bodyView": {
+    "body": "## Enhancement PR\n\n---\n\n## Linked Issue\n\nCloses #5104\n\nChild of epic #4629. Approved as Layer 1 by @trek-e (issuecomment-5891253965).\n\n---\n\n## What this enhancement improves\n\nAxis 2 of `scripts/lint-state-write-path-drift.cjs` (`findRawStateWrites`), the terminal guard that ADR-4629 Decision 5 names for \"No raw STATE.md write outside the seam\". A raw `fs.writeFileSync` against STATE.md skips the lock, so it can lose a concurrent update (the #500/#905/#1230 family).\n\n## Before / After\n\n**Before** (`next` @ a1c7bc74b): `findRawStateWrites` reported 0 for each of these shapes:\n\n```\nfs.writeFileSync(\\n  statePath,\\n  content)                              -> 0\nconst p = path.join(dir, 'STATE.md'); fs.writeFileSync(p, ...)         -> 0\nconst name = 'STATE.md';\\nconst p = path.join(dir, name);\\nfs.writeFileSync(p, ...)   -> 0\n```\n\n**After:** each shape is reported at the line of the `fs.writeFileSync(` call, as `RAW_STATE_WRITE`. The real tree still reports `rawWriteViolations: 0`: the prototype measured 0 new findings on `src/`, and this branch confirms it.\n\n## How it was implemented\n\nAll changes are in `scripts/lint-state-write-path-drift.cjs`, Axis 2. It stays a string match, with no AST.\n\n- **Wrapped calls.** The scan runs over the comment-stripped text joined across lines, so the existing depth- and string-aware `captureFirstArg` captures a first argument that follows a line break.\n- **Variable targets.** When the target is neither `statePath` nor a `STATE.md` literal, one resolver, `resolvesToStatePath`, follows its identifiers back through same-function assignments, at most `MAX_TARGET_RESOLUTION_HOPS` (4) deep. It stops at the enclosing named `function`, the boundary `nearestPrecedingAssignment` already uses. String contents and property names after a `.` are not resolved. Each hop resumes above the assignment it followed, so the scan always ends.\n- **Reuse of `nearestPrecedingAssignment`.** Axis 2 calls it directly, with a 4th `options` argument: `typed` (a TypeScript annotation between the name and `=`, read only after `const`/`let`/`var` and holding no `=` or `;`), `stopAtPatternBinding` (a `for...of` header or a destructuring declaration that binds the name ends the search as unresolved, which is not flagged) and `withLine` (return the line with the text, so the next hop can resume above it). Axis 3 passes no options, so its regex and behavior are unchanged. The `for...of` stop matters live: without it the rollback loop at `src/roadmap-upgrade.cts:2395` resolved to the `const filePath` at `:2329` (lines on `next` @ 62549bf24).\n- **The write's own line.** It is read up to the call, so an assignment earlier on that line is seen and one after the call is not. A named-function header in that text is dropped, so a one-line nested function can still read its enclosing function's variable.\n- **Boundary rule.** When a `{`, `}` or `=>` lies between an assignment and the write, a binding that misses STATE.md does not end the search: it moves on to the next earlier binding of that name. So a literal in a closed sibling block or an arrow body never clears a write. A binding that reaches STATE.md still reports across the boundary. This can only add reports. There is no brace-depth tracker; full scoping is #5279.\n- **Header caveat.** The file header's Axis 2 paragraph and the `findRawStateWrites` header say this axis's zero does not prove no raw writer remains (ADR-3408 Decision 5), and list every verified miss and false positive.\n- **Cut for scope (review 5512635344).** The join-tail pre-check, CRLF normalization, the template-interpolation parser, `+=` handling and same-line statement splitting are not in this PR. Each shape the cut gives up is pinned as a known-gap row (`expected` beside `currentBuggyOutput`) and tracked in #5279.\n\n**Not closed here (by design):** the raw writer at `src/roadmap-upgrade.cts:2345`. Its file name is a `Map` key filled in another function (miss 3), and no resolver scoped to one function reaches it. Per the ruling on #5104, that half is #5120 (approved; sequenced after #5056 Phase 13): a test-time check on the written path's basename. Until then, this axis's zero does not mean no raw writer exists (ADR-3408 Decision 5).\n\n## Testing\n\n### How I verified the enhancement works\n\n- `tests/state-write-path-drift-guard.test.cjs` section F4 holds:\n  - the rule rows: wrapped call, variable target, the write's own line, the boundary rule, typed declarations, the for...of / destructuring stop, and the function boundary;\n  - a limit-1/limit/limit+1 hop row built from `MAX_TARGET_RESOLUTION_HOPS`;\n  - a row showing Axis 3's reading is unchanged when no options are passed;\n  - three known-gap tables (`KNOWN_TAIL_GAPS`, `KNOWN_SCOPE_GAPS`, `KNOWN_MATCH_GAPS`), each row with `expected` beside `currentBuggyOutput`;\n  - one fast-check property (typed declarations, const/let/var, hop chains, wrapped calls, sibling-block redeclarations);\n  - the `--root` CLI row.\n- Fail-first: with `next`'s `scripts/lint-state-write-path-drift.cjs` swapped in (no shim needed; the property asserts the hop-bound export first), 25 of the file's 83 tests fail. Against this head all pass.\n- Head `472cfb257` on `next` @ 755bf26f0, with empty `HOME`/`GSD_HOME`: the two test files that load this script ran 84 tests, all passing. `npm run lint:ci` exit 0.\n- The guard's zero, with its pairing (ADR-3408 Decision 5): the real tree reports `rawWriteViolations: 0`, and the behavioral identity test, `tests/state-transition.test.cjs` \"#3468 matrix C1/C2\", passes 6/6. Neither proves no raw STATE.md writer exists. This axis is a line scan with the misses listed in `findRawStateWrites`'s header; the syntax-tree pass is #5279 and the run-time check is #5120.\n- No-worse harness (`next`'s guard vs this head, both axes, every source file under `src/`, `scripts/`, `gsd-core/bin/`, `hooks/`, `bin/`, 792 files): 0 verdict changes. Axis 3 verdicts are part of that comparison (0 changes).\n- The full suite was not run locally; CI on the head commit is the authority.\n\n### Platforms tested\n\n- [ ] macOS\n- [ ] Windows (including backslash path handling)\n- [x] Linux\n- [ ] N/A (not platform-specific)\n\n### Runtimes tested\n\n- [ ] Claude Code\n- [ ] Antigravity\n- [ ] OpenCode\n- [ ] Other: ___\n- [x] N/A (not runtime-specific)\n\n---\n\n## Scope confirmation\n\n- [x] The implementation matches the scope approved in the linked issue — no additions or removals\n- [ ] If scope changed during implementation, I updated the issue and got re-approval before continuing\n\nScope held: Axis 2, opt-in options on `nearestPrecedingAssignment` (Axis 3 passes none, output unchanged), and the test file. No `src/` change, no allowlist, no new dependency. `for...in` is not treated as a binding, because the approval named `for...of` and destructuring.\n\n---\n\n## Documentation\n\n- [ ] Updated the relevant file(s) under `docs/` to reflect this change\n- [x] All `docs/` content added in this PR is written in English\n- [x] If genuinely no user-facing docs impact (infrastructure / internal refactor / test-only),\n      apply the `no-docs` label **or** add `<!-- docs-exempt: <reason> -->` inside each\n      triggering changeset fragment and leave a comment explaining why.\n\nInternal lint guard only. No changeset fragment exists, so `lint:docs` has nothing to trigger on. ADR-4629 cites the guard at `:606,564`. Those line numbers were already stale on `next`, and I left the ADR untouched.\n\n## Checklist\n\n- [x] Issue linked above with `Closes #NNN` — **PR will be auto-closed if missing**\n- [x] Linked issue has the `approved-enhancement` label — **PR will be closed if missing**\n- [x] Changes are scoped to the approved enhancement — nothing extra included\n- [x] All existing tests pass (`npm test`), on the head commit per CI\n- [x] New or updated tests cover the enhanced behavior\n- [x] `.changeset/` fragment added (`npm run changeset -- --type Changed --pr <NNN> --body \"...\"`) — or `no-changelog` label applied if not user-facing\n- [x] No unnecessary dependencies added\n\n## Breaking changes\n\nNone. The guard runs only in `lint:ci`, it stays green on `next`, and its `--json` shape is unchanged.\n\n## Round 3 (2026-10-21)\n\nAddresses review 5563197184 at `8cea5f843`, rebased on `next` `812ddb5fe`. Detail, probes and commands are in the round-3 PR comment.\n\n- **Minor 1, fixed.** Raw-write target resolution in `scripts/lint-state-write-path-drift.cjs` is now linear in each line and shared across a file's writes: the assignment read is split into `assignmentHeadRegex` and `assignedValue`, `LOOP_BINDING_RE` no longer overlaps, and `nearestPrecedingAssignment` gains opt-in `cache` and `firstLine` options used by Axis 2 only. The review's probe went from 490 / 9894 ms to 5 / 3 ms (N = 1, 20). The old and new scripts differ on 0 inputs over the tracked tree and the fuzz corpora. Lines that repeat a write, an open call or a declaration many times stayed quadratic in one line's length; round 4 bounds them (below).\n- **Minor 2, fixed.** A `null` or `undefined` `stats` is ignored; row added.\n- **Nits 3 and 4 done.** Nit 5 declined again (ADR text is maintainer-owned).\n- **Question (a).** Recommend keeping the through-a-variable form flagged; reasons in the comment.\n\n## Round 4 (2026-10-22)\n\nAddresses review 5608091717 at `1830f5210`, rebased on `next` `26387bc83`. Detail, probes and commands are in the round-4 PR comment.\n\n- **Minor 1, fixed (option b, as ruled).** Three fail-closed bounds, all exported:\n  - `MAX_RAW_WRITE_TEXT_LENGTH = 4096` caps each write's first argument and its line before the call.\n  - `MAX_RAW_WRITE_RESOLVER_WORK = 250000000` caps the resolver's counted work per file: argument and line lengths, each lookup, each name's compiled reader, each line read (charged per occurrence of the name, and per `:`, `(`, `[` or `{` when it occurs), and each right-hand side read.\n  - `MAX_RESOLVED_NAME_LENGTH = 256` caps the length of a name the resolver follows.\n  - Past any of them, the write is reported as `raw_state_write_unresolved` on the raw-write axis, at most once per line, so the bounds add reports and never drop one.\n  - A call left open on every line of a 216 KB file went from 11164 ms to under 300 ms locally. Other resolver shapes found while probing, including two that ran out of heap, now finish with that finding. Timings are for the shapes probed.\n  - Quoted strings are dropped from a resolved expression in one pass, with the same output as the regex it replaces, which was quadratic on a run of escaped quotes.\n  - The stats seam gains `argumentChars`, `ownLineChars`, `resolverWork`, `readersBuilt` and `stringScanChars`.\n- **Nit 2, fixed.** The raw U+2028 in a test row is now an escape.\n- **Nit 3, done.** Rebased; the 19 reviewed commits are unchanged.\n- **Question (a)** stays pinned, per the review. **Nit 5** stays declined, pending the maintainer's call.\n\n> *Generated by AI during contribution; reviewed and posted by a human maintainer (@davesienkowski).*\n\n",
+    "baseRefOid": "09b6a836c1a2fe616c54a01dbb53e86fb149e437",
+    "changedFiles": 2
+  }
+}

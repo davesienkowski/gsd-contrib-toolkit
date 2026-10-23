@@ -1,0 +1,1131 @@
+{
+  "provenance": {
+    "source": "captured open-gsd/gsd-core#5192 2026-10-23T06:00Z",
+    "edits": "view.number renumbered 5192 -> 900044 (the stub indexes by view.number; keep the captured numbers out of the shared fixture set); reviews, timeline and view.headRefOid/commits/reviewRequests and bodyView (body, baseRefOid, changedFiles) are the capture; synthesized: state OPEN, isDraft false, author davesienkowski, baseRefName next, mergeable MERGEABLE, mergeStateStatus BLOCKED, reviewDecision CHANGES_REQUESTED, updatedAt, checks [] with checksExit 0, reviewComments {} (no inline comments were captured)",
+    "checksExit": 0,
+    "expected": {
+      "owner": "reviewer",
+      "login": "trek-e",
+      "reRequested": true
+    }
+  },
+  "view": {
+    "number": 900044,
+    "state": "OPEN",
+    "isDraft": false,
+    "author": {
+      "login": "davesienkowski"
+    },
+    "headRefOid": "aff15bafbeb67943a7f3639f1a5ed7c7a7c45e7c",
+    "baseRefName": "next",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "BLOCKED",
+    "reviewDecision": "CHANGES_REQUESTED",
+    "reviewRequests": [
+      {
+        "__typename": "User",
+        "login": "Solvely-Colin"
+      },
+      {
+        "__typename": "User",
+        "login": "jeremymcs"
+      },
+      {
+        "__typename": "User",
+        "login": "trek-e"
+      }
+    ],
+    "commits": [
+      {
+        "oid": "c61f64e2b3f658a460a025de0877a44e349fc8f2",
+        "committedDate": "2026-10-23T02:50:08Z",
+        "messageHeadline": "fix(#5182): watch a GSD-owned return receipt instead of the host tran…"
+      },
+      {
+        "oid": "dac682055858d350a00539ca3de54a635dffa91e",
+        "committedDate": "2026-10-23T02:50:08Z",
+        "messageHeadline": "docs(#5182): add changeset for the plan-phase stall-watch return receipt"
+      },
+      {
+        "oid": "54dfccf0dfb15439ee6dd41393a8c96763f2b211",
+        "committedDate": "2026-10-23T02:50:08Z",
+        "messageHeadline": "test(#5182): pass the unsafe phase-dir values through a file, not arg…"
+      },
+      {
+        "oid": "f781e7a29fc2d3d7772d1ca19a16888cfc00a661",
+        "committedDate": "2026-10-23T02:50:09Z",
+        "messageHeadline": "fix(#5182): fit plan-phase.md under its cap after the rebase and make…"
+      },
+      {
+        "oid": "a2c199b200dcf8e36f3d90278793272f33885bce",
+        "committedDate": "2026-10-23T02:50:09Z",
+        "messageHeadline": "test(#5182): add fast-check properties for the receipt helpers, AC4 b…"
+      },
+      {
+        "oid": "e67262131727f314297e1f98d7898d1d2751a11b",
+        "committedDate": "2026-10-23T02:50:09Z",
+        "messageHeadline": "test(#5182): run the #5182 rows on the shipped helper functions only,…"
+      },
+      {
+        "oid": "de7554cbea1b6d6bebfc5e6d215d3fa63fe6ae9d",
+        "committedDate": "2026-10-23T02:50:09Z",
+        "messageHeadline": "test(#5182): the AC5 row checks the watch's behavior, not two runs wi…"
+      },
+      {
+        "oid": "98cd720d61540d5237747cf010e8b96af4f34b8f",
+        "committedDate": "2026-10-23T02:50:09Z",
+        "messageHeadline": "fix(#5182): a planner checkpoint, split or source audit whose body ne…"
+      },
+      {
+        "oid": "be33dcd0d5a0b33210b3599fb2e0bb8451baf6de",
+        "committedDate": "2026-10-23T02:50:09Z",
+        "messageHeadline": "fix(#5182): move gsd-plan-checker to #767 Group B so its return recei…"
+      },
+      {
+        "oid": "f71524bafdfdc1a49b43a5c506686e0bf7e1cb7e",
+        "committedDate": "2026-10-23T02:50:09Z",
+        "messageHeadline": "fix(#5182): refuse a symlinked receipt directory and bound the receip…"
+      },
+      {
+        "oid": "d36e22b2d63f0a1a1db6409e5eb642da07e827f2",
+        "committedDate": "2026-10-23T02:50:09Z",
+        "messageHeadline": "docs(#5182): state the kimi-code receipt limit in the stall-watch hel…"
+      },
+      {
+        "oid": "42741147b965bf159bf9e70067c3c13ff554d557",
+        "committedDate": "2026-10-23T02:50:09Z",
+        "messageHeadline": "fix(#5182): confine the receipt to the project's physical path and ha…"
+      },
+      {
+        "oid": "450e83d72388516d551a16dfa0544c22b26188f6",
+        "committedDate": "2026-10-23T02:50:14Z",
+        "messageHeadline": "fix(#5182): remove the receipt at every watch site and state the no-r…"
+      },
+      {
+        "oid": "c13ee493bb42e91c8374d943488744bdf5359bd8",
+        "committedDate": "2026-10-23T02:50:14Z",
+        "messageHeadline": "fix(#5182): state what the orchestrator binds when the receipt is ref…"
+      },
+      {
+        "oid": "9a5867057105ade91ed1ac0dd46c00f1c05aab09",
+        "committedDate": "2026-10-23T02:50:14Z",
+        "messageHeadline": "fix(#5182): refuse a .. component in the receipt phase dir, and bind …"
+      },
+      {
+        "oid": "bd0574f35bc840624ce2a1f6b394b5142c620d02",
+        "committedDate": "2026-10-23T02:50:14Z",
+        "messageHeadline": "fix(#5182): pin the receipt walk's own link test with in-project link…"
+      },
+      {
+        "oid": "2c27266f406455cb7fb6c82c621a401c7ae40060",
+        "committedDate": "2026-10-23T02:50:14Z",
+        "messageHeadline": "fix(#5182): scope the changeset's symlink claim to what the receipt h…"
+      },
+      {
+        "oid": "2f9a3cccd9cce92f92c321eb8e8efd0f95338dc7",
+        "committedDate": "2026-10-23T02:50:14Z",
+        "messageHeadline": "docs(#5182): say the plan-checker receipt grant widens to full edit o…"
+      },
+      {
+        "oid": "f4e21dd8ffecbc484fa374be4e3b9aa7c53cc3d5",
+        "committedDate": "2026-10-23T02:50:14Z",
+        "messageHeadline": "fix(#5182): drop the plan-checker's receipt Write on hosts that grant…"
+      },
+      {
+        "oid": "144bbf71ffd2ee10d358e4d7d5e54eb817f293bf",
+        "committedDate": "2026-10-23T02:50:14Z",
+        "messageHeadline": "fix(#5182): anchor the receipt containment on the project root, and n…"
+      },
+      {
+        "oid": "2407fde85edea675a6164b0622c119825abe1a72",
+        "committedDate": "2026-10-23T02:50:14Z",
+        "messageHeadline": "fix(#5182): a receipt-only REVISION_CONFLICT fails closed instead of …"
+      },
+      {
+        "oid": "1ea66d5655219cc916609eef5c328d156ff50a09",
+        "committedDate": "2026-10-23T02:50:14Z",
+        "messageHeadline": "fix(#5182): read the receipt's byte cap boundary exactly, and strip a…"
+      },
+      {
+        "oid": "9d7fc2468f2b07c2d0655c3324599c1b297bea19",
+        "committedDate": "2026-10-23T02:50:14Z",
+        "messageHeadline": "test(#5182): drive the freshness window with a find shim, and drop th…"
+      },
+      {
+        "oid": "4cd1d4f9dfb714acbc823b95db1e6d714fec8923",
+        "committedDate": "2026-10-23T02:50:15Z",
+        "messageHeadline": "test(#5182): regenerate the compact-content benchmark baseline after …"
+      },
+      {
+        "oid": "c901dbccb2e979edb1b90fd680f10bc8c1523519",
+        "committedDate": "2026-10-23T02:50:15Z",
+        "messageHeadline": "chore(#5182): regenerate the Pi package roles for the planner and che…"
+      },
+      {
+        "oid": "50c4f7d6b50ae9946de7180f0a6f07366d54c184",
+        "committedDate": "2026-10-23T02:50:15Z",
+        "messageHeadline": "test(#5182): pin the receipt-Write scoping table against what each ho…"
+      },
+      {
+        "oid": "aff15bafbeb67943a7f3639f1a5ed7c7a7c45e7c",
+        "committedDate": "2026-10-23T02:50:15Z",
+        "messageHeadline": "test(#5182): pin the checker's scoped edit posture on global installs…"
+      }
+    ],
+    "updatedAt": "2026-10-23T04:47:18Z"
+  },
+  "reviews": [
+    [
+      {
+        "id": 5402039566,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-03T18:11:14Z",
+        "commit_id": "47b89935ddbfadeb5aac560639cbc39c76b63f8d",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#pullrequestreview-5402039566",
+        "body": "## Review — fix(#5182): watch a GSD-owned return receipt instead of the host transcript in the plan-phase stall watch\n\nHead reviewed: 47b89935ddbfadeb5aac560639cbc39c76b63f8d (fresh `gh pr view` this turn: mergeable=CONFLICTING, mergeStateStatus=DIRTY, reviewDecision=REVIEW_REQUIRED, no reviews/comments).\n\n### Summary\nReplaces the host `{outputFile}` grep in `gsd_stall_watch` with a per-dispatch GSD-owned receipt (`gsd_receipt_path`, `gsd_return_marker`), wires all five watch sites, passes revision markers, and adds agent receipt rules. Substance is sound; the branch conflicts with `origin/next` and the new parser helper has no property test.\n\n### Classification & gate compliance\n- Issue #5182: OPEN, labels `bug`, `area: workflow`, `confirmed-bug` -> Bug-Fix track. Body has `Fixes #5182`; not draft; branch `fix/5182-stall-watch-return-receipt`; title `fix(#5182):`.\n- Changeset `.changeset/lively-sloths-forage.md`: type Fixed, pr: 5192, body format OK. No docs/ requirement (Fixed).\n- PR label is only `area: workflow` (issue carries the gate label; fine).\n- No competing open PRs for #5182.\n- Acceptance criteria (verbatim from trek-e brief): AC1 markers only in prompt/definition/transcript -> waiting (test row AC1); AC2 checker issues -> revision (row AC2); AC3 finished revision -> success within one poll (row AC3, revision site now passes `## REVISION COMPLETE`/`## REVISION_CONFLICT`, plan-phase.md ~L1193); AC4 never-signals -> stalled (row AC4); AC5 identical on Claude Code vs no-output host (row AC5; receipt is host-independent, but see Finding 3 for the read-only checker host); AC6 fail-first (PR body reports 20 failing rows on untouched next; not executed here per brief).\n\n### Functional checklist / root-cause verdict\nRoot cause (one sentence): `gsd_stall_watch` grepped the whole host transcript, which already contains the prompt/definition quoting the markers, and the revision site passed no markers. Fix addresses the input to the watch (single owner `gsd_return_marker` used by watch and step 11), not the symptom. `gsd_stall_should_recover` unchanged. Verified in stall-detection-helpers.md (helpers ~L152-L195) and plan-phase.md steps 8/10/11/12.\n\n### Blast radius + risk tier\nShipped-prose + bash-in-markdown change; consumers are the five plan-phase watch sites, two agent definitions, agent-contracts registry. Tier: medium (runtime-loaded workflow/agent text, size-capped files). `compact-content-benchmark-baseline.json` refreshed for plan-phase growth.\n\n### Co-change completeness\nNo known co-change gap beyond the conflicting baseline fixture. `agent-contracts.md` updated for `## REVISION COMPLETE`. CONTEXT.md has no `gsd_stall_watch` entry (grep: 0 hits), so no glossary gap is implied.\n\n### Memtrace Evidence\nMemtrace is over quota (`quota_exceeded`) per orchestrator brief; `get_impact`, `get_symbol_context`, `recall_decision`, `find_code_review_issues` were NOT run (no result obtained; this is not a clean result). Evidence came from `git diff`/`git merge-tree` and direct reads of the PR head in the worktree. Co-change (`get_cochange_context`) not run. Changed symbols are bash helpers inside markdown (not graph-indexed), so graph impact would be limited regardless.\n\n### Findings\n**Blocker**\n1. [judgment] Merge conflict with `origin/next` (behind by 13): `git merge-tree --write-tree --name-only` exit 1, conflicting path `tests/fixtures/compact-content-benchmark-baseline.json` (plan-phase offTokens/onTokens/aggregate at lines ~28-45). `next` moved `plan-phase.md` after the PR's measurement (e.g. 84b4dfe84f #5171, 7586af3eaa #5044). Fix: `git fetch origin && git rebase origin/next`, regenerate the baseline against the rebased `plan-phase.md`, re-verify.\n\n**Major**\n2. [judgment] `tests/plan-phase-stall-detection.test.cjs` (new describe at ~L940-1200): `gsd_return_marker` is a new parser (line-start literal, word boundary, CR/BOM tolerance) and `gsd_receipt_path` a new sanitizer; the test file imports `fast-check` (L49) but the new rows use only example cases. RULESET.TESTS requires at least one discriminating `fast-check` property for parsers/bijective contracts. Add a property: for arbitrary lines/prefixes, a marker matches iff the line starts with it and the next char is not `[A-Za-z0-9_]`; and `gsd_receipt_path` output never escapes `.gsd-returns/` for arbitrary spawn labels.\n3. [judgment] AC5 / acceptance criterion partially unmet for the checker on read-only hosts: gsd-plan-checker writes its receipt via Bash `printf`; on a host that runs it read-only (Codex derives `read-only` from `tools:`) the write is refused and the checker watch ends `stalled` (agents/gsd-plan-checker.md ~L957-962; stall-detection-helpers.md \"Plan-checker on a read-only host\"). The PR discloses this and defers the Group B decision to the maintainer; it is a maintainer decision (must be raised in chat), but until decided the criterion \"identical on every host\" is not met for the checker.\n\n**Minor**\n4. [judgment] Boundary coverage: AC4 row tests elapsed 9 min and 11 min against a 10 min threshold but not the `limit` itself (10 min) — add `limit` case (limit-1/limit/limit+1). Rows derive times from `Date.now()` (`nowSec()` helper) rather than a clock seam; offsets are coarse so not flaky, but it is wall-clock-derived input.\n\n**Nit**\n5. [judgment] Several new rows assert prose via `assert.match` on workflow/agent markdown (e.g. \"never counted as 0 issues\", `rm -f \"{receipt}\"`); these are prose-contract checks, acceptable but brittle to rewording.\n\n### Verdict\nChanges requested (blocker: merge conflict; major: no property test; maintainer decision pending on checker read-only host). CI: all 36 check-runs for the head are success/skipped, pending approval runs=0 — scoped to the CI result only; mergeStateStatus is DIRTY.\n"
+      },
+      {
+        "id": 5436473886,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-07T01:15:18Z",
+        "commit_id": "08ddb32c292b26d7ba98f7c1240887e493937732",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#pullrequestreview-5436473886",
+        "body": "## Review — fix(#5182): watch a GSD-owned return receipt instead of the host transcript in the plan-phase stall watch\n\nHead reviewed: 08ddb32c292b26d7ba98f7c1240887e493937732 (mergeable=MERGEABLE, mergeStateStatus=BEHIND by 1, reviewDecision=CHANGES_REQUESTED).\n\n### Summary\nReplaces the host `{outputFile}` grep in `gsd_stall_watch` with a per-dispatch GSD-owned receipt (`gsd_receipt_path`, `gsd_return_marker`), wires all five watch sites, passes revision markers, and adds agent receipt rules. Prior findings 1, 2, 4 and 5 are fixed at this head. Finding 3 (checker on a read-only host) remains open pending a maintainer decision, and one new Minor test finding is added.\n\n### Classification & gate compliance\n- #5182: OPEN, labels `bug`, `area: workflow`, `confirmed-bug` -> bug-fix track. `Fixes #5182` present, not draft, conventional title, branch `fix/5182-stall-watch-return-receipt`.\n- Changeset `.changeset/lively-sloths-forage.md`: type Fixed, pr 5192, format OK. Docs exempt (Fixed). CHANGELOG untouched. No new references/ or workflows/ files.\n- `Emitted-Drift-Ack-Growth` trailers present for plan-phase.md, gsd-planner.md, gsd-plan-checker.md.\n- No competing open PR for #5182.\n\n### Prior-finding resolution (trek-e, 2026-10-03)\n| # | Finding | Status |\n|---|---|---|\n| 1 Blocker | baseline-fixture merge conflict | Resolved; merge of `origin/next` and head is clean |\n| 2 Major | no fast-check property | Resolved; two oracle-backed properties |\n| 3 Major | checker on read-only host / AC5 | OPEN (maintainer decision) |\n| 4 Minor | boundary triple, wall clock | Resolved; 599/600/601 s with stubbed `date +%s` |\n| 5 Nit | prose asserts | Resolved |\n\n### Functional checklist / root-cause verdict\nRoot cause: `gsd_stall_watch` grepped the whole host transcript, which already quotes the markers via prompt/definition, and the revision site passed no markers. The fix changes the watch's input to a GSD-owned file and uses one marker matcher shared with step 11 routing; `gsd_stall_should_recover` is untouched. Root-cause fix, not symptom handling.\nAC1 pass, AC2 pass, AC3 pass, AC4 pass (limit-1/limit/limit+1), AC5 partial (Finding 1), AC6 per PR body (20 failing rows on `next`; not executed here).\n\n### Blast radius\nShipped prose and bash-in-markdown: five plan-phase watch sites, gsd-planner, gsd-plan-checker, agent-contracts registry. Argument 2 of `gsd_stall_watch` changes meaning (receipt, not host output file); only the five plan-phase sites call it. Risk: medium (runtime-loaded text, size-capped; growth acked by trailers).\n\n### Co-change completeness\nagent-contracts.md updated for `## REVISION COMPLETE`; benchmark baseline regenerated. No missing INVENTORY, CONTEXT or docs requirement identified.\n\n### CodeGraph Evidence\n- `codegraph_impact` target `gsd_stall_watch` (base index): 2 affected symbols, both in tests/plan-phase-stall-detection.test.cjs (`extractStallHelpersBash`). Shell helpers inside markdown are not graph-indexed, so this is a lower bound.\n- `codegraph_callers` target `gsd_return_marker`: symbol not found (new in this PR, absent from base index).\n- `codegraph_node` target `gsd_stall_should_recover`: only the test wrapper `runShouldRecover` is indexed; the function body is unchanged by this PR.\n\nMemtrace unavailable: monthly query quota exhausted (20972/20933, resets 2026-10-20)\n\n### Findings\n**Major**\n1. [judgment, carried from prior review #3] `agents/gsd-plan-checker.md:962-966`, `gsd-core/workflows/plan-phase/steps/stall-detection-helpers.md` (\"Plan-checker on a read-only host\"): on a host that runs the checker read-only (Codex derives `read-only` from `tools:`) the receipt `printf` is refused and the checker watch ends `stalled`, so \"identical on every host\" (AC5) is not met for the checker. The contributor asked twice for a decision (Group B move here vs follow-up issue); it needs a maintainer answer in chat before approval.\n\n**Minor**\n2. [judgment] `tests/plan-phase-stall-detection.test.cjs`, AC5 row (`bind()`): once the call site binds `{receipt}`, both \"hosts\" receive `f.receipt`, so the comparison is between identical inputs and cannot fail. Fix: supply a transcript file and a missing file as argument 2 and assert neither is consulted, or remove the row.\n\n**Nit**\n3. [judgment] fast-check `numRuns` of 10/8/6 is small; acceptable given per-run batching.\n4. [judgment] `stall-detection-helpers.md` (\"The runtime's completion result ends the wait\"): only checker `## ISSUES FOUND` has an explicit fail-closed route when the receipt arrives without a body; planner receipt-only `## CHECKPOINT REACHED` / `## PHASE SPLIT RECOMMENDED` have no stated step-9 behavior.\n\n### Verdict\nRequest changes (Finding 1 open, Finding 2 Minor). CI at head: 36 check-runs, 32 success / 4 skipped, 0 red, 0 pending-approval runs. Rebase is optional (behind by 1, docs-only chore, clean): `git fetch origin next && git rebase origin/next`.\n"
+      },
+      {
+        "id": 5471157051,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-09T14:06:42Z",
+        "commit_id": "83e3c5fddf2074b666b1eed6af4a97c479e03edd",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#pullrequestreview-5471157051",
+        "body": "Automated maintainer re-review of head `83e3c5fddf`. Zero-tolerance policy: every finding at any severity must be resolved before approval.\n\n## Review — fix(#5182): watch a GSD-owned return receipt instead of the host transcript in the plan-phase stall watch\n\nHead reviewed: 83e3c5fddf2074b666b1eed6af4a97c479e03edd (fresh gh pr view this turn: mergeable=MERGEABLE, mergeStateStatus=BEHIND, reviewDecision=CHANGES_REQUESTED, not draft, 9 commits). CI rollup at that head: all completed checks SUCCESS (Required tests, test shards ubuntu/windows/macos, lint-tests, docs-lint, changeset-lint, security); Stryker/inert skipped. Nothing red or queued. Tests were NOT executed locally (per brief); local worktree read only.\n\n### Summary\nPrior Major (checker receipt on read-only hosts, AC5) is addressed as the maintainer directed: gsd-plan-checker moved to #767 Group B (tools gains Write; Claude denylist Edit, MultiEdit; Codex derives workspace-write). Prior Minor and Nit remain fixed. No Blocker/Major found. Remaining items are Minor/Nit and the BEHIND-by-1 rebase.\n\n### Prior findings status\n| Finding | Status | Evidence |\n|---|---|---|\n| Major: checker receipt refused on read-only host (AC5) | RESOLVED | agents/gsd-plan-checker.md frontmatter `tools: Read, Write, Bash, Glob, Grep, Skill`; src/runtime-artifact-conversion.cts:3932 `'gsd-plan-checker': 'Edit, MultiEdit'`; receipt rule now uses Write tool; tests/codex-config.test.cjs T20 expects workspace-write, T21 skips only the named departure and asserts compared==10; tests/install.test.cjs Group B list |\n| Minor: AC5 row compared identical inputs | RESOLVED | AC5 row (tests/plan-phase-stall-detection.test.cjs ~L1115) feeds transcript containing marker and a missing file as arg 2; asserts waiting then stalled |\n| Nit: receipt-only planner CHECKPOINT/SPLIT/Source Audit undefined | RESOLVED | stall-detection-helpers.md \"The runtime's completion result ends the wait\": routes to 9a, names marker, Retry planner before Accept |\n| Nit: small numRuns | Accepted by maintainer earlier |\n\n### Acceptance checklist (issue #5182 brief)\nAC1 markers only in prompt/definition/transcript -> waiting: met (watch reads only receipt; gsd_return_marker is line-start literal; AC1 + AC1-wiring rows). AC2 checker issues -> revision: met (step 11 routes on gsd_return_marker; fail-closed on missing list). AC3 finished revision -> marker_received: met (plan-phase.md revision site passes `## REVISION COMPLETE`/`## REVISION_CONFLICT`). AC4 never-signals -> stalled: met (599/600/601 boundary rows). AC5 identical across hosts: met for planner and checker on Claude Code and Codex; see Finding 3 for kimi-code. AC6 failing-first: PR body reports 20 failing rows on base; new helpers do not exist on base so rows fail there by construction; not executed here.\n\n### Root cause\nWatch grepped the host transcript, which already quotes the markers, and the revision site passed no markers. Fix changes the watch input to a GSD-owned file with a single marker owner shared with step 11. Root-cause fix.\n\n### Findings\nMinor\n1. [judgment] Security: gsd-core/workflows/plan-phase/steps/stall-detection-helpers.md `gsd_receipt_path` (mkdir -p / printf '*' > .gitignore) follows a pre-existing symlinked `<phase>/.gsd-returns` (repo-controlled in a hostile checkout; CONTRIBUTING.md:789 treats inputs as hostile). Writes `*\\n` through the link and directs the agent's Write to the link target. Fix: refuse when `[ -L \"$dir/.gsd-returns\" ]` (return 1) and add a test row.\n2. [judgment] Security posture, informational: Write limit for the checker (\"only the receipt\") is prose-only, same as the four existing Group B agents; maintainer accepted. Not a defect per decision; recorded for completeness.\n3. [judgment] kimi-code maps -planner/-checker to built-ins that cannot write files (runtime-aware-dispatch.md), so neither receipt is written there and the watch ends stalled; disclosed in PR body. Maintainer decision needed whether that counts against AC5; applies equally to planner (pre-existing posture).\nNit\n4. [judgment] Commit 0083c7efc9 Emitted-Drift-Ack-Growth text for gsd-plan-checker.md says \"best-effort Bash return-receipt rule\", stale after 83e3c5fddf (now Write + hooks block + anti-pattern). Key is the bare filename and CI emitted-attribution passes, so it is valid; wording only. Do not amend merely for this unless rebasing anyway.\n5. [judgment] gsd_return_marker reads the receipt unbounded; receipt is agent-written, low risk.\n6. docs/{ja,ko,zh,...}/AGENTS.md still say checkers are read-only; author states translations were already behind. Acceptable.\n\n### Gate compliance\nBug-fix track: issue #5182 confirmed-bug; `Fixes #5182`; conventional title; not draft; branch fix/5182-...; changeset .changeset/lively-sloths-forage.md type Fixed, pr 5192, body `**bold** — symptom-led` OK; Fixed exempt from docs/, but docs/AGENTS.md updated for the Group B move. Emitted-Drift-Ack-Growth trailers present in 0083c7efc9 for plan-phase.md, gsd-planner.md, gsd-plan-checker.md (only commit that needs them; 83e3c5fddf adds more plan-checker bytes covered by the filename key). No references/ or workflows/ files added: INVENTORY/manifest regen not required. CONTEXT.md has no entry for these helpers; no vocabulary/module change. Parity: install Group A/B lists and docs parity row updated; agent-contracts.md registers `## REVISION COMPLETE`. No `node --test` evidence required of me.\n\n### Blast radius\ncodegraph_impact gsd_stall_watch (index of main checkout, not worktree-local; shell-in-markdown is not graph-indexed so a lower bound): 2 affected symbols, both in tests/plan-phase-stall-detection.test.cjs. Behavioral reach: five plan-phase watch sites, gsd-planner, gsd-plan-checker (tool posture change on Claude Code and Codex), install denylist map, agent-contracts registry. Medium.\n\n### Co-change gaps\nNone blocking found. Translated AGENTS.md pages out of date (Nit 6).\n\n### Behind-by/rebase\norigin/next is 1 commit ahead (ed0f3fd558 chore(#4036) CI timeout budget history update); PR is 9 ahead. Docs/data-only commit; rebase optional but BEHIND status: `git fetch origin && git rebase origin/next` (re-verify compact-content baseline untouched).\n\n### Verdict\nChanges requested only on Minor 1 (symlink containment) under zero-tolerance; otherwise substance clean, CI green. If maintainer waives Minor 1, approvable after optional rebase.\n\n### Memtrace Evidence\nMemtrace quota was exhausted for this review run, so the graph-backed checks were NOT executed; this is stated rather than reported as passed:\n- `get_impact`: not run (quota). Blast radius above comes from codegraph where present.\n- `get_symbol_context`: not run (quota). Callers/callees were read via codegraph where present.\n- `recall_decision`: not run (quota). The recorded-decision gate was NOT evaluated; this is not a finding that no decision governs the change.\n- `find_code_review_issues`: not run (quota). The deterministic AST/YAML/cross-module pass did not execute; findings above are judgment-sourced unless marked deterministic.\n\nFindings above Nit are open, so no further CI is being spent on this head. Address them; the fix push re-triggers CI once.\n"
+      },
+      {
+        "id": 5477112848,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-10T02:25:40Z",
+        "commit_id": "8ce426bdec832cc2b0e966969b03551438c95235",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#pullrequestreview-5477112848",
+        "body": "## Review of head `8ce426bdec83` — changes requested\n\n**Summary.** The substance is sound and every earlier finding is resolved or dispositioned except that the symlink hardening is incomplete: a symlinked ancestor still bypasses it. I reproduced that by running the shipped function.\n\n**Earlier findings, verified**\n\n| Finding | Status |\n|---|---|\n| Blocker 1 (conflict) | Resolved: MERGEABLE, only BEHIND by one |\n| Major 2 (fast-check) | Resolved: two oracle properties |\n| Major 3 (checker read-only, AC5) | Resolved: `tools` gains `Write`, Group B (`agents/gsd-plan-checker.md:4`, `src/runtime-artifact-conversion.cts`) |\n| Minor (boundary, wall-clock) | Resolved: 599 / 600 / 601 with a stubbed `date +%s` |\n| Minor (AC5 identical inputs) | Resolved: transcript plus a missing file as arg 2 |\n| Nit (planner receipt-only markers) | Resolved: the helpers doc routes to 9a |\n| Minor 1 (symlinked `.gsd-returns`) | **Partial** — Minor 1 below |\n| Finding 2 (Write limit prose-only) | Informational, per your earlier decision |\n| Finding 3 (kimi-code) | The known-limit note in `stall-detection-helpers.md:71-74` is accepted as the disposition |\n| Nit 4 (ack text) | Resolved: the message now describes the Write rule; the key is unchanged and the trailers are valid single lines |\n| Nit 5 (unbounded read) | Resolved for lines; see Nit 2 |\n| Nit 6 (translated pages) | Unchanged, accepted |\n\n**Classification and gates.** #5182 is `confirmed-bug`; `Fixes #5182`; title `fix(#5182):`; not draft. Changeset `.changeset/lively-sloths-forage.md`: type `Fixed`, `pr: 5192`, bold lead; `docs/AGENTS.md` updated for the Group B move. No files added under `references/` or `workflows/`, so no INVENTORY change. The three `Emitted-Drift-Ack-Growth` trailers (`plan-phase.md`, `gsd-planner.md`, `gsd-plan-checker.md`) are valid single lines.\n\n**Root cause.** `gsd_stall_watch` grepped the whole host transcript, which contains the prompt and agent definition quoting the markers, and the revision site passed no markers. The fix watches a GSD-owned receipt with one shared matcher (`gsd_return_marker`) used by step 11 as well. `gsd_stall_should_recover` is unchanged. One owner of \"which marker returned\".\n\n**Helper behavior** [verified by running the shipped function in a scratch directory]: a symlinked `.gsd-returns` (live or dangling) is refused with rc=1 and the target is untouched; a symlinked `.gitignore` is refused with rc=1; a regular file where the directory should be fails at `mkdir` with rc=1; the marker on line 64 is found and line 65 is not; BOM, CR, no final newline and word boundaries behave.\n\n### Findings\n\n**Minor 1 — a symlinked ancestor bypasses the receipt-path hardening** [verified bypass; severity is judgment]\n`stall-detection-helpers.md:182-185`: `[ -L ]` tests only the final components `$dir/.gsd-returns` and its `.gitignore`. A symlinked `<phase>` directory (or `.planning/phases`, or `.planning`) is followed: `mkdir -p` and the `*` `.gitignore` write land in the link target. This is the same class the fix claims to close (a checkout commits a link and the helper writes outside the phase). Reproduced: `ln -s outside linkphase; gsd_receipt_path linkphase x` returns 0 and creates `outside/.gsd-returns`.\nFix: refuse when `[ -L \"$dir\" ]`, or resolve with `cd -P \"$dir\" && pwd -P` and require the result to sit under the project root, and add a test row. If a symlinked phase directory is legitimate (the planner already writes `PLAN.md` there), say so in the comment and changeset and scope the claim to the receipt directory.\n\n**Nit 2 — the 64-line cap bounds lines, not bytes.** `stall-detection-helpers.md:202`: `read -r` of one multi-gigabyte line is still unbounded. Use `head -c 4096 \"$file\" |` or `read -r -n`.\n\n**Nit 3 — check-then-act race.** `-L` and `mkdir` / `printf` are separate syscalls, and the shell cannot close that cheaply. State in the comment that only static (checked-in) links are in scope.\n\n**Nit 4 — test gaps.** Around lines 1134-1169 there is no row for a symlinked ancestor (Minor 1) or for a dangling `.gsd-returns` link; the helper handles the latter with rc=1 but it is unpinned.\n\n**Nit 5 — behind `next` by one commit** (`5d987ccf6d`, #5269). Rebase or merge, and confirm the `plan-phase.md` size budgets and the compact-content baseline stay untouched. This is a CI condition.\n\n**Not verified.** I did not execute any test (local `node --test` is not permitted); the author's RED/GREEN account for the new rows rests on the helpers not existing on base. On Windows, whether the junction row ran or was skipped cannot be told from the rollup names.\n\n**CI.** Head `8ce426bdec83`: 44 rollup entries, deduped newest-wins by name, 0 failing, 0 cancelled, none queued or awaiting approval. SUCCESS includes `Required tests`, `test (ubuntu-latest, 24)` and shards 1-3, Windows conformance shards 1-3, macOS conformance, `lint-tests`, `docs-lint`, `changeset-lint`, `Coverage gate (merged shards)`, `QA loop walk`, and the smoke jobs. SKIPPED: `auto-merge`, `validate-target`, Stryker ×2, `test (inert CI)`, emitted-baseline artifact.\n\n### CodeGraph Evidence\n\nMemtrace unavailable: monthly quota exhausted, so `get_impact`, `get_symbol_context`, `recall_decision` and `find_code_review_issues` were not run. The recorded-decision check was not evaluated. The index is of the main checkout and shell-in-markdown is not graph-indexed, so branch-new helpers (`gsd_receipt_path`, `gsd_return_marker`) are absent.\n\n- `codegraph_impact gsd_stall_watch`: 2 symbols, both in `tests/plan-phase-stall-detection.test.cjs` (`extractStallHelpersBash` and the file).\n- `codegraph_callers gsd_stall_watch`: one caller, `tests/plan-phase-stall-detection.test.cjs`.\n- Finding: the graph sees only the test harness. Behavioral reach is five watch sites plus the `gsd-planner` and `gsd-plan-checker` tool posture and the install Group B list, so I rate the blast radius medium on reading.\n\n### Verdict\n\nChanges requested. Blocker 0, Major 0, Minor 1, Nit 4.\n"
+      },
+      {
+        "id": 5477738387,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-10T05:12:13Z",
+        "commit_id": "8ce426bdec832cc2b0e966969b03551438c95235",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#pullrequestreview-5477738387",
+        "body": "## Review of head `8ce426bdec83` — changes requested\n\n**Summary.** This is the full pass on the same head; the earlier review (02:25Z) is not edited. The substance is sound and every earlier finding is resolved or dispositioned. Running the shipped helpers again confirms the symlinked-ancestor bypass and raises it from Minor to Major (the isolated pass rated it Major; both ratings are kept), and the passes add five more verified gaps in the new receipt surface. Blocker 0, Major 1, Minor 6, Nit 6.\n\n**Classification and gates.** #5182 carries `confirmed-bug`; `Fixes #5182`, conventional title, not draft. Changeset `.changeset/lively-sloths-forage.md`: type `Fixed`, `pr: 5192`, bold lead; `docs/AGENTS.md` updated for the Group B move. No file added under `references/` or `workflows/` (no INVENTORY change). `a28e4d397b` carries three valid single-line `Emitted-Drift-Ack-Growth` trailers (`plan-phase.md`, `gsd-planner.md`, `gsd-plan-checker.md`); `node scripts/benchmark-compact-content.cjs --check` reports the baseline up to date.\n\n**Acceptance, issue #5182 (verbatim)**\n1. \"Markers present in a prompt, agent definition or transcript, but not in the receipt, yield `waiting`.\" — Met.\n2. \"A checker whose receipt says `## ISSUES FOUND` routes to step 12, never step 13.\" — Met when the checker writes the receipt; routing is orchestrator prose only.\n3. \"A finished revision yields a success result within one poll interval, not `stalled`.\" — Met.\n4. \"A spawn that never writes its receipt still yields `stalled` after the threshold.\" — Met, and for the checker this is also the failure mode of Minor 4.\n5. \"The same results on Claude Code and on a host with no `{outputFile}`.\" — **Partial** on kimi-code (built-ins cannot write); the known-limit note at `stall-detection-helpers.md:71-74` is the disposition you accepted.\n6. Regression tests that fail on `next` first — Met by construction (the helpers do not exist on base); not executed by me.\n\n**Reproduction** (the shipped bash helpers extracted from the markdown and run under plain `bash` 3.2 in a scratch directory outside the repo)\n\n| Probe | Result |\n|---|---|\n| `.planning` symlinked to an outside directory, `PHASE_DIR=<proj>/.planning/ph` | `rc=0`; `.gsd-returns/.gitignore` created **outside** the project |\n| `PHASE_DIR` itself a symlink to an outside directory | `rc=0`; created outside |\n| dangling `.gsd-returns` symlink / live symlink / symlinked `.gitignore` | `rc=1`, targets untouched (correct) |\n| `PHASE_DIR` containing a newline (`x\\ny`) | `rc=0`; the printed path contains the newline and is bound into the spawn prompt |\n| receipt that is a symlink to a file containing a marker line | `gsd_return_marker` returns that marker |\n| checker watch with no receipt, stale plans, past the threshold | `stalled` (a live-but-silent checker) |\n| spaced `PHASE_DIR` (`sp ace/ph`) with a fresh `*-PLAN.md` | `stalled`, expected `active` |\n| marker on line 64 / line 65 | found / not found (the line cap works) |\n| one 1,000,000-byte line (delegated pass, not re-run by me) | 9 s on bash 3.2; 20 MB did not finish in 110 s |\n\n### Findings\n\n**Major 1 — a symlinked `PHASE_DIR` or ancestor bypasses the receipt-path hardening** [verified: rows 1-2; the earlier review rated this Minor] `stall-detection-helpers.md:182-185`: `[ -L ]` tests only `$dir/.gsd-returns` and its `.gitignore`, while `mkdir -p` and the `*` `.gitignore` write follow any link earlier in the path. A checkout can commit `.planning`, `.planning/phases` or a phase directory as a symlink exactly as the comment at `:171-174` says it can commit `.gsd-returns`; the printed receipt path then points outside the repo, and the planner and (now) the checker are told to Write to it. The test covers only the two innermost components (`tests/plan-phase-stall-detection.test.cjs` ~1322-1357), so the suite cannot fail on this. Fix: refuse `[ -L \"$dir\" ]`, or resolve with `cd -P \"$dir\" && pwd -P` and require containment under the project root before `mkdir`, re-verify after, and add a row; if a symlinked phase directory is legitimate (the planner already writes `PLAN.md` there), say so in the comment and the changeset and scope the claim to the receipt directory.\n\n**Minor 1 — control characters and a newline are accepted in `PHASE_DIR`** [verified: row 4] Only `'`, `\"`, `$` and the backtick are refused (`:177-178`); a newline, `<`, `>`, `;` or `\\` passes (`;touch pwn` did not execute) and the path is substituted into `<return_receipt>{receipt}</return_receipt>` in the planner and checker prompt, an LLM-transcript injection surface via a crafted directory name (`PHASE_DIR` is normally a slugified GSD path, but a hostile checkout can name one). Refuse control characters, `<` and `>` too, and extend the property.\n\n**Minor 2 — `gsd_return_marker` follows a symlinked receipt** [verified: row 5] `[ -f ]` accepts a symlink (`:201`); output is limited to the matched marker, so there is no content leak, but a receipt that is a symlink should be rejected for consistency with the stated hostile-input stance.\n\n**Minor 3 — a live checker is declared stalled, and receipts are not cleaned** [verified: row 6; Spec pass agrees] The checker watch glob is `${PHASE_DIR}/*-PLAN.md` (`plan-phase.md:1101`); a checker touches no plan file, so `artifact_fresh` is never true and, with no receipt (every kimi-code run, any Write failure, a prompt without the line), the only exit is the 10-minute cut as `stalled`. The issue calls declaring a live agent stalled \"worse than the original unbounded wait\"; the same applies to the planner in its first 10 minutes before it writes a `PLAN.md`. The \"runtime completion result ends the wait\" mitigation is prose only. Separately, `rm -f \"{receipt}\"` appears only in helper prose (\"After routing\"); `plan-phase.md` has no cleanup command and the stalled and retry paths leave orphan `.gsd-returns/*` files (gitignored, never removed). Give the checker a freshness signal it actually produces or document the outcome, and add the cleanup to the routing steps.\n\n**Minor 4 — a space in `PHASE_DIR` silently disables the freshness signal** [verified: row 7] `find $artifact_glob` is unquoted (`:251`), so a spaced phase directory returns `stalled` instead of `active`; the new code and tests support spaced phase directories for receipts (`phase dir/01-x`), so the sibling check fails silently (Windows user-profile paths hit this). Expand the glob into an array with `nullglob` and pass it quoted.\n\n**Minor 5 — test gaps** [verified from the diff; Standards and isolated passes agree] No row for a symlinked ancestor or `PHASE_DIR` (Major 1), a dangling `.gsd-returns` link, a byte-huge single line, a newline or control character in `PHASE_DIR`, a symlinked receipt, or a spaced-directory freshness case; the symlink rows `t.skip` on Windows (and on `EPERM`/`EACCES`/`ENOTSUP`), so those rows go green with zero assertions there; the receipt-path property runs 8 times and exempts any non-ASCII label from the stem check (`!ascii ||`), and the unsafe-directory property's alphabet (`ab -'\"$\\``) never generates newlines, control characters or symlinks; the `*-PLAN.md` mmin freshness boundary and the epoch fallback have no boundary rows beyond 0 and 11 minutes; several wiring rows are near-vacuous prose regexes (`/plan-checker/i`, `/\\{receipt\\}/`); Stryker is SKIPPED so the 80% threshold is unmeasured.\n\n**Minor 6 — the 64-line cap bounds lines, not bytes** [verified by the delegated pass: 1 MB = 9 s, 20 MB > 110 s on bash 3.2; the earlier review had this as a Nit] `:202`: `read -r` of one multi-megabyte line is quadratic, and the watch calls `gsd_return_marker` once per cycle, so one runaway receipt line stalls the watch beyond its own interval and threshold. Use `head -c 4096 \"$file\" |` or `read -r -n`, and add a huge-single-line row.\n\n**Nit 1** [verified, carried] A check-then-act race exists between `-L` and `mkdir`/`printf`; state that only static (checked-in) links are in scope.\n**Nit 2** [security pass, 8/10 on Codex; the posture you accepted] `agents/gsd-plan-checker.md:4` now declares Write, and the Codex sandbox for the checker moves from `read-only` to `workspace-write` (`src/codex-agent-toml.cts:427-500`, pinned by `tests/codex-config-agents.test.cjs:459` and `tests/codex-config.test.cjs:1134`); \"write only the receipt\" is prompt text and the checker ingests contributor-controlled `PLAN.md` and source with Bash. On Claude Code the checker already had Bash, so Write adds nothing there. Recorded; not a defect per the 2026-10-07 decision.\n**Nit 3** [judgment] The word-boundary check in `gsd_return_marker` (`:208`) rejects only an alphanumeric or `_` after the marker, so `## PLAN COMPLETE-x` matches `## PLAN COMPLETE`, contradicting the comment; it needs the agent itself to write the line.\n**Nit 4** [verified, accepted earlier] `docs/ja-JP/AGENTS.md:414` and `docs/ko-KR/AGENTS.md:414` still show the plan-checker row without Write; the English page gains it at `docs/AGENTS.md:871`.\n**Nit 5** [judgment] Scope extras: the chunked-planning watches (`steps/chunked-planning-mode.md`), `.gitignore` written inside `.gsd-returns`, an unrelated commented-out `hooks:` block in the checker frontmatter, and the \"one Bash printf\" description in the PR body is stale against the checker's heredoc ban.\n**Nit 6** [verified] The branch is `BEHIND` `next` by one commit (`5d987ccf6d`, #5269); a rebase is a CI condition, and `plan-phase.md` is not touched by #5269. The changeset has no trailing `(#5182)` backlink (a convention, not required).\n\n**Considered, not findings:** label sanitization held (`../../etc/x`, `/abs/p`, `-rf`, `--help`, an empty label, a newline label and multibyte labels are all reduced to `[A-Za-z0-9_-]` inside `PHASE_DIR/.gsd-returns/`); the random suffix is a fresh `mktemp -u` per call and the file is not pre-created, so a checked-in file or a sibling agent cannot pre-place a forged receipt; a FIFO at the receipt path is rejected by `[ -f ]`; the kimi-code limit is the disposition you accepted, and AC5 stays Partial on that host.\n\n### Passes run\n| Pass | Result |\n|---|---|\n| `/diagnose` | run; the shipped-helper probes in the table above |\n| `/root-cause-analysis` | run; watching a GSD-owned receipt is the root-cause fix, but the new surface (symlinked ancestor, hostile directory names, the checker's freshness signal) was hardened only at its innermost components |\n| `/qa-test-architect` | run; Minor 5 |\n| `/skills-from-the-artificer` (`bugfix-review`) | run; block below |\n| `/code-review` | run as two parallel sub-agents: Standards (Minor 5, Nits 4 and 5) and Spec (Minor 3, acceptance 2 and 5) |\n| `/security-review` | run: identification sub-agent found the Codex sandbox widening (8/10, Nit 2) and falsified label, suffix and `.gitignore` forgery |\n| Isolated adversarial pass | run by a fresh agent with no prior context; independently found Major 1 and Minors 1-5 |\n\n**Not run** (Memtrace is unavailable): the Deterministic Review Pass (`detect_changes`, `find_cross_module_issues`, `find_code_review_issues`, `find_yaml_rule_matches`, `review_github_pr`), `preflight_check`, risk tiering (`find_central_symbols`, `find_bridge_symbols`), the recorded-decision check (`recall_decision`, `governing_rules`) and the co-change gate. None is reported clean. I did not execute any test (local `node --test` is not permitted).\n\n## Laws that apply\nSubject: PR #5192 makes the plan-phase stall watch read a GSD-owned return receipt written by the planner and checker, with shell helpers that create and read it.\n- **kerckhoffs-principle** — fired: the receipt directory is protected by `-L` checks on its two innermost components only, which holds only while the layout of ancestors stays unknown to the repo author (`stall-detection-helpers.md:182-185`). Action: Major 1.\n- **postels-law** — fired: `PHASE_DIR` is accepted when it avoids four shell metacharacters and then flows into a prompt and a path; accept a narrow grammar once at the edge instead. Action: Minors 1 and 2.\n- **leaky-abstractions** — fired: bash 3.2 behaviors leak through (`read -r` is quadratic on a long line, unquoted `find $glob` splits on spaces), and Windows symlink privilege leaks into the tests as skips. Action: Minors 4, 5, 6.\n- **hyrums-law** — fired: the checker now has Write and a new receipt contract, and `kimi-code` hosts silently take the time-cut path. Action: Minor 3, Nit 2.\n- **goodharts-law** — fired: the property tests and 599/600/601 rows pass while the generators never produce the hostile inputs (newline, symlink) that matter. Action: Minor 5.\nConsidered and cleared: knuths-optimization-principle (no optimization).\n\n**CI.** Head `8ce426bdec83`: every row is SUCCESS or SKIPPED; none failing, cancelled, queued or awaiting approval (`Required tests`, Ubuntu, Windows and macOS conformance, `lint-tests`, `docs-lint`, `changeset-lint`, `Coverage gate`, `QA loop walk`, smoke jobs). SKIPPED: `auto-merge`, `validate-target`, Stryker ×2, `test (inert CI)`, the emitted-baseline artifact. The branch is `BEHIND` `next` by one commit. I am not approving: Major 1 and the Minors need a push.\n\n### CodeGraph Evidence\n\nMemtrace unavailable: monthly quota exhausted and the server disconnected, so `get_impact`, `get_symbol_context`, `recall_decision` and `find_code_review_issues` were not run, and the recorded-decision check was not evaluated.\n\n- `codegraph_impact gsd_stall_watch` (earlier pass on this head): 2 symbols, both in `tests/plan-phase-stall-detection.test.cjs`; `codegraph_callers`: one caller, the test. Shell-in-markdown is not graph-indexed and the index is the main checkout, so `gsd_receipt_path` and `gsd_return_marker` are absent; behavioral reach is the five watch sites (`plan-phase.md`, `chunked-planning-mode.md`), the `gsd-planner` and `gsd-plan-checker` tool posture, `READONLY_AGENT_DISALLOWED_TOOLS` (`src/runtime-artifact-conversion.cts`) and the install Group B tests. I rate it medium on reading.\n- Finding: the graph sees only the test harness; the risk sits in what the shipped shell helpers do with a hostile checkout.\n\n### Verdict\n\nChanges requested. Blocker 0, Major 1, Minor 6, Nit 6.\n"
+      },
+      {
+        "id": 5558292936,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "COMMENTED",
+        "submitted_at": "2026-10-17T14:44:44Z",
+        "commit_id": "efb6dcb7e66a6bb41c58964bdcb47f692a3982fa",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#pullrequestreview-5558292936",
+        "body": "**Merge conflict with `next` — blocks review and merge.**\n\n`git merge-tree --write-tree origin/next <PR head>` against `next` @ `f7efbf110a` reports conflicts in:\n\n- `tests/fixtures/compact-content-benchmark-baseline.json`\n\nPlease bring the branch current with `next` and resolve the conflict(s). The substantive review resumes once the PR is mergeable. This notice is about the conflict only; it does not retire any open finding from earlier reviews.\n"
+      },
+      {
+        "id": 5563209291,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-18T13:37:59Z",
+        "commit_id": "35bf07e3754e3235df17064c2af0f82bc31e5ed6",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#pullrequestreview-5563209291",
+        "body": "## Review — fix(#5182): watch a GSD-owned return receipt instead of the host transcript in the plan-phase stall watch\n\nHead reviewed: `35bf07e3754e3235df17064c2af0f82bc31e5ed6` (`gh pr view 5192 --repo open-gsd/gsd-core --json headRefOid,mergeable,mergeStateStatus,reviewDecision` this turn: `MERGEABLE`, `BEHIND`, `CHANGES_REQUESTED`). Reviewer is isolated (did not author). Nothing was executed with `node --test`; CI is the executor.\n\n### Summary\n\nThe substance is largely sound and the earlier trek-e findings are resolved at this head: the symlinked-ancestor Major (containment via `cd -P`/`pwd -P`, walk-up link test, `..` refusal), control characters and `<`/`>` in `PHASE_DIR`, symlinked receipt, `rm -f \"{receipt}\"` at all five sites, quoted glob expansion, `head -c 4096`, word-boundary rule, ja/ko tools rows. The head is `BEHIND` `next` (clean per `git merge-tree`), CI is fully green. What remains is one security-posture decision that was only accepted for Codex, several test-quality items the author already disclosed as open, a silent-degradation path in the containment check, one unhandled body-less route, and nits. Zero tolerance applies: changes requested. Blocker 0, Major 1, Minor 7, Nit 4.\n\n### Classification & gate compliance\n\n| Gate | Result | Evidence |\n|---|---|---|\n| Track / label | PASS | #5182 labels `bug`, `area: workflow`, `confirmed-bug` -> Bug-Fix track |\n| Scope vs approved issue | PASS | Agent Brief names planner, checker, revision; the two chunked sites are disclosed in the brief thread and pinned by the existing five-site test. #2699 and #3923 untouched |\n| Closing keyword | PASS | `Fixes #5182` in body; `closingIssuesReferences` = #5182 |\n| Not a draft; title; branch | PASS | `isDraft` false; `fix(#5182): ...`; branch `fix/5182-stall-watch-return-receipt` |\n| Commits | PASS | 18 conventional `fix/test/docs(#5182)` commits |\n| PR template | PARTIAL | \"Fix PR\" template used; \"All existing tests pass\" is unchecked with a stale local-failure narrative and stale head sha `18695364a` (Nit 2) |\n| Changeset | PASS | `.changeset/lively-sloths-forage.md`: `type: Fixed`, `pr: 5192`, bold lead, ends with `(#5182)` |\n| Docs gate | PASS (Fixed type is exempt) | `docs/AGENTS.md` updated anyway; ja-JP/ko-KR partially (Nit 1) |\n| Inventory | N/A | No file added under `references/` or `workflows/` |\n| ADR gate | PASS (judgment) | Body names ADR-1239, 1016, 5057, 857 P6, 1610, 1235, 3574 and #767; no conflicting ADR found. `recall_decision` unavailable (see Memtrace Evidence) |\n| CONTEXT.md | NIT | No entry for the new return-receipt concept or the #767 Group B move of plan-checker (Nit 3) |\n| Labels | NOTE | PR still carries `needs-review: merge-conflict` although `mergeable` is `MERGEABLE`; bot-owned, stale |\n\n### Must-Have Acceptance Checklist (issue #5182, verbatim)\n\n| # | Criterion | Result |\n|---|---|---|\n| 1 | \"Markers present only in a prompt, agent definition or transcript yield waiting.\" | PASS. `gsd_stall_watch` (`stall-detection-helpers.md`) reads only the receipt through `gsd_return_marker`; rows `AC1`, `AC5` pass a transcript holding the marker text and expect `waiting`. Verified by reading and by probing `gsd_return_marker` directly (`## ISSUES FOUND-x` -> empty) |\n| 2 | \"A checker returning issues routes to the revision step, never to the pass step.\" | PASS when the receipt or result arrives. Routing is orchestrator prose (`plan-phase.md` step 11); a receipt-only ISSUES FOUND with no body fails closed to 11a |\n| 3 | \"A finished revision yields a success result within one poll interval.\" | PASS. Revision watch now passes `## REVISION COMPLETE` and `## REVISION_CONFLICT`. Body-less REVISION_CONFLICT is not covered (Minor 2) |\n| 4 | \"A spawn that never signals completion yields stalled after the threshold.\" | PASS. Boundary rows at 599/600/601 s with a stubbed clock |\n| 5 | \"Results are identical on Claude Code and on a host with no output file.\" | PARTIAL, accepted limits: kimi-code cannot write a receipt (documented, `stall-detection-helpers.md` \"Known limit, kimi-code\"); a refused receipt (symlink, `..`, outside cwd) degrades to completion-result-or-stalled (Minor 1). Not exercised live (Minor 7) |\n| 6 | \"Regression tests fail on current `next` first.\" | PASS by construction (helpers and `{receipt}` binding do not exist on base; AC1/AC5 rows would see `marker_received` from the transcript on base). I did not execute them; PR body reports tests 60 / pass 40 / fail 20 against untouched `next` |\n\n### Root-cause / functional verdict\n\nRoot cause (one sentence): `gsd_stall_watch` decided completion by `grep -qF` over the host output file, which on Claude Code is a transcript that already contains the agent's prompt and definition quoting the markers, and the revision site passed no markers at all, so the success exit was unreachable.\n\nVerdict: root-cause fix. The input to the decision is replaced with a GSD-owned per-dispatch file, and `gsd_return_marker` is the single owner of \"which marker was returned\" for both the watch and step 11 routing (one owner, no parallel parser). `gsd_stall_should_recover` is unchanged, correctly. I ran the shipped `gsd_receipt_path` and `gsd_return_marker` from the head under bash in a scratch directory outside the repo: relative phase dir accepted with sanitized label (`a b` -> `a_b`), `.gitignore` written, marker/word-boundary behavior as specified.\n\n### Blast radius\n\n- Runtime-visible: `READONLY_AGENT_DISALLOWED_TOOLS['gsd-plan-checker']` (`src/runtime-artifact-conversion.cts:4067`): CodeGraph `impact` = 3 symbols, sole consumer `applyAgentFrontmatterExtensions` (`:4099`) via `injectDisallowedToolsFrontmatter` (Claude-only). Codex sandbox derivation moves the checker from `read-only` to `workspace-write`. The checker is spawned from quick, quick-batch and import as well, and now holds `Write` in all of them (the limit is prose in `<anti_patterns>`).\n- Tool-grant widening by host (see Major 1): Claude (Edit/MultiEdit still denied), Codex (workspace-write), OpenCode and Kilo (`Write` -> `edit`, `src/runtime-artifact-conversion.cts:321`; `buildOpencodeAgentPermissionBlock` emits denials only, and `disallowedTools` injection is Claude-only, so nothing re-denies), Copilot (`Write: 'edit'`, `bin/install.js:556`).\n- Workflow surface: five watch sites in `plan-phase.md` and `chunked-planning-mode.md`; `gsd_stall_watch` second argument changes meaning (host file -> receipt). No callers outside those five (the existing five-site test pins it).\n- Shell-in-markdown is not graph-indexed; risk rated medium on reading.\n\n### Co-change completeness\n\n- Present: agents (planner, checker), `agent-contracts.md`, `docs/AGENTS.md`, ja-JP/ko-KR tools rows, install/Codex/descriptor-parity tests, compact-content baseline fixture, changeset.\n- `agents/*.compact.md` for planner/checker: not tracked in the tree (only `gsd-eval-planner.compact.md` exists), no gap.\n- Absent: ja-JP/ko-KR \"Principle of Least Privilege\" line still says checkers are read-only (Nit 1); CONTEXT.md (Nit 3).\n\n### Test quality\n\n- Fail-first: AC1 (`tests/plan-phase-stall-detection.test.cjs:1032`) and AC5 (`:1116`) are the discriminating rows; on base they get `marker_received` from the transcript where `waiting` is expected.\n- Persisted artifact: receipt rows assert the file system (`treeOf(outside)` unchanged, `.gitignore` content, victim file byte-identical). Good.\n- Controls: `symlinkOrSkip` rows carry a control (`gsd_return_marker` row asserts the target itself carries the marker). Good.\n- Parsers/budgets: two fast-check properties exist (`:1209`, `:1235`) with an independent oracle; `numRuns` 8-12 each over batches; generators never produce `/`, `..` or links (Minor 3).\n- Boundaries: 64-line cap has 64/65; 600 s threshold has 599/600/601; the 4096-byte cap does not (Minor 4).\n- Wall clock: `:1693-1709` uses `Date.now()` (Minor 5).\n- Prose asserts remain (Nit 4).\n\n### Memtrace Evidence\n\n- `get_impact`: UNAVAILABLE — Memtrace MCP failed to connect (ENOENT).\n- `get_symbol_context`: UNAVAILABLE — Memtrace MCP failed to connect (ENOENT).\n- `recall_decision`: UNAVAILABLE — Memtrace MCP failed to connect (ENOENT). The ADR/decision check was not evaluated against recorded decisions; the ADR list above is the PR body's own claim, not verified.\n- `find_code_review_issues`: UNAVAILABLE — Memtrace MCP failed to connect (ENOENT). The deterministic review pass was not run and is not reported clean.\n- `_graph_state`: no Memtrace graph state available.\n\nCodeGraph / manual evidence used instead: `codegraph impact READONLY_AGENT_DISALLOWED_TOOLS` (3 symbols, one consumer); `codegraph callers injectDisallowedToolsFrontmatter` (1 caller, Claude-only path); `codegraph node` spans of `src/runtime-artifact-conversion.cts:135-364` (Kimi/Kilo/OpenCode permission maps and `buildOpencodeAgentPermissionBlock`) and of the full test file from 900 to 1711; `git diff origin/next...refs/prrev/5192` on every changed non-test file; direct execution of the head's `gsd_receipt_path` and `gsd_return_marker` in a scratch directory outside the repo; worktree at the head for index freshness. No test was executed.\n\n### Findings\n\nSource tags: [fact] = verified on disk or by running the shipped helper; [judgment] = reviewer assessment.\n\n**Major**\n\n1. **Major 1 — [judgment, built on verified facts] The plan-checker's `Write` grant widens to full `edit` on OpenCode, Kilo and Copilot, and the maintainer's security acceptance covered Codex only.** `agents/gsd-plan-checker.md:4` adds `Write`; `src/runtime-artifact-conversion.cts:321` maps `Write` and `Edit` and `MultiEdit` to the same OpenCode `edit` permission, `:343-364` emits denials only, and `disallowedTools` is injected for Claude only (`:4047`), so nothing re-denies Edit there; Kilo (`:241`) and Copilot (`bin/install.js:556`) map `Write` to `edit` the same way. The checker reads contributor-controlled `PLAN.md` and source and holds `Bash`. The PR body states \"The maintainer's 10-10 security acceptance covered Codex only and predates #5338\", and the PR discloses OpenCode and Kilo but not Copilot or the other `tools:`-deriving hosts (Antigravity and others were not audited here). The \"receipt is the only write\" limit is prose on all of them. Fix: obtain explicit maintainer acceptance for each widened host in the PR thread, or scope the grant (for example keep the checker's receipt via the host's completion result on hosts where `Write` cannot be separated from `edit`), and extend the disclosure in `docs/AGENTS.md:885` and the changeset to every host whose conversion maps `Write` to a broader permission.\n\n**Minor**\n\n2. **Minor 1 — [fact] Containment is anchored to the orchestrator's cwd and a refusal is silent.** `stall-detection-helpers.md` `gsd_receipt_path` (the `root=$(pwd -P)` and `case \"$phys/\" in \"$root\"/*` lines). Probed: with cwd `p/proj`, an absolute phase dir `p/other/ph` returns `rc=1` and prints nothing. A legitimate absolute `PHASE_DIR` outside the cwd (multi-project `GSD_PROJECT` workspaces per `docs/CONFIGURATION.md:2279`, or an orchestrator whose cwd is a subdirectory) loses its receipt with no diagnostic and reverts to the original stalled-only behavior. Fix: anchor on the project root the workflow already resolves, and emit a one-line stderr reason on refusal so the orchestrator can name it; add a row for an absolute phase dir under the project root but outside the cwd.\n3. **Minor 2 — [fact on code path, judgment on effect] A receipt-only `## REVISION_CONFLICT` is not in the fail-closed list.** `stall-detection-helpers.md` lists ISSUES FOUND, CHECKPOINT REACHED, PHASE SPLIT RECOMMENDED and Source Audit as body-needing routes; `plan-phase.md` (revision conflict block, after the step 12 watch rule) exports `CONFLICT_DIMENSION/_PLAN/_PROPERTY/_CONSTRAINT/_ALTERNATIVES` from the return body, which the receipt does not carry. With the receipt arriving first, the conflict record written to REVIEWS.md would have empty fields. Fix: add REVISION_CONFLICT to the list (route to the existing revision fallback and offer Retry planner) and add a row beside the ISSUES FOUND fail-closed row.\n4. **Minor 3 — [fact, author-disclosed] Test gaps from the prior Minor 5 remain open.** `tests/plan-phase-stall-detection.test.cjs:1209-1284` fast-check properties never generate `/`, `..` or links (example rows cover them); `:1333-1344` `symlinkOrSkip` skips on `EPERM/EACCES/ENOTSUP`, so every symlink row (`:1346-1381`, `:1458-1572`) passes with zero assertions on an unprivileged Windows runner; Stryker does not run on this PR so the 80% kill threshold is unmeasured. Fix: add path-shaped generators (segments from `a`, `..`, `.`, `link`) with a oracle for the refusal set, and make the Windows skip fail loudly where CI is known to have the privilege, or add a runner-side privilege check.\n5. **Minor 4 — [fact] The 4096-byte cap has no limit-1/limit/limit+1 rows.** `:1584-1587` uses 4000 and 5000 bytes only. Fix: place the marker so it ends at byte 4095, 4096 and 4097 and assert found / found / not found (a marker straddling the cut must not match).\n6. **Minor 5 — [fact] Wall-clock use in the freshness test.** `:1699-1708` sets mtimes from `Date.now()` and relies on `find`'s real clock, and `:1580` asserts the read \"must finish within `PROBE_TIMEOUT_MS`\". CLAUDE.md: \"Do not assert on wall-clock time.\" Fix: put a `find` shim ahead of `PATH` that reports a controlled age, and assert the cap by output (the marker is not read) rather than by elapsed time.\n7. **Minor 6 — [fact] `gsd_return_marker` strips a BOM on every line, not only the first.** `stall-detection-helpers.md` `line=\"${line#$'\\xef\\xbb\\xbf'}\"` runs inside the loop, so a BOM at the start of line 2..64 is also tolerated; the property oracle (`:1203-1207`) matches that, so the property cannot catch it. Low impact (a BOM mid-file does not occur in a Write-tool receipt) but it contradicts the stated \"leading BOM\" contract. Fix: strip only when `n -eq 1`, and add a row with a BOM on line 2.\n8. **Minor 7 — [judgment] No live-runtime evidence.** PR body: \"Runtimes tested: Other: runtime-neutral bash helper exercised directly; no live runtime session was run\". The mechanism the fix depends on (a background planner or checker writing its receipt with `Write` as its last action, and the orchestrator binding `{receipt}` across tool calls) is exercised only through shell-stubbed unit rows; the issue reproduced on live Claude Code. Fix: one recorded live Claude Code `plan-phase` run (planner, checker returning ISSUES FOUND, revision) showing the three receipts and the routing, attached to the PR.\n\n**Nit**\n\n9. **Nit 1 — [fact]** `docs/ja-JP/AGENTS.md:425` and `docs/ko-KR/AGENTS.md:425` still read \"checkers are read-only (no Write/Edit)\" while the same files' tools row (edited here) now lists `Write`. English `docs/AGENTS.md:885` was updated. Update the line or revert the partial edit.\n10. **Nit 2 — [fact]** PR body is stale: cites head `18695364a`, leaves \"All existing tests pass (`npm test`)\" unchecked with a local-failure narrative, and lists Linux only; CI at `35bf07e37` is green. Refresh the body to the current head.\n11. **Nit 3 — [judgment]** CONTEXT.md carries no entry for the return-receipt concept, `gsd_receipt_path` / `gsd_return_marker` as the single owner of \"which marker did the agent return\", or plan-checker's #767 Group B move. Gate: \"CONTEXT.md updated when vocabulary or modules change\". CONTEXT.md has no stall-detection entry at all, so precedent is weak.\n12. **Nit 4 — [fact]** Prose-contract asserts remain after the stated reduction (\"Prose-contract rows are deliberately reduced to command tokens and one keyword\", `:1416`): `/only write/`, `/the Write tool/`, `/Group B report-writer/`, `doesNotMatch(/refuses that write/)`, `doesNotMatch(/After routing, the orchestrator runs/)` (`:1405-1423`, `:1671`), `/no heartbeat/i` (`:1670`). They read workflow and agent markdown by regex (file carries the `source-text-is-the-product` exemption), but they pin wording, not behavior.\n13. **Nit 5 — [fact]** `mergeStateStatus` is `BEHIND`: `origin/next` is `274f8cae13d03ad80e18959b135b0e51b33329e8`; `git merge-tree --write-tree origin/next refs/prrev/5192` exits clean (tree `999a96f39f03dac67ec2b5679ead27fdf9226f89`). The branch has needed a rebase on `tests/fixtures/compact-content-benchmark-baseline.json` at each of its last five pushes; regenerate that fixture again with `node scripts/benchmark-compact-content.cjs --write` after the next rebase.\n\n### CI (fresh this turn, head `35bf07e3754e3235df17064c2af0f82bc31e5ed6`)\n\n- 50 check runs, collapsed to latest-per-name: 43 SUCCESS, 7 SKIPPED, 0 failing, 0 queued, 0 pending.\n- Non-success non-skipped rows by the prescribed jq/awk collapse: none.\n- `action_required` workflow runs for this head sha: none.\n- `reviewDecision`: `CHANGES_REQUESTED` (trek-e, 2026-10-10 on `8ce426bde`; the 2026-10-17 `COMMENTED` review on `efb6dcb7e` was a merge-conflict notice that retires nothing). `mergeStateStatus` `BEHIND`.\n- No red to attribute.\n\n### Verdict\n\n**Changes requested.** Blocker 0, Major 1, Minor 7, Nit 5. CI is green and the branch is mergeable; the open items are Major 1 (maintainer decision on the Write grant for OpenCode, Kilo and Copilot), the silent containment degradation (Minor 1), the body-less REVISION_CONFLICT route (Minor 2), the disclosed and still-open test gaps (Minor 3 to Minor 5), and the remaining minors and nits above.\n"
+      },
+      {
+        "id": 5607925401,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "COMMENTED",
+        "submitted_at": "2026-10-22T00:40:19Z",
+        "commit_id": "cf778a2dc78d973841021a9a549c842ca5f5f12e",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#pullrequestreview-5607925401",
+        "body": "Merge conflict gate: this branch does not merge cleanly into current `next` (b043112d64). Conflicting paths, from `git merge-tree --write-tree --name-only origin/next refs/pr/5192`:\n\n- `tests/fixtures/compact-content-benchmark-baseline.json`\n\nRebase onto `next` (`git fetch origin next && git rebase origin/next`), resolve, and regenerate any generated files (benchmark baselines, conformance-tier lists, registry tables) rather than hand-merging them, then push. Substantive review resumes once the branch merges cleanly; this comment makes no statement about the diff's correctness."
+      },
+      {
+        "id": 5607939663,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "COMMENTED",
+        "submitted_at": "2026-10-22T00:42:47Z",
+        "commit_id": "cf778a2dc78d973841021a9a549c842ca5f5f12e",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#pullrequestreview-5607939663",
+        "body": "Correction: my merge-conflict comment on this PR was wrong. It was computed from a stale local copy of the branch, not the current head. Against current `next` (b043112d64) the live head merges cleanly (`git merge-tree --write-tree origin/next <head>` exits 0). No rebase is needed for a conflict. Please disregard that comment; substantive review proceeds."
+      },
+      {
+        "id": 5622647807,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "COMMENTED",
+        "submitted_at": "2026-10-23T00:46:13Z",
+        "commit_id": "4fa5ef7b93faf60ea16b788168558bc30f539c59",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#pullrequestreview-5622647807",
+        "body": "## Merge conflict — rebase needed (head `4fa5ef7b93`)\n\n`git merge-tree --write-tree origin/next <head>` reports a content conflict against current `next` (8 commits ahead of this branch):\n\n- `tests/fixtures/compact-content-benchmark-baseline.json`\n\nResolve with `git fetch origin next && git rebase origin/next` (or merge `next`), re-apply your change against the current `next` version of that file, and push. Substantive review of the diff is deferred until the branch merges cleanly; the open findings from the previous review stand unchanged. This note concerns only the conflict.\n"
+      }
+    ]
+  ],
+  "checks": [],
+  "timeline": [
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-03T04:10:48Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-03T04:10:49Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "Solvely-Colin"
+      }
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-03T04:10:49Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "jeremymcs"
+      }
+    },
+    {
+      "event": "reviewed",
+      "commit_id": "47b89935ddbfadeb5aac560639cbc39c76b63f8d",
+      "id": 5402039566,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-10-03T18:11:14Z",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#pullrequestreview-5402039566"
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-03T19:34:44Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "345d13e46c48994577b9ecaf4fbc44d549e2cb85"
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-03T20:38:04Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 5973264964,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#issuecomment-5973264964",
+      "body": "Thanks for the review. Addressed at `57aab6e31`:\n\n**1. Merge conflict (blocker).** Rebased onto `origin/next` @ `47b22b8c1`. The only conflict was `tests/fixtures/compact-content-benchmark-baseline.js"
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-03T20:38:05Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-05T21:59:52Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "08ddb32c292b26d7ba98f7c1240887e493937732"
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-05T22:00:37Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6003936721,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#issuecomment-6003936721",
+      "body": "Rebased onto `next` @ `13d37238b` to clear a new conflict. As last time, it was only `tests/fixtures/compact-content-benchmark-baseline.json`. I took `next`'s copy and regenerated it with `scripts/ben"
+    },
+    {
+      "event": "reviewed",
+      "commit_id": "08ddb32c292b26d7ba98f7c1240887e493937732",
+      "id": 5436473886,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-10-07T01:15:18Z",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#pullrequestreview-5436473886"
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-07T02:55:53Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "48ee141b9255b7cc58b0d54a7948482acb4f8383"
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-07T02:56:06Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6029947776,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#issuecomment-6029947776",
+      "body": "@trek-e thanks. I rebased onto `next` @ `663acba1f` (three commits, no conflict). The new head is `48ee141b9`.\n\n1. **Finding 1.** I'm proposing the follow-up route: #5245 moves gsd-plan-checker to #76"
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-07T02:56:18Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-07T11:14:33Z",
+      "actor": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "id": 6036744404,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#issuecomment-6036744404",
+      "body": "Maintainer decision on the open question (review finding 3, AC5): the plan-checker return-receipt write on read-only hosts must be fixed in this PR. AC5 is a must-have acceptance criterion, so it is n"
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-09T00:31:13Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "83e3c5fddf2074b666b1eed6af4a97c479e03edd"
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-09T00:31:56Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6071789583,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#issuecomment-6071789583",
+      "body": "@trek-e thanks for the decision. The Group B move is in this PR. I rebased onto `next` @ `83aba4462`; all 8 earlier commits carried over unchanged (`range-diff` all `=`). The new head is `83e3c5fdd`.\n"
+    },
+    {
+      "event": "reviewed",
+      "commit_id": "83e3c5fddf2074b666b1eed6af4a97c479e03edd",
+      "id": 5471157051,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-10-09T14:06:42Z",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#pullrequestreview-5471157051"
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-09T19:36:50Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "90cbe78bc1a8e4c12e0e72bb2d8b14a00219a239"
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-09T19:38:20Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6087958021,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#issuecomment-6087958021",
+      "body": "@trek-e thanks. I pushed `90cbe78bc`, rebased onto `next` @ `ed0f3fd55`. Commits 2 to 9 are unchanged. Commit 1 changes only its message (Nit 4).\n\n1. **Minor 1: fixed.** `gsd_receipt_path` now fails c"
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-09T19:38:21Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-09T23:39:53Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6091133331,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#issuecomment-6091133331",
+      "body": "@trek-e follow-up on Finding 3 (kimi-code): I added the known-limit note here rather than waiting on the disposition, so the item is closed under the zero-tolerance policy. `8ce426bde` adds four lines"
+    },
+    {
+      "event": "review_request_removed",
+      "created_at": "2026-10-09T23:44:16Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-09T23:44:19Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "reviewed",
+      "commit_id": "8ce426bdec832cc2b0e966969b03551438c95235",
+      "id": 5477112848,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-10-10T02:25:40Z",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#pullrequestreview-5477112848"
+    },
+    {
+      "event": "reviewed",
+      "commit_id": "8ce426bdec832cc2b0e966969b03551438c95235",
+      "id": 5477738387,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-10-10T05:12:13Z",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#pullrequestreview-5477738387"
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-11T00:21:59Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "90feaccf7b6e5d7cd90ea6936b3ba05a8c3bfeb4"
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-11T00:22:25Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6103712075,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#issuecomment-6103712075",
+      "body": "@trek-e thanks. I pushed `90feaccf7`, rebased onto `next` @ `651bd2f5e`. The earlier commits are unchanged; three new commits sit on top.\n\n- **Major 1: fixed.** `gsd_receipt_path` walks from `PHASE_DI"
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-11T00:22:27Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-12T00:59:25Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6115878785,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#issuecomment-6115878785",
+      "body": "@trek-e one more commit on top, `1b8d05179`, from a further adversarial pass over my last round:\n\n- `gsd_receipt_path` returned 1 for a phase dir with a `..` after a component that did not exist yet, "
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-14T02:32:20Z",
+      "actor": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "id": 6159580762,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#issuecomment-6159580762",
+      "body": "Merge conflict gate: this branch does not merge cleanly into `next` (`9c4d04f856`). `git merge-tree` reports a content conflict in `tests/fixtures/compact-content-benchmark-baseline.json`.\n\nPlease reb"
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-16T14:13:27Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "9441faf05bdfb907555c6ad94171f78e41ead6cb"
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-16T14:13:44Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6217399812,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#issuecomment-6217399812",
+      "body": "@trek-e I pushed `9441faf05`, rebased onto `next` @ `46a119f06`.\nThe only conflict was `tests/fixtures/compact-content-benchmark-baseline.json`, in the\n`plan-phase` row and the totals, at the three co"
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-16T18:29:52Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6222128078,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#issuecomment-6222128078",
+      "body": "@trek-e the branch is conflict-free: `9441faf05` was rebased onto `next` @ `46a119f06` on 10-16, and `git merge-tree` against today's `next` (`19f2d5e8e`, two commits ahead) is clean. Since my 10-11 a"
+    },
+    {
+      "event": "reviewed",
+      "commit_id": "efb6dcb7e66a6bb41c58964bdcb47f692a3982fa",
+      "id": 5558292936,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "commented",
+      "submitted_at": "2026-10-17T14:44:44Z",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#pullrequestreview-5558292936"
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-18T01:34:28Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "35bf07e3754e3235df17064c2af0f82bc31e5ed6"
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-18T01:35:04Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-18T01:35:15Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6244287799,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#issuecomment-6244287799",
+      "body": "@trek-e rebased onto `next` @ `755bf26f0`. The rebase stopped only on `tests/fixtures/compact-content-benchmark-baseline.json`; I regenerated it with `--write` at each of the three commits that change"
+    },
+    {
+      "event": "reviewed",
+      "commit_id": "35bf07e3754e3235df17064c2af0f82bc31e5ed6",
+      "id": 5563209291,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-10-18T13:37:59Z",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#pullrequestreview-5563209291"
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-21T19:47:44Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "cf778a2dc78d973841021a9a549c842ca5f5f12e"
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-21T19:48:34Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6325059162,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#issuecomment-6325059162",
+      "body": "Thanks for the review. Rebased onto `next` (fixture regenerated with `--write`); head `cf778a2dc`.\n\n- **Major 1: scoped, not just disclosed.** On OpenCode, Kilo and Copilot the installer now drops the"
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-21T19:48:41Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-21T22:51:25Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6328312693,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#issuecomment-6328312693",
+      "body": "**Minor 7: live Claude Code `plan-phase` run recorded.** Head `cf778a2dc`, Claude Code 2.1.306 on WSL2, PR build installed `--local` into a scratch project. Every `plan-phase.md` include in the five s"
+    },
+    {
+      "event": "reviewed",
+      "commit_id": "cf778a2dc78d973841021a9a549c842ca5f5f12e",
+      "id": 5607925401,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "commented",
+      "submitted_at": "2026-10-22T00:40:19Z",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#pullrequestreview-5607925401"
+    },
+    {
+      "event": "reviewed",
+      "commit_id": "cf778a2dc78d973841021a9a549c842ca5f5f12e",
+      "id": 5607939663,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "commented",
+      "submitted_at": "2026-10-22T00:42:47Z",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#pullrequestreview-5607939663"
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-22T01:13:58Z",
+      "actor": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "id": 6330264744,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#issuecomment-6330264744",
+      "body": "Heads-up on a change to how fixes land in `next`, and what it means for this PR. Nothing here blocks you today; it is how to be ready.\n\n**1. No need to keep merging `next` into your branch.** `next` n"
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-22T06:30:10Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "4fa5ef7b93faf60ea16b788168558bc30f539c59"
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-22T06:31:41Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6334372065,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#issuecomment-6334372065",
+      "body": "@trek-e thanks for the 00:42Z correction. `next` then moved to 26387bc83, and the head really conflicted there, in `tests/plan-phase-stall-detection.test.cjs` and the benchmark baseline (#5588). So I "
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-22T06:31:48Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "reviewed",
+      "commit_id": "4fa5ef7b93faf60ea16b788168558bc30f539c59",
+      "id": 5622647807,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "commented",
+      "submitted_at": "2026-10-23T00:46:13Z",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#pullrequestreview-5622647807"
+    },
+    {
+      "event": "committed",
+      "sha": "c61f64e2b3f658a460a025de0877a44e349fc8f2",
+      "committer": {
+        "date": "2026-10-23T02:50:08Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "dac682055858d350a00539ca3de54a635dffa91e",
+      "committer": {
+        "date": "2026-10-23T02:50:08Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "54dfccf0dfb15439ee6dd41393a8c96763f2b211",
+      "committer": {
+        "date": "2026-10-23T02:50:08Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "f781e7a29fc2d3d7772d1ca19a16888cfc00a661",
+      "committer": {
+        "date": "2026-10-23T02:50:09Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "a2c199b200dcf8e36f3d90278793272f33885bce",
+      "committer": {
+        "date": "2026-10-23T02:50:09Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "e67262131727f314297e1f98d7898d1d2751a11b",
+      "committer": {
+        "date": "2026-10-23T02:50:09Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "de7554cbea1b6d6bebfc5e6d215d3fa63fe6ae9d",
+      "committer": {
+        "date": "2026-10-23T02:50:09Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "98cd720d61540d5237747cf010e8b96af4f34b8f",
+      "committer": {
+        "date": "2026-10-23T02:50:09Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "be33dcd0d5a0b33210b3599fb2e0bb8451baf6de",
+      "committer": {
+        "date": "2026-10-23T02:50:09Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "f71524bafdfdc1a49b43a5c506686e0bf7e1cb7e",
+      "committer": {
+        "date": "2026-10-23T02:50:09Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "d36e22b2d63f0a1a1db6409e5eb642da07e827f2",
+      "committer": {
+        "date": "2026-10-23T02:50:09Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "42741147b965bf159bf9e70067c3c13ff554d557",
+      "committer": {
+        "date": "2026-10-23T02:50:09Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "450e83d72388516d551a16dfa0544c22b26188f6",
+      "committer": {
+        "date": "2026-10-23T02:50:14Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "c13ee493bb42e91c8374d943488744bdf5359bd8",
+      "committer": {
+        "date": "2026-10-23T02:50:14Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "9a5867057105ade91ed1ac0dd46c00f1c05aab09",
+      "committer": {
+        "date": "2026-10-23T02:50:14Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "bd0574f35bc840624ce2a1f6b394b5142c620d02",
+      "committer": {
+        "date": "2026-10-23T02:50:14Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "2c27266f406455cb7fb6c82c621a401c7ae40060",
+      "committer": {
+        "date": "2026-10-23T02:50:14Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "2f9a3cccd9cce92f92c321eb8e8efd0f95338dc7",
+      "committer": {
+        "date": "2026-10-23T02:50:14Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "f4e21dd8ffecbc484fa374be4e3b9aa7c53cc3d5",
+      "committer": {
+        "date": "2026-10-23T02:50:14Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "144bbf71ffd2ee10d358e4d7d5e54eb817f293bf",
+      "committer": {
+        "date": "2026-10-23T02:50:14Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "2407fde85edea675a6164b0622c119825abe1a72",
+      "committer": {
+        "date": "2026-10-23T02:50:14Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "1ea66d5655219cc916609eef5c328d156ff50a09",
+      "committer": {
+        "date": "2026-10-23T02:50:14Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "9d7fc2468f2b07c2d0655c3324599c1b297bea19",
+      "committer": {
+        "date": "2026-10-23T02:50:14Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "4cd1d4f9dfb714acbc823b95db1e6d714fec8923",
+      "committer": {
+        "date": "2026-10-23T02:50:15Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "c901dbccb2e979edb1b90fd680f10bc8c1523519",
+      "committer": {
+        "date": "2026-10-23T02:50:15Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "50c4f7d6b50ae9946de7180f0a6f07366d54c184",
+      "committer": {
+        "date": "2026-10-23T02:50:15Z"
+      }
+    },
+    {
+      "event": "committed",
+      "sha": "aff15bafbeb67943a7f3639f1a5ed7c7a7c45e7c",
+      "committer": {
+        "date": "2026-10-23T02:50:15Z"
+      }
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-23T04:47:03Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "aff15bafbeb67943a7f3639f1a5ed7c7a7c45e7c"
+    },
+    {
+      "event": "commented",
+      "created_at": "2026-10-23T04:47:14Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "id": 6357613383,
+      "user": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/5192#issuecomment-6357613383",
+      "body": "@trek-e rebased onto `next` @ `e61dbb948` for the real conflict your 10-23 00:46Z note names; head is now `aff15bafb`.\n\n- The only conflict was `tests/fixtures/compact-content-benchmark-baseline.json`"
+    },
+    {
+      "event": "review_requested",
+      "created_at": "2026-10-23T04:47:18Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    }
+  ],
+  "reviewComments": {},
+  "bodyView": {
+    "body": "## Fix PR\n\n---\n\n## Linked Issue\n\nFixes #5182\n\nThe linked issue carries `confirmed-bug`. This PR follows @trek-e's diagnosis and Agent Brief on the issue (issuecomment-5963253983); its six acceptance criteria are mapped below. Out of scope, per the brief: #2699 (general subagent watchdog) and #3923 (threshold default).\n\n---\n\n## What was broken\n\nWith the default `planner.stall_detection_enabled: true`, `/gsd:plan-phase` decides that a background planner or plan-checker has finished by grepping the host's `{outputFile}` for the return markers. On Claude Code that file is the subagent transcript. The transcript already holds the agent's prompt and its definition snapshot, and both quote the markers, so the wait reported `marker_received` at its first check whether or not the agent had returned. The revision watch passed no markers, so every revision round could only end in the \"Accept as revised / Retry / Stop\" stall menu. A host that returns no output file could only ever reach `stalled`.\n\n## What this fix does\n\nEach watched spawn now gets a GSD-owned, per-dispatch return receipt, and the watch reads only that file:\n\n- `gsd_receipt_path \"${PHASE_DIR}\" <spawn> \"${PROJECT_ROOT}\"` prints a fresh absolute path, `<phase>/.gsd-returns/<spawn>.<epoch>.XXXXXXXX`. It creates the directory with a catch-all `.gitignore` but not the file. `PROJECT_ROOT` is init's `project_root`; with no third argument the orchestrator's `pwd -P` is used.\n  - It fails closed (prints nothing, returns 1) unless the phase directory's nearest existing ancestor resolves, with `pwd -P`, under that root, and no walked component, `.gsd-returns` or its `.gitignore` is a symlink.\n  - It also fails closed on a `.` or `..` component, and on a quote, `$`, a backtick, `<`, `>` or any control character in the phase path.\n  - Every refusal prints one `gsd_receipt_path: no receipt: <reason>` line on stderr.\n  - Only static, checked-in links are in scope; the check-then-act race is not.\n  - The orchestrator binds the printed path as `{receipt}` in the spawn prompt (`<return_receipt>{receipt}</return_receipt>`) and in the watch call.\n- The agent's last action is to write the marker line it returns to that path with the Write tool.\n- `gsd_return_marker FILE MARKER...` is the single owner of \"which marker did the agent return\":\n  - It does a literal line-start match within the first 64 lines and 4096 bytes.\n  - The marker must end within those 4096 bytes, and it must be followed by the end of the line, whitespace, CR or a colon. 4097 bytes are read, so a word cut at the cap never matches.\n  - It ignores a receipt that is a symlink. It tolerates a BOM on line 1 and a missing final newline.\n  - `gsd_stall_watch` uses it for `marker_found`, and step 11 routes the checker on it, so the watch and the router cannot disagree. Prompt, definition and JSONL transcript text never match it.\n- The revision watch passes `## REVISION COMPLETE` and `## REVISION_CONFLICT`, so it has a success exit. `## REVISION COMPLETE` was already emitted (`planner-revision.md` Step 7). It is now declared in gsd-planner's Return Markers and in the `agent-contracts.md` registry.\n- A real completion result arriving between cycles ends the wait. The receipt carries only the marker, so every route that needs the body fails closed when the body has not arrived:\n  - `## ISSUES FOUND` goes to 11a.\n  - A planner checkpoint, split or Source Audit goes to 9a.\n  - `## REVISION_CONFLICT` goes to the revision stalled menu, with Retry offered first.\n- A `$TS` lost between tool calls falls back to the epoch stamped into the receipt name.\n\nAll five watch sites get the receipt, and each rule removes it with `rm -f \"{receipt}\"` after routing any result, stalled and Retry included. Three are the `plan-phase.md` steps the brief names (8, 10, 12). The other two are the chunked outline and per-plan sites in `steps/chunked-planning-mode.md`.\n\n## Root cause\n\n`gsd_stall_watch` ran `grep -qF` over the whole host output file. On Claude Code that file contains the agent's inputs as well as its output. The revision call site passed no markers, so the `marker_received` exit in `gsd_stall_should_recover` was unreachable for it. Introduced by 067a4d1c6c (#3015). `gsd_stall_should_recover` itself is unchanged on purpose.\n\n## Checker posture (maintainer decision, issuecomment-6036744404; review 5563209291 Major 1)\n\ngsd-plan-checker moves from #767 Group A to Group B. Its `tools:` gains `Write` for the receipt, and its Claude `disallowedTools` becomes `Edit, MultiEdit`. Codex derives `workspace-write` from its `tools:`. The receipt rule and `<anti_patterns>` both say that the receipt is the checker's only write.\n\n**Scoped per host.** OpenCode, Kilo and Copilot grant Write and Edit as one `edit` permission. There the installer drops the checker's `Write` before conversion (`scopeReceiptOnlyWrite`, at the ADR-1235 descriptor boundary), so the checker keeps its read-only posture, edit stays denied, and no checker receipt is written. A `Write` the user grants in `agent_tools` is appended afterwards and kept. A test derives the set of merging hosts from every descriptor agent converter's real output and requires the table to equal it.\n\nHosts that keep a separate write tool keep the checker's `Write`: Claude Code, Antigravity (`write_file`), Pi (`write`), Hermes, ZCode, Qwen, and Kimi CLI (`WriteFile`). Augment, Cline, CodeBuddy, Cursor, Trae and Windsurf emit no tool restriction at all, so they are unchanged. On kimi-code the planner and checker map to built-ins that cannot write, so no receipt is written there.\n\n**Security posture, stated plainly:** on the hosts that keep `Write`, the \"only write\" limit is prose, as it is for the other Group B agents. The checker already holds `Bash` on every host, so where there is no sandbox this grant does not change what it can reach. Codex's sandbox is the one real barrier, and the maintainer accepted it on 10-10.\n\n## Testing\n\n### How I verified the fix\n\nRows in `tests/plan-phase-stall-detection.test.cjs` run the shipped bash with `sleep`, `date +%s` and (for the freshness window) `find` stubbed, and read each call site's markers from `plan-phase.md`:\n\n| Acceptance criterion | Row |\n|---|---|\n| Markers present only in a prompt, agent definition or transcript yield waiting | `AC1` (+ wiring row: 5 sites bind `{receipt}`, none binds `{outputFile}`) |\n| A checker returning issues routes to the revision step | `AC2` (+ fail-closed rows for a body-less ISSUES FOUND and REVISION_CONFLICT) |\n| A finished revision yields success within one poll interval | `AC3` |\n| A spawn that never signals completion yields stalled | `AC4` 599/600/601 s + lost-`$TS` epoch row |\n| Identical results with and without a host output file | `AC5` |\n| Regression tests fail on current `next` first | see below |\n\nPlus the following:\n\n- `gsd_return_marker` rows: byte cap at 4095/4096/4097, a word cut at the cap, BOM on line 2 only, word boundary, symlinked receipt.\n- `gsd_receipt_path` rows: project-root anchoring from a cwd outside the root, a stderr reason on every refusal, symlinked phase dir, ancestor, `.gsd-returns` and `.gitignore`, `.`/`..`, and unsafe characters.\n- Two fast-check properties, one of them over path-shaped inputs.\n- In `tests/agent-tools.install.test.cjs`: per-host install rows (local and global) for the checker's edit posture, a gsd-verifier control, the `agent_tools` grant, and the converter-derived host set.\n\n**Red first:** run against the untouched `next` source, the stall-detection test file failed its AC1 and AC5 rows with `marker_received` where `waiting` was expected. This is the issue's mechanism. The byte-cap straddle row and the line-2 BOM row each fail against the previous head's helper. Re-measured for the Self-test report below: with only this head's test file on `next` e61dbb948 (also the merge base), 38 of the file's 102 tests fail, AC1 and AC5 among them; on aff15bafb all 102 pass.\n\n**Green on HEAD_SHA = aff15bafbeb67943a7f3639f1a5ed7c7a7c45e7c** (`env -i`, empty `HOME`/`GSD_HOME`):\n\n- Rebased onto `next` e61dbb948 for a real conflict: the compact-content benchmark baseline fixture (`tests/fixtures/compact-content-benchmark-baseline.json`). The baseline is regenerated with `node scripts/benchmark-compact-content.cjs --write` at each commit that changed it, not hand-merged. `git range-diff` shows 23 of 27 commits identical; the other 4 differ only in that fixture's numbers. The stall-detection test file now has 102 tests.\n- 14 affected test files (`plan-phase-stall-detection`, `agent-descriptor-parity.install`, `agent-tools.install`, `codex-config-agents`, `codex-config`, `install`, `benchmark-compact-content`, `agent-size-budget`, `chunked-planning-parallel`, `copilot-install`, `pi-package`, `workflow-size-budget`, `workflow-size` and `opencode-permissions`), with `HOME` and `GSD_HOME` empty and `CODEX_HOME` and `OPENCODE_CONFIG_DIR` unset: tests 1349, pass 1349, fail 0. In this round's first attempt, without unsetting `CODEX_HOME`, the run failed at `copilot-install.test.cjs:159` with `actual: '<home>/.codex'`; that is an environment leak, not a PR defect.\n- `GSD_EMITTED_BASE=origin/next node --test` over `emitted-attribution`, `emitted-caps-gate`, `emitted-caps`, `emitted-sizes` and `emitted-ack-trailer`: tests 229, pass 229, fail 0, against `origin/next` e61dbb948.\n- `npm run lint:ci`, `lint-docs-required` and `changeset/lint` all exit 0.\n- Full `npm test` on this head: 46559 passed, 0 failed, 108 skipped, 1 todo (29 chunks, exit 0), in a standalone `git clone --shared` checkout with `env -i`, empty `HOME`/`GSD_HOME`, a real copy of `node_modules` and `origin/next` at e61dbb948.\n\n### Regression test added?\n\n- [x] Yes, added tests that would have caught this bug\n\n### Platforms tested\n\n- [ ] macOS\n- [ ] Windows (including backslash path handling)\n- [x] Linux\n- [ ] N/A (not platform-specific)\n\nLocally: Linux (WSL2), bash 5.x. CI runs the rows on macOS and Windows. At the previous head, the Windows shard that ran this file ran every symlink row with no skip, and the symlink rows now fail rather than skip on CI.\n\n### Runtimes tested\n\n- [x] Claude Code\n- [ ] Antigravity\n- [ ] OpenCode\n- [x] Other: runtime-neutral bash helper exercised directly; installer output checked per host by install tests. A live Claude Code plan-phase run (planner, checker ISSUES FOUND, revision, checker VERIFICATION PASSED) is posted at https://github.com/open-gsd/gsd-core/pull/5192#issuecomment-6328312693, with its limits disclosed there, including a haiku planner, bypass permissions (a normal-permission checker Write is untested) and a non-default stall interval and threshold.\n- [ ] N/A (not runtime-specific)\n\n---\n\n## Self-test report\n\nBound to aff15bafb. The base row runs this head's test file on `next` e61dbb948, which is also the merge base; `git status --short` after that checkout lists only the test file. `$SCRATCH` is a local scratch directory (the full-suite clone must sit outside the system tmpdir: helpers-cleanup refuses to run under it), `$WORKTREE` the PR worktree at the head, and `$DEPS_CHECKOUT` a checkout with installed `node_modules`.\n\n```json\n{\n  \"schema\": 1,\n  \"head_sha\": \"aff15bafbeb67943a7f3639f1a5ed7c7a7c45e7c\",\n  \"tool\": \"npm-test\",\n  \"failing_first\": {\n    \"test\": \"tests/plan-phase-stall-detection.test.cjs\",\n    \"fails_on_base\": true,\n    \"passes_on_head\": true\n  },\n  \"commands\": [\n    \"git clone --shared --no-checkout \\\"$WORKTREE\\\" \\\"$SCRATCH/base-clone\\\" && cd \\\"$SCRATCH/base-clone\\\" && git checkout --detach e61dbb94817573fb13def0abc112441e498ef39a && ln -s \\\"$DEPS_CHECKOUT/node_modules\\\" node_modules && rm -f tsconfig.build.tsbuildinfo && npm run build:lib && git checkout aff15bafbeb67943a7f3639f1a5ed7c7a7c45e7c -- tests/plan-phase-stall-detection.test.cjs && git status --short  # prints only: M  tests/plan-phase-stall-detection.test.cjs\",\n    \"H=$(mktemp -d -p \\\"$SCRATCH\\\"); env -i PATH=\\\"$PATH\\\" HOME=\\\"$H\\\" GSD_HOME=\\\"$H\\\" node --test tests/plan-phase-stall-detection.test.cjs  # in base-clone\",\n    \"cd \\\"$WORKTREE\\\" && rm -f tsconfig.build.tsbuildinfo && npm run build:lib && H=$(mktemp -d -p \\\"$SCRATCH\\\"); env -i PATH=\\\"$PATH\\\" HOME=\\\"$H\\\" GSD_HOME=\\\"$H\\\" node --test tests/plan-phase-stall-detection.test.cjs\",\n    \"git clone --shared --no-checkout \\\"$WORKTREE\\\" \\\"$SCRATCH/selftest-clone\\\" && cd \\\"$SCRATCH/selftest-clone\\\" && git checkout --detach aff15bafbeb67943a7f3639f1a5ed7c7a7c45e7c && git fetch \\\"$WORKTREE\\\" +refs/remotes/origin/next:refs/remotes/origin/next  # origin/next = e61dbb948\",\n    \"cp -a \\\"$DEPS_CHECKOUT/node_modules\\\" . && rm -f tsconfig.build.tsbuildinfo && npm run build:lib\",\n    \"H=$(mktemp -d -p \\\"$SCRATCH\\\"); G=$(mktemp -d -p \\\"$SCRATCH\\\"); env -i PATH=\\\"$PATH\\\" HOME=\\\"$H\\\" GSD_HOME=\\\"$G\\\" npm test\"\n  ],\n  \"full_suite\": {\n    \"command\": \"H=$(mktemp -d -p \\\"$SCRATCH\\\"); G=$(mktemp -d -p \\\"$SCRATCH\\\"); env -i PATH=\\\"$PATH\\\" HOME=\\\"$H\\\" GSD_HOME=\\\"$G\\\" npm test\",\n    \"result\": \"passed\",\n    \"passed\": 46559,\n    \"failed\": 0\n  },\n  \"environment\": {\n    \"os\": \"Linux 6.18.54.1-microsoft-standard-WSL2 (WSL2, Ubuntu 24.04.4 LTS)\",\n    \"node\": \"v24.13.0\"\n  },\n  \"output_excerpt\": \"base: next e61dbb948 (also the merge base) plus only the head's tests/plan-phase-stall-detection.test.cjs; git status --short lists only that file. tests 102, pass 64, fail 38, exit 1. AC1 and AC5 fail (marker_received where waiting is expected)\\nhead aff15bafb: tests 102, pass 102, fail 0, exit 0\\nfull suite (standalone clone at head, origin/next = e61dbb948, env -i): 29 chunks, tests 46668, pass 46559, fail 0, cancelled 0, skipped 108, todo 1, exit 0\"\n}\n```\n\n---\n\n## Checklist\n\n- [x] Issue linked above with `Fixes #5182`\n- [x] Linked issue has the `confirmed-bug` label\n- [x] Fix is scoped to the reported bug; no unrelated changes included\n- [x] Regression test added (or explained why not)\n- [x] All existing tests pass (`npm test`): locally 46559 passed, 0 failed on aff15bafb in a clean clone (Self-test report above); CI re-runs on this head\n- [x] `.changeset/` fragment added (`type: Fixed`, `pr: 5192`)\n- [x] No unnecessary dependencies added\n\n## Breaking changes\n\nThere is no API or output-format change: `gsd_stall_watch` still prints one of `marker_received | active | waiting | stalled`. The behavior changes, all disclosed in the issue and this PR:\n\n- The planner and checker waits no longer return at their first check.\n- The \"Accept as revised\" menu no longer follows every successful revision.\n- The second argument of `gsd_stall_watch` is now the receipt, and its only callers are the five plan-phase sites.\n- `gsd_receipt_path` takes an optional third argument, the project root.\n\nADRs consulted:\n\n- ADR-1239: no new `runtime === ...` branch in workflow prose. The installer's host set is derived from the converters' own maps.\n- ADR-1016: the runtime capability descriptor.\n- ADR-1235: the scoping step sits at the descriptor boundary, before the converter, like the `disallowedTools` resolution.\n- ADR-3574: install materialization primitives, unchanged.\n- ADR-5057 (Accepted): `gsd_return_marker` is the single marker matcher for the watch and the checker routing.\n- ADR-5559: Pi package roles regenerated; Pi keeps a separate `write` tool.\n- ADR-1610: `plan-phase.md` is 97,131 bytes, under the 98,304-byte XL cap, and the agents stay under their tier caps.\n- #767: the Group A/B split.\n\n> *Generated by AI during triage; reviewed and posted by a human maintainer (@davesienkowski).*\n\n",
+    "baseRefOid": "e61dbb94817573fb13def0abc112441e498ef39a",
+    "changedFiles": 22
+  }
+}

@@ -1,0 +1,115 @@
+{
+  "provenance": {
+    "source": "synthetic from cr-5119-captured.json",
+    "edits": "invented 40-hex shas: head, base (bodyView.baseRefOid), a pr commit, two shas sharing the prefix dddd048 (a pr commit and a force-pushed head), a force-pushed head, a review commit no longer on the branch, a committed-event sha no longer on the branch; the body holds every token class, an all-digit run, a 41-hex run, an uppercase token, a Self-test json block inside an HTML comment (head_sha = head) followed by a visible block whose head_sha is the older forced head, and \"3 files changed\" against changedFiles 2",
+    "checksExit": 0,
+    "expected": {
+      "owner": "reviewer",
+      "login": "trek-e",
+      "reRequested": false
+    }
+  },
+  "view": {
+    "number": 900048,
+    "state": "OPEN",
+    "isDraft": false,
+    "author": {
+      "login": "davesienkowski"
+    },
+    "headRefOid": "aaaa048000000000000000000000000000000000",
+    "baseRefName": "next",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "BLOCKED",
+    "reviewDecision": "CHANGES_REQUESTED",
+    "reviewRequests": [],
+    "commits": [
+      {
+        "oid": "cccc048000000000000000000000000000000000",
+        "committedDate": "2026-10-20T00:00:00Z",
+        "messageHeadline": "commit 1"
+      },
+      {
+        "oid": "dddd048111111111111111111111111111111111",
+        "committedDate": "2026-10-21T00:00:00Z",
+        "messageHeadline": "commit 2"
+      },
+      {
+        "oid": "aaaa048000000000000000000000000000000000",
+        "committedDate": "2026-10-22T00:00:00Z",
+        "messageHeadline": "commit 3"
+      }
+    ],
+    "updatedAt": "2026-10-23T00:00:00Z"
+  },
+  "reviews": [
+    [
+      {
+        "id": 900048001,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-21T10:00:00Z",
+        "commit_id": "ffff048000000000000000000000000000000000",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/900048#pullrequestreview-900048001",
+        "body": "## Review\n\n### Findings\n\n**Minor**\n1. first minor finding\n   - detail line, not an item\n\n**Nit**\n2. a nit\n\n### Verdict\nChanges requested (0 Blocker, 0 Major, 1 Minor, 1 Nit).\n"
+      }
+    ]
+  ],
+  "checks": [],
+  "timeline": [
+    {
+      "event": "committed",
+      "sha": "abab048000000000000000000000000000000000",
+      "committer": {
+        "date": "2026-10-20T10:00:00Z"
+      }
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-20T11:00:00Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "eeee048000000000000000000000000000000000"
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-20T12:00:00Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "dddd048222222222222222222222222222222222"
+    },
+    {
+      "event": "reviewed",
+      "id": 900048001,
+      "user": {
+        "login": "trek-e",
+        "type": "User"
+      },
+      "state": "changes_requested",
+      "submitted_at": "2026-10-21T10:00:00Z",
+      "commit_id": "ffff048000000000000000000000000000000000",
+      "html_url": "https://github.com/open-gsd/gsd-core/pull/900048#pullrequestreview-900048001"
+    },
+    {
+      "event": "head_ref_force_pushed",
+      "created_at": "2026-10-22T11:00:00Z",
+      "actor": {
+        "login": "davesienkowski",
+        "type": "User"
+      },
+      "commit_id": "aaaa048000000000000000000000000000000000"
+    }
+  ],
+  "reviewComments": {},
+  "bodyView": {
+    "body": "## Summary\nHead aaaa048000000000000000000000000000000000 on base bbbb04800; earlier cccc04800 and CCCC048.\nAmbiguous dddd048, former eeee048, review on ffff048000, pushed abab0480.\nUnresolved deadbee, digits 1234567890, a long run aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, again cccc04800 cccc04800.\nThis change has 3 files changed; GitHub shows 2 changed files.\n\n## Self-test report\n<!--\n```json\n{\"head_sha\": \"aaaa048000000000000000000000000000000000\"}\n```\n-->\n```json\n{\"schema\": 1, \"head_sha\": \"EEEE048000000000000000000000000000000000\"}\n```",
+    "baseRefOid": "bbbb048000000000000000000000000000000000",
+    "changedFiles": 2
+  }
+}

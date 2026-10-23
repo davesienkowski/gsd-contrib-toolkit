@@ -10,7 +10,7 @@
  * head SHA, mergeable + mergeStateStatus, the current checks, every reviewer's latest state with the
  * commit it was on, the requested reviewers and one ball line.
  *
- *   node bin/pr-status.cjs [--json] [--overlap] [--repo owner/name] <n...>
+ *   node bin/pr-status.cjs [--json] [--overlap] [--cr [--reviewer <login>]] [--body] [--repo owner/name] <n...>
  *
  * Text output is plain ASCII (every GitHub-sourced string has C0 controls and DEL dropped and any
  * other non-ASCII character replaced by ?), PR blocks print in argv order and end with one footer:
@@ -43,7 +43,15 @@
  *  10. gh api "repos/R/compare/<base>...<head sha>"   (behind_by and the merge base)
  *  11. gh api "repos/R/compare/<merge base>...<base>"   (files the base changed since the merge base; GitHub
  *      lists at most 300, so a 300-file list makes the overlap a lower bound); skipped when behind_by is 0
- * A failed timeline or overlap read is named on its own line and never fails the PR block or the exit code.
+ * and, only with --cr (quick 261023-2u4), the timeline read above (once per PR, shared with the dismissed path)
+ * plus, when a change request was chosen, one more REST GET per PR:
+ *  12. gh api --paginate --slurp "repos/R/pulls/N/reviews/<id>/comments?per_page=100"   (the chosen review's
+ *      inline comments)
+ * and, only with --body (same quick), the timeline read above plus one more read per PR, after 12:
+ *  13. gh pr view N --repo R --json body,baseRefOid,changedFiles   (a separate view, so a push between the two
+ *      views can move the head: the body lines name the head they compared against)
+ * A failed timeline, overlap, inline-comments or body read is named on its own line and never fails the PR block or
+ * the exit code.
  * Any queue read that fails makes the mode `unknown` with the error named; it never fails the PR block
  * or the exit code (fail open to informational). Known limit: a queue configured through classic branch
  * protection rather than a ruleset is not visible to these reads.
@@ -82,15 +90,22 @@ const DEFAULT_REPO = 'open-gsd/gsd-core';
 const VIEW_FIELDS =
   'number,state,isDraft,author,headRefOid,baseRefName,mergeable,mergeStateStatus,reviewDecision,reviewRequests,commits,updatedAt';
 const CHECK_FIELDS = 'name,state,bucket,workflow,completedAt,link';
+const BODY_FIELDS = 'body,baseRefOid,changedFiles'; // the --body view (quick 261023-2u4), read apart from VIEW_FIELDS
 const BUCKETS = Object.freeze(['pass', 'fail', 'pending', 'skipping', 'cancel']);
 const IGNORED_REVIEW_STATES = new Set(['COMMENTED', 'PENDING']);
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-const USAGE = 'usage: pr-status [--json] [--overlap] [--repo owner/name] <pr-number...>  (default repo ' + DEFAULT_REPO + ')';
+const USAGE =
+  'usage: pr-status [--json] [--overlap] [--cr [--reviewer <login>]] [--body] [--repo owner/name] <pr-number...>  (default repo ' +
+  DEFAULT_REPO +
+  ')';
 const FOOTER =
   'Snapshot is point-in-time (three separate gh reads per PR, and separate merge-queue reads per base branch; ' +
   'plus a timeline read when a review was dismissed, and files and compare reads with --overlap); re-run before any write. ' +
   'A change request answered without a new commit (retitle, comment) still reads as author owes unless ' +
   'the reviewer was re-requested: check the timeline.';
+// R8: printed after FOOTER (which stays byte-identical) only when --cr or --body added reads.
+const CR_FOOTER =
+  "With --cr or --body: the timeline, the chosen change request's inline comments and the body view are further separate reads, so the head can move between them; re-run before any write.";
 const MAX_BUFFER = 64 * 1024 * 1024; // review listings carry full bodies; 1 MiB (the default) is not enough
 const UNKNOWN_RETRY_MS = 2000;
 const MERGE_CAVEAT = 'Update branch at merge time; never --admin';
@@ -136,14 +151,16 @@ function jsonArrayOrNull(text) {
 }
 
 /**
- * Read one PR through three read-only gh calls.
+ * Read one PR through three read-only gh calls (plus the timeline when a review is DISMISSED or options ask).
  *
  * @param {string|number} number PR number (digits)
  * @param {string} repo owner/name
  * @param {{gh?: Function, sleep?: Function}} [deps] injectable gh(args) runner returning parsed JSON, and sleep(ms)
+ * @param {{timeline?: boolean}} [options] timeline: read the timeline even with no DISMISSED review (--cr, --body);
+ *   omitted (bin/issue-status.cjs) keeps the dismissed-only read
  * @returns {{view: object, reviews: object[], checks: object[]}}
  */
-function fetchPr(number, repo, deps = {}) {
+function fetchPr(number, repo, deps = {}, options = {}) {
   const gh = deps.gh || defaultGh;
   const args = ghArgs(number, repo);
   const sleep = deps.sleep || defaultSleep;
@@ -158,7 +175,7 @@ function fetchPr(number, repo, deps = {}) {
   // The dismissal message lives only on the timeline's review_dismissed event: read it only when needed.
   let timeline = null;
   let timelineError = null;
-  if (reviews.some((r) => r && r.state === 'DISMISSED')) {
+  if ((options && options.timeline) || reviews.some((r) => r && r.state === 'DISMISSED')) {
     try {
       timeline = pagesToArray(gh(args.timeline), 'timeline');
     } catch (err) {
@@ -214,6 +231,53 @@ function fetchOverlap(repo, view, deps = {}) {
   } catch (err) {
     return { base, error: firstErrorLine(err) };
   }
+}
+
+/**
+ * --cr: read the chosen change request's inline comments (one REST GET, only when a review was chosen) and
+ * derive the --cr verdict. A failed read is named, never a thrown PR error (CONTEXT D1 f).
+ *
+ * @param {string|number} number PR number (digits)
+ * @param {string} repo owner/name
+ * @param {{view: object, reviews: object[], timeline: (object[]|null), timelineError: (string|null)}} pr fetchPr result
+ * @param {string|null} reviewer --reviewer login, or null
+ * @param {{gh?: Function}} [deps]
+ * @returns {object} deriveCr result
+ */
+function fetchCr(number, repo, pr, reviewer, deps = {}) {
+  const gh = deps.gh || defaultGh;
+  const { chosen } = chooseCr(pr.view, pr.reviews, reviewer);
+  let comments = null;
+  let commentsError = null;
+  if (chosen) {
+    try {
+      if (!/^[0-9]+$/.test(String(chosen.id))) throw new Error(`review id not usable in a path: ${chosen.id}`);
+      comments = pagesToArray(gh(['api', '--paginate', '--slurp', `repos/${repo}/pulls/${number}/reviews/${chosen.id}/comments?per_page=100`]), 'review comments');
+    } catch (err) {
+      commentsError = firstErrorLine(err);
+    }
+  }
+  return deriveCr({ view: pr.view, reviews: pr.reviews, timeline: pr.timeline, timelineError: pr.timelineError, comments, commentsError, reviewer });
+}
+
+/**
+ * --body: one more read-only view (body, baseRefOid, changedFiles) and the --body verdict. A failed read is
+ * named, never a thrown PR error (CONTEXT D2 f).
+ *
+ * @returns {object} deriveBody result, or { error }
+ */
+function fetchBody(number, repo, pr, deps = {}) {
+  const gh = deps.gh || defaultGh;
+  let bodyView = null;
+  let bodyError = null;
+  try {
+    bodyView = gh(['pr', 'view', String(number), '--repo', repo, '--json', BODY_FIELDS]);
+    if (!bodyView || typeof bodyView !== 'object') throw new Error('body view reply is not an object');
+  } catch (err) {
+    bodyView = null;
+    bodyError = firstErrorLine(err);
+  }
+  return deriveBody({ view: pr.view, reviews: pr.reviews, timeline: pr.timeline, timelineError: pr.timelineError, bodyView, bodyError });
 }
 
 /** Every path a compare/pulls file entry names (its filename, plus previous_filename for a rename). */
@@ -431,7 +495,7 @@ function summarizeChecks(checks) {
  *   page-nested; queue is a fetchQueue/deriveQueue result for the PR's base (absent input = not read)
  * @returns {object} snapshot with checks summary, reviewers, requested, queue and ball
  */
-function derive({ view, reviews, checks, queue, timeline, timelineError, overlap }) {
+function derive({ view, reviews, checks, queue, timeline, timelineError, overlap, cr, body }) {
   const v = view || {};
   const head = String(v.headRefOid || '');
   const authorLogin = lower(v.author && v.author.login);
@@ -497,6 +561,8 @@ function derive({ view, reviews, checks, queue, timeline, timelineError, overlap
     decisionNote: decisionNote(v.reviewDecision, latest),
     dismissals: deriveDismissals(reviews, timeline === undefined ? null : timeline, timelineError || null),
     overlap: overlap || null, // null = --overlap not given
+    cr: cr || null, // null = --cr not given (a deriveCr result otherwise)
+    body: body || null, // null = --body not given (a deriveBody result otherwise)
   };
 }
 
@@ -686,7 +752,564 @@ function formatText(d) {
   if (d.mergeStateStatus === 'BEHIND') lines.push(behindNote(d.queue));
   if (d.decisionNote) lines.push(`  note: ${clean(d.decisionNote)}`);
   if (d.overlap) lines.push(...overlapLines(d.overlap));
+  if (d.cr) lines.push(...crLines(d.cr));
+  if (d.body) lines.push(...bodyLines(d.body));
   return lines.join('\n');
+}
+
+// ---- --cr (quick 261023-2u4, CONTEXT D1): the latest change request, its checklist, activity, re-request ----
+
+const SEVERITIES = Object.freeze(['Blocker', 'Major', 'Minor', 'Nit']);
+const MAX_ITEM = 200; // a checklist item prints cut at this length, after cleaning
+const MAX_INLINE = 120; // an inline comment prints cut at this length, after cleaning
+const LOGIN_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/; // R3: a GitHub login
+
+function severityName(word) {
+  const w = lower(word).replace(/s$/, '');
+  return SEVERITIES.find((s) => lower(s) === w) || null;
+}
+
+/** Stable sort by submitted_at: equal timestamps keep API order, so the later-listed review wins (the ball's rule). */
+function bySubmitted(list) {
+  return list
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => {
+      const ta = String(a.r.submitted_at || '');
+      const tb = String(b.r.submitted_at || '');
+      return ta < tb ? -1 : ta > tb ? 1 : a.i - b.i;
+    })
+    .map(({ r }) => r);
+}
+
+/** Reviews by non-bot users other than the PR author, any state, flattened and in submitted_at order. */
+function humanReviews(view, reviews) {
+  const author = lower(view && view.author && view.author.login);
+  const flat = (Array.isArray(reviews) ? reviews : []).flat();
+  return bySubmitted(flat.filter((r) => r && r.user && r.user.login && r.user.type !== 'Bot' && lower(r.user.login) !== author));
+}
+
+/**
+ * D1 a: the chosen change request = the newest CHANGES_REQUESTED review by a non-bot non-author user (only
+ * `reviewer` when given), and the DISMISSED reviews by the same users that are newer than it.
+ *
+ * @returns {{chosen: (object|null), newerDismissed: object[]}}
+ */
+function chooseCr(view, reviews, reviewer) {
+  const pool = humanReviews(view, reviews).filter((r) => !reviewer || lower(r.user.login) === lower(reviewer));
+  let at = -1;
+  pool.forEach((r, i) => {
+    if (r.state === 'CHANGES_REQUESTED') at = i;
+  });
+  if (at < 0) return { chosen: null, newerDismissed: [] };
+  return { chosen: pool[at], newerDismissed: pool.slice(at + 1).filter((r) => r.state === 'DISMISSED') };
+}
+
+const COUNT_RE = /\b(\d+)\s+(blocker|major|minor|nit)s?\b|\b(blocker|major|minor|nit)s?\s+(\d+)\b/gi;
+
+/**
+ * R1: the verdict counts of one line = its severity counts (`<n> <Severity>` or `<Severity> <n>`) in order, up
+ * to, not including, the first count whose severity already appeared on the line. Null unless two or more.
+ */
+function lineCounts(line) {
+  const seen = new Set();
+  const group = [];
+  for (const m of String(line).matchAll(COUNT_RE)) {
+    const sev = severityName(m[2] || m[3]);
+    if (seen.has(sev)) break;
+    seen.add(sev);
+    group.push({ sev, n: Number(m[1] != null ? m[1] : m[4]), start: m.index, end: m.index + m[0].length });
+  }
+  if (group.length < 2) return null;
+  return { sum: group.reduce((a, g) => a + g.n, 0), text: line.slice(group[0].start, group[group.length - 1].end) };
+}
+
+/** A line that is only a severity word (bold or not, as a heading or not, optional plural and colon). */
+function severityLabel(line) {
+  const m = /^(?:#{1,6}[ \t]+)?(?:\*\*)?[ \t]*(blocker|major|minor|nit)s?[ \t]*:?[ \t]*(?:\*\*)?[ \t]*:?[ \t]*$/i.exec(line);
+  return m ? severityName(m[1]) : null;
+}
+
+/**
+ * D1 b: the findings checklist, structural only. The Findings section runs from the first heading
+ * /^#{1,6}\s+Findings\b/i to the next heading of the same or a higher level (a heading that is only a severity
+ * word is a severity label, not a section end); fenced code is skipped. An item is a column-0 line starting
+ * `N. `, `- `, `* ` or a bold `**<Severity> <n>` label; indented lines are detail. Severity = the item's own
+ * bold label, else the last severity label line seen. The item count is cross-checked against the verdict
+ * counts (R1, last qualifying line of the whole body): unequal -> unparsed, never a guessed list.
+ *
+ * @param {string} body review body
+ * @returns {{status: 'matched'|'nocounts'|'unparsed'|'none', reason?: string, items: {severity: (string|null), text: string}[], structural: number, verdict: ({sum: number, text: string}|null)}}
+ */
+function parseChecklist(body) {
+  const lines = String(body == null ? '' : body).split(/\r?\n/);
+  let verdict = null;
+  for (const line of lines) verdict = lineCounts(line) || verdict;
+  const start = lines.findIndex((l) => /^#{1,6}\s+Findings\b/i.test(l));
+  if (start < 0) return { status: 'none', reason: 'no Findings heading', items: [], structural: 0, verdict };
+  const level = /^(#+)/.exec(lines[start])[1].length;
+  const items = [];
+  let severity = null;
+  let fence = null;
+  for (let i = start + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    const f = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      if (f && f[1][0] === fence[0] && f[1].length >= fence.length && /^\s*[`~]+\s*$/.test(line)) fence = null;
+      continue;
+    }
+    if (f) {
+      fence = f[1];
+      continue;
+    }
+    const label = severityLabel(line);
+    if (label) {
+      severity = label;
+      continue;
+    }
+    const h = /^(#{1,6})\s/.exec(line);
+    if (h && h[1].length <= level) break;
+    if (!/^(?:\d+\.\s|[-*]\s|\*\*(?:blocker|major|minor|nit)s?\s+\d)/i.test(line)) continue;
+    const own = /^(?:\d+\.\s+|[-*]\s+)?\*\*(blocker|major|minor|nit)s?\b/i.exec(line);
+    items.push({ severity: own ? severityName(own[1]) : severity, text: line.trim() });
+  }
+  // R2: a Findings section with no recognised item (5471174433 uses M1/m1 prefixes) is none; the grammar is not widened.
+  if (items.length === 0) return { status: 'none', reason: 'the Findings section holds no recognised items', items, structural: 0, verdict };
+  if (!verdict) return { status: 'nocounts', items, structural: items.length, verdict };
+  if (verdict.sum !== items.length) return { status: 'unparsed', items: [], structural: items.length, verdict };
+  return { status: 'matched', items, structural: items.length, verdict };
+}
+
+/** R5: a timeline event's own time (reviewed: submitted_at; committed: committer.date, else author.date; else created_at). */
+function eventTime(e) {
+  if (!e) return '';
+  if (e.event === 'reviewed') return String(e.submitted_at || '');
+  if (e.event === 'committed') return String((e.committer && e.committer.date) || (e.author && e.author.date) || '');
+  return String(e.created_at || '');
+}
+
+function eventActor(e) {
+  return String((e && e.actor && e.actor.login) || (e && e.user && e.user.login) || '?');
+}
+
+/** The requested user's login, or `team <slug|name>`, of a review_requested / review_request_removed event. */
+function requestTarget(e) {
+  if (e && e.requested_reviewer && e.requested_reviewer.login) return { kind: 'user', name: String(e.requested_reviewer.login) };
+  const t = e && e.requested_team;
+  if (t && (t.slug || t.name)) return { kind: 'team', name: String(t.slug || t.name) };
+  return { kind: 'user', name: '?' };
+}
+
+/**
+ * D1 d: the timeline events strictly later than `since`, in timeline order, one entry each; a contiguous run
+ * of committed events is one entry. Other event types are dropped.
+ */
+function deriveActivity(timeline, since) {
+  const out = [];
+  for (const e of Array.isArray(timeline) ? timeline : []) {
+    if (!e || !(eventTime(e) > String(since || ''))) continue;
+    if (e.event === 'committed') {
+      const prev = out[out.length - 1];
+      if (prev && prev.kind === 'commits') {
+        prev.count += 1;
+        prev.last = String(e.sha || '');
+      } else out.push({ kind: 'commits', count: 1, last: String(e.sha || '') });
+    } else if (e.event === 'reviewed') {
+      out.push({ kind: 'reviewed', login: eventActor(e), state: String(e.state || '').toUpperCase(), id: e.id == null ? '?' : String(e.id), commit: String(e.commit_id || '') });
+    } else if (e.event === 'commented') {
+      out.push({ kind: 'commented', login: eventActor(e), time: eventTime(e), url: String(e.html_url || '') });
+    } else if (e.event === 'head_ref_force_pushed') {
+      out.push({ kind: 'force-pushed', actor: eventActor(e), commit: String(e.commit_id || '') });
+    } else if (e.event === 'review_requested' || e.event === 'review_request_removed') {
+      const t = requestTarget(e);
+      out.push({ kind: e.event === 'review_requested' ? 'requested' : 'request-removed', actor: eventActor(e), target: t.kind === 'team' ? `team ${t.name}` : t.name });
+    } else if (e.event === 'review_dismissed') {
+      const id = e.dismissed_review && e.dismissed_review.review_id;
+      out.push({ kind: 'dismissed', actor: eventActor(e), id: id == null ? '?' : String(id) });
+    }
+  }
+  return out;
+}
+
+/**
+ * D1 e: one entry per non-bot non-author user who submitted any review, sorted by login: requested now (with
+ * the last review_requested event), or what ended the last request (the first review by that login submitted
+ * strictly later, or a later review_request_removed, whichever comes first), and whether a re-request is
+ * needed (not requested, newest review on a commit other than the head, latest counted state
+ * CHANGES_REQUESTED or DISMISSED). R4: a requested team makes that flag unknown.
+ */
+function deriveRerequests(view, reviews, timeline) {
+  const v = view || {};
+  const head = String(v.headRefOid || '');
+  const entries = (Array.isArray(v.reviewRequests) ? v.reviewRequests : []).map(requestEntry).filter(Boolean);
+  const users = new Set(entries.filter((e) => e.kind === 'user').map((e) => lower(e.name)));
+  const teams = entries.filter((e) => e.kind === 'team').map((e) => e.name);
+  const human = humanReviews(v, reviews);
+  const byLogin = new Map();
+  for (const r of human) {
+    const k = lower(r.user.login);
+    if (!byLogin.has(k)) byLogin.set(k, { login: String(r.user.login), reviews: [] });
+    byLogin.get(k).reviews.push(r);
+  }
+  const events = Array.isArray(timeline) ? timeline : [];
+  const out = [];
+  for (const [k, x] of byLogin) {
+    const reqs = events.filter((e) => e && e.event === 'review_requested' && requestTarget(e).kind === 'user' && lower(requestTarget(e).name) === k);
+    const lastReq = reqs.length ? reqs[reqs.length - 1] : null;
+    const request = lastReq ? { time: eventTime(lastReq), actor: eventActor(lastReq) } : null;
+    const entry = { login: x.login, requested: users.has(k), request, ending: null, needed: false, team: null };
+    if (!entry.requested) {
+      if (!lastReq) entry.ending = { kind: 'never' };
+      else {
+        const consumed = x.reviews.find((r) => String(r.submitted_at || '') > request.time);
+        const removed = events.find(
+          (e) => e && e.event === 'review_request_removed' && requestTarget(e).kind === 'user' && lower(requestTarget(e).name) === k && eventTime(e) > request.time
+        );
+        const ct = consumed ? String(consumed.submitted_at) : null;
+        const rt = removed ? eventTime(removed) : null;
+        if (consumed && (!removed || ct <= rt)) entry.ending = { kind: 'consumed', id: consumed.id == null ? '?' : String(consumed.id), state: String(consumed.state || ''), time: ct };
+        else if (removed) entry.ending = { kind: 'removed', actor: eventActor(removed), time: rt };
+        else entry.ending = { kind: 'open' };
+      }
+      const newest = x.reviews[x.reviews.length - 1];
+      const counted = x.reviews.filter((r) => !IGNORED_REVIEW_STATES.has(r.state));
+      const latest = counted.length ? counted[counted.length - 1].state : null;
+      const flag = String(newest.commit_id || '') !== head && (latest === 'CHANGES_REQUESTED' || latest === 'DISMISSED');
+      if (flag && teams.length) entry.team = teams.join(', ');
+      else entry.needed = flag;
+    }
+    out.push(entry);
+  }
+  return out.sort((a, b) => (lower(a.login) < lower(b.login) ? -1 : lower(a.login) > lower(b.login) ? 1 : 0));
+}
+
+/**
+ * Pure --cr verdict over the reads (D1). comments = the chosen review's inline comments (null = not read).
+ *
+ * @returns {object} { reviewer, chosen, notes, checklist, inline, inlineError, activity, rerequest, timelineError }
+ */
+function deriveCr({ view, reviews, timeline, timelineError, comments, commentsError, reviewer }) {
+  const v = view || {};
+  const head = String(v.headRefOid || '');
+  const { chosen, newerDismissed } = chooseCr(v, reviews, reviewer || null);
+  const tl = Array.isArray(timeline) ? timeline : null;
+  const out = {
+    reviewer: reviewer || null,
+    chosen: null,
+    notes: [],
+    checklist: null,
+    inline: null,
+    inlineError: null,
+    activity: null,
+    rerequest: tl ? deriveRerequests(v, reviews, tl) : null,
+    timelineError: tl ? null : timelineError || 'timeline not read',
+  };
+  if (!chosen) return out;
+  out.chosen = {
+    id: chosen.id == null ? '?' : String(chosen.id),
+    login: String(chosen.user.login),
+    commitId: String(chosen.commit_id || ''),
+    onHead: head !== '' && String(chosen.commit_id || '') === head,
+    submittedAt: String(chosen.submitted_at || ''),
+    url: String(chosen.html_url || ''),
+  };
+  for (const r of newerDismissed) {
+    const e = (tl || []).find((x) => x && x.event === 'review_dismissed' && x.dismissed_review && String(x.dismissed_review.review_id) === String(r.id));
+    if (e && lower(e.dismissed_review.state) === 'changes_requested') {
+      out.notes.push({ id: String(r.id), login: String(r.user.login), actor: eventActor(e), time: eventTime(e) });
+    }
+  }
+  out.checklist = parseChecklist(chosen.body);
+  if (Array.isArray(comments)) {
+    out.inline = comments.map((c) => ({
+      path: String((c && c.path) || '?'),
+      line: c && c.line != null ? String(c.line) : c && c.original_line != null ? String(c.original_line) : '?',
+      body: String((c && c.body) || ''),
+    }));
+  } else out.inlineError = commentsError || 'inline comments not read';
+  if (tl) out.activity = deriveActivity(tl, out.chosen.submittedAt);
+  return out;
+}
+
+function cut(s, n) {
+  return s.length > n ? s.slice(0, n) : s;
+}
+
+function activityLine(a) {
+  if (a.kind === 'commits') return `  activity: ${a.count} commit(s) pushed, last ${clean(short(a.last, 7))}`;
+  if (a.kind === 'reviewed') return `  activity: reviewed ${clean(a.login)} ${clean(a.state)} review ${clean(a.id)} on ${clean(short(a.commit, 7))}`;
+  if (a.kind === 'commented') return `  activity: commented ${clean(a.login)} ${clean(a.time)} ${clean(a.url)}`;
+  if (a.kind === 'force-pushed') return `  activity: force-pushed by ${clean(a.actor)} to ${clean(short(a.commit, 7))}`;
+  if (a.kind === 'requested') return `  activity: review requested by ${clean(a.actor)} -> ${clean(a.target)}`;
+  if (a.kind === 'request-removed') return `  activity: review request removed by ${clean(a.actor)} -> ${clean(a.target)}`;
+  return `  activity: review ${clean(a.id)} dismissed by ${clean(a.actor)}`;
+}
+
+function rerequestLine(x) {
+  if (x.requested) {
+    const since = x.request ? `since ${clean(x.request.time)} by ${clean(x.request.actor)}` : 'no review_requested event on the timeline';
+    return `  rerequest: ${clean(x.login)} requested now (${since})`;
+  }
+  const req = x.request ? `the ${clean(x.request.time)} request by ${clean(x.request.actor)}` : '';
+  const e = x.ending;
+  let ending;
+  if (e.kind === 'never') ending = 'never requested on the timeline';
+  else if (e.kind === 'consumed') ending = `${req} was consumed by review ${clean(e.id)} (${clean(e.state)}) at ${clean(e.time)}`;
+  else if (e.kind === 'removed') ending = `${req} was removed by ${clean(e.actor)} at ${clean(e.time)}`;
+  else ending = `${req} has no consuming review or removal on the timeline`;
+  const flag = x.needed ? ' RE-REQUEST NEEDED' : x.team ? ` re-request unknown (team ${clean(x.team)} requested; membership not resolved)` : '';
+  return `  rerequest: ${clean(x.login)} not requested; ${ending}${flag}`;
+}
+
+/** The --cr lines of one PR block. */
+function crLines(cr) {
+  const lines = [];
+  if (!cr.chosen) {
+    lines.push(`  cr: none (no CHANGES_REQUESTED review by a non-bot non-author user${cr.reviewer ? ' named ' + clean(cr.reviewer) : ''})`);
+  } else {
+    const c = cr.chosen;
+    lines.push(`  cr: review ${clean(c.id)} by ${clean(c.login)} on ${clean(short(c.commitId, 7))} (${c.onHead ? 'head' : 'older commit'}) ${clean(c.submittedAt)} ${clean(c.url)}`);
+    for (const n of cr.notes) {
+      lines.push(`  cr: note: newer review ${clean(n.id)} by ${clean(n.login)} was dismissed by ${clean(n.actor)} ${clean(n.time)} (originally CHANGES_REQUESTED); not counted`);
+    }
+    const k = cr.checklist;
+    const url = clean(c.url);
+    if (k.status === 'none') lines.push(`  checklist: none (${clean(k.reason)}); read the review ${url}`);
+    else if (k.status === 'unparsed') lines.push(`  checklist: unparsed (${k.structural} structural items, the verdict counts ${k.verdict.sum}); read the review ${url}`);
+    else {
+      const why = k.status === 'matched' ? `matches the verdict counts ${clean(k.verdict.text)}` : 'no verdict counts to cross-check';
+      lines.push(`  checklist (${k.items.length} items; ${why})`);
+      for (const it of k.items) lines.push(`    [ ] ${it.severity || '?'} ${cut(clean(it.text), MAX_ITEM)}`);
+    }
+    if (cr.inline == null) lines.push(`  cr: inline unknown (read failed: ${clean(cr.inlineError)})`);
+    else if (cr.inline.length === 0) lines.push('  inline: none');
+    else for (const i of cr.inline) lines.push(`  inline: ${clean(i.path)}:${clean(i.line)} ${cut(clean(i.body.replace(/\s+/g, ' ').trim()), MAX_INLINE)}`);
+  }
+  if (cr.rerequest == null) {
+    lines.push(`  cr: activity and rerequest unknown (read failed: ${clean(cr.timelineError)})`);
+    return lines;
+  }
+  if (cr.chosen) {
+    if (cr.activity.length === 0) lines.push('  activity: none since the change request');
+    else lines.push(...cr.activity.map(activityLine));
+  }
+  if (cr.rerequest.length === 0) lines.push('  rerequest: none (no review by a non-bot non-author user)');
+  else lines.push(...cr.rerequest.map(rerequestLine));
+  return lines;
+}
+
+// ---- --body (quick 261023-2u4, CONTEXT D2): body sha classes, Self-test report binding, files-changed ----
+
+const SHA_CLASSES = Object.freeze(['head', 'base', 'pr commit', 'former head', 'earlier commit', 'ambiguous', 'unresolved']);
+const HEX_TOKEN_RE = /\b[0-9a-fA-F]{7,40}\b/g; // \b on both sides: a hex run longer than 40 is no token
+const FILES_CHANGED_RE = /\b(\d+)\s+(?:files?\s+changed|changed\s+files?)\b/gi;
+const SELF_TEST_TITLE = 'self-test report';
+const SYNTAX_LINE_MAX = 1000; // a longer line is never heading or fence syntax (bounded work on hostile text)
+
+/**
+ * D2 a: every sha the PR knows, each with ONE class, the first that applies in the order head, base, pr commit,
+ * former head, earlier commit. base is the base sha GitHub last recorded for the PR (baseRefOid), not the live
+ * base tip. Former heads = force-pushed head commits and review commits; earlier commits = committed events.
+ *
+ * @returns {Map<string, string>} lowercased 40-hex sha -> class
+ */
+function knownShas({ view, reviews, timeline, baseRefOid }) {
+  const v = view || {};
+  const known = new Map();
+  const add = (sha, cls) => {
+    const s = lower(sha);
+    if (/^[0-9a-f]{7,40}$/.test(s) && !known.has(s)) known.set(s, cls);
+  };
+  add(v.headRefOid, 'head');
+  add(baseRefOid, 'base');
+  for (const c of Array.isArray(v.commits) ? v.commits : []) add(c && c.oid, 'pr commit');
+  const tl = Array.isArray(timeline) ? timeline : [];
+  for (const e of tl) if (e && e.event === 'head_ref_force_pushed') add(e.commit_id, 'former head');
+  for (const r of (Array.isArray(reviews) ? reviews : []).flat()) add(r && r.commit_id, 'former head');
+  for (const e of tl) if (e && e.event === 'committed') add(e.sha, 'earlier commit');
+  return known;
+}
+
+/**
+ * D2 b-c: the hex tokens of a body (7 to 40 hex characters, case-insensitive, compared lowercased), de-duplicated
+ * by (token, line), in body order, each classified by prefix match: one known sha -> its class, two or more
+ * distinct -> ambiguous, none -> unresolved when it holds a letter a-f, and an all-digit token that matches
+ * nothing is ignored (review and comment ids are all digits).
+ *
+ * @returns {{counts: object, tokens: {line: number, token: string, cls: string}[]}}
+ */
+function classifyBodyShas(body, known) {
+  const counts = Object.fromEntries(SHA_CLASSES.map((c) => [c, 0]));
+  const tokens = [];
+  const shas = [...known.keys()];
+  String(body == null ? '' : body)
+    .split(/\r?\n/)
+    .forEach((text, i) => {
+      const seen = new Set();
+      for (const m of text.matchAll(HEX_TOKEN_RE)) {
+        const token = m[0].toLowerCase();
+        if (seen.has(token)) continue;
+        seen.add(token);
+        const hits = shas.filter((s) => s.startsWith(token));
+        let cls;
+        if (hits.length === 1) cls = known.get(hits[0]);
+        else if (hits.length > 1) cls = 'ambiguous';
+        else if (/[a-f]/.test(token)) cls = 'unresolved';
+        else continue;
+        counts[cls] += 1;
+        tokens.push({ line: i + 1, token, cls });
+      }
+    });
+  return { counts, tokens };
+}
+
+/** ATX heading -> { level, text } (text with ** removed, trimmed, lowercased), parsed without a backtracking regex. */
+function headingOf(line) {
+  const t = line.trim();
+  let level = 0;
+  while (level < t.length && t[level] === '#') level += 1;
+  if (level < 1 || level > 6 || level >= t.length || !/\s/.test(t[level])) return null;
+  let text = t.slice(level).trim();
+  let end = text.length;
+  while (end > 0 && text[end - 1] === '#') end -= 1;
+  if (end < text.length && (end === 0 || /\s/.test(text[end - 1]))) text = text.slice(0, end).trimEnd();
+  return { level, text: text.replace(/\*\*/g, '').trim().toLowerCase() };
+}
+
+/**
+ * R6: the Self-test report json block, by the rule of upstream gsd-core scripts/self-test-report-policy.cjs
+ * (extractReport, read 2026-10-23 from origin/next; reimplemented here, not copied): any heading level whose
+ * text, with ** removed, trimmed and lowercased, is "self-test report"; the section ends at the next heading
+ * of the same or a higher level; fence-aware (a # line inside a fence is no heading; a fence's first info word
+ * names its language); HTML comments outside fences are skipped; the first COMPLETE json block wins.
+ *
+ * @returns {string|null} the block's text, or null when the section or a complete block is absent
+ */
+function selfTestBlock(body) {
+  let fence = null; // { ch, len, capture }
+  let inComment = false;
+  let level = 0;
+  let captured = [];
+  for (const full of String(body == null ? '' : body).split(/\r?\n/)) {
+    const line = full.length > SYNTAX_LINE_MAX ? full.slice(0, SYNTAX_LINE_MAX) : full;
+    if (!fence) {
+      if (inComment) {
+        if (line.includes('-->')) inComment = false;
+        continue;
+      }
+      const at = line.indexOf('<!--');
+      if (at !== -1 && line.indexOf('-->', at + 4) === -1) {
+        inComment = true;
+        continue;
+      }
+      const open = /^\s*(`{3,}|~{3,})\s*([^\s`]*)(?:\s.*)?$/.exec(line);
+      if (open) {
+        fence = { ch: open[1][0], len: open[1].length, capture: level > 0 && open[2].toLowerCase() === 'json' };
+        captured = [];
+        continue;
+      }
+      const h = headingOf(line);
+      if (h) {
+        if (level === 0 && h.text === SELF_TEST_TITLE) level = h.level;
+        else if (level > 0 && h.level <= level) return null;
+      }
+      continue;
+    }
+    const close = /^\s*(`{3,}|~{3,})\s*$/.exec(line);
+    if (close && close[1][0] === fence.ch && close[1].length >= fence.len) {
+      if (fence.capture) return captured.join('\n');
+      fence = null;
+      continue;
+    }
+    if (fence.capture) captured.push(full);
+  }
+  return null;
+}
+
+/**
+ * D2 d: the Self-test report's binding to the head: bound (head_sha equals the head, case-insensitive), stale
+ * (another head_sha), none (no section or no complete json block), unparsable (the block is not JSON), or
+ * no-head-sha (JSON without a string head_sha).
+ */
+function selfTestBinding(body, head) {
+  const block = selfTestBlock(body);
+  if (block == null) return { status: 'none' };
+  let report;
+  try {
+    report = JSON.parse(block);
+  } catch {
+    return { status: 'unparsable' };
+  }
+  const sha = report && typeof report === 'object' && typeof report.head_sha === 'string' ? report.head_sha : null;
+  if (sha == null) return { status: 'no-head-sha' };
+  if (lower(sha) === lower(head) && head !== '') return { status: 'bound', headSha: sha };
+  return { status: 'stale', headSha: sha };
+}
+
+/** D2 e: the `<n> files changed` / `<n> changed files` phrases (singular too) that disagree with changedFiles. */
+function filesChangedMismatches(body, changedFiles) {
+  const out = [];
+  if (!Number.isInteger(changedFiles)) return out;
+  String(body == null ? '' : body)
+    .split(/\r?\n/)
+    .forEach((text, i) => {
+      for (const m of text.matchAll(FILES_CHANGED_RE)) {
+        if (Number(m[1]) !== changedFiles) out.push({ line: i + 1, phrase: m[0], n: Number(m[1]) });
+      }
+    });
+  return out;
+}
+
+/**
+ * Pure --body verdict (D2). bodyView = the `gh pr view --json body,baseRefOid,changedFiles` reply (null = the
+ * read failed, bodyError names why).
+ */
+function deriveBody({ view, reviews, timeline, timelineError, bodyView, bodyError }) {
+  if (!bodyView) return { error: bodyError || 'body not read' };
+  const v = view || {};
+  const head = String(v.headRefOid || '');
+  const body = String(bodyView.body == null ? '' : bodyView.body);
+  const known = knownShas({ view: v, reviews, timeline, baseRefOid: bodyView.baseRefOid });
+  const { counts, tokens } = classifyBodyShas(body, known);
+  const changedFiles = Number.isInteger(bodyView.changedFiles) ? bodyView.changedFiles : null;
+  return {
+    head,
+    base: String(bodyView.baseRefOid || ''),
+    counts,
+    tokens,
+    selfTest: selfTestBinding(body, head),
+    changedFiles,
+    filesChanged: filesChangedMismatches(body, changedFiles),
+    timelineError: Array.isArray(timeline) ? null : timelineError || 'timeline not read',
+  };
+}
+
+/** The --body lines of one PR block. */
+function bodyLines(b) {
+  if (b.error) return [`  body: unknown (read failed: ${clean(b.error)})`];
+  const lines = [];
+  const counts = SHA_CLASSES.map((c) => `${b.counts[c]} ${c}`).join(', ');
+  lines.push(
+    `  body: shas ${counts} (compared against head ${clean(short(b.head, 9))}; base is the base sha GitHub last recorded for the PR, not the live base tip)`
+  );
+  // review F6: say outright when the body never names the current head (a body written for an earlier head)
+  if (b.counts.head === 0) lines.push(`  body: no token names the head ${clean(short(b.head, 9))}`);
+  for (const t of b.tokens) {
+    if (t.cls === 'head' || t.cls === 'base') continue;
+    const check = t.cls === 'unresolved' ? ' (may be an older base or an unrelated commit: check)' : '';
+    lines.push(`    L${t.line} ${clean(t.token)} ${t.cls}${check}`);
+  }
+  if (b.timelineError) {
+    lines.push(`  body: timeline unknown (read failed: ${clean(b.timelineError)}); former heads come from the reviews only and earlier commits are not known`);
+  }
+  const s = b.selfTest;
+  if (s.status === 'bound') lines.push('  body: Self-test report bound to the head');
+  else if (s.status === 'stale') lines.push(`  body: Self-test report STALE (head_sha ${clean(s.headSha)}, head ${clean(b.head)})`);
+  else if (s.status === 'unparsable') lines.push('  body: Self-test report unparsable JSON');
+  else if (s.status === 'no-head-sha') lines.push('  body: Self-test report has no head_sha string');
+  else lines.push('  body: Self-test report none');
+  lines.push(`  body: counts checked: files-changed phrases only (changedFiles ${b.changedFiles == null ? 'unknown' : b.changedFiles})`);
+  for (const m of b.filesChanged) lines.push(`    L${m.line} "${clean(m.phrase)}" says ${m.n}`);
+  return lines;
 }
 
 /** First non-empty line of a gh failure (its stderr, else the error message). */
@@ -699,6 +1322,9 @@ function firstErrorLine(err) {
 function parseArgs(argv) {
   let json = false;
   let overlap = false;
+  let cr = false;
+  let body = false;
+  let reviewer = null;
   let repo = DEFAULT_REPO;
   const numbers = [];
   const list = Array.isArray(argv) ? argv : [];
@@ -706,6 +1332,13 @@ function parseArgs(argv) {
     const a = String(list[i]);
     if (a === '--json') json = true;
     else if (a === '--overlap') overlap = true;
+    else if (a === '--cr') cr = true;
+    else if (a === '--body') body = true;
+    else if (a === '--reviewer' || a.startsWith('--reviewer=')) {
+      const value = a === '--reviewer' ? list[++i] : a.slice('--reviewer='.length);
+      if (value == null || !LOGIN_PATTERN.test(String(value))) return { usageError: `bad --reviewer value (not a GitHub login): ${clean(value)}` };
+      reviewer = String(value);
+    }
     else if (a === '--repo' || a.startsWith('--repo=')) {
       const value = a === '--repo' ? list[++i] : a.slice('--repo='.length);
       if (value == null || !REPO_PATTERN.test(String(value))) return { usageError: `bad --repo value: ${clean(value)}` };
@@ -718,7 +1351,8 @@ function parseArgs(argv) {
     else return { usageError: `not a PR number or flag: ${clean(a)}` };
   }
   if (numbers.length === 0) return { usageError: 'no PR number given' };
-  return { json, overlap, repo, numbers };
+  if (reviewer != null && !cr) return { usageError: '--reviewer needs --cr' };
+  return { json, overlap, cr, body, reviewer, repo, numbers };
 }
 
 /**
@@ -740,11 +1374,13 @@ function runCli(argv, deps = {}) {
   const queues = new Map(); // base branch -> fetchQueue result, one set of queue reads per repo and base
   const results = args.numbers.map((n) => {
     try {
-      const pr = fetchPr(n, args.repo, deps);
+      const pr = fetchPr(n, args.repo, deps, { timeline: args.cr || args.body });
       const base = String((pr.view && pr.view.baseRefName) || '');
       if (!queues.has(base)) queues.set(base, fetchQueue(args.repo, base, deps));
       const overlap = args.overlap ? fetchOverlap(args.repo, pr.view, deps) : null;
-      return { repo: args.repo, ...derive({ ...pr, queue: queues.get(base), overlap }) };
+      const cr = args.cr ? fetchCr(n, args.repo, pr, args.reviewer, deps) : null;
+      const body = args.body ? fetchBody(n, args.repo, pr, deps) : null;
+      return { repo: args.repo, ...derive({ ...pr, queue: queues.get(base), overlap, cr, body }) };
     } catch (err) {
       failed = true;
       return { repo: args.repo, number: Number(n), error: firstErrorLine(err) };
@@ -756,11 +1392,37 @@ function runCli(argv, deps = {}) {
     out.write(ascii + '\n');
   } else {
     const blocks = results.map((d) => (d.error ? `${clean(d.repo)}#${clean(d.number)} ERROR: ${clean(d.error)}` : formatText(d)));
-    out.write(blocks.join('\n\n') + '\n\n' + FOOTER + '\n');
+    out.write(blocks.join('\n\n') + '\n\n' + FOOTER + '\n' + (args.cr || args.body ? CR_FOOTER + '\n' : ''));
   }
   return failed ? 1 : 0;
 }
 
-module.exports = { ballLineOf: ballLine, clean, derive, deriveDismissals, deriveOverlap, deriveQueue, fetchOverlap, fetchPr, fetchQueue, firstErrorLine, formatText, runCli };
+module.exports = {
+  ballLineOf: ballLine,
+  bodyLines,
+  chooseCr,
+  classifyBodyShas,
+  clean,
+  crLines,
+  derive,
+  deriveActivity,
+  deriveBody,
+  deriveCr,
+  deriveDismissals,
+  deriveOverlap,
+  deriveQueue,
+  deriveRerequests,
+  fetchBody,
+  fetchCr,
+  fetchOverlap,
+  fetchPr,
+  fetchQueue,
+  firstErrorLine,
+  formatText,
+  knownShas,
+  parseChecklist,
+  runCli,
+  selfTestBinding,
+};
 
 if (require.main === module) process.exitCode = runCli(process.argv.slice(2));
