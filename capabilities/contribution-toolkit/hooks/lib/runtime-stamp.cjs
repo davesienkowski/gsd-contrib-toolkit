@@ -7,6 +7,13 @@
  * "Is the globally-installed gsd-core runtime at `~/.claude/gsd-core` provably the same
  * gsd-core as `open-gsd/gsd-core` `origin/next` right now?"
  *
+ * Since quick 261024-po0 (CTK-ADR-0013) "installed" means the SESSION's Claude config dir:
+ * `CLAUDE_CONFIG_DIR` when it is an absolute path, else `~/.claude`. The runtime root is
+ * `<config dir>/gsd-core`, the managed hooks live in `<config dir>/hooks`, and the toolkit state
+ * (stamp, tip cache) is kept per config dir (the daily `~/.claude` keeps `~/.gsd-contrib`). An
+ * empty, relative or `~`-prefixed value is INVALID and is refused, never normalized. See
+ * classifyConfigDir below; every decision path calls the functions, never the load-time constants.
+ *
  * That question matters because a contribution reviewed or filed against a STALE engine
  * produces "reproduced locally" results that do not match CI, and fixes that are already
  * upstream. This module is the single place that answers it; `hooks/runtime-drift.cjs`
@@ -82,8 +89,20 @@ const { GSD_CORE_OWNER, GSD_CORE_REPO } = require('./resolve.cjs');
 
 // ───────────────────────────── constants ─────────────────────────────
 
-/** The installed gsd-core runtime this module measures. */
-const RUNTIME_ROOT = path.join(os.homedir(), '.claude', 'gsd-core');
+/** The variable that selects the session's Claude config dir (CTK-ADR-0013). */
+const CONFIG_DIR_ENV = 'CLAUDE_CONFIG_DIR';
+
+/** The subdirectory of the state dir that holds one state dir per non-daily config dir. */
+const CONFIG_DIRS_SUBDIR = 'config-dirs';
+
+/**
+ * The installed gsd-core runtime this module measures BY DEFAULT: `<config dir>/gsd-core` for the
+ * config dir in this process's environment at load time (CLAUDE_CONFIG_DIR when it is a valid
+ * absolute path, else `~/.claude`). Computed from the environment only (no filesystem IO) and
+ * wrapped so that nothing at load can throw: a hook that crashes at load fails open. Kept for
+ * compatibility; every decision path calls classifyConfigDir / runtimeRootFor instead.
+ */
+const RUNTIME_ROOT = loadTimeRuntimeRoot();
 
 /**
  * Where gsd-core's installer writes its managed hooks: the `hooks` directory beside the runtime
@@ -186,6 +205,19 @@ const REMEDIATION_COMMAND = REMEDIATION_CLI
   : 'node <gsd-contrib-toolkit>/bin/runtime-sync.cjs sync';
 
 /**
+ * THE single start-a-contribution-session text (CTK-ADR-0013). `runtime-sync where`, the sync
+ * refusal, `check` on the daily dir and the ENF-21 gate on the daily dir all quote THIS constant,
+ * the same single-source rule as REMEDIATION_COMMAND. It names no private tool or path.
+ */
+const CONTRIB_SESSION_HINT =
+  'Contribution work (review sweeps, /gsd-submit, runtime-sync check and sync) runs in its own ' +
+  'Claude config dir, never the daily ~/.claude. Start a contribution session in the gsd-core ' +
+  'checkout with: CLAUDE_CONFIG_DIR=<absolute path, for example $HOME/.claude-contrib> claude. ' +
+  'The value must be absolute: Claude Code reads a ~, empty or relative value against the working ' +
+  'directory. With CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 set, hooks and Bash do not see the variable ' +
+  'and resolve the daily dir instead (CTK-ADR-0013).';
+
+/**
  * The four PAYLOAD directories the installer projects from `<clone>/gsd-core/` into
  * `~/.claude/gsd-core/` (measured: 117 / 115 / 46 / 3 files, byte-identical). `bin/` is
  * deliberately absent — it is BUILT (`build:lib`) and does not exist in a fresh clone, which is
@@ -216,28 +248,213 @@ class UpstreamUnavailable extends Error {
 // ───────────────────────────── paths ─────────────────────────────
 
 /**
- * The toolkit's USER-level state directory (D-01). Mirrors `tool-recorder.cjs`'s
- * `GSD_CONTRIB_LOG_DIR` shape but uses its OWN variable: the log dir names where the OBS-01
- * JSONL goes, and overloading it would move enforcement state as a side effect of relocating
- * a log.
+ * Resolve the session's Claude config dir from an environment (CTK-ADR-0013). PURE: no IO.
+ *
+ *   CLAUDE_CONFIG_DIR absent or undefined  -> `<home>/.claude` (fromEnv false)
+ *   empty or whitespace-only              -> INVALID (Claude Code reads it as the working directory)
+ *   starting with `~`                     -> INVALID (Claude Code does not expand it; install.js does)
+ *   relative                              -> INVALID (Claude Code reads it against the working directory)
+ *   absolute                              -> path.resolve(value) (the value itself is never trimmed,
+ *                                            expanded or otherwise normalized)
+ *
+ * An invalid value is never mapped to `~/.claude`: the installer and the session would then read
+ * different dirs. Callers refuse it (sync, where, check) or deny (the gate).
  *
  * @param {Object} [env]
+ * @param {string} [homedir] defaults to os.homedir()
+ * @returns {{configDir:(string|null), fromEnv:boolean, invalid:boolean, reason?:string}}
+ */
+function resolveConfigDir(env, homedir) {
+  const home = homedir === undefined ? os.homedir() : homedir;
+  const value = env ? env[CONFIG_DIR_ENV] : undefined;
+  if (value === undefined) {
+    return { configDir: path.join(home, '.claude'), fromEnv: false, invalid: false };
+  }
+  const shown = CONFIG_DIR_ENV + '=' + JSON.stringify(value);
+  const bad = (why) => ({ configDir: null, fromEnv: true, invalid: true, reason: shown + ' ' + why });
+  if (typeof value !== 'string') return bad('is not a string; set it to an absolute path or unset it');
+  if (value.trim() === '') {
+    return bad('is empty: Claude Code reads an empty value as the working directory, so the session and ' +
+      'the installer would use different dirs; set it to an absolute path or unset it');
+  }
+  if (value.startsWith('~')) {
+    return bad('starts with ~, which Claude Code does not expand (it reads the value against the working ' +
+      'directory) while install.js does; set it to an absolute path such as $HOME/.claude-contrib');
+  }
+  if (!path.isAbsolute(value)) {
+    return bad('is a relative path, which Claude Code reads against the working directory; set it to an ' +
+      'absolute path');
+  }
+  return { configDir: path.resolve(value), fromEnv: true, invalid: false };
+}
+
+/** The load-time RUNTIME_ROOT: env only, never IO, never a throw. */
+function loadTimeRuntimeRoot() {
+  try {
+    const r = resolveConfigDir(process.env, os.homedir());
+    if (!r.invalid && typeof r.configDir === 'string') return path.join(r.configDir, 'gsd-core');
+  } catch (_) {
+    /* fall through to the daily default */
+  }
+  return path.join(os.homedir(), '.claude', 'gsd-core');
+}
+
+/** Is `p` at or inside `base`, by a segment-wise test (so `/h/.claude-contrib` is not in `/h/.claude`)? */
+function isAtOrInside(p, base) {
+  const rel = path.relative(base, p);
+  if (rel === '') return true;
+  return rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
+}
+
+/**
+ * Why `configDir` is the daily install, or null when it is not (CTK-ADR-0013 Decision 4). Paths
+ * are compared by realpath, falling back to path.resolve when realpath throws (a dir that does
+ * not exist yet). Daily when the dir IS the daily `<home>/.claude` (a symlink to it included),
+ * lies inside it, or when its `gsd-core` or `hooks` resolves at or inside it.
+ *
+ * @param {string} configDir
+ * @param {{homedir?:string, realpathSync?:Function}} [opts]
+ * @returns {(string|null)}
+ */
+function dailyConfigDirReason(configDir, opts = {}) {
+  const home = opts.homedir === undefined ? os.homedir() : opts.homedir;
+  const realpathSync = opts.realpathSync || nodeFs.realpathSync;
+  const rp = (p) => {
+    try {
+      return path.resolve(String(realpathSync(p)));
+    } catch (_) {
+      return path.resolve(p);
+    }
+  };
+  const daily = rp(path.join(home, '.claude'));
+  const cfg = rp(configDir);
+  if (cfg === daily) return 'the config dir ' + configDir + ' is the daily install ' + daily;
+  if (isAtOrInside(cfg, daily)) return 'the config dir ' + configDir + ' lies inside the daily install ' + daily;
+  for (const sub of ['gsd-core', 'hooks']) {
+    const r = rp(path.join(configDir, sub));
+    if (isAtOrInside(r, daily)) {
+      return 'the config dir\'s ' + sub + ' (' + path.join(configDir, sub) + ') resolves to ' + r +
+        ', inside the daily install ' + daily;
+    }
+  }
+  return null;
+}
+
+/**
+ * @param {string} configDir
+ * @param {{homedir?:string, realpathSync?:Function}} [opts]
+ * @returns {boolean} true when `configDir` is (or resolves into) the daily `<home>/.claude`
+ */
+function isDailyConfigDir(configDir, opts = {}) {
+  return dailyConfigDirReason(configDir, opts) !== null;
+}
+
+/** The state-dir override, trimmed, or null. */
+function stateDirOverride(env) {
+  const override = env && env[STATE_DIR_ENV];
+  return typeof override === 'string' && override.trim().length > 0 ? override.trim() : null;
+}
+
+/** The per-config-dir state key: the first 16 hex of sha256(path.resolve(configDir)). */
+function configDirKey(configDir) {
+  return nodeCrypto.createHash('sha256').update(path.resolve(configDir)).digest('hex').slice(0, 16);
+}
+
+/**
+ * Classify the session's config dir (CTK-ADR-0013). Reads only (realpath), writes nothing.
+ *
+ *   invalid -> every path null, `reason` says why (callers refuse or deny)
+ *   daily   -> the daily `<home>/.claude` (or a dir resolving into it); tilde labels; the state dir
+ *              stays `<home>/.gsd-contrib`, so the daily stamp path does not move
+ *   contrib -> any other absolute dir; absolute labels; the state dir is
+ *              `<home>/.gsd-contrib/config-dirs/<16 hex>`
+ * GSD_CONTRIB_STATE_DIR, when set, is the state dir for daily and contrib alike.
+ *
+ * @param {Object} [env]
+ * @param {{homedir?:string, realpathSync?:Function}} [opts]
+ * @returns {{kind:string, fromEnv:boolean, value:(string|undefined), configDir:(string|null),
+ *   runtimeRoot:(string|null), hooksRoot:(string|null), stateDir:(string|null),
+ *   runtimeLabel:(string|null), hooksLabel:(string|null), reason:string}}
+ */
+function classifyConfigDir(env = process.env, opts = {}) {
+  const home = opts.homedir === undefined ? os.homedir() : opts.homedir;
+  const value = env ? env[CONFIG_DIR_ENV] : undefined;
+  const r = resolveConfigDir(env, home);
+  if (r.invalid) {
+    return {
+      kind: 'invalid', fromEnv: true, value, configDir: null, runtimeRoot: null, hooksRoot: null,
+      stateDir: null, runtimeLabel: null, hooksLabel: null, reason: r.reason,
+    };
+  }
+  const cfg = r.configDir;
+  const why = r.fromEnv
+    ? dailyConfigDirReason(cfg, { homedir: home, realpathSync: opts.realpathSync })
+    : CONFIG_DIR_ENV + ' is unset, so the session uses the daily ~/.claude';
+  const daily = why !== null;
+  const override = stateDirOverride(env);
+  const stateDir = override !== null
+    ? override
+    : (daily ? path.join(home, STATE_DIRNAME) : path.join(home, STATE_DIRNAME, CONFIG_DIRS_SUBDIR, configDirKey(cfg)));
+  return {
+    kind: daily ? 'daily' : 'contrib',
+    fromEnv: r.fromEnv,
+    value,
+    configDir: cfg,
+    runtimeRoot: path.join(cfg, 'gsd-core'),
+    hooksRoot: path.join(cfg, 'hooks'),
+    stateDir,
+    runtimeLabel: daily ? '~/.claude/gsd-core' : path.join(cfg, 'gsd-core'),
+    hooksLabel: daily ? '~/.claude/hooks' : path.join(cfg, 'hooks'),
+    reason: daily ? why : '',
+  };
+}
+
+/** A classification that must be usable: an invalid config dir THROWS FailClosed. */
+function usableConfigDir(env, opts) {
+  const d = classifyConfigDir(env === undefined ? process.env : env, opts || {});
+  if (d.kind === 'invalid') throw new FailClosed('ENF-21: ' + d.reason);
+  return d;
+}
+
+/** @returns {string} `<config dir>/gsd-core` for the classified config dir (FailClosed on invalid). */
+function runtimeRootFor(env = process.env, opts = {}) {
+  return usableConfigDir(env, opts).runtimeRoot;
+}
+
+/** @returns {string} `<config dir>/hooks` for the classified config dir (FailClosed on invalid). */
+function hooksRootFor(env = process.env, opts = {}) {
+  return usableConfigDir(env, opts).hooksRoot;
+}
+
+/**
+ * The toolkit's USER-level state directory (D-01), per config dir since CTK-ADR-0013. Mirrors
+ * `tool-recorder.cjs`'s `GSD_CONTRIB_LOG_DIR` shape but uses its OWN variable: the log dir names
+ * where the OBS-01 JSONL goes, and overloading it would move enforcement state as a side effect of
+ * relocating a log.
+ *
+ *   GSD_CONTRIB_STATE_DIR set -> that dir, for every config dir (an invalid one included)
+ *   daily config dir          -> `<home>/.gsd-contrib` (unchanged: outside readers bind to it)
+ *   contribution config dir   -> `<home>/.gsd-contrib/config-dirs/<first 16 hex of sha256(path)>`
+ *   invalid, no override      -> THROWS FailClosed
+ *
+ * @param {Object} [env]
+ * @param {{homedir?:string, realpathSync?:Function}} [opts]
  * @returns {string}
  */
-function resolveStateDir(env = process.env) {
-  const override = env && env[STATE_DIR_ENV];
-  if (typeof override === 'string' && override.trim().length > 0) return override.trim();
-  return path.join(os.homedir(), STATE_DIRNAME);
+function resolveStateDir(env = process.env, opts = {}) {
+  const override = stateDirOverride(env);
+  if (override !== null) return override;
+  return usableConfigDir(env || {}, opts).stateDir;
 }
 
-/** @param {Object} [env] @returns {string} absolute path to the runtime stamp. */
-function stampPath(env = process.env) {
-  return path.join(resolveStateDir(env), STAMP_FILENAME);
+/** @param {Object} [env] @param {Object} [opts] @returns {string} absolute path to the runtime stamp. */
+function stampPath(env = process.env, opts = {}) {
+  return path.join(resolveStateDir(env, opts), STAMP_FILENAME);
 }
 
-/** @param {Object} [env] @returns {string} absolute path to the upstream-tip cache. */
-function cachePath(env = process.env) {
-  return path.join(resolveStateDir(env), CACHE_FILENAME);
+/** @param {Object} [env] @param {Object} [opts] @returns {string} absolute path to the upstream-tip cache. */
+function cachePath(env = process.env, opts = {}) {
+  return path.join(resolveStateDir(env, opts), CACHE_FILENAME);
 }
 
 // ───────────────────────────── the tree digest (D-02) ─────────────────────────────
@@ -619,7 +836,7 @@ function validateStamp(obj, where) {
  * "exists but could not be read" FailClosed below. Only ENOENT is the unstamped null, so a planted
  * special file is never read as absent (that would let an offline run turn the deny into an ask).
  *
- * @param {{readFileSync?:Function, stampPath?:string, env?:Object}} [deps]
+ * @param {{readFileSync?:Function, stampPath?:string, env?:Object, homedir?:string}} [deps]
  * @returns {Object|null} the stamp, or null when the file is ABSENT (the unstamped case)
  * @throws {FailClosed} on malformed JSON, a wrong schema, a bad sha/digest, or an unreadable,
  *   non-regular or oversized (but present) file: fail-closed, never a guessed null
@@ -627,7 +844,7 @@ function validateStamp(obj, where) {
 function readStamp(deps = {}) {
   // The default drops the encoding argument: the shared reader's second parameter is its byte cap.
   const readFileSync = deps.readFileSync || ((p) => readRegularFileBounded(p));
-  const file = deps.stampPath || stampPath(deps.env);
+  const file = deps.stampPath || stampPath(deps.env, { homedir: deps.homedir });
 
   let raw;
   try {
@@ -657,13 +874,14 @@ function readStamp(deps = {}) {
  * produce a stamp `readStamp` would reject (a self-inflicted permanent deny).
  *
  * @param {Object} stamp
- * @param {{writeFileSync?:Function, mkdirSync?:Function, stampPath?:string, env?:Object}} [deps]
+ * @param {{writeFileSync?:Function, mkdirSync?:Function, stampPath?:string, env?:Object,
+ *   homedir?:string}} [deps]
  * @returns {string} the path written
  */
 function writeStamp(stamp, deps = {}) {
   const writeFileSync = deps.writeFileSync || nodeFs.writeFileSync;
   const mkdirSync = deps.mkdirSync || nodeFs.mkdirSync;
-  const file = deps.stampPath || stampPath(deps.env);
+  const file = deps.stampPath || stampPath(deps.env, { homedir: deps.homedir });
   validateStamp(stamp, 'about to be written');
   mkdirSync(path.dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(stamp, null, 2) + '\n', { encoding: 'utf8' });
@@ -767,14 +985,15 @@ function usableCache(entry, nowMs) {
  * is a FIFO, socket, device or directory (or a symlink to one), or is over the 1 MiB read cap, is
  * a miss at once rather than a read that blocks the hook past its harness timeout.
  *
- * @param {{readFileSync?:Function, cachePath?:string, env?:Object}} [deps]
+ * @param {{readFileSync?:Function, cachePath?:string, env?:Object, homedir?:string}} [deps]
  * @returns {Object|null}
  */
 function readCacheLive(deps = {}) {
   // The default drops the encoding argument: the shared reader's second parameter is its byte cap.
   const readFileSync = deps.readFileSync || ((p) => readRegularFileBounded(p));
-  const file = deps.cachePath || cachePath(deps.env);
   try {
+    // Inside the try: a path that cannot be resolved (an invalid config dir) is a miss too.
+    const file = deps.cachePath || cachePath(deps.env, { homedir: deps.homedir });
     return JSON.parse(String(readFileSync(file, 'utf8')));
   } catch (_) {
     return null;
@@ -789,13 +1008,14 @@ function readCacheLive(deps = {}) {
  * is swallowed like any other unwritable cache, instead of blocking the hook past its timeout.
  *
  * @param {Object} entry
- * @param {{writeFileSync?:Function, mkdirSync?:Function, cachePath?:string, env?:Object}} [deps]
+ * @param {{writeFileSync?:Function, mkdirSync?:Function, cachePath?:string, env?:Object,
+ *   homedir?:string}} [deps]
  */
 function writeCacheLive(entry, deps = {}) {
   const writeFileSync = deps.writeFileSync || ((p, data) => writeRegularFile(p, data));
   const mkdirSync = deps.mkdirSync || nodeFs.mkdirSync;
-  const file = deps.cachePath || cachePath(deps.env);
   try {
+    const file = deps.cachePath || cachePath(deps.env, { homedir: deps.homedir });
     mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(file, JSON.stringify(entry, null, 2) + '\n', { encoding: 'utf8' });
   } catch (_) {
@@ -812,13 +1032,18 @@ function writeCacheLive(entry, deps = {}) {
  *   fetch fails, no usable cache       → THROWS UpstreamUnavailable  (→ the gate's `ask`)
  *   fetch returns a non-40-hex tip     → THROWS FailClosed           (→ deny; never a guess)
  *
- * @param {{fetchTip?:Function, readCache?:Function, writeCache?:Function, now?:Function}} [deps]
+ * The default cache closures read and write the cache of the config dir named by `deps.env` /
+ * `deps.homedir` (or `deps.cachePath` when given), so each config dir keeps its own tip cache.
+ *
+ * @param {{fetchTip?:Function, readCache?:Function, writeCache?:Function, now?:Function,
+ *   env?:Object, homedir?:string, cachePath?:string}} [deps]
  * @returns {{sha:string, source:'cache'|'live'|'stale-cache', ageMs:number}}
  */
 function upstreamTip(deps = {}) {
+  const cacheDeps = { env: deps.env, homedir: deps.homedir, cachePath: deps.cachePath };
   const fetchTip = deps.fetchTip || (() => fetchTipLive());
-  const readCache = deps.readCache || (() => readCacheLive());
-  const writeCache = deps.writeCache || ((e) => writeCacheLive(e));
+  const readCache = deps.readCache || (() => readCacheLive(cacheDeps));
+  const writeCache = deps.writeCache || ((e) => writeCacheLive(e, cacheDeps));
   const now = deps.now || (() => Date.now());
 
   const nowMs = now();
@@ -920,12 +1145,17 @@ function sourceNote(upstream) {
  * `unstamped` / `unverified` / `drifted` are ALL deny-shaped (see DENY_VERDICTS).
  *
  * @param {{stamp:(Object|null), runtimeDigest:string, hooksDigest?:(string|null),
- *   upstream:{sha:string, source?:string, ageMs?:number}}} input
+ *   upstream:{sha:string, source?:string, ageMs?:number}, runtimeLabel?:string,
+ *   hooksLabel?:string}} input  the labels name the measured roots in the reasons (defaults
+ *   `~/.claude/gsd-core` and `~/.claude/hooks`; CTK-ADR-0013)
  * @returns {{verdict:string, reason:string, behind?:{stamped:string, upstream:string}}}
  */
 function evaluateDrift(input) {
   const { stamp, runtimeDigest: digest, hooksDigest: measuredHooks, upstream } = input || {};
   const note = sourceNote(upstream);
+  // CTK-ADR-0013: the reasons name the session's config dir; the defaults are the daily labels.
+  const runtimeLabel = (input && typeof input.runtimeLabel === 'string' && input.runtimeLabel) || '~/.claude/gsd-core';
+  const hooksLabel = (input && typeof input.hooksLabel === 'string' && input.hooksLabel) || '~/.claude/hooks';
 
   if (stamp === null || stamp === undefined) {
     return {
@@ -941,8 +1171,8 @@ function evaluateDrift(input) {
       verdict: 'unverified',
       reason:
         'the installed runtime no longer matches the tree the stamp describes (stamped digest ' +
-        String(stamp.runtime_digest).slice(0, 19) + '…, measured ' + String(digest).slice(0, 19) +
-        '…) — something reinstalled or edited `~/.claude/gsd-core` outside this toolkit, so the ' +
+        String(stamp.runtime_digest).slice(0, 19) + '..., measured ' + String(digest).slice(0, 19) +
+        '...): something reinstalled or edited `' + runtimeLabel + '` outside this toolkit, so the ' +
         'stamp can no longer be trusted',
     };
   }
@@ -952,7 +1182,7 @@ function evaluateDrift(input) {
       verdict: 'unverified',
       reason:
         'the runtime stamp predates hook coverage (it records no `hooks_files` / `hooks_digest`), ' +
-        'so the managed gsd-core hooks under `~/.claude/hooks` are unverified: a sync that never ' +
+        'so the managed gsd-core hooks under `' + hooksLabel + '` are unverified: a sync that never ' +
         'built them would have kept the OLD hooks; re-run sync once to re-stamp with hook coverage',
     };
   }
@@ -961,7 +1191,7 @@ function evaluateDrift(input) {
     return {
       verdict: 'unverified',
       reason:
-        'the managed gsd-core hooks under `~/.claude/hooks` no longer match the set the stamp ' +
+        'the managed gsd-core hooks under `' + hooksLabel + '` no longer match the set the stamp ' +
         'describes (stamped hooks digest ' + String(stamp.hooks_digest).slice(0, 19) + '..., measured ' +
         String(measuredHooks).slice(0, 19) + '...): a managed hook was edited, removed or replaced ' +
         'outside this toolkit, so the stamp can no longer be trusted',
@@ -1004,9 +1234,18 @@ module.exports = {
   REMEDIATION_COMMAND,
   REMEDIATION_CLI,
   resolveRemediationCli,
+  CONFIG_DIR_ENV,
+  CONFIG_DIRS_SUBDIR,
+  CONTRIB_SESSION_HINT,
   PAYLOAD_DIRS,
   DENY_VERDICTS,
   UpstreamUnavailable,
+  // config dir (CTK-ADR-0013)
+  resolveConfigDir,
+  isDailyConfigDir,
+  classifyConfigDir,
+  runtimeRootFor,
+  hooksRootFor,
   // paths
   resolveStateDir,
   stampPath,
