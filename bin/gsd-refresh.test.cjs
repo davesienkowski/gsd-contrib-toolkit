@@ -58,8 +58,9 @@ function makeScratch(t) {
   const stub = path.join(root, 'stub', 'runtime-sync.cjs');
   const log = path.join(root, 'stub', 'calls.log');
   for (const d of [home, path.join(cfg, 'gsd-core'), mods, snaps, path.dirname(stub)]) fs.mkdirSync(d, { recursive: true });
-  fs.writeFileSync(path.join(mods, 'audit-local-mods.sh'), '#!/usr/bin/env bash\necho "MODIFIED 12"\necho "MISSING 3"\n');
-  for (const s of REAPPLY) fs.writeFileSync(path.join(mods, s), '#!/usr/bin/env bash\nexit 0\n');
+  // Every local-mods stub logs its own name, so a test can prove which ran.
+  fs.writeFileSync(path.join(mods, 'audit-local-mods.sh'), '#!/usr/bin/env bash\necho "mod:audit-local-mods.sh" >> "$STUB_LOG"\necho "MODIFIED 12"\necho "MISSING 3"\n');
+  for (const s of REAPPLY) fs.writeFileSync(path.join(mods, s), '#!/usr/bin/env bash\necho "mod:' + s + '" >> "$STUB_LOG"\nexit 0\n');
   fs.writeFileSync(
     stub,
     "'use strict';\n" +
@@ -128,4 +129,17 @@ test('po0 guard: where 0 then sync exit 1 still exits 2 with the roll-back text'
   assert.strictEqual(r.status, 2, 'exit 2 expected; output:\n' + r.out);
   assert.ok(r.out.includes('sync FAILED'), 'output must say sync FAILED:\n' + r.out);
   assert.ok(r.out.includes('Roll back with'), 'output must carry the roll-back command:\n' + r.out);
+});
+
+test('po0: a contribution dir (where 0, sync 0) is refreshed WITHOUT re-applying local mods or the mod-baseline audit', (t) => {
+  // CTK-ADR-0013: a contribution config dir must stay pristine, so the local mods that the daily
+  // install carries are never re-applied there; the snapshot and roll-back still work.
+  const sc = makeScratch(t);
+  const r = runRefresh(sc, { STUB_WHERE_CODE: '0', STUB_SYNC_CODE: '0' });
+  assert.ifError(r.error);
+  assert.strictEqual(r.status, 0, 'exit 0 expected; output:\n' + r.out);
+  assert.strictEqual(r.calls, 'where\nsync\n', 'only runtime-sync where and sync may run; calls:\n' + r.calls);
+  assert.ok(!r.calls.includes('mod:'), 'no local-mods script may run in a contribution dir; calls:\n' + r.calls);
+  assert.strictEqual(r.snapDirs.length, 1, 'the pre-sync snapshot is still taken');
+  assert.ok(r.out.includes('not re-applied'), 'output must say the local mods are not re-applied:\n' + r.out);
 });
