@@ -484,14 +484,70 @@ function pushUnique(list, items) {
   return list;
 }
 
-/** Resolve target interpretations from every current candidate. */
-function applyTarget(cands, t, homes) {
+/**
+ * quick-261007-rni F9 R3 (item 2, REVIEW-R2 CR-03 / ADVERSARIAL-R2 B): the directory chdir(2)
+ * reaches from `from` through `target`, walked one component at a time the way the kernel does it
+ * (and `git -C`, `cd -P`): each name is resolved through any symlink BEFORE a later `..` is applied,
+ * so `lnk/..` is the symlink target's parent, not `from`. Throws when a component does not exist
+ * or the end is not a directory.
+ * @param {string} from an absolute (logical) directory
+ * @param {string} target the cd / pushd / -C argument (already HOME-expanded)
+ * @returns {string} the physical absolute directory
+ */
+function physicalChdir(from, target) {
+  const t = String(target);
+  let cur = fs.realpathSync(path.isAbsolute(t) ? path.parse(t).root : from);
+  for (const comp of t.split(/\/+/)) {
+    if (comp === '' || comp === '.') continue;
+    cur = comp === '..' ? path.dirname(cur) : fs.realpathSync(path.join(cur, comp));
+  }
+  if (!fs.statSync(cur).isDirectory()) throw new Error('not a directory');
+  return cur;
+}
+
+/**
+ * F9 R3 item 2: the logical (textual, `path.resolve`) and physical (component-wise realpath)
+ * resolutions of `target` from `from`. Returns `{ logical, physical: string|null, reason }`:
+ * `physical` is null and `reason` set when either does not resolve to an existing directory;
+ * `reason` is set when they differ. The physical dir is where `git -C` and `cd -P` really land.
+ */
+function logicalAndPhysical(from, target) {
+  const logical = path.resolve(from, target);
+  const shownT = JSON.stringify(String(target)).slice(0, 120);
+  let physical;
+  let logicalReal;
+  try {
+    physical = physicalChdir(from, target);
+    logicalReal = fs.realpathSync(logical);
+  } catch (err) {
+    return { logical, physical: null, reason: 'the directory ' + shownT + ' does not resolve to an existing directory (' +
+      ((err && err.code) || 'not a directory') + ')' };
+  }
+  if (physical !== logicalReal) {
+    return { logical, physical, reason: 'the directory ' + shownT + ' resolves through a symlink to ' +
+      JSON.stringify(physical).slice(0, 120) + ' physically but ' + JSON.stringify(logicalReal).slice(0, 120) +
+      ' textually (`git -C` and `cd -P` resolve `..` physically)' };
+  }
+  return { logical, physical, reason: null };
+}
+
+/**
+ * Resolve target interpretations from every current candidate. With a `taint` collector
+ * (pushSegmentDirs only, F9 R3 item 2) each kept interpretation is also resolved physically: a
+ * physical dir that differs is ADDED as a candidate (so a rule-(a) lookup sees where the push
+ * really goes), and any divergence or missing dir is recorded in `taint.reason` (never rule b).
+ */
+function applyTarget(cands, t, homes, taint) {
   const out = [];
   for (const c of cands) {
     for (const it of targetInterpretations(t, homes)) {
       const abs = path.resolve(c, it.p);
       if (it.mustExist && !isDir(abs)) continue;
       pushUnique(out, [abs]);
+      if (!taint) continue;
+      const lp = logicalAndPhysical(c, it.p);
+      if (lp.reason && taint.reason === null) taint.reason = lp.reason;
+      if (lp.reason && lp.physical) pushUnique(out, [lp.physical]);
     }
   }
   return out;
@@ -508,9 +564,41 @@ function applyTarget(cands, t, homes) {
 function commandCandidateDirs(command, baseCwd, opts) {
   const followGitC = !(opts && opts.followGitC === false);
   const base = path.resolve(baseCwd == null ? process.cwd() : String(baseCwd));
+  const ctx = candidateContext(command, base);
+  if (ctx === null) return [base];
+  const { segs } = ctx;
+
+  // Relevant segments: git / gh segments the shared classifier names an action for (the only ones
+  // a gate can govern), so a read-only `git log` / `git status` in the session cwd does not gate a
+  // commit or push that runs elsewhere. None of those -> every git / gh segment; none at all ->
+  // the end state. classify.cjs is required lazily (it does not require this module).
+  // If no git / gh segment is recognised but the classifier still names an action somewhere (a
+  // wrapper form this walk does not model), every segment and the end state are relevant.
+  const gitOrGh = [];
+  segs.forEach((s, j) => { if (s.program === 'git' || s.program === 'gh') gitOrGh.push(j); });
+  let relevant = gitOrGh.filter((j) => segmentIsGovernable(segs[j]));
+  if (relevant.length === 0) relevant = gitOrGh;
+  if (relevant.length === 0 && segs.some((s) => segmentIsGovernable(s))) relevant = segs.map((_, j) => j).concat([segs.length]);
+  if (relevant.length === 0) relevant = [segs.length];
+
+  const out = [];
+  for (const j of relevant) {
+    pushUnique(out, segmentCandidates(segs, j, { base, homes: ctx.homes, cdFunction: ctx.cdFunction, followGitC }));
+  }
+  appendCandidateExtras(out, ctx, base);
+  return out;
+}
+
+/**
+ * The state every candidate computation of one command shares: the resolver's own segments
+ * (parsed with `{cwdSeparators:true}`, falling back to a plain parse), every possible HOME, and
+ * the HOME-reassignment and cd-function flags. null when the command does not parse.
+ * (quick-261007-rni F9: extracted unchanged from commandCandidateDirs so pushSegmentDirs shares it.)
+ */
+function candidateContext(command, base) {
   let parsed = parseCommand(command, { cwdSeparators: true });
   if (!parsed || parsed.ok !== true) parsed = parseCommand(command);
-  if (!parsed || parsed.ok !== true || !Array.isArray(parsed.segments)) return [base];
+  if (!parsed || parsed.ok !== true || !Array.isArray(parsed.segments)) return null;
 
   const segs = parsed.segments.map((seg) => {
     const e = effectiveProgram(seg);
@@ -533,65 +621,62 @@ function commandCandidateDirs(command, baseCwd, opts) {
     }
     pushUnique(homes, absolutePathTokens(segs));
   }
+  return { segs, reassign, cdFunction, homes };
+}
 
-  // Relevant segments: git / gh segments the shared classifier names an action for (the only ones
-  // a gate can govern), so a read-only `git log` / `git status` in the session cwd does not gate a
-  // commit or push that runs elsewhere. None of those -> every git / gh segment; none at all ->
-  // the end state. classify.cjs is required lazily (it does not require this module).
-  // If no git / gh segment is recognised but the classifier still names an action somewhere (a
-  // wrapper form this walk does not model), every segment and the end state are relevant.
-  const gitOrGh = [];
-  segs.forEach((s, j) => { if (s.program === 'git' || s.program === 'gh') gitOrGh.push(j); });
-  let relevant = gitOrGh.filter((j) => segmentIsGovernable(segs[j]));
-  if (relevant.length === 0) relevant = gitOrGh;
-  if (relevant.length === 0 && segs.some((s) => segmentIsGovernable(s))) relevant = segs.map((_, j) => j).concat([segs.length]);
-  if (relevant.length === 0) relevant = [segs.length];
-
-  const out = [];
-  for (const j of relevant) {
-    let cands = [base];
-    const seen = [base];
-    for (let i = 0; i < j; i++) {
-      const s = segs[i];
-      if (!CD_PROGRAMS.has(s.program) && s.program !== 'popd') continue;
-      // Round 3 (re-review R2-WR-01): a cd that is a PIPELINE STAGE (`a | cd X`, `cd X | b`) runs in
-      // a subshell and never moves the parent: no candidate changes.
-      if ((i > 0 && segs[i - 1].nextOp === '|') || s.nextOp === '|') continue;
-      let bypass = cdFunction || s.subshell;
-      // The operators between the cd and segment j that let j run after a FAILED cd: `;`, `||`, a
-      // lone `&` and a newline. `&&` short-circuits, a later `|` only joins a pipeline that is itself
-      // behind the cd (`cd X && a | b && git commit` runs git only in X), and the end of the command
-      // (null) is no operator.
-      for (let k = i; k < j && !bypass; k++) {
-        const op = segs[k].nextOp;
-        if (op === ';' || op === '||' || op === '&' || op === '\n') bypass = true;
-      }
-      const t = s.program === 'popd' ? '-' : cdTarget(s.rest);
-      let next;
-      if (t === '-' || (s.program === 'pushd' && t === null)) {
-        next = pushUnique(cands.slice(), seen);
-      } else {
-        next = t === null ? applyTarget(cands, '~', homes) : applyTarget(cands, t, homes);
-        if (bypass || next.length === 0) pushUnique(next, cands);
-      }
-      cands = next;
-      pushUnique(seen, cands);
+/**
+ * The candidate directories of resolver segment `j` (the end state when j === segs.length): the
+ * cd walk before it, its own `env -C` / `sudo -D` chdirs and, for git, its global `-C` targets.
+ * (quick-261007-rni F9: the per-segment body of commandCandidateDirs, extracted unchanged.)
+ */
+function segmentCandidates(segs, j, { base, homes, cdFunction, followGitC, taint }) {
+  let cands = [base];
+  const seen = [base];
+  for (let i = 0; i < j; i++) {
+    const s = segs[i];
+    if (!CD_PROGRAMS.has(s.program) && s.program !== 'popd') continue;
+    // Round 3 (re-review R2-WR-01): a cd that is a PIPELINE STAGE (`a | cd X`, `cd X | b`) runs in
+    // a subshell and never moves the parent: no candidate changes.
+    if ((i > 0 && segs[i - 1].nextOp === '|') || s.nextOp === '|') continue;
+    let bypass = cdFunction || s.subshell;
+    // The operators between the cd and segment j that let j run after a FAILED cd: `;`, `||`, a
+    // lone `&` and a newline. `&&` short-circuits, a later `|` only joins a pipeline that is itself
+    // behind the cd (`cd X && a | b && git commit` runs git only in X), and the end of the command
+    // (null) is no operator.
+    for (let k = i; k < j && !bypass; k++) {
+      const op = segs[k].nextOp;
+      if (op === ';' || op === '||' || op === '&' || op === '\n') bypass = true;
     }
-    // `env -C <dir>` / `sudo -D <dir>` move this segment only (round 3, R2-WR-02).
-    if (j < segs.length) {
-      for (const d of segs[j].chdirs) {
-        const moved = applyTarget(cands, String(d), homes);
-        if (moved.length > 0) cands = moved;
-      }
+    const t = s.program === 'popd' ? '-' : cdTarget(s.rest);
+    let next;
+    if (t === '-' || (s.program === 'pushd' && t === null)) {
+      next = pushUnique(cands.slice(), seen);
+    } else {
+      next = t === null ? applyTarget(cands, '~', homes, taint) : applyTarget(cands, t, homes, taint);
+      if (bypass || next.length === 0) pushUnique(next, cands);
     }
-    if (j < segs.length && followGitC && segs[j].program === 'git') {
-      for (const d of gitGlobalChdirs({ tokens: ['git'].concat(segs[j].rest.slice(1)) })) {
-        const moved = applyTarget(cands, String(d), homes);
-        if (moved.length > 0) cands = moved;
-      }
-    }
-    pushUnique(out, cands);
+    cands = next;
+    pushUnique(seen, cands);
   }
+  // `env -C <dir>` / `sudo -D <dir>` move this segment only (round 3, R2-WR-02).
+  if (j < segs.length) {
+    for (const d of segs[j].chdirs) {
+      const moved = applyTarget(cands, String(d), homes, taint);
+      if (moved.length > 0) cands = moved;
+    }
+  }
+  if (j < segs.length && followGitC && segs[j].program === 'git') {
+    for (const d of gitGlobalChdirs({ tokens: ['git'].concat(segs[j].rest.slice(1)) })) {
+      const moved = applyTarget(cands, String(d), homes, taint);
+      if (moved.length > 0) cands = moved;
+    }
+  }
+  return cands;
+}
+
+/** The command-wide extras appended after the per-segment candidates (HOME reassignment, cd functions). */
+function appendCandidateExtras(out, ctx, base) {
+  const { segs, reassign, cdFunction, homes } = ctx;
   if (reassign) pushUnique(out, [base]);
   if (cdFunction) {
     for (const t of new Set(absolutePathTokens(segs).concat(
@@ -602,6 +687,47 @@ function commandCandidateDirs(command, baseCwd, opts) {
       }
     }
   }
+  return out;
+}
+
+/**
+ * quick-261007-rni F9: the candidate directories of ONE push segment, for looking its remote up
+ * where that push actually runs. The command-wide union (commandCandidateDirs) is wrong here:
+ * `cd A && git push backup x && cd B && git push origin main` would look `backup` up in B as well,
+ * fail, and false-arm. `seg` is a gate-shaped segment (parseCommandForGates), matched to the
+ * resolver's own segments by its token list; token-identical segments get the union of their
+ * dirs. git `-C` is always followed. The same command-wide extras as commandCandidateDirs apply.
+ * @param {string} command raw tool_input.command
+ * @param {string} [baseCwd] the hook's process.cwd()
+ * @param {{tokens?: Array}} seg
+ * quick-261007-rni F9 R3 (item 2, REVIEW-R2 CR-03 "precise" option): every cd / pushd / env -C /
+ * git -C directory this walk derives is also resolved physically (component-wise realpath, as chdir
+ * and `git -C` do). A physical dir that differs from the textual one is ADDED to the candidates, so
+ * the classifier's lookups see where the push really goes (rule a still arms); a divergence or a
+ * dir that does not exist sets the NON-enumerable `unverified` property on the returned array to a
+ * phrase, and the classifier then never grants rule (b) (rule c). It does not throw for these: a
+ * throw would skip the rule-(a) lookups in the other candidates (ADVERSARIAL-R2 row 31,
+ * `cd ../nope || cd ../evil1 && git push backup x`). commandCandidateDirs (the cwd rule) stays lexical.
+ * @returns {string[]|null} absolute directories (`.unverified` set when a dir could not be
+ *   confirmed), or null when the command does not parse or no resolver segment carries these tokens
+ *   (the caller fails closed to its cwd rule)
+ */
+function pushSegmentDirs(command, baseCwd, seg) {
+  const base = path.resolve(baseCwd == null ? process.cwd() : String(baseCwd));
+  const ctx = candidateContext(command, base);
+  if (ctx === null) return null;
+  const key = JSON.stringify(Array.isArray(seg && seg.tokens) ? seg.tokens.map(String) : []);
+  const out = [];
+  const taint = { reason: null };
+  let matched = false;
+  ctx.segs.forEach((s, j) => {
+    if (JSON.stringify(s.allTokens) !== key) return;
+    matched = true;
+    pushUnique(out, segmentCandidates(ctx.segs, j, { base, homes: ctx.homes, cdFunction: ctx.cdFunction, followGitC: true, taint }));
+  });
+  if (!matched) return null;
+  appendCandidateExtras(out, ctx, base);
+  if (taint.reason !== null) Object.defineProperty(out, 'unverified', { value: taint.reason, enumerable: false });
   return out;
 }
 
@@ -657,6 +783,32 @@ function resolveRootForCommand(command, baseCwd, opts) {
 // `dave/gsd-core`) is NOT this target — only owner===open-gsd AND repo===gsd-core.
 const GSD_CORE_OWNER = 'open-gsd';
 const GSD_CORE_REPO = 'gsd-core';
+
+/**
+ * quick-261007-rni F9 R3 (item 1, REVIEW-R2 CR-01 / ADVERSARIAL-R2 A): historical owner/repo names
+ * that GitHub still REDIRECTS to open-gsd/gsd-core. GitHub forwards clone, fetch AND push through a
+ * rename redirect, so a push to one of these is a push to upstream. Lowercased (parseOwnerRepo
+ * lowercases before any comparison). Frozen: a future rename or transfer of gsd-core must be added
+ * here (recorded residual); any other repo under the open-gsd org is handled by push-target's org rule.
+ *
+ * Evidence, 2026-10-08T03:59Z, read-only, run from a gsd-contrib-toolkit checkout.
+ * Candidates: gsd-core's package.json repository/homepage/bugs (all open-gsd/gsd-core), README /
+ * CHANGELOG / docs / .github links and `git log -p` of package.json + README.md, which name
+ * open-gsd/get-shit-done-redux, GSD-redux/get-shit-done-redux, gsd-build/get-shit-done and
+ * glittercowboy/get-shit-done; plus guesses for other renames.
+ *   $ gh api repos/<o>/<r> --jq '.full_name + " id=" + (.id|tostring)'
+ *   open-gsd/gsd-core              -> open-gsd/gsd-core id=1246625636   (the upstream itself)
+ *   open-gsd/get-shit-done-redux   -> open-gsd/gsd-core id=1246625636   INCLUDED
+ *   GSD-redux/get-shit-done-redux  -> open-gsd/gsd-core id=1246625636   INCLUDED
+ *   gsd-build/get-shit-done        -> gsd-build/get-shit-done id=1116260703  excluded (another repo)
+ *   glittercowboy/get-shit-done    -> gsd-build/get-shit-done id=1116260703  excluded (another repo)
+ *   open-gsd/get-shit-done, GSD-redux/gsd-core, gsd-build/gsd-core, glittercowboy/gsd-core,
+ *   open-gsd/gsd, GSD-redux/get-shit-done -> HTTP 404                        excluded
+ *   $ git ls-remote https://github.com/open-gsd/get-shit-done-redux refs/heads/next
+ *   $ git ls-remote https://github.com/GSD-redux/get-shit-done-redux.git refs/heads/next
+ *     both -> 83aba44627ba43aff77588894f7b81a9a7437e75 refs/heads/next (= open-gsd/gsd-core next)
+ */
+const UPSTREAM_ALIASES = Object.freeze(['open-gsd/get-shit-done-redux', 'gsd-redux/get-shit-done-redux']);
 
 // ─────────────────────── the branch-naming policy (ONE definition) ───────────────────────
 //
@@ -724,6 +876,9 @@ function isContribBranch(branch) {
 // the input did NOT resolve to an enumerated owner/repo → null (fail-closed signal).
 const OWNER_REPO_SEG = /^[A-Za-z0-9._-]+$/;
 
+/** F9 R4 (item 1): an RFC 3986 unreserved character; only these decode from a `%XX` escape. */
+const UNRESERVED_CHAR = /^[A-Za-z0-9\-._~]$/;
+
 /**
  * parseOwnerRepo — the SINGLE owner/repo normalizer (CHD-01, WR-03: fix the class, not the
  * instance). It DELIBERATELY ENUMERATES the accepted input forms (Postel-inversion, binding
@@ -740,7 +895,22 @@ const OWNER_REPO_SEG = /^[A-Za-z0-9._-]+$/;
  *
  * Returns `{ owner, repo, host }` with owner/repo/host LOWER-cased (GitHub routes
  * owner/repo case-insensitively — CR-01), or `null` when the input does not resolve to an
- * enumerated form / >=2 path segments / GitHub-safe owner+repo. Pure (string in,
+ * enumerated form / >=2 path segments / GitHub-safe owner+repo.
+ *
+ * quick-261007-rni F9 R2 (item 7, review CR-01), R3 (item 4, REVIEW-R2 CR-02) and R4 (item 1,
+ * REVIEW-R3 CR-01 / WR-01): the PATH (the part after scheme, user@ and host) is normalized the way
+ * the server and curl see it, then the LAST two segments are read:
+ *   1. `%XX` escapes of the RFC 3986 unreserved characters (A-Z a-z 0-9 - . _ ~) decode; any other
+ *      `%` (a reserved or invalid escape), any `?`, `#` or `\`, and whitespace anywhere -> null;
+ *   2. RFC 3986 remove_dot_segments: empty and `.` segments drop, `..` removes the previous one and
+ *      is clamped at the root (the server collapses `x/../open-gsd/gsd-core` to upstream);
+ *   3. a trailing `.git` (and the slashes around it) is stripped from the collapsed path.
+ * So `https://github.com/x/../open-gsd/gsd-core.git`, `.../%6Fpen-gsd/gsd-core.git` and
+ * `.../open-gsd/gsd-core/x/..` all parse as open-gsd/gsd-core (`git ls-remote` reached upstream
+ * through each, REVIEW-R3). INVARIANT: never return null for a URL that reaches upstream. null is
+ * fail-closed at segmentRepoTarget, commandTargetsGsdCore, gh-pr-create and push-target, but it is
+ * an ALLOW at containment's isUpstreamRemote (ENF-07) and worktree-fresh-base (ENF-25); a later
+ * round must not tighten this parser back to null for a shape the server resolves. Pure (string in,
  * object|null out); operates on already-structured argv values (HARD-04-safe — never a
  * raw-command regex).
  *
@@ -751,6 +921,7 @@ function parseOwnerRepo(urlOrSpec) {
   if (typeof urlOrSpec !== 'string') return null;
   const raw = urlOrSpec.trim();
   if (raw.length === 0) return null;
+  if (/\s/.test(raw)) return null; // F9 R2: whitespace anywhere (R3 keeps this on the raw string)
 
   let host = null;
   let rest = raw;
@@ -777,7 +948,27 @@ function parseOwnerRepo(urlOrSpec) {
   }
   // else: bare `owner/repo` or `host/owner/repo` — host stays the github.com default.
 
-  rest = rest.replace(/^\/+/, '').replace(/\.git$/i, '');
+  // F9 R3 (item 4, REVIEW-R2 CR-02): every PATH check runs after the scheme, user@ and host are
+  // stripped, so a `%` in the userinfo (`https://u%2Dx@github.com/...`, which reaches upstream) parses.
+  if (/[?#\\]/.test(rest)) return null;
+  // F9 R4 (item 1, step 1): decode the unreserved escapes; any other escape is null.
+  let badEscape = false;
+  rest = rest.replace(/%([0-9A-Fa-f]{2})/g, (m, hex) => {
+    const c = String.fromCharCode(parseInt(hex, 16));
+    if (UNRESERVED_CHAR.test(c)) return c;
+    badEscape = true;
+    return m;
+  });
+  if (badEscape || rest.includes('%')) return null;
+  // F9 R4 (item 1, step 2): RFC 3986 remove_dot_segments, `..` clamped at the root; `//` collapses.
+  const collapsed = [];
+  for (const x of rest.split('/')) {
+    if (x === '' || x === '.') continue;
+    if (x === '..') { collapsed.pop(); continue; }
+    collapsed.push(x);
+  }
+  // Step 3: trailing slashes before AND after the `.git` strip (`.git/`, `.git//` normalize).
+  rest = collapsed.join('/').replace(/\/+$/, '').replace(/\.git$/i, '').replace(/\/+$/, '');
   const segs = rest.split('/').filter((x) => x.length > 0);
   if (segs.length < 2) return null;
   const owner = segs[segs.length - 2];
@@ -800,8 +991,23 @@ function parseOwnerRepo(urlOrSpec) {
  * @returns {boolean}
  */
 function repoSpecTargetsGsdCore(value) {
-  const r = parseOwnerRepo(value);
-  return !!r && r.owner === GSD_CORE_OWNER && r.repo === GSD_CORE_REPO;
+  return isUpstreamOwnerRepo(parseOwnerRepo(value));
+}
+
+/**
+ * quick-261007-rni F9 R4 (item 4, REVIEW-R3 WR-02): THE upstream predicate. True for
+ * open-gsd/gsd-core and for every UPSTREAM_ALIASES entry (a GitHub rename redirect to it). Every
+ * repo-target check routes through this one function (repoSpecTargetsGsdCore, tokenTargetsGsdCoreApi,
+ * segmentRepoTarget, commandTargetsGsdCore, containment's isUpstreamRemote, push-target's rule a),
+ * so ENF-07, ENF-25, the gh gates and ENF-21 agree on what "upstream" is. The alias widening only
+ * adds arming / denying (fail-closed direction).
+ * @param {{owner?:string, repo?:string}|null} r a parseOwnerRepo result (lowercased)
+ * @returns {boolean}
+ */
+function isUpstreamOwnerRepo(r) {
+  if (!r || typeof r.owner !== 'string' || typeof r.repo !== 'string') return false;
+  if (r.owner === GSD_CORE_OWNER && r.repo === GSD_CORE_REPO) return true;
+  return UPSTREAM_ALIASES.includes(r.owner + '/' + r.repo);
 }
 
 /**
@@ -817,35 +1023,51 @@ function repoSpecTargetsGsdCore(value) {
  * @returns {boolean}
  */
 function tokenTargetsGsdCoreApi(token) {
-  if (typeof token !== 'string' || token.length === 0) return false;
+  const a = apiRepoOf(token);
+  // F9 R3 (WR-03): a `repos/` path with a dot or encoded segment fails CLOSED (true).
+  if (a.kind === 'unparseable') return true;
+  return a.kind === 'repo' && isUpstreamOwnerRepo(a.repo); // F9 R4 (item 4): aliases are upstream
+}
+
+/**
+ * quick-261007-rni F9 R3 (item 5, REVIEW-R2 WR-03): the THREE-way reading of a gh-api / curl REST
+ * token. The token is normalized (scheme, `api.github.com[:port]` host and leading slashes
+ * stripped); the leading `repos/` prefix is required, else `{kind:'none'}`. Under `repos/`, the
+ * path before any `?` / `#` is read: a `.` / `..` segment, any `%` or a backslash is
+ * `{kind:'unparseable'}` (curl and the server collapse dot segments and decode escapes, so
+ * `repos/open-gsd/x/../gsd-core` reaches upstream while its first two segments read `open-gsd/x`).
+ * Otherwise the FIRST two segments (empty ones collapse) go through parseOwnerRepo: a parse is
+ * `{kind:'repo'}`, and a non-parse (`{owner}/{repo}` gh placeholders, fewer than two segments)
+ * stays `{kind:'none'}`, the pre-R3 behaviour (the cwd rule decides).
+ * @param {*} token
+ * @returns {{kind:'none'} | {kind:'unparseable'} | {kind:'repo', repo:{owner:string, repo:string, host:string}}}
+ */
+function apiRepoOf(token) {
+  if (typeof token !== 'string' || token.length === 0) return { kind: 'none' };
   let s = token.trim();
   s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, ''); // strip scheme
   s = s.replace(/^api\.github\.com(?::\d+)?/i, ''); // strip REST host + optional :port (close :443 slip)
   s = s.replace(/^\/+/, ''); // strip leading slashes
   const m = /^repos\/(.+)$/i.exec(s); // the `repos/` prefix is required
-  if (!m) return false;
-  const after = m[1].split('/').filter((x) => x.length > 0);
-  if (after.length < 2) return false;
+  if (!m) return { kind: 'none' };
+  const pathPart = m[1].split(/[?#]/)[0];
+  const raw = pathPart.split('/');
+  if (/[%\\]/.test(pathPart) || raw.some((x) => x === '.' || x === '..')) return { kind: 'unparseable' };
+  const after = raw.filter((x) => x.length > 0);
+  if (after.length < 2) return { kind: 'none' };
   const r = parseOwnerRepo(after[0] + '/' + after[1]); // owner/repo are the FIRST two segments after repos/
-  return !!r && r.owner === GSD_CORE_OWNER && r.repo === GSD_CORE_REPO;
+  return r ? { kind: 'repo', repo: r } : { kind: 'none' };
 }
 
 /**
- * The `owner/repo` a gh-api / curl REST token names (`repos/<owner>/<repo>/...`), or null.
+ * The `owner/repo` a gh-api / curl REST token names (`repos/<owner>/<repo>/...`), or null (no
+ * `repos/` target, or an unparseable one: see apiRepoOf, which segmentRepoTarget reads instead).
  * @param {string} token
  * @returns {{owner:string, repo:string}|null}
  */
 function tokenApiRepo(token) {
-  if (typeof token !== 'string' || token.length === 0) return null;
-  let s = token.trim();
-  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
-  s = s.replace(/^api\.github\.com(?::\d+)?/i, '');
-  s = s.replace(/^\/+/, '');
-  const m = /^repos\/(.+)$/i.exec(s);
-  if (!m) return null;
-  const after = m[1].split('/').filter((x) => x.length > 0);
-  if (after.length < 2) return null;
-  return parseOwnerRepo(after[0] + '/' + after[1]);
+  const a = apiRepoOf(token);
+  return a.kind === 'repo' ? a.repo : null;
 }
 
 /**
@@ -934,11 +1156,12 @@ function segmentRepoTarget(seg, ghRepo) {
     targets.push(r);
   }
   for (const tok of tokens) {
-    const r = tokenApiRepo(tok);
-    if (r) targets.push(r);
+    const a = apiRepoOf(tok);
+    if (a.kind === 'unparseable') return 'gsd-core'; // F9 R3 (WR-03): fail closed
+    if (a.kind === 'repo') targets.push(a.repo);
   }
   if (targets.length === 0) return null;
-  return targets.some((r) => r.owner === GSD_CORE_OWNER && r.repo === GSD_CORE_REPO) ? 'gsd-core' : 'other';
+  return targets.some(isUpstreamOwnerRepo) ? 'gsd-core' : 'other'; // F9 R4 (item 4): aliases are upstream
 }
 
 /**
@@ -1000,7 +1223,7 @@ function commandTargetsGsdCore(parsed) {
     for (const spec of explicitSpecs) {
       const r = parseOwnerRepo(spec);
       if (r) {
-        if (r.owner === GSD_CORE_OWNER && r.repo === GSD_CORE_REPO) return true; // upstream → DENY
+        if (isUpstreamOwnerRepo(r)) return true; // upstream (or an F9 R4 rename alias) → DENY
         // else: parses as a clearly-non-upstream fork → not targeting via this source (continue).
       } else {
         // explicit spec present but unparseable (GitHub-ish but unparseable) → fail-closed.
@@ -1069,6 +1292,8 @@ module.exports = {
   GSD_CORE_IDENTITY_SCRIPTS,
   commandStartDir,
   commandCandidateDirs,
+  // quick-261007-rni F9: per-push-segment dirs for ENF-21's remote lookup (not the command union).
+  pushSegmentDirs,
   expandHome,
   resolveGsdCoreRootForCommand,
   resolveRootForCommand,
@@ -1086,6 +1311,8 @@ module.exports = {
   isConventionalBranch,
   isContribBranch,
   parseOwnerRepo,
+  UPSTREAM_ALIASES,
+  isUpstreamOwnerRepo,
   repoSpecTargetsGsdCore,
   tokenTargetsGsdCoreApi,
 };

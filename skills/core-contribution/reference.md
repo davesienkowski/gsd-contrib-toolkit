@@ -135,7 +135,7 @@ mempalace mine "$STAGE" --wing gsd_core
 trek-e's published directives ([`review-open-prs.md`, `triage-review.md`, `bug-fixer.md`, `feature-builder.md`](https://github.com/The-Artificer-of-Ciphers-LLC/skills-from-the-artificer/tree/main/commands)) route every "where is X / what calls it / blast radius / why does this exist" question through **memtrace** graph + Cortex tools **before** grep. The `mcp__memtrace__*` tools ARE reachable here — in the **main session**, and for the 10 GSD agents granted a read-only subset via the local patch (`code-reviewer`, `codebase-mapper`, `executor`, …) — so the toolkit adopts the same graph-backed passes. **But with the environment caveats trek-e's own box does not have; naive memtrace-first adoption produces confident-but-wrong verdicts here.** The load-bearing ones, each measured live:
 
 - **`get_impact` UNDER-reports for engine internals — treat it as a FLOOR, never refactor clearance.** gsd-core's `src/*.cts` symbols are called from `bin/gsd-tools.cjs` through the emitted `lib/*.cjs` twin, which is gitignored and unindexed, so **no edge reaches the `.cts` definition**. `get_impact` / `direct_callers` then returns `risk:"LOW"` / `total_affected:0` **with no warning field** for a symbol that has real callers (measured: `routeStateCommand` has 2 live call sites, reports 0; all 8 `HOST_COMMAND_ROUTERS` symbols read 0 upstream for the same reason). Capture the blast-radius number, but confirm any "no callers" / "low risk" with **`grep` / `fallow` before you rely on it** — never clear a change as "safe, low blast radius" on the graph number alone. This is the opposite of trek-e's "blast radius asserted instead of computed is not evidence" — here the *computed* number is the one to distrust.
-- **`repo_id` is the repo NAME, not a path — a path returns zero, silently.** `get_impact(…,repo_id:"/home/dave/repos/gsd-core")` → `found:false,count:0`, whose own `_note` mis-reads as "not indexed." **Omit `repo_id`** (session-cwd inference is correct — only gsd-core is indexed, so it cannot misfire) or pass the bare name `gsd-core`. `get_impact` *requires* `repo_id`, so pass the bare name there — never a path.
+- **`repo_id` is the repo NAME, not a path — a path returns zero, silently.** `get_impact(…,repo_id:"/home/user/repos/gsd-core")` → `found:false,count:0`, whose own `_note` mis-reads as "not indexed." **Omit `repo_id`** (session-cwd inference is correct — only gsd-core is indexed, so it cannot misfire) or pass the bare name `gsd-core`. `get_impact` *requires* `repo_id`, so pass the bare name there — never a path.
 - **Freshness + reach.** Compare the graph's `head_at_build` (memtrace: `list_indexed_repositories` / `get_repository_stats`; graphify: `.planning/graphs/.last-build-status.json`) against `git rev-parse HEAD` — a stale graph flags-missing what `next` already ships and reports moved code as present. Only `.cts` / `.cjs` under indexed dirs resolve; `agents/`, `commands/`, `skills/` are markdown and yield **no** symbols. **Zero results is not evidence the code is absent** — name which rung failed (scope → substance → freshness → reindex) and fall back to grep; a *silent* downgrade to grep is the violation, not the fallback itself.
 - **Availability by context AND by verb — don't cite a tool that isn't here.** `mcp__memtrace__*` exists only in the **main session** and for the granted GSD agents (`code-reviewer`, `codebase-mapper`, `executor`, …); any *other* subagent has no memtrace — query in the main session and pass the *findings* down, or let it grep. **And not every verb trek-e's directives name exists in this build.** The verbs *confirmed available* here are `find_symbol`, `find_code`, `get_symbol_context`, `get_impact`, `why_is_this_here`, `governing_contracts`, `recall_decision`, `get_timeline`, `find_dependency_path`, `get_source_window` (+ the codebase-mapper extras `list_communities` / `find_central_symbols` / `get_codebase_briefing` / `get_directory_tree` / `list_processes`). trek-e's richer graph-review + Cortex verbs — `find_cross_module_issues`, `find_code_review_issues`, `find_dead_code`, `find_yaml_rule_matches`, `get_cochange_context`, `verify_intent`, `detect_changes`, `get_function_quality_metrics`, `get_evolution` — are **his memtrace build, not confirmed here**: probe / `list` for one before relying on it, and if it's absent fall back to the confirmed subset + `/code-review` + grep, **naming the missing verb** rather than pretending it ran. A `-32000` error means the sidecar isn't listening, not that the code is gone.
 
@@ -224,6 +224,8 @@ The label lifecycle is driven by GitHub Actions, not by CONTRIBUTING.md prose:
 | `pr-target-validator.yml` | branch model; **skips maintainers** (OWNER/MEMBER/COLLABORATOR) |
 | `branch-naming.yml` | valid prefix (`feat/ fix/ hotfix/ docs/ chore/ …`); **warn-only**, non-blocking |
 | `dismiss-unauthorized-pr-approvals.yml` | dismisses approvals from non-collaborators / a blocklist |
+| `reviewed-or-maintainer.yml` | **advisory** (no ruleset requires it): passes for a `.github/MAINTAINERS` author (only trek-e) or a non-author, non-bot approval with write access on the CURRENT head; red on Dave's PRs until approved, red again after any push (SKILL.md Phase 6) |
+| `self-test-report.yml` | **advisory**: a fix PR from a non-maintainer needs the `## Self-test report` json block bound to the current head (*Fix PR body skeleton* below) |
 
 (The three typed PR templates + the `pr-template-policy.cjs` required headings are captured as skeletons in *Fix PR body skeleton* below; escape hatch `<!-- pr-template-exempt: <reason> -->`.)
 
@@ -323,6 +325,18 @@ npm run build:lib                            # regenerates gitignored bin/lib/*.
 
 **Push target** — if you have push access (CODEOWNER/member: `gh api repos/open-gsd/gsd-core -q .permissions.push` → `true`), push the branch to **origin** and open a same-repo PR (`git push -u origin fix/<#>-<slug>` then `gh pr create --head fix/<#>-<slug>`). Only an external contributor without push access pushes to a fork and opens a cross-fork PR (`--head <user>:fix/<#>-<slug>`). Default to origin for maintainer work.
 
+**Pushing to an EXISTING PR (2026-10-21 lesson).** The remote is the one named by the PR's `head.repo`, never the worktree's tracking remote: tracking config is set when the worktree is created and can be wrong (on 2026-10-21 the worktrees for #5119 and #5192 tracked `origin` while both heads lived on `davesienkowski/gsd-core`). Before composing the push:
+
+```bash
+gh api repos/open-gsd/gsd-core/pulls/<n> --jq '.head.repo.full_name, .head.ref, .head.sha'
+git remote -v                      # map head.repo to the local remote whose URL names it
+git ls-remote <remote> refs/heads/<head.ref>   # prints head.sha when the mapping is right
+git push <remote> HEAD:<head.ref>             # a plain fast-forward push
+git push --force-with-lease=<head.ref>:<head.sha> <remote> HEAD:<head.ref>   # only after a needed history rewrite
+```
+
+The explicit lease fails closed on a wrong remote and on a moved head. Put `head.repo` in any push hand-off to a worker or to the `!` channel. **After approval, push only when a change is needed** (a push dismisses the approval), and never rebase only for BEHIND (CTK-ADR-0012).
+
 RED-before-GREEN when the fix is already written: `git stash push src/<file>.cts` → `build:lib` → run test (watch fail) → `git stash pop` → `build:lib` → run test (green).
 
 ## Issue body skeleton (bug_report, engine-internal)
@@ -368,7 +382,7 @@ gh issue create --repo open-gsd/gsd-core --title "<type>(<area>): <imperative>" 
 
 ## Fix PR body skeleton (required headings — pr-template-policy enforces them)
 
-```markdown
+````markdown
 ## Fix PR
 ## Linked Issue
 Fixes #<issue#>
@@ -381,6 +395,21 @@ Fixes #<issue#>
 - [x] Yes — added a test that would have caught this bug
 ### Platforms tested
 ### Runtimes tested
+## Self-test report
+
+```json
+{
+  "schema": 1,
+  "head_sha": "<git rev-parse HEAD of the pushed head>",
+  "tool": "npm-test",
+  "failing_first": { "test": "<tests/your-regression.test.cjs>", "fails_on_base": true, "passes_on_head": true },
+  "commands": ["<the exact P3b RED/GREEN command>", "npm test"],
+  "full_suite": { "command": "npm test", "result": "passed", "passed": 0, "failed": 0 },
+  "environment": { "os": "<OS and version>", "node": "<node --version>" },
+  "output_excerpt": "<the last lines of the passing npm test run, 2000 characters at most>"
+}
+```
+
 ## Checklist
 - [x] Issue linked above with `Fixes #NNN`
 - [x] Linked issue has the `confirmed-bug` label
@@ -390,6 +419,24 @@ Fixes #<issue#>
 - [x] `.changeset/` fragment added
 ## Breaking changes
 <disclose any Hyrum's-Law behavior change from the artificer pass, else "None">
+````
+
+**Self-test report (advisory check, fix PRs).** Upstream landed the section in `.github/PULL_REQUEST_TEMPLATE/fix.md` on `origin/next` in 76e1d4dc7 (#5612/#5614), between `### Runtimes tested` and `## Checklist`; the block above is that json block with passing values where the template ships failing defaults (`false`, `"skipped"`) and `<...>` where only you know the answer. The `Self-test report` status context runs `scripts/self-test-report-policy.cjs` from the base sha on every open, edit and push. It is advisory: not a required context on any ruleset, and pr-template-policy does not require the heading. Re-check the template with `git show origin/next:.github/PULL_REQUEST_TEMPLATE/fix.md` and the rules with `git show origin/next:scripts/self-test-report-policy.cjs`.
+
+- **Who must file it.** A fix PR is one whose head ref starts `fix/` or whose title starts `fix:` or `fix(...):` (optionally with `!`, any case), so every PR this skill opens (always a `fix/` branch) counts. Authors ending `[bot]` pass outright, and so do authors listed in `.github/MAINTAINERS`, read from the base sha so a PR cannot add its own author. That file lists only trek-e (2026-10-21): Dave is not exempt.
+- **What passes.** `schema` is `1`; `head_sha` is 40 hex and equals the PR's current head (case-insensitive); `tool` is `gsd-test`, `npm-test` or `manual`; `failing_first` is either `{test, fails_on_base: true, passes_on_head: true}` or `{"not_applicable_reason": "<why>"}`, which the check accepts for any non-empty sentence, so it is a declaration, not proof; `commands` is a non-empty list; `full_suite` has a `command`, `result: "passed"`, `failed` 0 and `passed` at least 1; `environment` gives `os` and `node`; `output_excerpt` is non-empty and at most 2000 characters. Any of `head_sha`, `failing_first.test`, `failing_first.not_applicable_reason`, `commands`, `full_suite.command`, `environment.os`, `environment.node` or `output_excerpt` whose whole value is still `<...>` fails as the unfilled template (`<a>` inside real text is fine). The block must be the first ```` ```json ```` fence under the heading and not inside an HTML comment. The check reports one class per run: schema problems, then `fail_stale_sha`, then `fail_not_failing_first`, then `fail_suite_not_passed`.
+- **Fill it from runs that happened on the pushed head.** `failing_first` comes from the P3b RED output (the test failing without the fix) and the P3c GREEN run; `commands` names those exact commands. P3d's "full relevant suites" is not a full suite: run `npm test` (tool `npm-test`, or `gsd-test` with tool `gsd-test`) on the commit you push and copy its `# pass` and `# fail` counts and its last lines into `full_suite` and `output_excerpt`. Never report a suite you did not run on that commit: the check validates shape and sha binding only, so it cannot catch a made-up report, and CI on the merge-group commit stays authoritative.
+- **Bind it to the head after the last push.** Push first, then set `head_sha` to `git rev-parse HEAD` and confirm it equals the remote branch (`git ls-remote <remote> refs/heads/<branch>`); after `gh pr create`, confirm `gh pr view <n> --repo open-gsd/gsd-core --json headRefOid --jq .headRefOid` prints the same sha. **After any later push** (a review fix, a needed rebase) the report is stale and the check fails `fail_stale_sha`: re-run `npm test` on the new head, refresh `head_sha`, the counts and the excerpt together, re-run the P5d check, then `gh pr edit <n> --repo open-gsd/gsd-core --body-file BODY.md` and re-confirm `headRefOid`. Never swap only the sha. If `headRefOid` moved between the fill and the edit, fill again.
+- **P5d: run the LIVE policy on the exact body.** The script requires `./lib/cli-exit.cjs` and `./reviewed-or-maintainer-policy.cjs`, so take a base copy of the tree, not a single file:
+
+```bash
+B=$(mktemp -d); git -C ~/repos/gsd-core fetch -q origin next
+git -C ~/repos/gsd-core archive origin/next scripts .github/MAINTAINERS | tar -x -C "$B"
+printf '%s\n' '<the exact PR title>' > "$B/title.txt"
+( cd "$B" && PR_BODY_FILE='<absolute path of BODY.md>' PR_TITLE_FILE="$B/title.txt" HEAD_REF='fix/<issue#>-<slug>' \
+  PR_AUTHOR_LOGIN=davesienkowski HEAD_SHA="$(git -C "$WT" rev-parse HEAD)" MAINTAINERS_FILE="$B/.github/MAINTAINERS" \
+  node scripts/self-test-report-policy.cjs )
+# pass: {"ok":true,"reason":"ok_report","problems":[]}; any other reason prints its problems as ::error:: lines
 ```
 
 **PR title convention (ENFORCED at open time — `pr-title-validator.yml`, `WARN_ONLY:false`):** the title MUST be `<type>(#<issue#>): <imperative>` — the linked issue ref lives **inside the scope**, not the subject. The live matcher is `scripts/release-notes/conventional-title.cjs` (`evaluatePrTitle`): a leading tag (`[security] …`) fails `bad-prefix`; a scope without `#<n>` (e.g. `fix(core): …`) fails `missing-issue-ref`. Valid: `fix(#1542): roadmap rollback`, `feat(#39)!: drop legacy flag`, `enhance(#1549): add PR-title validator`. You MAY add an area after the ref: `fix(#1542, core): …`. (Issue titles are NOT title-gated — the `<type>(<area>)` form above is fine for `gh issue create`; only PR titles are checked, because the changelog is built from them.)
@@ -402,7 +449,8 @@ gh pr create --repo open-gsd/gsd-core --base next --head fix/<issue#>-<slug> \
 gh api -X POST repos/open-gsd/gsd-core/issues/<PR#>/labels -f "labels[]=area: <X>"
 # changeset references the PR number → add AFTER the PR exists, then push:
 npm run changeset -- --type Fixed --pr <PR#> --body "<user-facing one-liner>"
-git add .changeset/ && git commit -q -m "chore(changeset): Fixed fragment for #<PR#> (<slug>)" && git push
+# Push to the remote named by the PR's head.repo (see *Push target*), never a bare `git push` that follows the tracking remote:
+git add .changeset/ && git commit -q -m "chore(changeset): Fixed fragment for #<PR#> (<slug>)" && git push <head-repo-remote> HEAD:<head.ref>
 ```
 
 **PR labels (author-applied; the repo has NO auto-labeler):** `area: <X>` (always, mirror the issue) + `security`/`runtime: <X>` if applicable. Use `no-changelog` only when there is no changeset. Do NOT put `bug`/`confirmed-bug`/`priority:` on the PR (issue-only) or `review:`/`needs rebase` (maintainer/bot). `Fixed`/`Security` changesets do NOT trigger docs-lint.
@@ -442,4 +490,4 @@ Children: each is its own issue + PR. The child **PR title** follows the same en
 - `lint:ci` runs `lint-allow-test-rule-refs` → any new `// allow-test-rule: <reason>` MUST carry `see #NNN` (ADR-456).
 - A **changeset-only commit can skip the Tests workflow** → the head shows green meta-checks while a prior commit's Tests FAILED. Always read check-runs on the head SHA and confirm Tests ran there.
 - Reproduce `lint:ci` in a **clean worktree** — a stray untracked `gsd-core/bin/lib/*.cjs` in the main checkout poisons `eslint .`.
-- Don't chase `mergeStateStatus: BEHIND` — the maintainer clears it on merge; re-pushing can re-dismiss an approval.
+- Don't rebase for `mergeStateStatus: BEHIND`: with the merge queue the queue tests the PR on top of `next`, without one the maintainer runs Update branch at merge time (not your job), and a push after approval dismisses the approval (CTK-ADR-0012). Rebase only for DIRTY or a needed change.

@@ -1,0 +1,66 @@
+{
+  "provenance": {
+    "source": "synthetic from cr-5119-captured.json",
+    "edits": "one CHANGES_REQUESTED review by trek-e on an older commit, no DISMISSED review; the timeline, inline-comments and body reads fail (timelineFail, reviewCommentsFail, bodyFail)",
+    "checksExit": 0,
+    "timelineFail": "gh: Server Error (HTTP 502)",
+    "reviewCommentsFail": "gh: Server Error (HTTP 503)",
+    "bodyFail": "gh: Server Error (HTTP 504)",
+    "expected": {
+      "owner": "reviewer",
+      "login": "trek-e",
+      "reRequested": false
+    }
+  },
+  "view": {
+    "number": 900047,
+    "state": "OPEN",
+    "isDraft": false,
+    "author": {
+      "login": "davesienkowski"
+    },
+    "headRefOid": "5a5a047000000000000000000000000000000000",
+    "baseRefName": "next",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "BLOCKED",
+    "reviewDecision": "CHANGES_REQUESTED",
+    "reviewRequests": [],
+    "commits": [
+      {
+        "oid": "5a5a047111111111111111111111111111111111",
+        "committedDate": "2026-10-20T00:00:00Z",
+        "messageHeadline": "commit 1"
+      },
+      {
+        "oid": "5a5a047000000000000000000000000000000000",
+        "committedDate": "2026-10-21T00:00:00Z",
+        "messageHeadline": "commit 2"
+      }
+    ],
+    "updatedAt": "2026-10-23T00:00:00Z"
+  },
+  "reviews": [
+    [
+      {
+        "id": 900047001,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-21T10:00:00Z",
+        "commit_id": "5a5a047111111111111111111111111111111111",
+        "html_url": "https://github.com/open-gsd/gsd-core/pull/900047#pullrequestreview-900047001",
+        "body": "## Review\n\n### Findings\n\n**Minor**\n1. first minor finding\n   - detail line, not an item\n\n**Nit**\n2. a nit\n\n### Verdict\nChanges requested (0 Blocker, 0 Major, 1 Minor, 1 Nit).\n"
+      }
+    ]
+  ],
+  "checks": [],
+  "timeline": [],
+  "reviewComments": {},
+  "bodyView": {
+    "body": "x",
+    "baseRefOid": "5a5a0b7000000000000000000000000000000000",
+    "changedFiles": 1
+  }
+}

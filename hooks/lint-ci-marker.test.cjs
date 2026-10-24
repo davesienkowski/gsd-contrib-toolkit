@@ -46,6 +46,11 @@ function deps(over = {}) {
       readWorkingTreeStatus: () => '', // clean
       readMarkerExists: (_root, _sha) => true, // marker present for the current SHA
       runAffectedTier: (_root) => undefined, // green: returns, does not throw (LIVE contract)
+      // quick-261007-tz0 F10: rule c (a lookup that fails) = the pre-F10 arming, with no real git.
+      segmentDirs: () => ['/tmp/wt'],
+      resolvePushUrls: () => {
+        throw new Error('no remote lookup is configured in this test');
+      },
       overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
     },
     over
@@ -454,3 +459,236 @@ test('CF-05: echo hi && git log (read-only chain) → allow (must-still-allow)',
   const d = runLintCiMarkerGate(input('echo hi && git log'), deps({ readMarkerExists: () => false }));
   assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
 });
+
+// ---- quick-261007-tz0 F10: lint-ci-marker does not arm on a push whose every target is another
+//      repo (a fork or backup remote). Armed world: no marker. backup/backup2 -> the experiments
+//      fork, origin -> upstream, any other name throws (rule c). `F10: ` fails before the fix;
+//      `F10 guard: ` holds before and after. ----
+
+const F10_FORK = 'https://github.com/davesienkowski/gsd-core-sandbox.git';
+const F10_UPSTREAM = 'https://github.com/open-gsd/gsd-core.git';
+
+/** Counted lookup world plus counted readers, in the armed (no-marker) state. */
+function pushWorld(map = { backup: [F10_FORK], backup2: [F10_FORK], origin: [F10_UPSTREAM] }) {
+  const calls = { dirs: 0, lookups: [], treeSha: 0, status: 0, marker: 0, affected: 0 };
+  const d = deps({
+    segmentDirs: () => {
+      calls.dirs += 1;
+      return ['/tmp/wt'];
+    },
+    resolvePushUrls: (dir, name) => {
+      calls.lookups.push([dir, name]);
+      if (Object.prototype.hasOwnProperty.call(map, name)) return map[name];
+      throw Object.assign(new Error('No such remote ' + name), { status: 2, signal: null }) // F9 R4: git's exit 2;
+    },
+    urlRewrites: () => [],
+    readTreeSha: () => {
+      calls.treeSha += 1;
+      return 'abc123';
+    },
+    readWorkingTreeStatus: () => {
+      calls.status += 1;
+      return '';
+    },
+    readMarkerExists: () => {
+      calls.marker += 1;
+      return false;
+    },
+    runAffectedTier: () => {
+      calls.affected += 1;
+    },
+  });
+  return { d, calls };
+}
+
+test('F10: `git push backup fix/x` (fork) -> allow, one lookup, no marker/tree/status/affected reads', () => {
+  const { d, calls } = pushWorld();
+  const r = runLintCiMarkerGate(input('git push backup fix/x'), d);
+  assert.strictEqual(r.permissionDecision, 'allow', r.permissionDecisionReason);
+  assert.deepStrictEqual(calls.lookups, [['/tmp/wt', 'backup']]);
+  assert.strictEqual(calls.treeSha, 0);
+  assert.strictEqual(calls.status, 0);
+  assert.strictEqual(calls.marker, 0);
+  assert.strictEqual(calls.affected, 0);
+});
+
+test('F10: `git status && git push backup y` -> allow', () => {
+  const { d } = pushWorld();
+  const r = runLintCiMarkerGate(input('git status && git push backup y'), d);
+  assert.strictEqual(r.permissionDecision, 'allow', r.permissionDecisionReason);
+});
+
+test('F10: `git push backup x && git status` (segment 0 dropped) -> allow', () => {
+  const { d } = pushWorld();
+  const r = runLintCiMarkerGate(input('git push backup x && git status'), d);
+  assert.strictEqual(r.permissionDecision, 'allow', r.permissionDecisionReason);
+});
+
+test('F10: `git push backup x && git push backup2 y` (both forks) -> allow, two lookups', () => {
+  const { d, calls } = pushWorld();
+  const r = runLintCiMarkerGate(input('git push backup x && git push backup2 y'), d);
+  assert.strictEqual(r.permissionDecision, 'allow', r.permissionDecisionReason);
+  assert.strictEqual(calls.lookups.length, 2);
+});
+
+test('F10 guard: `git push origin fix/x` (upstream) -> deny', () => {
+  const { d } = pushWorld();
+  const r = runLintCiMarkerGate(input('git push origin fix/x'), d);
+  assert.strictEqual(r.permissionDecision, 'deny');
+  assert.match(r.permissionDecisionReason, /lint-ci-stamp/);
+});
+
+test('F10 guard: `git push typo x` (lookup throws, rule c) -> deny', () => {
+  const { d } = pushWorld();
+  const r = runLintCiMarkerGate(input('git push typo x'), d);
+  assert.strictEqual(r.permissionDecision, 'deny');
+});
+
+test('F10 guard: bare `git push` (rule d) -> deny with zero segmentDirs and lookup calls', () => {
+  const { d, calls } = pushWorld();
+  const r = runLintCiMarkerGate(input('git push'), d);
+  assert.strictEqual(r.permissionDecision, 'deny');
+  assert.strictEqual(calls.dirs, 0);
+  assert.strictEqual(calls.lookups.length, 0);
+});
+
+test('F10 guard: `git status` (non-governed) -> allow with zero segmentDirs and lookup calls', () => {
+  const { d, calls } = pushWorld();
+  const r = runLintCiMarkerGate(input('git status'), d);
+  assert.strictEqual(r.permissionDecision, 'allow', r.permissionDecisionReason);
+  assert.strictEqual(calls.dirs, 0);
+  assert.strictEqual(calls.lookups.length, 0);
+});
+
+test('F10 guard: `git push backup x && git push origin y` (fork + upstream) -> deny', () => {
+  const { d } = pushWorld();
+  const r = runLintCiMarkerGate(input('git push backup x && git push origin y'), d);
+  assert.strictEqual(r.permissionDecision, 'deny');
+});
+
+test('F10 guard: hidden push beside a fork push (`bash -c "git push origin main"`) -> deny', () => {
+  const { d } = pushWorld();
+  const r = runLintCiMarkerGate(input('git push backup x && bash -c "git push origin main"'), d);
+  assert.strictEqual(r.permissionDecision, 'deny');
+});
+
+test('F10 guard: `gh pr create ... && git push backup x` -> deny (pr-create stays gated)', () => {
+  const { d } = pushWorld();
+  const r = runLintCiMarkerGate(input('gh pr create --title t --body b && git push backup x'), d);
+  assert.strictEqual(r.permissionDecision, 'deny');
+});
+
+test('F10 guard: `git push backup x && gh pr create ...` -> deny (pr-create stays gated)', () => {
+  const { d } = pushWorld();
+  const r = runLintCiMarkerGate(input('git push backup x && gh pr create --title t --body b'), d);
+  assert.strictEqual(r.permissionDecision, 'deny');
+});
+
+test('F10 guard: a redirected push (`git -c remote.backup.pushurl=<upstream> push backup x`) -> deny', () => {
+  const { d } = pushWorld();
+  const r = runLintCiMarkerGate(
+    input('git -c remote.backup.pushurl=https://github.com/open-gsd/gsd-core.git push backup x'),
+    d
+  );
+  assert.strictEqual(r.permissionDecision, 'deny');
+});
+
+// The F9 R2 rule-(b) allowlist does not list `git commit`, so the fork push in this chain is
+// rule c (kept) and the gate keeps arming exactly as before F10.
+test('F10 guard: `git commit -m x && git push backup y` -> deny (git commit is off the rule-(b) allowlist)', () => {
+  const { d } = pushWorld();
+  const r = runLintCiMarkerGate(input('git commit -m x && git push backup y'), d);
+  assert.strictEqual(r.permissionDecision, 'deny');
+});
+
+// ---- quick-261007-rni F9 R3: F10 consumes classifyPushTarget and pushSegmentDirs, so every R3
+//      change reaches lint-ci-marker too. `F9 R3: ` fails before the R3 fix; `F9 R3 guard: ` holds both. ----
+{
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { pushSegmentDirs } = require('./lib/resolve.cjs');
+  const ALIAS_REDUX = 'https://github.com/GSD-redux/get-shit-done-redux.git';
+
+  for (const [cmd, map] of [
+    ['git push https://github.com/open-gsd/get-shit-done-redux fix/x', undefined],
+    ['git push legacy fix/x', { legacy: [ALIAS_REDUX] }],
+    ['git push https://github.com/open-gsd/gsd-test-runner.git x', undefined],
+    ['git push https://github.com/open-gsd//gsd-core.git x', undefined],
+    ['cd - && git push backup x', undefined],
+    ['popd && git push backup x', undefined],
+  ]) {
+    test((cmd.includes('//gsd-core') ? 'F9 R3 guard: ' : 'F9 R3: ') + 'lint-ci-marker `' + cmd + '` -> deny (alias, org, `//`, or an invisible cd target is never other)', () => {
+      const { d } = pushWorld(map ? Object.assign({ backup: [F10_FORK] }, map) : undefined);
+      const r = runLintCiMarkerGate(input(cmd), d);
+      assert.strictEqual(r.permissionDecision, 'deny', r.permissionDecisionReason);
+    });
+  }
+
+  // A real symlink: T/gc/lnk -> T/E/x; `git -C lnk/.. push backup x` lands in T/E (backup -> upstream).
+  const T = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'f9r3-lcm-phys-')));
+  require('node:test').after(() => fs.rmSync(T, { recursive: true, force: true }));
+  const GC = path.join(T, 'gc');
+  fs.mkdirSync(GC, { recursive: true });
+  fs.mkdirSync(path.join(T, 'E', 'x'), { recursive: true });
+  fs.symlinkSync(path.join(T, 'E', 'x'), path.join(GC, 'lnk'));
+  const physWorld = () => {
+    const { d, calls } = pushWorld();
+    d.segmentDirs = (c, s) => pushSegmentDirs(c, GC, s);
+    d.resolvePushUrls = (dir, name) => {
+      calls.lookups.push([dir, name]);
+      if (name !== 'backup') throw Object.assign(new Error('No such remote ' + name), { status: 2, signal: null }) // F9 R4: git's exit 2;
+      return dir === GC ? [F10_FORK] : [F10_UPSTREAM];
+    };
+    return { d, calls };
+  };
+
+  test('F9 R3: lint-ci-marker `git -C lnk/.. push backup x` (symlink `..`) -> deny', () => {
+    const r = runLintCiMarkerGate(input('git -C lnk/.. push backup x'), physWorld().d);
+    assert.strictEqual(r.permissionDecision, 'deny', r.permissionDecisionReason);
+  });
+
+  for (const cmd of ['git push backup fix/x', 'git push backup fix/x 2>&1 | tail -5', 'git -C ' + GC + ' push backup x']) {
+    test('F9 R3 guard: lint-ci-marker pin `' + cmd.replace(T, '<T>') + '` (fork, real dirs) -> allow', () => {
+      const r = runLintCiMarkerGate(input(cmd), physWorld().d);
+      assert.strictEqual(r.permissionDecision, 'allow', r.permissionDecisionReason);
+    });
+  }
+}
+
+// ---- quick-261007-rni F9 R4: R4 changes reach lint-ci-marker through classifyPushTarget.
+//      `F9 R4: ` fails before the R4 fix; `F9 R4 guard: ` holds both. ----
+{
+  const LIT = 'https://github.com/davesienkowski/gsd-core-sandbox';
+  for (const [cmd, map, kind] of [
+    // ADVERSARIAL-R3 R3-A: remote."<literal URL>".pushurl = upstream (planted by an earlier call)
+    ['git push ' + LIT + ' fix/x', { [LIT]: [F10_UPSTREAM] }, 'R4'],
+    ['git push backup fix/x; git push ' + LIT + ' fix/x', { backup: [F10_FORK], [LIT]: [F10_UPSTREAM] }, 'R4'],
+    // ADVERSARIAL-R3 R3-B: a bare relative cd target may be found through CDPATH
+    ['cd docs && git push backup fix/x', undefined, 'R4'],
+    ['pushd docs && git push backup fix/x', undefined, 'R4'],
+    // REVIEW-R3 CR-01: dot segments / escapes (rule c already kept these armed here; rule a now)
+    ['git push https://github.com/x/../open-gsd/gsd-core.git fix/x', undefined, 'guard'],
+    ['git push https://github.com/%6Fpen-gsd/gsd-core.git fix/x', undefined, 'guard'],
+  ]) {
+    test((kind === 'R4' ? 'F9 R4: ' : 'F9 R4 guard: ') + 'lint-ci-marker `' + cmd + '` -> deny', () => {
+      const { d } = pushWorld(map);
+      const r = runLintCiMarkerGate(input(cmd), d);
+      assert.strictEqual(r.permissionDecision, 'deny', r.permissionDecisionReason);
+    });
+  }
+
+  for (const cmd of [
+    'git push backup fix/x',
+    'git push backup fix/x 2>&1 | tail -5',
+    'git -C /tmp/wt push backup x',
+    'git push ' + LIT + '.git fix/x', // a literal fork URL with no remote."<URL>" entry ("No such remote")
+    'cd ./docs && git push backup fix/x',
+  ]) {
+    test('F9 R4 guard: lint-ci-marker pin `' + cmd + '` (fork) -> allow', () => {
+      const { d } = pushWorld();
+      const r = runLintCiMarkerGate(input(cmd), d);
+      assert.strictEqual(r.permissionDecision, 'allow', r.permissionDecisionReason);
+    });
+  }
+}

@@ -161,7 +161,7 @@ test('hasSentinel identity: the updated makeFixtureRoot fixture still resolves (
 // usually starts with `cd <worktree> && git commit`, so the effective cwd is the cd
 // target, not the hook's process.cwd().
 
-const BASE = '/home/dave/repos/gsd-core';
+const BASE = '/home/user/repos/gsd-core';
 
 test('commandStartDir: no cd → returns the base cwd', () => {
   const parsed = parseCommand('git commit -m "x"');
@@ -169,10 +169,10 @@ test('commandStartDir: no cd → returns the base cwd', () => {
 });
 
 test('commandStartDir: leading `cd <abs> && git` → returns the cd target', () => {
-  const parsed = parseCommand('cd /home/dave/repos/gsd-core-1549-pr-title && git commit -m "x"');
+  const parsed = parseCommand('cd /home/user/repos/gsd-core-1549-pr-title && git commit -m "x"');
   assert.strictEqual(
     res.commandStartDir(parsed, BASE),
-    '/home/dave/repos/gsd-core-1549-pr-title'
+    '/home/user/repos/gsd-core-1549-pr-title'
   );
 });
 
@@ -180,7 +180,7 @@ test('commandStartDir: relative cd resolves against the base cwd', () => {
   const parsed = parseCommand('cd ../gsd-core-1549-pr-title && git commit -m "x"');
   assert.strictEqual(
     res.commandStartDir(parsed, BASE),
-    '/home/dave/repos/gsd-core-1549-pr-title'
+    '/home/user/repos/gsd-core-1549-pr-title'
   );
 });
 
@@ -324,10 +324,10 @@ test('F3 guard (HOME reassignment): export HOME=/x && git -C "$HOME" commit keep
 });
 
 test('commandStartDir: multiple cd segments → the last one wins', () => {
-  const parsed = parseCommand('cd /tmp && cd /home/dave/repos/gsd-core-1549-pr-title && git commit');
+  const parsed = parseCommand('cd /tmp && cd /home/user/repos/gsd-core-1549-pr-title && git commit');
   assert.strictEqual(
     res.commandStartDir(parsed, BASE),
-    '/home/dave/repos/gsd-core-1549-pr-title'
+    '/home/user/repos/gsd-core-1549-pr-title'
   );
 });
 
@@ -348,23 +348,23 @@ test('commandStartDir: missing baseCwd → defaults to process.cwd()', () => {
 const FGC = { followGitC: true };
 
 test('commandStartDir: default FOLLOWS `git -C`', () => {
-  const parsed = parseCommand('git -C /home/dave/repos/gsd-handover push origin main');
-  assert.strictEqual(res.commandStartDir(parsed, BASE), '/home/dave/repos/gsd-handover');
+  const parsed = parseCommand('git -C /home/user/repos/gsd-handover push origin main');
+  assert.strictEqual(res.commandStartDir(parsed, BASE), '/home/user/repos/gsd-handover');
 });
 
 test('commandStartDir: {followGitC:false} opts OUT — resolves base (commit-convention over-deny)', () => {
-  const parsed = parseCommand('git -C /home/dave/repos/gsd-handover commit -m "x"');
+  const parsed = parseCommand('git -C /home/user/repos/gsd-handover commit -m "x"');
   assert.strictEqual(res.commandStartDir(parsed, BASE, { followGitC: false }), BASE);
 });
 
 test('commandStartDir(followGitC): `git -C <abs>` → returns the -C target', () => {
-  const parsed = parseCommand('git -C /home/dave/repos/gsd-handover push origin main');
-  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/dave/repos/gsd-handover');
+  const parsed = parseCommand('git -C /home/user/repos/gsd-handover push origin main');
+  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/user/repos/gsd-handover');
 });
 
 test('commandStartDir(followGitC): relative `git -C` resolves against the base cwd', () => {
   const parsed = parseCommand('git -C ../gsd-handover push');
-  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/dave/repos/gsd-handover');
+  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/user/repos/gsd-handover');
 });
 
 test('commandStartDir(followGitC): a SUBCOMMAND -C (git log -C) is NOT a chdir', () => {
@@ -373,18 +373,18 @@ test('commandStartDir(followGitC): a SUBCOMMAND -C (git log -C) is NOT a chdir',
 });
 
 test('commandStartDir(followGitC): a global -C before a subcommand -C uses only the global one', () => {
-  const parsed = parseCommand('git -C /home/dave/repos/gsd-handover log -C 50');
-  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/dave/repos/gsd-handover');
+  const parsed = parseCommand('git -C /home/user/repos/gsd-handover log -C 50');
+  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/user/repos/gsd-handover');
 });
 
 test('commandStartDir(followGitC): multiple global -C apply cumulatively', () => {
-  const parsed = parseCommand('git -C /home/dave/repos -C gsd-handover push');
-  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/dave/repos/gsd-handover');
+  const parsed = parseCommand('git -C /home/user/repos -C gsd-handover push');
+  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/user/repos/gsd-handover');
 });
 
 test('commandStartDir(followGitC): `git -c k=v -C <abs>` skips the -c value and follows -C', () => {
-  const parsed = parseCommand('git -c user.name=x -C /home/dave/repos/gsd-handover push');
-  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/dave/repos/gsd-handover');
+  const parsed = parseCommand('git -c user.name=x -C /home/user/repos/gsd-handover push');
+  assert.strictEqual(res.commandStartDir(parsed, BASE, FGC), '/home/user/repos/gsd-handover');
 });
 
 test('resolveRootForCommand(followGitC): `git -C <non-gsd-core>` from a gsd-core cwd → null', () => {
@@ -646,6 +646,53 @@ test('parseOwnerRepo: a GitHub-ish-but-unparseable input → null (fail-closed s
   assert.strictEqual(res.parseOwnerRepo(42), null);
 });
 
+// --- quick-261007-rni F9 R2 (item 7, REVIEW CR-01): trailing slashes normalize; dot, empty,
+// encoded or whitespace segments are unparseable (null -> fail-closed at every caller) ---
+
+const F9R2_UP = { owner: 'open-gsd', repo: 'gsd-core', host: 'github.com' };
+for (const [input, label] of [
+  ['https://github.com/open-gsd/gsd-core.git/', 'F9 R2: '],
+  ['https://github.com/open-gsd/gsd-core.git//', 'F9 R2: '],
+  ['git@github.com:open-gsd/gsd-core.git/', 'F9 R2: '],
+  ['ssh://git@github.com/open-gsd/gsd-core.git/', 'F9 R2: '],
+  ['open-gsd/gsd-core.git/', 'F9 R2: '],
+  ['https://github.com/open-gsd/gsd-core/', 'F9 R2 guard: '],
+  ['open-gsd/gsd-core/', 'F9 R2 guard: '],
+]) {
+  test(label + 'parseOwnerRepo(`' + input + '`) normalizes to open-gsd/gsd-core', () => {
+    assert.deepStrictEqual(res.parseOwnerRepo(input), F9R2_UP);
+  });
+}
+
+for (const input of [
+  'open-gsd/../gsd-core',
+  './gsd-core',
+  // F9 R3 (item 4, REVIEW-R2 CR-02) FLIPPED two rows that were here: `open-gsd//gsd-core` and
+  // `https://github.com/open-gsd//gsd-core` now normalize to open-gsd/gsd-core (see below).
+  // F9 R4 (item 1, REVIEW-R3 CR-01) FLIPPED five rows that were here: `open-gsd/./gsd-core`,
+  // `.../gsd-core/x/..`, `.../gsd-core/.`, `.../gsd-core/./` and `.../gsd-core/../gsd-core` now go
+  // through remove_dot_segments and parse as open-gsd/gsd-core (see the F9 R4 block). The two left
+  // here collapse to ONE segment (`gsd-core`), so they stay null.
+]) {
+  test('F9 R2: parseOwnerRepo(' + JSON.stringify(input) + ') -> null (dot or empty segment)', () => {
+    assert.strictEqual(res.parseOwnerRepo(input), null);
+  });
+}
+
+// Already null before R2 (OWNER_REPO_SEG rejects them); item 7 makes the rejection explicit.
+// F9 R4 (item 1) FLIPPED `open-gsd/gsd%2Dcore` out of this list: `%2D` is an unreserved `-`.
+for (const input of ['https://github.com/open-gsd/gsd core', 'open-gsd/gsd-core\tx']) {
+  test('F9 R2 guard: parseOwnerRepo(' + JSON.stringify(input) + ') -> null (encoded or whitespace segment)', () => {
+    assert.strictEqual(res.parseOwnerRepo(input), null);
+  });
+}
+
+test('F9 R2: segmentRepoTarget arms an explicit gh --repo open-gsd/./gsd-core (unparseable -> gsd-core)', () => {
+  const { parseCommandForGates } = require('./argv.cjs');
+  const seg = parseCommandForGates('gh issue create --repo open-gsd/./gsd-core --title x').segments[0];
+  assert.strictEqual(res.segmentRepoTarget(seg), 'gsd-core');
+});
+
 // --- repoSpecTargetsGsdCore: rerouted through parseOwnerRepo (case-fold) ---
 
 test('repoSpecTargetsGsdCore: Open-GSD/GSD-Core (case-variant) → true (CR-01)', () => {
@@ -780,7 +827,9 @@ test('commandTargetsGsdCore: a -f title=x field token is NOT mistaken for an env
 });
 
 // --- Integration against the REAL gsd-core checkout when present ---
-const REAL_GSD_CORE = '/home/dave/repos/gsd-core';
+// Evaluated once at module load: the F3 tests change HOME inside their bodies, and os.homedir()
+// reads HOME at call time. GSD_CORE_ROOT overrides; without a checkout there the test skips.
+const REAL_GSD_CORE = process.env.GSD_CORE_ROOT || path.join(os.homedir(), 'repos', 'gsd-core');
 const hasRealCore =
   fs.existsSync(path.join(REAL_GSD_CORE, 'scripts')) &&
   fs.existsSync(path.join(REAL_GSD_CORE, 'gsd-core', 'bin', 'lib'));
@@ -1032,3 +1081,373 @@ test('R2-WR-05: commandTargetsGsdCore reads GH_REPO after `env` and from an earl
   assert.strictEqual(res.commandTargetsGsdCore(parseCommand('export GH_REPO=dave/fork && gh pr create --title x')), false);
   assert.strictEqual(res.commandTargetsGsdCore(parseCommand('export GH_REPO=open-gsd/gsd-core; unset GH_REPO; gh pr create --title x')), false);
 });
+
+// ── quick-261007-rni F9: pushSegmentDirs, the PER-SEGMENT candidate dirs of one push segment ──
+//
+// ENF-21 looks a push's remote up in the directory THAT push runs in. The command-wide union
+// (commandCandidateDirs) is wrong for that: `cd A && git push backup x && cd B && git push origin
+// main` would look `backup` up in B too. The segment is the gate-shaped one (parseCommandForGates),
+// matched to the resolver's own segments by its token list.
+{
+  const { parseCommandForGates } = require('./argv.cjs');
+  const { classifyAction } = require('./classify.cjs');
+  const F9A = fs.mkdtempSync(path.join(os.tmpdir(), 'f9-dirs-a-'));
+  const F9B = fs.mkdtempSync(path.join(os.tmpdir(), 'f9-dirs-b-'));
+  const F9C = fs.mkdtempSync(path.join(os.tmpdir(), 'f9-dirs-c-'));
+  require('node:test').after(() => {
+    for (const d of [F9A, F9B, F9C]) fs.rmSync(d, { recursive: true, force: true });
+  });
+  const pushSegs = (cmd) => parseCommandForGates(cmd).segments.filter(
+    (s) => classifyAction({ ok: true, segments: [s] }).action === 'push'
+  );
+
+  test('F9: pushSegmentDirs `git -C A push backup x` from base B -> [A]', () => {
+    const cmd = 'git -C ' + F9A + ' push backup x';
+    assert.deepStrictEqual(res.pushSegmentDirs(cmd, F9B, pushSegs(cmd)[0]), [F9A]);
+  });
+
+  test('F9: pushSegmentDirs `cd A && git push backup x` from base B -> [A]', () => {
+    const cmd = 'cd ' + F9A + ' && git push backup x';
+    assert.deepStrictEqual(res.pushSegmentDirs(cmd, F9B, pushSegs(cmd)[0]), [F9A]);
+  });
+
+  test('F9: pushSegmentDirs `cd A; git push backup x` from base B -> [A, B] (a failed cd keeps B)', () => {
+    const cmd = 'cd ' + F9A + '; git push backup x';
+    assert.deepStrictEqual(res.pushSegmentDirs(cmd, F9B, pushSegs(cmd)[0]), [F9A, F9B]);
+  });
+
+  test('F9: pushSegmentDirs newline-split `git status` then a push, from base B -> [B]', () => {
+    const cmd = 'git status\ngit push backup x';
+    const segs = pushSegs(cmd);
+    assert.strictEqual(segs.length, 1);
+    assert.deepStrictEqual(res.pushSegmentDirs(cmd, F9B, segs[0]), [F9B]);
+  });
+
+  test('F9: pushSegmentDirs two token-identical push segments -> the union of their dirs [A, C]', () => {
+    const cmd = 'cd ' + F9A + ' && git push backup x; cd ' + F9C + ' && git push backup x';
+    assert.deepStrictEqual(res.pushSegmentDirs(cmd, F9B, pushSegs(cmd)[0]), [F9A, F9C]);
+  });
+
+  test('F9: pushSegmentDirs mixed chain gives each push its own dir, not the union', () => {
+    const cmd = 'cd ' + F9A + ' && git push backup x && cd ' + F9B + ' && git push origin main';
+    const segs = pushSegs(cmd);
+    assert.strictEqual(segs.length, 2);
+    assert.deepStrictEqual(res.pushSegmentDirs(cmd, F9C, segs[0]), [F9A]);
+    assert.deepStrictEqual(res.pushSegmentDirs(cmd, F9C, segs[1]), [F9B]);
+  });
+
+  test('F9: pushSegmentDirs a segment whose tokens are not in the command -> null', () => {
+    const other = pushSegs('git push elsewhere y')[0];
+    assert.strictEqual(res.pushSegmentDirs('git push backup x', F9B, other), null);
+  });
+}
+
+// ───────────── quick-261007-rni F9 R3: hardening round 3 (REVIEW-R2 CR-02/CR-03/WR-03, ADVERSARIAL-R2 B) ─────────────
+//
+// Naming: `F9 R3: ` fails before the R3 fix and passes after; `F9 R3 guard: ` passes both.
+
+// ── item 4 (CR-02): parseOwnerRepo never returns null for a URL that reaches upstream ──
+// `git ls-remote` reached open-gsd/gsd-core (refs/heads/next 83aba446) through each of these
+// shapes on 2026-10-08; a null here is an ALLOW at containment (ENF-07) and ENF-25.
+for (const input of [
+  'open-gsd//gsd-core',
+  'https://github.com/open-gsd//gsd-core',
+  'https://github.com/open-gsd//gsd-core.git',
+  'git@github.com:open-gsd//gsd-core.git',
+  'https://u%2Dx@github.com/open-gsd/gsd-core.git',
+  'ssh://u%2Dx@github.com/open-gsd/gsd-core.git',
+  'u%2Dx@github.com:open-gsd/gsd-core.git',
+]) {
+  test('F9 R3: parseOwnerRepo(' + JSON.stringify(input) + ') -> open-gsd/gsd-core (`//` collapses, `%` in userinfo is not the path)', () => {
+    assert.deepStrictEqual(res.parseOwnerRepo(input), F9R2_UP);
+  });
+}
+
+test('F9 R3 guard: parseOwnerRepo("https://github.com//open-gsd/gsd-core.git") -> open-gsd/gsd-core (leading slashes were already stripped)', () => {
+  assert.deepStrictEqual(res.parseOwnerRepo('https://github.com//open-gsd/gsd-core.git'), F9R2_UP);
+});
+
+test('F9 R3: repoSpecTargetsGsdCore is true for `//` and `%`-userinfo upstream URLs (ENF-07 / ENF-25 consumers)', () => {
+  assert.strictEqual(res.repoSpecTargetsGsdCore('https://github.com/open-gsd//gsd-core.git'), true);
+  assert.strictEqual(res.repoSpecTargetsGsdCore('https://u%2Dx@github.com/open-gsd/gsd-core.git'), true);
+});
+
+for (const input of [
+  // F9 R4 (item 1, REVIEW-R3 CR-01) FLIPPED four rows out of this list: `open-gsd/gsd%2Dcore`,
+  // `https://github.com/open-gsd/gsd%2Dcore.git` (unreserved escapes decode), and
+  // `https://github.com/open-gsd/x/../gsd-core`, `https://github.com/open-gsd/./gsd-core` (dot
+  // segments collapse). All four reach upstream (`git ls-remote`, REVIEW-R3). See the F9 R4 block.
+  'https://github.com/open-gsd/gsd-core?x=1',
+  'https://github.com/open-gsd/gsd-core#frag',
+  'https://github.com/open-gsd\\gsd-core',
+  'https://u x@github.com/open-gsd/gsd-core.git',
+]) {
+  test('F9 R3 guard: parseOwnerRepo(' + JSON.stringify(input) + ') stays null (escape, query, fragment, backslash, whitespace or dot in the PATH)', () => {
+    assert.strictEqual(res.parseOwnerRepo(input), null);
+  });
+}
+
+// ── item 1: the frozen alias list (evidence beside UPSTREAM_ALIASES in resolve.cjs) ──
+test('F9 R3: UPSTREAM_ALIASES lists the two GitHub redirect names of open-gsd/gsd-core, lowercased and frozen', () => {
+  assert.ok(Array.isArray(res.UPSTREAM_ALIASES), 'UPSTREAM_ALIASES is exported');
+  assert.ok(Object.isFrozen(res.UPSTREAM_ALIASES));
+  assert.deepStrictEqual(res.UPSTREAM_ALIASES.slice().sort(), ['gsd-redux/get-shit-done-redux', 'open-gsd/get-shit-done-redux']);
+  // checked and excluded: gsd-build/get-shit-done (and glittercowboy/get-shit-done) is another repo.
+  assert.ok(!res.UPSTREAM_ALIASES.includes('gsd-build/get-shit-done'));
+  assert.ok(!res.UPSTREAM_ALIASES.includes('glittercowboy/get-shit-done'));
+});
+
+// ── item 5 (WR-03): a REST `repos/` path with a dot segment fails closed ──
+{
+  const { parseCommandForGates } = require('./argv.cjs');
+  for (const cmd of [
+    'gh api -X POST repos/open-gsd/x/../gsd-core/issues -f title=t',
+    'gh api repos/open-gsd/./gsd-core/issues',
+    'gh api repos/open-gsd/x/%2e%2e/gsd-core/issues',
+    'gh api /repos/someone/x/../../open-gsd/gsd-core/pulls',
+  ]) {
+    test('F9 R3: segmentRepoTarget(`' + cmd + '`) -> gsd-core (dot or encoded segment under repos/ fails closed)', () => {
+      assert.strictEqual(res.segmentRepoTarget(parseCommandForGates(cmd).segments[0]), 'gsd-core');
+    });
+  }
+  for (const tok of ['repos/open-gsd/x/../gsd-core/issues', 'https://api.github.com/repos/open-gsd/x/../gsd-core/issues', 'repos/a/b/./c']) {
+    test('F9 R3: tokenTargetsGsdCoreApi(`' + tok + '`) -> true (fail closed)', () => {
+      assert.strictEqual(res.tokenTargetsGsdCoreApi(tok), true);
+    });
+  }
+  for (const [cmd, want] of [
+    ['gh api repos/someone/fork/issues', 'other'],
+    ['gh api repos/open-gsd/gsd-core/issues', 'gsd-core'],
+    ['gh api user', null],
+    ['gh api repos/{owner}/{repo}/pulls', null],
+    ['gh api repos/someone/fork/issues?q=a%20b', 'other'],
+  ]) {
+    test('F9 R3 guard: segmentRepoTarget(`' + cmd + '`) -> ' + want, () => {
+      assert.strictEqual(res.segmentRepoTarget(parseCommandForGates(cmd).segments[0]), want);
+    });
+  }
+}
+
+// ── item 2 (CR-03, ADVERSARIAL-R2 B): a derived dir whose logical and physical resolutions differ ──
+// Fixture (realpath'd, so logical == physical on any host): T/gc (the cwd), T/E/root and T/E/x,
+// T/gc/lnk -> T/E/x, and T/F/lnk -> T/E/x beside T/F/root. pushSegmentDirs adds the PHYSICAL dir as
+// a candidate (the classifier's rule-a lookup sees it) and sets the non-enumerable `unverified`
+// phrase (never rule b). It does not throw: a throw would skip rule (a) in the other candidates.
+{
+  const { parseCommandForGates } = require('./argv.cjs');
+  const { classifyAction } = require('./classify.cjs');
+  const T = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'f9r3-phys-')));
+  require('node:test').after(() => fs.rmSync(T, { recursive: true, force: true }));
+  const GC = path.join(T, 'gc');
+  const E = path.join(T, 'E');
+  const F = path.join(T, 'F');
+  for (const d of [GC, path.join(E, 'root'), path.join(E, 'x'), path.join(F, 'root'), path.join(GC, 'sub')]) fs.mkdirSync(d, { recursive: true });
+  fs.symlinkSync(path.join(E, 'x'), path.join(GC, 'lnk'));
+  fs.symlinkSync(path.join(E, 'x'), path.join(F, 'lnk'));
+  const FROOT = path.join(F, 'root');
+  const pushSeg = (cmd) => parseCommandForGates(cmd).segments.filter(
+    (s) => classifyAction({ ok: true, segments: [s] }).action === 'push'
+  )[0];
+  const dirsOf = (cmd, base) => res.pushSegmentDirs(cmd, base, pushSeg(cmd));
+
+  for (const [cmd, base, physical] of [
+    ['git -C lnk/.. push backup x', GC, E],
+    ['cd -P lnk/.. && git push backup x', GC, E],
+    ['git -C ../lnk/../root push backup x', FROOT, path.join(E, 'root')],
+    ['git -C ' + F + '/lnk/../root push backup x', FROOT, path.join(E, 'root')],
+    ['cd -P ../lnk/../root && git push backup x', FROOT, path.join(E, 'root')],
+    ['cd -P ../lnk && cd .. && git -C root push backup x', FROOT, path.join(E, 'root')],
+    ['cd ../lnk/../root && git push backup x', FROOT, path.join(E, 'root')],
+  ]) {
+    test('F9 R3: pushSegmentDirs(`' + cmd.replace(T, '<T>') + '`) adds the physical dir and marks the list unverified (symlink `..`)', () => {
+      const dirs = dirsOf(cmd, base);
+      assert.ok(dirs.includes(physical), JSON.stringify(dirs) + ' must include ' + physical);
+      assert.match(String(dirs.unverified), /symlink/);
+      assert.ok(!Object.keys(dirs).includes('unverified'), 'unverified is non-enumerable');
+    });
+  }
+
+  for (const cmd of ['cd ' + path.join(T, 'nope') + ' && git push backup x', 'git -C nope push backup x']) {
+    test('F9 R3: pushSegmentDirs(`' + cmd.replace(T, '<T>') + '`) marks the list unverified (a derived dir that does not exist)', () => {
+      assert.match(String(dirsOf(cmd, GC).unverified), /does not resolve to an existing directory/);
+    });
+  }
+
+  test('F9 R3: `cd nope || cd sub && git push backup x` keeps sub as a candidate (row-31 shape: a missing dir does not hide the real one)', () => {
+    const dirs = dirsOf('cd nope || cd sub && git push backup x', GC);
+    assert.ok(dirs.includes(path.join(GC, 'sub')), JSON.stringify(dirs));
+    assert.match(String(dirs.unverified), /does not resolve/);
+  });
+
+  for (const [cmd, want] of [
+    ['git push backup x', [GC]],
+    ['cd sub && git push backup x', [path.join(GC, 'sub')]],
+    ['git -C ' + GC + ' push backup x', [GC]],
+    ['git -C lnk push backup x', [path.join(GC, 'lnk')]],
+    ['cd sub/.. && git push backup x', [GC]],
+  ]) {
+    test('F9 R3 guard: pushSegmentDirs(`' + cmd.replace(T, '<T>') + '`) -> ' + JSON.stringify(want.map((d) => d.replace(T, '<T>'))), () => {
+      const dirs = dirsOf(cmd, GC);
+      assert.deepStrictEqual(dirs, want);
+      assert.strictEqual(dirs.unverified, undefined);
+    });
+  }
+
+  test('F9 R3 guard: commandCandidateDirs (the cwd rule) still resolves `lnk/..` lexically, unchanged', () => {
+    assert.deepStrictEqual(res.commandCandidateDirs('git -C lnk/.. push backup x', GC), [GC]);
+  });
+}
+
+// ───────────── quick-261007-rni F9 R4 (REVIEW-R3 CR-01 / WR-01 / WR-02) ─────────────
+// Naming: `F9 R4: ` fails before the R4 fix and passes after; `F9 R4 guard: ` passes both.
+// Item 1: parseOwnerRepo applies RFC 3986 remove_dot_segments to the PATH (a `..` above the root is
+// clamped, as the server does) and decodes `%XX` of the unreserved characters (A-Z a-z 0-9 - . _ ~)
+// before matching; any other `%` stays null. null is ALLOW at containment (ENF-07) and
+// worktree-fresh-base (ENF-25), so a URL that reaches upstream must parse (REVIEW-R3 CR-01: these
+// shapes reached open-gsd/gsd-core through `git ls-remote` on 2026-10-08).
+// Item 4: the GitHub rename aliases (UPSTREAM_ALIASES) count as upstream on the gh paths too.
+{
+  const { parseCommandForGates } = require('./argv.cjs');
+  const UP = { owner: 'open-gsd', repo: 'gsd-core', host: 'github.com' };
+
+  for (const input of [
+    // REVIEW-R3 CR-01 rows 3-6 and the unit.cjs shapes
+    'https://github.com/x/../open-gsd/gsd-core.git',
+    'https://github.com/./open-gsd/gsd-core.git',
+    'git@github.com:x/../open-gsd/gsd-core.git',
+    'ssh://git@github.com/./open-gsd/gsd-core.git',
+    // the mid-path residuals CR-01 names (allowed by ENF-07 at 8131774 too)
+    'https://github.com/open-gsd/x/../gsd-core.git',
+    'https://github.com/open-gsd/gsd-core/x/..//',
+    // the five R2 null rows the spec flips
+    'open-gsd/./gsd-core',
+    'https://github.com/open-gsd/gsd-core/x/..',
+    'https://github.com/open-gsd/gsd-core/.',
+    'https://github.com/open-gsd/gsd-core/./',
+    'https://github.com/open-gsd/gsd-core/../gsd-core',
+    // R3 guard rows the spec flips
+    'https://github.com/open-gsd/x/../gsd-core',
+    'https://github.com/open-gsd/./gsd-core',
+    // `..` above the root clamps at the root
+    'https://github.com/../../open-gsd/gsd-core.git',
+    // `.git` after the dot segments collapse
+    'https://github.com/open-gsd/gsd-core.git/x/..',
+  ]) {
+    test('F9 R4: parseOwnerRepo(' + JSON.stringify(input) + ') -> open-gsd/gsd-core (remove_dot_segments)', () => {
+      assert.deepStrictEqual(res.parseOwnerRepo(input), UP);
+    });
+  }
+
+  for (const input of [
+    'https://github.com/%6Fpen-gsd/gsd-core.git',
+    'https://github.com/open-gsd/gsd%2Dcore.git',
+    'https://github.com/open-gsd/gsd%2dcore.git',
+    'open-gsd/gsd%2Dcore',
+    'https://github.com/%6F%70%65%6E-gsd/gsd-core',
+    'https://github.com/x/%2E%2E/open-gsd/gsd-core.git',
+    'https://github.com/open-gsd/gsd-cor%65.git',
+  ]) {
+    test('F9 R4: parseOwnerRepo(' + JSON.stringify(input) + ') -> open-gsd/gsd-core (unreserved escapes decode)', () => {
+      assert.deepStrictEqual(res.parseOwnerRepo(input), UP);
+    });
+  }
+
+  test('F9 R4: parseOwnerRepo decodes `%7E` / `%5F` / `%2E` inside a segment (`a%5Fb/c%2Ed` -> a_b/c.d)', () => {
+    assert.deepStrictEqual(res.parseOwnerRepo('https://github.com/a%5Fb/c%2Ed'), { owner: 'a_b', repo: 'c.d', host: 'github.com' });
+  });
+
+  for (const input of [
+    'https://github.com/open-gsd%2Fgsd-core.git', // %2F is a reserved `/`
+    'https://github.com/open-gsd/gsd-core%40x.git', // %40 is `@`
+    'https://github.com/open-gsd/gsd%25core.git', // %25 is `%`
+    'https://github.com/open-gsd/gsd%zzcore.git', // bad hex
+    'https://github.com/open-gsd/gsd-core%', // trailing `%`
+    'https://github.com/open-gsd/gsd-core%2', // truncated escape
+    'https://github.com/open-gsd/gsd-core?x=1',
+    'https://github.com/open-gsd/gsd-core#frag',
+    'https://github.com/open-gsd/./', // one segment after collapse
+    'https://github.com/open-gsd/gsd-core/../..', // nothing left
+    './gsd-core',
+    'open-gsd/../gsd-core',
+    'gsd-core/..',
+  ]) {
+    test('F9 R4 guard: parseOwnerRepo(' + JSON.stringify(input) + ') stays null (reserved or bad escape, query, fragment, or < 2 segments)', () => {
+      assert.strictEqual(res.parseOwnerRepo(input), null);
+    });
+  }
+
+  test('F9 R4: a dot-segment / escaped FORK URL parses as the fork (the server collapses it too)', () => {
+    assert.deepStrictEqual(res.parseOwnerRepo('https://github.com/x/../davesienkowski/gsd-core-sandbox.git'),
+      { owner: 'davesienkowski', repo: 'gsd-core-sandbox', host: 'github.com' });
+    assert.deepStrictEqual(res.parseOwnerRepo('https://github.com/dave/gsd%2Dcore-fork.git'),
+      { owner: 'dave', repo: 'gsd-core-fork', host: 'github.com' });
+  });
+
+  // REVIEW-R3 CR-01 / WR-01: the boolean consumers (ENF-07, ENF-25) read repoSpecTargetsGsdCore.
+  for (const url of [
+    'https://github.com/x/../open-gsd/gsd-core.git',
+    'https://github.com/./open-gsd/gsd-core.git',
+    'https://github.com/%6Fpen-gsd/gsd-core.git',
+    'https://github.com/open-gsd/gsd%2Dcore.git',
+  ]) {
+    test('F9 R4: repoSpecTargetsGsdCore(' + JSON.stringify(url) + ') -> true', () => {
+      assert.strictEqual(res.repoSpecTargetsGsdCore(url), true);
+    });
+  }
+
+  // ── item 4 (REVIEW-R3 WR-02): one alias-aware predicate behind every gh repo-target check ──
+  test('F9 R4: resolve.cjs exports isUpstreamOwnerRepo (gsd-core or an UPSTREAM_ALIASES entry)', () => {
+    assert.strictEqual(typeof res.isUpstreamOwnerRepo, 'function');
+    assert.strictEqual(res.isUpstreamOwnerRepo({ owner: 'open-gsd', repo: 'gsd-core' }), true);
+    for (const a of res.UPSTREAM_ALIASES) {
+      const [owner, repo] = a.split('/');
+      assert.strictEqual(res.isUpstreamOwnerRepo({ owner, repo }), true, a);
+    }
+    assert.strictEqual(res.isUpstreamOwnerRepo({ owner: 'gsd-build', repo: 'get-shit-done' }), false);
+    assert.strictEqual(res.isUpstreamOwnerRepo({ owner: 'open-gsd', repo: 'gsd-test-runner' }), false);
+    assert.strictEqual(res.isUpstreamOwnerRepo(null), false);
+  });
+
+  for (const spec of [
+    'open-gsd/get-shit-done-redux',
+    'GSD-redux/get-shit-done-redux',
+    'https://github.com/open-gsd/get-shit-done-redux.git',
+    'git@github.com:GSD-redux/get-shit-done-redux.git',
+  ]) {
+    test('F9 R4: repoSpecTargetsGsdCore(' + JSON.stringify(spec) + ') -> true (rename alias)', () => {
+      assert.strictEqual(res.repoSpecTargetsGsdCore(spec), true);
+    });
+  }
+
+  for (const cmd of [
+    'gh issue create --repo open-gsd/get-shit-done-redux --title x --body y',
+    'gh pr create -R GSD-redux/get-shit-done-redux --title x --body y',
+    'GH_REPO=open-gsd/get-shit-done-redux gh issue create --title x --body y',
+    'gh api -X POST repos/open-gsd/get-shit-done-redux/issues -f title=t',
+    'curl -X POST https://api.github.com/repos/GSD-redux/get-shit-done-redux/pulls -d x',
+  ]) {
+    test('F9 R4: commandTargetsGsdCore and segmentRepoTarget treat the alias in `' + cmd + '` as upstream', () => {
+      const parsed = parseCommandForGates(cmd);
+      assert.strictEqual(res.commandTargetsGsdCore(parsed), true);
+      const ghRepos = res.ghRepoBySegment(parsed.segments);
+      assert.strictEqual(res.segmentRepoTarget(parsed.segments[0], ghRepos[0]), 'gsd-core');
+    });
+  }
+
+  test('F9 R4: tokenTargetsGsdCoreApi reads an alias REST path as upstream', () => {
+    assert.strictEqual(res.tokenTargetsGsdCoreApi('repos/open-gsd/get-shit-done-redux/issues'), true);
+    assert.strictEqual(res.tokenTargetsGsdCoreApi('https://api.github.com/repos/gsd-redux/get-shit-done-redux/pulls'), true);
+  });
+
+  for (const cmd of [
+    'gh issue create --repo gsd-build/get-shit-done --title x --body y',
+    'gh issue create --repo open-gsd/gsd-test-runner --title x --body y',
+    'gh issue create --repo davesienkowski/gsd-core-sandbox --title x --body y',
+  ]) {
+    test('F9 R4 guard: `' + cmd + '` is still not upstream on the gh path (not an alias)', () => {
+      const parsed = parseCommandForGates(cmd);
+      assert.strictEqual(res.commandTargetsGsdCore(parsed), false);
+      assert.strictEqual(res.segmentRepoTarget(parsed.segments[0]), 'other');
+    });
+  }
+}

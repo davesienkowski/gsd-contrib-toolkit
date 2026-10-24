@@ -1,0 +1,31 @@
+{
+  "provenance": {
+    "source": "captured open-gsd/gsd-core#4955 2026-10-23T03:24Z",
+    "edits": "pr view number, state, closingIssuesReferences, title, mergedAt, closedAt only (closed PR: issue-status makes no pr-status read for it)",
+    "checksExit": 0
+  },
+  "view": {
+    "closedAt": "2026-09-28T06:41:04Z",
+    "closingIssuesReferences": [
+      {
+        "id": "I_kwDOSk3_ZM8AAAABQ6YUEA",
+        "number": 4649,
+        "repository": {
+          "id": "R_kgDOSk3_ZA",
+          "name": "gsd-core",
+          "owner": {
+            "id": "O_kgDOERpJfg",
+            "login": "open-gsd"
+          }
+        },
+        "url": "https://github.com/open-gsd/gsd-core/issues/4649"
+      }
+    ],
+    "mergedAt": null,
+    "number": 4955,
+    "state": "CLOSED",
+    "title": "enhance(#4649): scope the project-skills discovery read and report costly skills in /gsd-health"
+  },
+  "reviews": [],
+  "checks": []
+}

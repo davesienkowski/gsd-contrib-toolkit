@@ -56,6 +56,12 @@
  * skipping from free-and-silent into deliberate-and-recorded. It must never be described as
  * closing that gap.
  *
+ * F10 (quick-261007-tz0): a push segment that F9's classifyPushTarget proves goes to another
+ * owner/repo (a fork or backup remote) does not arm this gate: gate() narrows the parse with
+ * narrowToArmingPushes right after the parse-failure throw, before the first-actionable
+ * classification. pr-create and issue-create segments are never dropped, and an upstream push,
+ * an unresolvable or redirected target and a push with no explicit remote arm exactly as before.
+ *
  * @module hooks/protocol-artifact
  */
 
@@ -65,7 +71,8 @@ const path = require('node:path');
 const { parseCommandForGates } = require('./lib/argv.cjs');
 const { classifyAction, isNonGovernedCommand } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
-const { resolveRootForCommand, isContribBranch } = require('./lib/resolve.cjs');
+const { resolveRootForCommand, isContribBranch, pushSegmentDirs } = require('./lib/resolve.cjs');
+const { narrowToArmingPushes, resolvePushUrlsLive, urlRewritesLive } = require('./lib/push-target.cjs');
 const { readRegularFileBounded } = require('./lib/regular-file.cjs');
 const {
   PLACEHOLDER_RE,
@@ -832,14 +839,25 @@ function gateGoverns(g, act) {
  * @param {() => string[]} deps.readChangedPaths repo-relative paths changed on this branch.
  * @param {(runId: string) => *} deps.readMatrixRun parsed gsd-test failures.json. MAY THROW.
  * @param {() => (string|null)} deps.readHeadCommittedAt ISO-8601 commit time of HEAD.
+ * @param {(command:string, seg:Object)=>(string[]|null)} [deps.segmentDirs] F10: the dirs one push
+ *   segment runs in. Without it (and resolvePushUrls) the parse is not narrowed.
+ * @param {(dir:string, name:string, timeoutMs:number)=>string[]} [deps.resolvePushUrls] F10: every
+ *   push URL of a named remote in a dir. MAY THROW (rule c: the push keeps arming).
+ * @param {(dir:string, timeoutMs:number)=>string[]} [deps.urlRewrites] F10: url rewrite lines.
  * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
  */
 function gate(stdinString, deps) {
   const input = readHookInput(stdinString);
   const command = (input.tool_input && input.tool_input.command) || '';
 
-  const parsed = parseCommandForGates(command);
-  if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
+  const rawParse = parseCommandForGates(command);
+  if (!rawParse.ok) throw new FailClosed('unparseable command: ' + rawParse.reason);
+
+  // F10 (quick-261007-tz0): drop only the push segments proven to go to another owner/repo. Every
+  // other path returns the SAME parse object, so this gate arms exactly as before.
+  const narrowed = narrowToArmingPushes(command, rawParse, deps);
+  if (narrowed.empty) return allow();
+  const parsed = narrowed.parsed;
 
   const action = classifyAction(parsed);
   // ENF-15: an unclassifiable MUTATING github synonym is failClosed -> deny, never a pass.
@@ -905,7 +923,8 @@ function gate(stdinString, deps) {
  * gsd-core worktree.
  *
  * @param {string} stdinString raw PreToolUse JSON
- * @param {Object} [deps]
+ * @param {Object} [deps] gate()'s deps; F10 segmentDirs / resolvePushUrls / urlRewrites default to
+ *   the live F9 lookups (pushSegmentDirs from process.cwd(), resolvePushUrlsLive, urlRewritesLive).
  * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
  */
 function runProtocolArtifactGate(stdinString, deps = {}) {
@@ -955,6 +974,12 @@ function runProtocolArtifactGate(stdinString, deps = {}) {
       }
     }
     if (!resolved.readMatrixRun) resolved.readMatrixRun = readMatrixRunLive;
+    // F10 (quick-261007-tz0): the F9 push-target lookups, outside the needsRoot block.
+    if (!resolved.segmentDirs) {
+      resolved.segmentDirs = (command, seg) => pushSegmentDirs(command, process.cwd(), seg);
+    }
+    if (!resolved.resolvePushUrls) resolved.resolvePushUrls = resolvePushUrlsLive;
+    if (!resolved.urlRewrites) resolved.urlRewrites = urlRewritesLive;
 
     return gate(stdinString, resolved);
   }, ctx);

@@ -1,0 +1,216 @@
+{
+  "provenance": {
+    "source": "synthetic from absent.json",
+    "edits": "the rules/branches GET exits 1 with a 403 message; nothing else is read",
+    "expected": {
+      "mode": "unknown"
+    }
+  },
+  "fail": {
+    "rules": "gh: Resource not accessible by integration (HTTP 403)"
+  },
+  "repo": {
+    "default_branch": "next"
+  },
+  "rulesBranches": {
+    "next": []
+  },
+  "rulesets": [
+    {
+      "id": 16752567,
+      "name": "main-protection",
+      "target": "branch",
+      "source_type": "Repository",
+      "source": "open-gsd/gsd-core",
+      "enforcement": "evaluate"
+    },
+    {
+      "id": 16752568,
+      "name": "release-branches",
+      "target": "branch",
+      "source_type": "Repository",
+      "source": "open-gsd/gsd-core",
+      "enforcement": "evaluate"
+    },
+    {
+      "id": 16752570,
+      "name": "tag-immutability",
+      "target": "tag",
+      "source_type": "Repository",
+      "source": "open-gsd/gsd-core",
+      "enforcement": "evaluate"
+    }
+  ],
+  "rulesetDetails": {
+    "16752567": {
+      "id": 16752567,
+      "name": "main-protection",
+      "target": "branch",
+      "source_type": "Repository",
+      "source": "open-gsd/gsd-core",
+      "enforcement": "evaluate",
+      "conditions": {
+        "ref_name": {
+          "exclude": [],
+          "include": [
+            "~DEFAULT_BRANCH"
+          ]
+        }
+      },
+      "rules": [
+        {
+          "type": "deletion"
+        },
+        {
+          "type": "non_fast_forward"
+        },
+        {
+          "type": "required_linear_history"
+        },
+        {
+          "type": "pull_request",
+          "parameters": {
+            "required_approving_review_count": 0,
+            "dismiss_stale_reviews_on_push": true,
+            "required_reviewers": [],
+            "require_code_owner_review": false,
+            "dismissal_restriction": {
+              "enabled": false,
+              "allowed_actors": []
+            },
+            "require_last_push_approval": false,
+            "required_review_thread_resolution": true,
+            "require_extra_approval_for_unattributed_changes": true,
+            "allowed_merge_methods": [
+              "squash",
+              "rebase"
+            ]
+          }
+        },
+        {
+          "type": "required_status_checks",
+          "parameters": {
+            "strict_required_status_checks_policy": true,
+            "do_not_enforce_on_create": false,
+            "required_status_checks": [
+              {
+                "context": "lint-tests"
+              },
+              {
+                "context": "test (ubuntu-latest, 22)"
+              },
+              {
+                "context": "test (macos-latest, 22)"
+              },
+              {
+                "context": "test (windows-latest, 22)"
+              },
+              {
+                "context": "test (ubuntu-latest, 24)"
+              },
+              {
+                "context": "test (macos-latest, 24)"
+              },
+              {
+                "context": "test (windows-latest, 24)"
+              },
+              {
+                "context": "Changeset Required"
+              },
+              {
+                "context": "require-issue-link"
+              },
+              {
+                "context": "pr-template-format"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "16752568": {
+      "id": 16752568,
+      "name": "release-branches",
+      "target": "branch",
+      "source_type": "Repository",
+      "source": "open-gsd/gsd-core",
+      "enforcement": "evaluate",
+      "conditions": {
+        "ref_name": {
+          "exclude": [],
+          "include": [
+            "refs/heads/release/**",
+            "refs/heads/hotfix/**"
+          ]
+        }
+      },
+      "rules": [
+        {
+          "type": "deletion"
+        },
+        {
+          "type": "non_fast_forward"
+        },
+        {
+          "type": "pull_request",
+          "parameters": {
+            "required_approving_review_count": 0,
+            "dismiss_stale_reviews_on_push": true,
+            "required_reviewers": [],
+            "require_code_owner_review": false,
+            "dismissal_restriction": {
+              "enabled": false,
+              "allowed_actors": []
+            },
+            "require_last_push_approval": false,
+            "required_review_thread_resolution": true,
+            "require_extra_approval_for_unattributed_changes": true,
+            "allowed_merge_methods": [
+              "squash",
+              "rebase"
+            ]
+          }
+        },
+        {
+          "type": "required_status_checks",
+          "parameters": {
+            "strict_required_status_checks_policy": true,
+            "do_not_enforce_on_create": false,
+            "required_status_checks": [
+              {
+                "context": "lint-tests"
+              },
+              {
+                "context": "test (ubuntu-latest, 22)"
+              },
+              {
+                "context": "test (macos-latest, 22)"
+              },
+              {
+                "context": "test (windows-latest, 22)"
+              },
+              {
+                "context": "test (ubuntu-latest, 24)"
+              },
+              {
+                "context": "test (macos-latest, 24)"
+              },
+              {
+                "context": "test (windows-latest, 24)"
+              },
+              {
+                "context": "Changeset Required"
+              },
+              {
+                "context": "require-issue-link"
+              },
+              {
+                "context": "pr-template-format"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

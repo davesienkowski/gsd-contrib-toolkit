@@ -37,8 +37,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const GSD_TOOLS = '/home/dave/repos/gsd-core/gsd-core/bin/gsd-tools.cjs';
-const ENGINE_LIB = '/home/dave/repos/gsd-core/gsd-core/bin/lib/capability-source.cjs';
+// The gsd-core checkout whose engine runs the proof: GSD_CORE_ROOT when set (non-empty), else
+// ~/repos/gsd-core.
+const CORE = process.env.GSD_CORE_ROOT || path.join(os.homedir(), 'repos', 'gsd-core');
+const GSD_TOOLS = path.join(CORE, 'gsd-core', 'bin', 'gsd-tools.cjs');
+const ENGINE_LIB = path.join(CORE, 'gsd-core', 'bin', 'lib', 'capability-source.cjs');
 const CAP_ID = 'contribution-toolkit';
 // Resolve the capabilities source dir relative to THIS script (repo root = bin/..) so the
 // recipe works in the worktree now and in main after merge.
@@ -53,12 +56,12 @@ function log(msg) { process.stdout.write(msg + '\n'); }
 function assertEngineReady() {
   if (!fs.existsSync(GSD_TOOLS)) {
     log(`SETUP-FAIL: gsd-tools binary not found at ${GSD_TOOLS}`);
-    log('  Rebuild: cd /home/dave/repos/gsd-core && npm run build:lib');
+    log(`  Rebuild: cd ${CORE} && npm run build:lib`);
     process.exit(2);
   }
   if (!fs.existsSync(ENGINE_LIB)) {
     log(`SETUP-FAIL: compiled engine lib not found at ${ENGINE_LIB}`);
-    log('  Rebuild: cd /home/dave/repos/gsd-core && npm run build:lib');
+    log(`  Rebuild: cd ${CORE} && npm run build:lib`);
     process.exit(2);
   }
   if (!fs.existsSync(path.join(CAP_SRC_DIR, 'capability.json'))) {

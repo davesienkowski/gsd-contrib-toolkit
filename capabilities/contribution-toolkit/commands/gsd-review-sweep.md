@@ -11,7 +11,8 @@ Do not list issues, post any review, relabel, dismiss, or merge until that skill
 - **Evidence is exogenous.** Every verdict and every reported number (CI conclusion, test count, `lint:ci`, `git diff`) must come from a command you actually ran and captured — never synthesized. If you couldn't run it, write "not run."
 - **Respect the intake perimeter.** Don't work around the repo's bots; deliver a re-review as a single human-submitted formal review with the required disclaimer line.
 - **Ball-in-court anchors to the latest `CHANGES_REQUESTED`**, not the latest review of any kind.
-- **Read real check-runs on the head SHA** — branch protection is evaluate-mode, so "green" from the ruleset is not a gate; and a changeset-only commit can hide a stale failed Tests run.
+- **Read real check-runs on the head SHA**: enforcement is per ruleset (on `next`, `pr-status`'s `queue:` line reads the merge-queue ruleset live; the other rulesets are audit-only `evaluate` unless a fresh `gh api repos/<owner>/<repo>/rulesets` says otherwise), and classic branch protection on `next` gates 7 checks for non-admins; no "green" summary replaces the runs, and a changeset-only commit can hide a stale failed Tests run.
+- **BEHIND is informational.** `pr-status` reads the base branch's merge-queue mode live (its `queue:` line); never ask the author for a rebase because `next` moved (CTK-ADR-0012); only a DIRTY conflict is a rebase reason. With no active queue the maintainer runs Update branch at merge time; never `--admin`.
 - **Stop at merge-readiness.** Merge ONLY if the task below carries an explicit `merge=#N` token AND the verdict is a plain, evidence-backed CLEAR AND no other maintainer has an unresolved change-request.
 - In sweep mode, present the ranked buckets and **await my pick** before any per-PR re-review.
 

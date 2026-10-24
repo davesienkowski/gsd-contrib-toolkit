@@ -1,0 +1,512 @@
+{
+  "provenance": {
+    "source": "synthetic from cr-captured.json",
+    "edits": "files and both compare replies captured from open-gsd/gsd-core#5119 (head 1830f5210) at 2026-10-23T03:20Z, trimmed to the fields pr-status reads; view.number 900042, view.headRefOid set to the 5119 head",
+    "checksExit": 0,
+    "expected": {
+      "owner": "reviewer",
+      "login": "trek-e",
+      "reRequested": false
+    }
+  },
+  "view": {
+    "number": 900042,
+    "state": "OPEN",
+    "isDraft": false,
+    "author": {
+      "login": "lipeeh"
+    },
+    "headRefOid": "1830f52109c5f3875b5709a8b0d9140cee7ee23f",
+    "baseRefName": "next",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "BEHIND",
+    "reviewDecision": "CHANGES_REQUESTED",
+    "reviewRequests": [
+      {
+        "__typename": "User",
+        "login": "Solvely-Colin"
+      },
+      {
+        "__typename": "User",
+        "login": "jeremymcs"
+      },
+      {
+        "__typename": "User",
+        "login": "davesienkowski"
+      }
+    ],
+    "commits": [
+      {
+        "oid": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690",
+        "committedDate": "2026-10-06T15:59:40Z",
+        "messageHeadline": "chore(#4916): add changeset fragment for the v2 plugin port"
+      }
+    ],
+    "updatedAt": "2026-10-07T01:15:25Z"
+  },
+  "reviews": [
+    [
+      {
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-07T01:15:23Z",
+        "commit_id": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690"
+      }
+    ]
+  ],
+  "checks": [
+    {
+      "name": "Socket Security: Pull Request Alerts",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": ""
+    },
+    {
+      "name": "Issue link required",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Require Issue Link"
+    },
+    {
+      "name": "Pull request template format",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "PR Template Format"
+    },
+    {
+      "name": "validate-target",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "PR Target Validator"
+    },
+    {
+      "name": "validate-title",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "PR Title Validator"
+    },
+    {
+      "name": "Socket Security: Project Report",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": ""
+    },
+    {
+      "name": "GitGuardian Security Checks",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": ""
+    }
+  ],
+  "files": [
+    {
+      "filename": "scripts/lint-state-write-path-drift.cjs",
+      "status": "modified"
+    },
+    {
+      "filename": "tests/state-write-path-drift-guard.test.cjs",
+      "status": "modified"
+    }
+  ],
+  "compare": {
+    "next...1830f52109c5f3875b5709a8b0d9140cee7ee23f": {
+      "status": "diverged",
+      "ahead_by": 25,
+      "behind_by": 13,
+      "total_commits": 25,
+      "merge_base_commit": {
+        "sha": "26387bc83d9ddc6cbea04946ff0fe5871e8830d0"
+      }
+    },
+    "26387bc83d9ddc6cbea04946ff0fe5871e8830d0...next": {
+      "status": "ahead",
+      "ahead_by": 13,
+      "total_commits": 13,
+      "files": [
+        {
+          "filename": ".changeset/5296-markdown-linting-registry-entry.md",
+          "status": "added"
+        },
+        {
+          "filename": ".changeset/5305-pr-workflow-registry-entry.md",
+          "status": "added"
+        },
+        {
+          "filename": ".changeset/calm-lane-probe.md",
+          "status": "added"
+        },
+        {
+          "filename": ".changeset/humble-yaks-leap.md",
+          "status": "added"
+        },
+        {
+          "filename": ".changeset/jolly-hawks-caper.md",
+          "status": "added"
+        },
+        {
+          "filename": ".changeset/lively-hawks-hum.md",
+          "status": "added"
+        },
+        {
+          "filename": ".changeset/lucky-otters-wander.md",
+          "status": "added"
+        },
+        {
+          "filename": ".changeset/silly-jaguars-forage.md",
+          "status": "added"
+        },
+        {
+          "filename": ".changeset/sturdy-jays-wave.md",
+          "status": "added"
+        },
+        {
+          "filename": ".changeset/sturdy-quails-sprint.md",
+          "status": "added"
+        },
+        {
+          "filename": ".changeset/sunny-birds-travel.md",
+          "status": "added"
+        },
+        {
+          "filename": ".claude-plugin/plugin.json",
+          "status": "modified"
+        },
+        {
+          "filename": ".github/workflows/diagnose-validate-commit-macos.yml",
+          "status": "removed"
+        },
+        {
+          "filename": "bin/install.js",
+          "status": "modified"
+        },
+        {
+          "filename": "docs/COMMANDS.md",
+          "status": "modified"
+        },
+        {
+          "filename": "docs/INVENTORY-MANIFEST.json",
+          "status": "modified"
+        },
+        {
+          "filename": "docs/README.md",
+          "status": "modified"
+        },
+        {
+          "filename": "docs/adr/0010-skill-surface-budget-module.md",
+          "status": "modified"
+        },
+        {
+          "filename": "docs/adr/766-claude-code-plugin-manifest-module.md",
+          "status": "modified"
+        },
+        {
+          "filename": "docs/explanation/how-gsd-runs-on-pi.md",
+          "status": "added"
+        },
+        {
+          "filename": "docs/how-to/install-minimal-and-add-skills.md",
+          "status": "modified"
+        },
+        {
+          "filename": "docs/ja-JP/ARCHITECTURE.md",
+          "status": "modified"
+        },
+        {
+          "filename": "docs/ja-JP/INVENTORY.md",
+          "status": "modified"
+        },
+        {
+          "filename": "docs/ja-JP/explanation/multi-agent-orchestration.md",
+          "status": "modified"
+        },
+        {
+          "filename": "docs/ko-KR/ARCHITECTURE.md",
+          "status": "modified"
+        },
+        {
+          "filename": "docs/ko-KR/INVENTORY.md",
+          "status": "modified"
+        },
+        {
+          "filename": "docs/ko-KR/explanation/multi-agent-orchestration.md",
+          "status": "modified"
+        },
+        {
+          "filename": "docs/pt-BR/ARCHITECTURE.md",
+          "status": "modified"
+        },
+        {
+          "filename": "docs/pt-BR/INVENTORY.md",
+          "status": "modified"
+        },
+        {
+          "filename": "docs/pt-BR/explanation/multi-agent-orchestration.md",
+          "status": "modified"
+        },
+        {
+          "filename": "docs/reference/pi-parity-matrix.md",
+          "status": "added"
+        },
+        {
+          "filename": "docs/registries/capabilities.json",
+          "status": "modified"
+        },
+        {
+          "filename": "docs/registries/capability-registry.md",
+          "status": "modified"
+        },
+        {
+          "filename": "docs/zh-CN/ARCHITECTURE.md",
+          "status": "modified"
+        },
+        {
+          "filename": "docs/zh-CN/INVENTORY.md",
+          "status": "modified"
+        },
+        {
+          "filename": "docs/zh-CN/explanation/multi-agent-orchestration.md",
+          "status": "modified"
+        },
+        {
+          "filename": "gsd-core/bin/gsd-tools.cjs",
+          "status": "modified"
+        },
+        {
+          "filename": "gsd-core/workflows/complete-milestone.md",
+          "status": "modified"
+        },
+        {
+          "filename": "gsd-core/workflows/complete-milestone/steps/project-md-evolution-review.md",
+          "status": "added"
+        },
+        {
+          "filename": "gsd-core/workflows/execute-phase.md",
+          "status": "modified"
+        },
+        {
+          "filename": "gsd-core/workflows/execute-phase/steps/per-plan-worktree-gate.md",
+          "status": "modified"
+        },
+        {
+          "filename": "gsd-core/workflows/review.md",
+          "status": "modified"
+        },
+        {
+          "filename": "gsd-core/workflows/section-manifest.json",
+          "status": "modified"
+        },
+        {
+          "filename": "package-lock.json",
+          "status": "modified"
+        },
+        {
+          "filename": "scripts/diagnose-validate-commit-in-tier.cjs",
+          "status": "removed"
+        },
+        {
+          "filename": "scripts/diagnose-validate-commit-phases.cjs",
+          "status": "removed"
+        },
+        {
+          "filename": "scripts/docs-guard-registry.cjs",
+          "status": "modified"
+        },
+        {
+          "filename": "scripts/lib/macos-conformance-tier.generated.cjs",
+          "status": "modified"
+        },
+        {
+          "filename": "scripts/lib/platform-conformance-tier.generated.cjs",
+          "status": "modified"
+        },
+        {
+          "filename": "scripts/xtrace-phase-timing.cjs",
+          "status": "removed"
+        },
+        {
+          "filename": "src/init.cts",
+          "status": "modified"
+        },
+        {
+          "filename": "src/install-profiles.cts",
+          "status": "modified"
+        },
+        {
+          "filename": "src/phase.cts",
+          "status": "modified"
+        },
+        {
+          "filename": "src/review-lane-descriptor.cts",
+          "status": "modified"
+        },
+        {
+          "filename": "src/review-lane-runner.cts",
+          "status": "modified"
+        },
+        {
+          "filename": "src/runtime-artifact-conversion.cts",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/ci-timeout-budget-history.jsonl",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/codex-config-agents.test.cjs",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/fixtures/compact-content-benchmark-baseline.json",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/fixtures/install-tree/antigravity.json",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/fixtures/install-tree/augment.json",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/fixtures/install-tree/claude-local.json",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/fixtures/install-tree/claude.json",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/fixtures/install-tree/cline.json",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/fixtures/install-tree/codebuddy.json",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/fixtures/install-tree/codex.json",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/fixtures/install-tree/copilot.json",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/fixtures/install-tree/cursor.json",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/fixtures/install-tree/hermes.json",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/fixtures/install-tree/kilo.json",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/fixtures/install-tree/kimi-code.json",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/fixtures/install-tree/kimi.json",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/fixtures/install-tree/opencode.json",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/fixtures/install-tree/pi.json",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/fixtures/install-tree/qwen.json",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/fixtures/install-tree/trae.json",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/fixtures/install-tree/windsurf.json",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/fixtures/install-tree/zcode.json",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/fixtures/plugin-manifest-schema.json",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/helpers/pi-parity.cjs",
+          "status": "added"
+        },
+        {
+          "filename": "tests/in-tier-commit-hook-timing.test.cjs",
+          "status": "removed"
+        },
+        {
+          "filename": "tests/install-minimal-hooks.test.cjs",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/isolation-aged-none-sentinel.test.cjs",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/localized-inventory-agent-counts.test.cjs",
+          "status": "added"
+        },
+        {
+          "filename": "tests/milestone.test.cjs",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/phase.test.cjs",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/pi-parity-matrix.test.cjs",
+          "status": "added"
+        },
+        {
+          "filename": "tests/plan-phase-stall-detection.test.cjs",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/plugin-manifest.test.cjs",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/review-lane-availability.test.cjs",
+          "status": "added"
+        },
+        {
+          "filename": "tests/review-lane-descriptor.test.cjs",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/review-lane-runner.test.cjs",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/section-manifest-init-facts.test.cjs",
+          "status": "modified"
+        },
+        {
+          "filename": "tests/xtrace-phase-timing.platform.test.cjs",
+          "status": "removed"
+        },
+        {
+          "filename": "tests/xtrace-phase-timing.test.cjs",
+          "status": "removed"
+        }
+      ]
+    }
+  }
+}

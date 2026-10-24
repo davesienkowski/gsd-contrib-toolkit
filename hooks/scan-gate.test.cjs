@@ -286,3 +286,28 @@ test('BUG-4629: runScansLive treats a scan exit 66 (empty scope) as a PASS, not 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// quick-261007-tz0 F10 (locked decision): scan-gate is a leak control, not an upstream-contribution
+// control, so it keeps arming on a push to a fork or the public backup remote and never looks the
+// push target up.
+test('F10 guard: scan-gate stays armed on a fork push (`git push backup fix/x`, failing secret scan) -> deny, zero lookups', () => {
+  const calls = { dirs: 0, lookups: 0 };
+  const d = runScanGate(
+    input('git push backup fix/x'),
+    deps({
+      runScans: stubRunner({ 'scripts/secret-scan.sh': 'leaked token' }),
+      segmentDirs: () => {
+        calls.dirs += 1;
+        return ['/tmp/wt'];
+      },
+      resolvePushUrls: () => {
+        calls.lookups += 1;
+        return ['https://github.com/davesienkowski/gsd-core-sandbox.git'];
+      },
+    })
+  );
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /secret-scan\.sh/);
+  assert.strictEqual(calls.dirs, 0);
+  assert.strictEqual(calls.lookups, 0);
+});

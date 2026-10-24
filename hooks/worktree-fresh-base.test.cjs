@@ -2410,7 +2410,7 @@ test('ENF-25 BL-02 e2e (fx2c): next mid-bisect in W, origin advanced -> deny; ne
 
 // ── MA-01: arm (fetch / move) only when origin parses as open-gsd/gsd-core ──
 
-for (const url of ['https://github.com/davesienkowski/gsd-core-experiments.git', 'git@github.com:someone/gsd-core.git', '/srv/other-origin.git', null]) {
+for (const url of ['https://github.com/davesienkowski/gsd-core-sandbox.git', 'git@github.com:someone/gsd-core.git', '/srv/other-origin.git', null]) {
   test('ENF-25 MA-01: origin ' + JSON.stringify(url) + ' is not open-gsd/gsd-core -> allow with ZERO fetch, symref, rev-parse and CAS', () => {
     const { deps, calls } = scenario({ originUrl: url });
     const d = runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps);
@@ -2431,6 +2431,42 @@ for (const url of ['https://github.com/open-gsd/gsd-core.git', 'git@github.com:o
     assert.strictEqual(calls.casUpdateRef, 1);
   });
 }
+
+// quick-261007-rni F9 R3 (item 4, REVIEW-R2 WR-01): `//` and a `%` in the userinfo reach upstream
+// (`git ls-remote` 2026-10-08), so such an origin arms. `F9 R3: ` fails before the parser fix.
+for (const url of ['https://github.com/open-gsd//gsd-core.git', 'https://u%2Dx@github.com/open-gsd/gsd-core.git']) {
+  test('F9 R3: ENF-25 MA-01: origin ' + url + ' arms the gate (fetch once, CAS once)', () => {
+    const { deps, calls } = scenario({ originUrl: url });
+    assert.strictEqual(runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps).permissionDecision, 'allow');
+    assert.strictEqual(calls.fetchOrigin, 1);
+    assert.strictEqual(calls.casUpdateRef, 1);
+  });
+}
+
+// quick-261007-rni F9 R4 (item 1, REVIEW-R3 WR-01; item 4, WR-02): a dot-segment or escaped origin
+// reaches upstream (`git ls-remote`, REVIEW-R3), and so does a pre-rename clone whose origin is a
+// GitHub rename alias; each arms ENF-25. `F9 R4: ` fails before the R4 fix.
+for (const url of [
+  'https://github.com/x/../open-gsd/gsd-core.git',
+  'https://github.com/./open-gsd/gsd-core.git',
+  'https://github.com/%6Fpen-gsd/gsd-core.git',
+  'https://github.com/open-gsd/gsd%2Dcore.git',
+  'https://github.com/GSD-redux/get-shit-done-redux.git',
+  'git@github.com:open-gsd/get-shit-done-redux.git',
+]) {
+  test('F9 R4: ENF-25 MA-01: origin ' + url + ' arms the gate (fetch once, CAS once)', () => {
+    const { deps, calls } = scenario({ originUrl: url });
+    assert.strictEqual(runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps).permissionDecision, 'allow');
+    assert.strictEqual(calls.fetchOrigin, 1);
+    assert.strictEqual(calls.casUpdateRef, 1);
+  });
+}
+
+test('F9 R4 guard: ENF-25 MA-01: a dot-segment FORK origin stays out of scope (zero fetch)', () => {
+  const { deps, calls } = scenario({ originUrl: 'https://github.com/x/../davesienkowski/gsd-core-sandbox.git' });
+  assert.strictEqual(runWorktreeFreshBaseGate(input('git worktree add -b f p next'), deps).permissionDecision, 'allow');
+  assert.strictEqual(calls.fetchOrigin, 0);
+});
 
 test('ENF-25 MA-01: the origin check runs once per root, and after the HEAD-branch read (HEAD on work: ZERO originUrl)', () => {
   const two = scenario();

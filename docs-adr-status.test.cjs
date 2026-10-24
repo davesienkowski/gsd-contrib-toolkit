@@ -700,3 +700,107 @@ test('w1i: CTK-ADR-0007 has exactly one Amended by line, and it names CTK-ADR-00
   assert.strictEqual(hits.length, 1, JSON.stringify(hits));
   assert.ok(hits[0].includes('CTK-ADR-0011'), hits[0]);
 });
+
+// Quick 261021-n2m: CTK-ADR-0012 (merge-queue convention change). Proposed when landed on toolkit main,
+// then Accepted on Dave's 2026-10-21 sign-off, recorded verbatim in the Status bullet.
+test('261021-n2m: CTK-ADR-0012 Status line says Accepted with the dated sign-off, quotes it, and is not Proposed', () => {
+  const line = statusLine(adrFile(12));
+  assert.match(line, /^- \*\*Status:\*\* Accepted \(2026-10-21, by Dave's explicit sign-off\)\./, line);
+  assert.doesNotMatch(line, /^- \*\*Status:\*\*\s*Proposed/, line);
+  // The Status bullet itself records the approval and its basis (the quote and the date).
+  const lines = fs.readFileSync(adrFile(12), 'utf8').split('\n');
+  const start = lines.findIndex((l) => l === line);
+  const para = [];
+  for (let i = start; i < lines.length && lines[i].trim() !== '' && (i === start || !/^- \*\*/.test(lines[i])); i++) para.push(lines[i]);
+  const text = para.join(' ').replace(/\s+/g, ' ');
+  assert.ok(text.includes('Dave has approved this record'), text);
+  assert.ok(text.includes('"i pre approve sign offs on everything. proceed using your judgement"'), text);
+  assert.doesNotMatch(text, PENDING_WORDING, text);
+  assert.doesNotMatch(text, /stays Proposed/, text);
+  // Pending wording must not return anywhere in the header list (to the first blank line).
+  const header = [];
+  for (let i = start; i < lines.length && lines[i].trim() !== ''; i++) header.push(lines[i]);
+  assert.doesNotMatch(header.join(' ').replace(/\s+/g, ' '), PENDING_WORDING, header.join(' '));
+  const whole = lines.join('\n');
+  assert.match(whole, /^- \*\*Trigger:\*\* trek-e's announcement/m, 'names the trigger');
+  assert.match(whole, /^- \*\*Revisit:\*\* at trek-e's four-week review/m, 'revisit tied to the four-week review');
+  assert.match(whole, /^## Revisit$/m, 'carries a Revisit section');
+});
+
+test('261021-n2m: docs/adr/README.md row for CTK-ADR-0012 says Accepted (not Proposed), milestone v2.8', () => {
+  const cells = readmeRow('CTK-ADR-0012').split('|').map((c) => c.trim());
+  assert.ok(cells.includes('Accepted'), `status cell is Accepted: ${JSON.stringify(cells)}`);
+  assert.ok(!cells.includes('Proposed'), 'status cell is not Proposed');
+  assert.ok(cells.includes('v2.8'), `milestone cell is v2.8: ${JSON.stringify(cells)}`);
+});
+
+test('261021-n2m gate fix: CTK-ADR-0012 records the enforced classic protection and forbids --admin', () => {
+  const text = fs.readFileSync(adrFile(12), 'utf8');
+  assert.match(text, /enforcement_level: non_admins/);
+  assert.match(text, /\*\*`--admin` is never used, in any mode\.\*\*/);
+  assert.doesNotMatch(text, /squash merge does not need/);
+  assert.doesNotMatch(text, /GitHub does not block a BEHIND merge/);
+});
+
+test('261021-n2m: CTK-ADR-0012 is plain ASCII (tab, newline and printable bytes only, so no em dash)', () => {
+  const bytes = fs.readFileSync(adrFile(12));
+  const bad = [...bytes].findIndex((b) => !(b === 0x09 || b === 0x0a || (b >= 0x20 && b <= 0x7e)));
+  assert.equal(bad, -1, `non-ASCII byte at offset ${bad}`);
+});
+
+// Round-2 gate follow-up (notes N2 and N4): CTK-ADR-0012 Consequences states both Update-branch unknowns
+// honestly and records why queue.strictUpToDate was removed rather than deprecated (Hyrum).
+test('round-2 N2/N4: CTK-ADR-0012 Consequences names stale BEHIND, the unverified dismissal and the strictUpToDate removal', () => {
+  const text = fs.readFileSync(adrFile(12), 'utf8');
+  const start = text.indexOf('## Consequences');
+  const end = text.indexOf('## Alternatives considered');
+  assert.ok(start >= 0 && end > start, 'Consequences section found');
+  const c = text.slice(start, end).replace(/\s+/g, ' ');
+  assert.match(c, /behind_by=0/, 'BEHIND can be stale');
+  assert.match(c, /PR branch already up-to-date/, 'Update branch is then a no-op');
+  assert.match(c, /Not verified: whether that Update-branch push dismisses/, 'dismissal stays unverified');
+  assert.match(c, /strictUpToDate/, 'names the removed field');
+  assert.match(c, /Hyrum/, 'records the Hyrum reasoning');
+  assert.match(c, /removed/, 'records the choice: removed');
+  assert.match(c, /via the paths searched/, 'the consumer search is scoped, not a claim of absence');
+});
+
+// Nits gate (2026-10-21): the header names the post-acceptance additions, and the Update-branch
+// consequence says step 13 checks both the parents and the content of the new head.
+test('nits gate: CTK-ADR-0012 header notes the post-acceptance additions; step 13 checks parents and content', () => {
+  const text = fs.readFileSync(adrFile(12), 'utf8');
+  const date = text.split('\n').find((l) => l.startsWith('- **Date:**'));
+  assert.ok(date, 'has a Date line');
+  const lines = text.split('\n');
+  const i = lines.indexOf(date);
+  const dateBullet = [date];
+  for (let k = i + 1; k < lines.length && /^  \S/.test(lines[k]); k++) dateBullet.push(lines[k]);
+  const d = dateBullet.join(' ').replace(/\s+/g, ' ');
+  assert.match(d, /additions after acceptance/, d);
+  assert.match(d, /no Decision changed/, d);
+  const start = text.indexOf('## Consequences');
+  const c = text.slice(start, text.indexOf('## Alternatives considered')).replace(/\s+/g, ' ');
+  assert.match(c, /both its parents and its content/, 'the consequence names the content check');
+  assert.match(c, /git merge-tree --write-tree/, 'names how the content is checked');
+});
+
+// Quick 261021-rud: Decision 6's own clause fired (fix.md gained the section in 76e1d4dc7). Recorded as a
+// dated after-acceptance consequence; the Decision text and the baseline table stay as accepted.
+test('261021-rud: CTK-ADR-0012 records the landed Self-test template, Reviewed or maintainer and the evaluate queue', () => {
+  const text = fs.readFileSync(adrFile(12), 'utf8');
+  const lines = text.split('\n');
+  const i = lines.findIndex((l) => l.startsWith('- **Date:**'));
+  const dateBullet = [lines[i]];
+  for (let k = i + 1; k < lines.length && /^  \S/.test(lines[k]); k++) dateBullet.push(lines[k]);
+  const d = dateBullet.join(' ').replace(/\s+/g, ' ');
+  assert.match(d, /three additions after acceptance/, d);
+  assert.match(d, /\(3\)/, d);
+  const c = text.slice(text.indexOf('## Consequences'), text.indexOf('## Alternatives considered')).replace(/\s+/g, ' ');
+  for (const s of ['76e1d4dc7', 'self-test-report-policy.cjs', 'Reviewed or maintainer', '4402ed4c2',
+    'next-queue', 'evaluate', 'switched to `active` at 2026-10-22T00:08:26Z', 'queue: next active', 'MAINTAINERS', 'no Decision changed']) {
+    assert.ok(c.includes(s), `Consequences names ${s}`);
+  }
+  // Decision 6 and the baseline row are left as accepted (the record's own Review rule).
+  assert.match(text, /because the upstream template has not\s+landed it/, 'Decision 6 text unchanged');
+  assert.match(text, /\| Self-test report in the fix template \| \*\*Not landed\.\*\*/, 'baseline row unchanged');
+});

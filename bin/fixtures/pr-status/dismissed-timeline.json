@@ -1,0 +1,135 @@
+{
+  "provenance": {
+    "source": "synthetic from cr-captured.json",
+    "edits": "review and review_dismissed event shapes captured from open-gsd/gsd-core#5119 at 2026-10-23T03:20Z; two reviews by trek-e: an older CHANGES_REQUESTED (id 900040001) and the newest DISMISSED (id 900040002, its timeline event carries the 5119 dismissal message); a second DISMISSED review (id 900040003, alice) has no timeline event; reviewRequests emptied",
+    "checksExit": 0,
+    "expected": {
+      "owner": "maintainer",
+      "login": "trek-e"
+    }
+  },
+  "view": {
+    "number": 900040,
+    "state": "OPEN",
+    "isDraft": false,
+    "author": {
+      "login": "lipeeh"
+    },
+    "headRefOid": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690",
+    "baseRefName": "next",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "BEHIND",
+    "reviewDecision": "CHANGES_REQUESTED",
+    "reviewRequests": [],
+    "commits": [
+      {
+        "oid": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690",
+        "committedDate": "2026-10-06T15:59:40Z",
+        "messageHeadline": "chore(#4916): add changeset fragment for the v2 plugin port"
+      }
+    ],
+    "updatedAt": "2026-10-07T01:15:25Z"
+  },
+  "reviews": [
+    [
+      {
+        "id": 900040001,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-22T01:07:53Z",
+        "commit_id": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690"
+      },
+      {
+        "id": 900040003,
+        "user": {
+          "login": "alice",
+          "type": "User"
+        },
+        "state": "DISMISSED",
+        "submitted_at": "2026-10-22T05:00:00Z",
+        "commit_id": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690"
+      },
+      {
+        "id": 900040002,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "DISMISSED",
+        "submitted_at": "2026-10-23T00:50:25Z",
+        "commit_id": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690"
+      }
+    ]
+  ],
+  "checks": [
+    {
+      "name": "Socket Security: Pull Request Alerts",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": ""
+    },
+    {
+      "name": "Issue link required",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Require Issue Link"
+    },
+    {
+      "name": "Pull request template format",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "PR Template Format"
+    },
+    {
+      "name": "validate-target",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "PR Target Validator"
+    },
+    {
+      "name": "validate-title",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "PR Title Validator"
+    },
+    {
+      "name": "Socket Security: Project Report",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": ""
+    },
+    {
+      "name": "GitGuardian Security Checks",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": ""
+    }
+  ],
+  "timeline": [
+    {
+      "event": "review_requested",
+      "actor": {
+        "login": "lipeeh"
+      },
+      "created_at": "2026-10-22T14:44:36Z",
+      "requested_reviewer": {
+        "login": "trek-e"
+      }
+    },
+    {
+      "event": "review_dismissed",
+      "actor": {
+        "login": "trek-e"
+      },
+      "created_at": "2026-10-23T00:55:59Z",
+      "dismissed_review": {
+        "state": "changes_requested",
+        "review_id": 900040002,
+        "dismissal_message": "Withdrawn: review produced outside the required /review-open-prs procedure; run is being restarted."
+      }
+    }
+  ]
+}

@@ -1,0 +1,112 @@
+{
+  "provenance": {
+    "source": "synthetic from cr-captured.json",
+    "edits": "review and review_dismissed event shapes captured from open-gsd/gsd-core#5119 at 2026-10-23T03:20Z; as dismissed-timeline.json but the timeline read exits 1",
+    "checksExit": 0,
+    "expected": {
+      "owner": "maintainer",
+      "login": "trek-e"
+    },
+    "timelineFail": "gh: Server Error (HTTP 502)"
+  },
+  "view": {
+    "number": 900041,
+    "state": "OPEN",
+    "isDraft": false,
+    "author": {
+      "login": "lipeeh"
+    },
+    "headRefOid": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690",
+    "baseRefName": "next",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "BEHIND",
+    "reviewDecision": "CHANGES_REQUESTED",
+    "reviewRequests": [],
+    "commits": [
+      {
+        "oid": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690",
+        "committedDate": "2026-10-06T15:59:40Z",
+        "messageHeadline": "chore(#4916): add changeset fragment for the v2 plugin port"
+      }
+    ],
+    "updatedAt": "2026-10-07T01:15:25Z"
+  },
+  "reviews": [
+    [
+      {
+        "id": 900040001,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-10-22T01:07:53Z",
+        "commit_id": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690"
+      },
+      {
+        "id": 900040003,
+        "user": {
+          "login": "alice",
+          "type": "User"
+        },
+        "state": "DISMISSED",
+        "submitted_at": "2026-10-22T05:00:00Z",
+        "commit_id": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690"
+      },
+      {
+        "id": 900040002,
+        "user": {
+          "login": "trek-e",
+          "type": "User"
+        },
+        "state": "DISMISSED",
+        "submitted_at": "2026-10-23T00:50:25Z",
+        "commit_id": "22fccc0e5c6dc2d0a6ca14416737aa53e9a25690"
+      }
+    ]
+  ],
+  "checks": [
+    {
+      "name": "Socket Security: Pull Request Alerts",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": ""
+    },
+    {
+      "name": "Issue link required",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Require Issue Link"
+    },
+    {
+      "name": "Pull request template format",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "PR Template Format"
+    },
+    {
+      "name": "validate-target",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "PR Target Validator"
+    },
+    {
+      "name": "validate-title",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "PR Title Validator"
+    },
+    {
+      "name": "Socket Security: Project Report",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": ""
+    },
+    {
+      "name": "GitGuardian Security Checks",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": ""
+    }
+  ]
+}
