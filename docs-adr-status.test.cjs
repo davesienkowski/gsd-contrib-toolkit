@@ -34,8 +34,8 @@
  *       hooks/lib/regular-file.cjs), and exactly one "W5 residual" bullet names the same-class
  *       opens W5 left unchanged.
  *   (k) Quick 261017-w1i: CTK-ADR-0011 (runtime freshness binds the managed gsd-core hooks) exists once,
- *       is Proposed (never Accepted here), amends CTK-ADR-0007 Decision 1 and Decision 5, is plain ASCII,
- *       has a Proposed row in docs/adr/README.md, and CTK-ADR-0007 carries exactly one Amended by line
+ *       is Accepted (2026-10-24 sign-off), amends CTK-ADR-0007 Decision 1 and Decision 5, is plain ASCII,
+ *       has an Accepted row in docs/adr/README.md, and CTK-ADR-0007 carries exactly one Amended by line
  *       naming it (its Accepted Status line, pinned by 36-06c, is unchanged).
  *
  * Dave accepted CTK-ADR-0008, CTK-ADR-0009 and CTK-ADR-0010 on 2026-10-06 by explicit sign-off (quick
@@ -670,10 +670,10 @@ function headerBullet(file, label) {
   return hits;
 }
 
-test('w1i: exactly one CTK-ADR-0011 file, and its Status line starts Proposed', () => {
+test('w1i: exactly one CTK-ADR-0011 file, and its Status line says Accepted with the dated sign-off, not Proposed', () => {
   const line = statusLine(adrFile(11));
-  assert.match(line, /^- \*\*Status:\*\* Proposed/, line);
-  assert.doesNotMatch(line, /Accepted/, line);
+  assert.match(line, /^- \*\*Status:\*\* Accepted \(2026-10-24, by Dave's explicit sign-off\)/, line);
+  assert.doesNotMatch(line, /^- \*\*Status:\*\*\s*Proposed/, line);
 });
 
 test('w1i: CTK-ADR-0011 has an Amends line naming CTK-ADR-0007, Decision 1 and Decision 5', () => {
@@ -689,10 +689,10 @@ test('w1i: every byte of CTK-ADR-0011 is plain ASCII', () => {
   assert.deepStrictEqual(bad.slice(0, 10), [], 'non-ASCII or control bytes at offsets ' + bad.slice(0, 10).join(','));
 });
 
-test('w1i: docs/adr/README.md row for CTK-ADR-0011 says Proposed and not Accepted', () => {
+test('w1i: docs/adr/README.md row for CTK-ADR-0011 says Accepted and not Proposed', () => {
   const cells = readmeRow('CTK-ADR-0011').split('|').map((c) => c.trim());
-  assert.ok(cells.includes('Proposed'), JSON.stringify(cells));
-  assert.ok(!cells.includes('Accepted'), JSON.stringify(cells));
+  assert.ok(cells.includes('Accepted'), JSON.stringify(cells));
+  assert.ok(!cells.includes('Proposed'), JSON.stringify(cells));
 });
 
 test('w1i: CTK-ADR-0007 has exactly one Amended by line, and it names CTK-ADR-0011', () => {

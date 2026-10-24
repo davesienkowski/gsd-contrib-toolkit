@@ -1,7 +1,8 @@
 # CTK-ADR-0011: Runtime freshness also binds the managed gsd-core hooks
 
-- **Status:** Proposed (2026-10-17). Implemented on branch
-  davesienkowski/fix-runtime-sync-builds-hooks; awaits Dave's sign-off.
+- **Status:** Accepted (2026-10-24, by Dave's explicit sign-off). Before that sign-off it was Proposed
+  (2026-10-17), documenting a decision implemented on branch
+  davesienkowski/runtime-sync-hooks-merge-main.
 - **Review:** Published for maintainer review and open to revision. A changed decision will be recorded
   by a superseding or amending CTK-ADR, never by a silent edit to an accepted record.
 - **Date:** 2026-10-17 (milestone v2.8).
@@ -73,14 +74,17 @@ mods' own files (for example `artifact-gate.cjs`, `herdr-agent-state.sh`, `gsd-p
 3. **After install.js, every managed hook must have been written by this install.** The install start
    is captured immediately before install.js runs. `verifyHooksWritten` then requires every listed
    relpath to exist under `~/.claude/hooks` as a regular file whose write time, the later of its mtime
-   and its ctime, is no older than the install start minus `HOOK_MTIME_SLACK_MS` (2000 ms); a missing
-   or older file ends the sync with `post-install-hooks-mismatch` and no stamp. A timestamp that is not
+   and its ctime, is no older than the install start minus `HOOK_MTIME_SLACK_MS` (2000 ms) and no later than the
+   clock read once after install.js returns plus the same `HOOK_MTIME_SLACK_MS` (a future-dated file
+   cannot have been written by this install, so it counts as stale); a missing, older or later file
+   ends the sync with `post-install-hooks-mismatch` and no stamp. A timestamp that is not
    a finite number is ignored, and a file with neither is stale. ctime is included because install.js
    writes only the top-level `.js`, `.cjs` and `.sh` hooks and a subdirectory's `.sh` files with
    `writeFileSync`, and copies everything else, including the `lib/*.js` helpers, with
    `copyFileSync`; a copy API may carry the source's mtime over, but it cannot carry ctime, which the
    kernel sets on the write. What this
-   proves: each managed file was written (or had its metadata changed) during the install window. What
+   proves: each managed file was written (or had its metadata changed) during the install window,
+   bounded below by the install start minus the slack and above by the post-install clock plus the slack. What
    it does not prove: that its bytes are right. Bytes cannot be compared, because install.js rewrites
    hook content; names alone cannot catch the measured defect, because the stale hooks carry the right
    names.
@@ -141,7 +145,8 @@ mods' own files (for example `artifact-gate.cjs`, `herdr-agent-state.sh`, `gsd-p
 
 - **Positive:** a `sync` that cannot build or confirm the gsd-core hooks no longer writes a stamp,
   and a stamp now binds the managed hook set, so stale, edited, removed or replaced managed hooks read
-  `unverified` in both `check` and the gate.
+  `unverified` in both `check` and the gate (online; with the upstream tip unobtainable and not
+  cached, the gate asks instead of denying a hooks mismatch, per CTK-ADR-0007).
 - **Positive:** the user's own files in `~/.claude/hooks` never affect the verdict.
 - **Negative / accepted:** every pre-existing stamp denies once (`unverified`, predates hook
   coverage) until one `sync`. This is the designed first-use cost.
@@ -162,7 +167,7 @@ mods' own files (for example `artifact-gate.cjs`, `herdr-agent-state.sh`, `gsd-p
 - **Residual:** a copy API that preserves the source's mtime (plausibly `copyFileSync` on some
   platforms; not measured here) no longer makes the sync abort, because the check also reads ctime.
   What still makes it abort, never stamp falsely: a filesystem whose clock or timestamps lag the
-  install start by more than the 2 s slack (for example a network or drvfs mount, or coarse timestamp
+  install start, or run ahead of the process clock, by more than the 2 s slack (for example a network or drvfs mount, or coarse timestamp
   granularity at the boundary), or one that reports no usable mtime or ctime. The ctime behavior was
   verified on Linux (WSL2 ext4), where `utimes` backdates mtime and leaves ctime at the current time;
   other platforms were not measured.

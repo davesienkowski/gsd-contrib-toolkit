@@ -253,7 +253,7 @@ function gate(stdinString, deps) {
       'fixes that may already be upstream. One command resolves it, with no further decisions:\n\n  ' +
       REMEDIATION_COMMAND + '\n\n' +
       '(That command resolves the tip, verifies the installed payload against it, reinstalls from ' +
-      '`origin/' + runtimeStamp.UPSTREAM_REF + '` only if it actually differs, and stamps the ' +
+      '`origin/' + runtimeStamp.UPSTREAM_REF + '`, builds and reinstalls the managed hooks, and stamps the ' +
       'result. It never installs the PUBLISHED npm package, which can be far behind `' +
       runtimeStamp.UPSTREAM_REF + '`.)' +
       // quick-261007-rni F9 (PD-4), R2 item 8 (WR-02), R3 IN-01: a rule-c arm says the gate could not

@@ -51,6 +51,7 @@
  *     stamp when the build fails or leaves `hooks/dist` with no regular file;
  *   - after install.js, every managed hook must exist as a regular file under `~/.claude/hooks`
  *     whose later of mtime and ctime is no older than the install start minus HOOK_MTIME_SLACK_MS
+ *     and no later than the post-install clock plus HOOK_MTIME_SLACK_MS (a future-dated file is stale)
  *     (ctime because a copy API may carry the source's mtime over, never its ctime). That proves each
  *     managed file was WRITTEN by this install, NOT that its bytes are right (install.js rewrites
  *     hook content, so bytes cannot be compared), and a concurrent writer inside the install window
@@ -557,10 +558,10 @@ function sync(deps = {}) {
         log(hooksRoot + ' - refusing to stamp an install that cannot be confirmed.');
         log('');
         log('This check proves each managed hook was WRITTEN by this install (a regular file whose');
-        log('later of mtime and ctime is no older than the install start minus ' + HOOK_MTIME_SLACK_MS + ' ms); it does');
+        log('later of mtime and ctime is between the install start minus ' + HOOK_MTIME_SLACK_MS + ' ms and now plus ' + HOOK_MTIME_SLACK_MS + ' ms); it does');
         log('not prove the bytes. A miss here means the hooks were not installed where this tool measures');
         log('them (for example a CLAUDE_CONFIG_DIR pointing elsewhere), a partial install, or a filesystem');
-        log('whose clock or timestamps lag the install start by more than the slack.');
+        log('whose clock or timestamps lag the install start, or run ahead of the clock, by more than the slack.');
         if (hv.missing.length) log('  missing (' + hv.missing.length + '): ' + hv.missing.slice(0, 5).join(', '));
         if (hv.stale.length) log('  not rewritten (' + hv.stale.length + '): ' + hv.stale.slice(0, 5).join(', '));
         log('');
