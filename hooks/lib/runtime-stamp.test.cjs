@@ -186,6 +186,9 @@ test('runtimeDigest: a runtime root that is a FILE, not a directory, throws Fail
 
 // ───────────────────────────── readStamp / writeStamp ─────────────────────────────
 
+/** The managed-hook digest a hook-carrying stamp records (quick 261017-w1i, CTK-ADR-0011). */
+const HDIGEST = 'sha256:' + 'e'.repeat(64);
+
 const VALID_STAMP = Object.freeze({
   schema: 1,
   sha: SHA_A,
@@ -194,6 +197,8 @@ const VALID_STAMP = Object.freeze({
   engine_verified: false,
   installed_at: '2026-07-30T00:00:00.000Z',
   source: 'https://github.com/open-gsd/gsd-core.git#next',
+  hooks_files: Object.freeze(['gsd-a.js', 'lib/b.sh']),
+  hooks_digest: HDIGEST,
 });
 
 function stampReader(body) {
@@ -532,6 +537,7 @@ test('evaluateDrift: stamp present + digest matches + sha matches → fresh', ()
   const r = rs.evaluateDrift({
     stamp: { ...VALID_STAMP, sha: SHA_A, runtime_digest: DIGEST },
     runtimeDigest: DIGEST,
+    hooksDigest: HDIGEST,
     upstream: FRESH_UPSTREAM,
   });
   assert.strictEqual(r.verdict, 'fresh');
@@ -540,7 +546,7 @@ test('evaluateDrift: stamp present + digest matches + sha matches → fresh', ()
 });
 
 test('evaluateDrift: a null stamp → unstamped', () => {
-  const r = rs.evaluateDrift({ stamp: null, runtimeDigest: DIGEST, upstream: FRESH_UPSTREAM });
+  const r = rs.evaluateDrift({ stamp: null, runtimeDigest: DIGEST, hooksDigest: HDIGEST, upstream: FRESH_UPSTREAM });
   assert.strictEqual(r.verdict, 'unstamped');
   assert.match(r.reason, /stamp/i);
 });
@@ -549,6 +555,7 @@ test('evaluateDrift: a digest mismatch → unverified (a foreign reinstall repla
   const r = rs.evaluateDrift({
     stamp: { ...VALID_STAMP, sha: SHA_A, runtime_digest: DIGEST },
     runtimeDigest: 'sha256:' + '0'.repeat(64),
+    hooksDigest: HDIGEST,
     upstream: FRESH_UPSTREAM,
   });
   assert.strictEqual(r.verdict, 'unverified');
@@ -560,6 +567,7 @@ test('evaluateDrift: unverified takes precedence over a sha match AND over a sha
     const r = rs.evaluateDrift({
       stamp: { ...VALID_STAMP, sha: SHA_A, runtime_digest: DIGEST },
       runtimeDigest: mismatched,
+      hooksDigest: HDIGEST,
       upstream: { sha: upstreamSha, source: 'live', ageMs: 0 },
     });
     assert.strictEqual(r.verdict, 'unverified');
@@ -570,6 +578,7 @@ test('evaluateDrift: digest matches but the SHAs differ → drifted, carrying bo
   const r = rs.evaluateDrift({
     stamp: { ...VALID_STAMP, sha: SHA_A, runtime_digest: DIGEST },
     runtimeDigest: DIGEST,
+    hooksDigest: HDIGEST,
     upstream: { sha: SHA_B, source: 'live', ageMs: 0 },
   });
   assert.strictEqual(r.verdict, 'drifted');
@@ -583,6 +592,7 @@ test('evaluateDrift: a stale-cache upstream DISCLOSES the cache age in the reaso
     const r = rs.evaluateDrift({
       stamp: { ...VALID_STAMP, sha: SHA_A, runtime_digest: DIGEST },
       runtimeDigest: DIGEST,
+      hooksDigest: HDIGEST,
       upstream: { sha: upstreamSha, source: 'stale-cache', ageMs },
     });
     assert.match(r.reason, /cached/i, 'a stale-cache adjudication must say so');
@@ -592,10 +602,10 @@ test('evaluateDrift: a stale-cache upstream DISCLOSES the cache age in the reaso
 
 test('evaluateDrift returns EXACTLY one of the four verdicts, and only `fresh` is allow-shaped', () => {
   const verdicts = new Set([
-    rs.evaluateDrift({ stamp: null, runtimeDigest: DIGEST, upstream: FRESH_UPSTREAM }).verdict,
-    rs.evaluateDrift({ stamp: { ...VALID_STAMP, runtime_digest: 'sha256:' + '1'.repeat(64) }, runtimeDigest: DIGEST, upstream: FRESH_UPSTREAM }).verdict,
-    rs.evaluateDrift({ stamp: { ...VALID_STAMP, sha: SHA_B, runtime_digest: DIGEST }, runtimeDigest: DIGEST, upstream: FRESH_UPSTREAM }).verdict,
-    rs.evaluateDrift({ stamp: { ...VALID_STAMP, sha: SHA_A, runtime_digest: DIGEST }, runtimeDigest: DIGEST, upstream: FRESH_UPSTREAM }).verdict,
+    rs.evaluateDrift({ stamp: null, runtimeDigest: DIGEST, hooksDigest: HDIGEST, upstream: FRESH_UPSTREAM }).verdict,
+    rs.evaluateDrift({ stamp: { ...VALID_STAMP, runtime_digest: 'sha256:' + '1'.repeat(64) }, runtimeDigest: DIGEST, hooksDigest: HDIGEST, upstream: FRESH_UPSTREAM }).verdict,
+    rs.evaluateDrift({ stamp: { ...VALID_STAMP, sha: SHA_B, runtime_digest: DIGEST }, runtimeDigest: DIGEST, hooksDigest: HDIGEST, upstream: FRESH_UPSTREAM }).verdict,
+    rs.evaluateDrift({ stamp: { ...VALID_STAMP, sha: SHA_A, runtime_digest: DIGEST }, runtimeDigest: DIGEST, hooksDigest: HDIGEST, upstream: FRESH_UPSTREAM }).verdict,
   ]);
   assert.deepStrictEqual([...verdicts].sort(), ['drifted', 'fresh', 'unstamped', 'unverified']);
   assert.deepStrictEqual([...rs.DENY_VERDICTS].sort(), ['drifted', 'unstamped', 'unverified']);
@@ -603,9 +613,347 @@ test('evaluateDrift returns EXACTLY one of the four verdicts, and only `fresh` i
 
 test('evaluateDrift is PURE — plain objects in, plain object out, no injected deps at all', () => {
   const before = JSON.stringify(VALID_STAMP);
-  const r = rs.evaluateDrift({ stamp: VALID_STAMP, runtimeDigest: VALID_STAMP.runtime_digest, upstream: FRESH_UPSTREAM });
+  const r = rs.evaluateDrift({ stamp: VALID_STAMP, runtimeDigest: VALID_STAMP.runtime_digest, hooksDigest: HDIGEST, upstream: FRESH_UPSTREAM });
   assert.strictEqual(JSON.stringify(VALID_STAMP), before, 'evaluateDrift must not mutate its input');
   assert.strictEqual(typeof r, 'object');
   // No decision object — the GATE maps verdicts to decisions, so the CLI can reuse this.
   assert.strictEqual(r.permissionDecision, undefined);
+});
+
+// ───────────── quick 261017-w1i (CTK-ADR-0011): the managed gsd-core hooks ─────────────
+//
+// `sync` used to reinstall gsd-core without building its hooks, so install.js kept the OLD
+// ~/.claude/hooks/* and the stamp (whose digest covered only ~/.claude/gsd-core) still read fresh.
+// The stamp now binds the managed hook set: `hooks_files` (the built hooks/dist inventory) and
+// `hooks_digest`. Every new export is touched INSIDE a test body, so a missing export fails its own
+// test and never crashes this file.
+
+/**
+ * The D4 framing, computed by hand with node:crypto: a present file is `<rel> 0x00 <bytes> 0x00`,
+ * a missing one is `<rel> 0x01 MISSING 0x00`, over the plain-sorted list.
+ *
+ * @param {Array<[string, (string|null)]>} entries rel and its content, or null for missing
+ */
+function handHooksDigest(entries) {
+  const crypto = require('node:crypto');
+  const h = crypto.createHash('sha256');
+  for (const [rel, body] of entries.slice().sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))) {
+    h.update(Buffer.from(rel, 'utf8'));
+    if (body === null) {
+      h.update(Buffer.from([0x01]));
+      h.update(Buffer.from('MISSING', 'latin1'));
+      h.update(Buffer.from([0x00]));
+    } else {
+      h.update(Buffer.from([0x00]));
+      h.update(Buffer.from(body, 'utf8'));
+      h.update(Buffer.from([0x00]));
+    }
+  }
+  return 'sha256:' + h.digest('hex');
+}
+
+/** An fs seam whose every call throws, proving a code path never touches the filesystem. */
+function throwIfCalled(name) {
+  return () => { throw new Error('w1i: ' + name + ' must not be called'); };
+}
+const NO_FS = Object.freeze({
+  readdirSync: throwIfCalled('readdirSync'),
+  statSync: throwIfCalled('statSync'),
+  lstatSync: throwIfCalled('lstatSync'),
+  readFileSync: throwIfCalled('readFileSync'),
+});
+
+const HOOKS_TREE = Object.freeze({ 'gsd-a.js': 'console.log(1);\n', 'lib/b.sh': '#!/bin/sh\necho b\n' });
+
+test('w1i: HOOKS_ROOT is the hooks dir beside the runtime root (path.dirname(RUNTIME_ROOT)/hooks)', () => {
+  assert.strictEqual(rs.HOOKS_ROOT, path.join(path.dirname(rs.RUNTIME_ROOT), 'hooks'));
+});
+
+test('w1i: HOOK_MISSING_FRAME is the string 0x01 MISSING 0x00', () => {
+  assert.strictEqual(rs.HOOK_MISSING_FRAME, '\u0001MISSING\u0000');
+});
+
+test('w1i: isManagedHookRel accepts one- or two-segment POSIX relpaths, dot-names included', () => {
+  for (const rel of ['gsd-a.js', 'lib/b.sh', '.dot.js', 'lib/.x.sh', 'gsd-statusline.js']) {
+    assert.strictEqual(rs.isManagedHookRel(rel), true, JSON.stringify(rel) + ' should be accepted');
+  }
+});
+
+test('w1i: isManagedHookRel rejects empty, absolute, backslash, . and .. segments, deep, empty segments and control chars', () => {
+  for (const rel of [
+    '', '/abs', '/etc/passwd', 'lib\\b.sh', '..\\x', '../x', 'lib/../x', './x', 'lib/./x', '.', '..',
+    'a/b/c', 'a//b', 'lib/', '/lib', 'a\u0007b', 'a\nb', 'lib/\u0000x', 'a\u007fb', 42, null, undefined, ['a'],
+  ]) {
+    assert.strictEqual(rs.isManagedHookRel(rel), false, JSON.stringify(rel) + ' should be rejected');
+  }
+});
+
+test('w1i: hooksInventory lists depth-0 files and depth-1 files of a subdir, skips depth-2, keeps dot-names', () => {
+  const fsx = makeFs('/h', {
+    'gsd-a.js': 'a', 'lib/b.sh': 'b', 'lib/deep/c.js': 'c', 'lib/deeper/x/y.js': 'y', '.dot.js': 'd',
+  });
+  assert.deepStrictEqual(rs.hooksInventory('/h', fsx), ['.dot.js', 'gsd-a.js', 'lib/b.sh']);
+});
+
+test('w1i: hooksInventory returns relpaths sorted by plain Array#sort whatever the readdir order', () => {
+  const fsx = makeFs('/h', { 'b.js': '1', 'B.js': '2', 'a.js': '3', 'lib/z.sh': '4', 'lib/Y.sh': '5' });
+  const reversed = Object.assign({}, fsx, { readdirSync: (d) => fsx.readdirSync(d).slice().reverse() });
+  const want = ['B.js', 'a.js', 'b.js', 'lib/Y.sh', 'lib/z.sh'];
+  assert.deepStrictEqual(rs.hooksInventory('/h', fsx), want);
+  assert.deepStrictEqual(rs.hooksInventory('/h', reversed), want);
+});
+
+test('w1i: hooksInventory returns [] for an absent root, a root that is a file, and an absent real path', () => {
+  const fsx = makeFs('/h', { 'gsd-a.js': 'a' });
+  assert.deepStrictEqual(rs.hooksInventory('/nope', fsx), []);
+  const fileRoot = Object.assign({}, fsx, {
+    readdirSync: () => { const e = new Error('ENOTDIR'); e.code = 'ENOTDIR'; throw e; },
+  });
+  assert.deepStrictEqual(rs.hooksInventory('/h/gsd-a.js', fileRoot), []);
+  assert.deepStrictEqual(rs.hooksInventory(path.join(require('node:os').tmpdir(), 'w1i-absent-' + process.pid + '-' + Date.now())), []);
+});
+
+test('w1i: hooksDigest equals the D4 framing computed by hand', () => {
+  const fsx = makeFs('/h', HOOKS_TREE);
+  const got = rs.hooksDigest('/h', ['gsd-a.js', 'lib/b.sh'], fsx);
+  assert.match(got, /^sha256:[0-9a-f]{64}$/);
+  assert.strictEqual(got, handHooksDigest([['gsd-a.js', HOOKS_TREE['gsd-a.js']], ['lib/b.sh', HOOKS_TREE['lib/b.sh']]]));
+});
+
+test('w1i: hooksDigest over a REAL temp dir (the default bounded reader) equals the hand framing', (t) => {
+  const nodeFs = require('node:fs');
+  const os = require('node:os');
+  const root = nodeFs.mkdtempSync(path.join(os.tmpdir(), 'w1i-hooks-'));
+  t.after(() => nodeFs.rmSync(root, { recursive: true, force: true }));
+  nodeFs.mkdirSync(path.join(root, 'lib'));
+  nodeFs.writeFileSync(path.join(root, 'gsd-a.js'), HOOKS_TREE['gsd-a.js']);
+  nodeFs.writeFileSync(path.join(root, 'lib', 'b.sh'), HOOKS_TREE['lib/b.sh']);
+  nodeFs.mkdirSync(path.join(root, 'dir.js'));
+  const got = rs.hooksDigest(root, ['dir.js', 'gone.js', 'gsd-a.js', 'lib/b.sh']);
+  assert.strictEqual(got, handHooksDigest([
+    ['dir.js', null], ['gone.js', null], ['gsd-a.js', HOOKS_TREE['gsd-a.js']], ['lib/b.sh', HOOKS_TREE['lib/b.sh']],
+  ]));
+});
+
+test('w1i: hooksDigest is list-order independent (it sorts a copy and leaves the caller list alone)', () => {
+  const fsx = makeFs('/h', HOOKS_TREE);
+  const list = ['lib/b.sh', 'gsd-a.js'];
+  const a = rs.hooksDigest('/h', ['gsd-a.js', 'lib/b.sh'], fsx);
+  const b = rs.hooksDigest('/h', list, fsx);
+  assert.strictEqual(a, b);
+  assert.deepStrictEqual(list, ['lib/b.sh', 'gsd-a.js'], 'the caller list is not sorted in place');
+});
+
+test('w1i: hooksDigest changes on one byte and on a rename', () => {
+  const base = rs.hooksDigest('/h', ['gsd-a.js', 'lib/b.sh'], makeFs('/h', HOOKS_TREE));
+  const oneByte = rs.hooksDigest('/h', ['gsd-a.js', 'lib/b.sh'],
+    makeFs('/h', Object.assign({}, HOOKS_TREE, { 'gsd-a.js': 'console.log(2);\n' })));
+  assert.notStrictEqual(base, oneByte);
+  const renamedTree = { 'gsd-z.js': HOOKS_TREE['gsd-a.js'], 'lib/b.sh': HOOKS_TREE['lib/b.sh'] };
+  const renamed = rs.hooksDigest('/h', ['gsd-z.js', 'lib/b.sh'], makeFs('/h', renamedTree));
+  assert.notStrictEqual(base, renamed);
+});
+
+test('w1i: hooksDigest ignores an unlisted file under the root (a user hook never moves the digest)', () => {
+  const a = rs.hooksDigest('/h', ['gsd-a.js', 'lib/b.sh'], makeFs('/h', HOOKS_TREE));
+  const b = rs.hooksDigest('/h', ['gsd-a.js', 'lib/b.sh'],
+    makeFs('/h', Object.assign({}, HOOKS_TREE, { 'artifact-gate.cjs': 'user', 'lib/user.sh': 'user' })));
+  assert.strictEqual(a, b);
+});
+
+test('w1i: hooksDigest frames a directory at a listed path as missing, without reading it', () => {
+  const fsx = makeFs('/h', { 'gsd-a.js/inner.txt': 'x', 'lib/b.sh': HOOKS_TREE['lib/b.sh'] });
+  const reads = [];
+  const spy = Object.assign({}, fsx, { readFileSync: (p) => { reads.push(p); return fsx.readFileSync(p); } });
+  const got = rs.hooksDigest('/h', ['gsd-a.js', 'lib/b.sh'], spy);
+  assert.strictEqual(got, handHooksDigest([['gsd-a.js', null], ['lib/b.sh', HOOKS_TREE['lib/b.sh']]]));
+  assert.deepStrictEqual(reads, [path.join('/h', 'lib', 'b.sh')], 'only the regular file is read');
+});
+
+test('w1i: hooksDigest tells a missing file, an empty file and a file whose text is MISSING apart', () => {
+  const missing = rs.hooksDigest('/h', ['gsd-a.js'], makeFs('/h', {}));
+  const empty = rs.hooksDigest('/h', ['gsd-a.js'], makeFs('/h', { 'gsd-a.js': '' }));
+  const text = rs.hooksDigest('/h', ['gsd-a.js'], makeFs('/h', { 'gsd-a.js': 'MISSING' }));
+  const textFramed = rs.hooksDigest('/h', ['gsd-a.js'], makeFs('/h', { 'gsd-a.js': '\u0001MISSING' }));
+  assert.strictEqual(new Set([missing, empty, text, textFramed]).size, 4);
+  assert.strictEqual(missing, handHooksDigest([['gsd-a.js', null]]));
+});
+
+test('w1i: hooksDigest over an absent root frames every file as missing and differs from the all-present digest', () => {
+  let got;
+  assert.doesNotThrow(() => { got = rs.hooksDigest('/nope', ['gsd-a.js', 'lib/b.sh'], makeFs('/h', HOOKS_TREE)); });
+  assert.strictEqual(got, handHooksDigest([['gsd-a.js', null], ['lib/b.sh', null]]));
+  assert.notStrictEqual(got, rs.hooksDigest('/h', ['gsd-a.js', 'lib/b.sh'], makeFs('/h', HOOKS_TREE)));
+});
+
+test('w1i: hooksDigest throws FailClosed on a non-array list or an invalid relpath', () => {
+  const fsx = makeFs('/h', HOOKS_TREE);
+  for (const files of [undefined, null, 'gsd-a.js', 42, {}, ['../etc/passwd'], ['/etc/passwd'], ['lib\\b.sh'], ['a/b/c'], [''], [7]]) {
+    assert.throws(() => rs.hooksDigest('/h', files, fsx), (e) => e instanceof FailClosed,
+      'files ' + JSON.stringify(files) + ' should throw FailClosed');
+  }
+});
+
+test('w1i: hooksDigest throws FailClosed naming the relpath when a regular file cannot be read', () => {
+  const fsx = makeFs('/h', HOOKS_TREE);
+  const boom = Object.assign({}, fsx, {
+    readFileSync: (p) => {
+      if (p.endsWith('b.sh')) { const e = new Error('EACCES: permission denied'); e.code = 'EACCES'; throw e; }
+      return fsx.readFileSync(p);
+    },
+  });
+  assert.throws(() => rs.hooksDigest('/h', ['gsd-a.js', 'lib/b.sh'], boom),
+    (e) => e instanceof FailClosed && e.message.includes('lib/b.sh'));
+});
+
+test('w1i: hooksDigest over an unchanged tree returns the same value twice', () => {
+  const fsx = makeFs('/h', HOOKS_TREE);
+  assert.strictEqual(rs.hooksDigest('/h', ['gsd-a.js', 'lib/b.sh'], fsx), rs.hooksDigest('/h', ['gsd-a.js', 'lib/b.sh'], fsx));
+});
+
+test('w1i: hooksDigestForStamp is null for null/undefined and a hook-less stamp, with no filesystem access', () => {
+  assert.strictEqual(typeof rs.hooksDigestForStamp, 'function');
+  const legacy = Object.assign({}, VALID_STAMP);
+  delete legacy.hooks_files;
+  delete legacy.hooks_digest;
+  assert.strictEqual(rs.hooksDigestForStamp(null, '/h', NO_FS), null);
+  assert.strictEqual(rs.hooksDigestForStamp(undefined, '/h', NO_FS), null);
+  assert.strictEqual(rs.hooksDigestForStamp(legacy, '/h', NO_FS), null);
+});
+
+test('w1i: hooksDigestForStamp equals hooksDigest(root, stamp.hooks_files) for a hook-carrying stamp', () => {
+  const fsx = makeFs('/h', HOOKS_TREE);
+  assert.strictEqual(
+    rs.hooksDigestForStamp(VALID_STAMP, '/h', fsx),
+    rs.hooksDigest('/h', VALID_STAMP.hooks_files, fsx)
+  );
+  assert.match(rs.hooksDigestForStamp(VALID_STAMP, '/h', fsx), /^sha256:[0-9a-f]{64}$/);
+});
+
+test('w1i: readStamp throws FailClosed on every malformed or half-present hook field', () => {
+  const cases = [
+    ['hooks_files only', { hooks_digest: undefined }],
+    ['hooks_digest only', { hooks_files: undefined }],
+    ['non-array hooks_files', { hooks_files: 'gsd-a.js' }],
+    ['object hooks_files', { hooks_files: { 0: 'gsd-a.js' } }],
+    ['empty hooks_files', { hooks_files: [] }],
+    ['empty-string entry', { hooks_files: ['', 'gsd-a.js'] }],
+    ['non-string entry', { hooks_files: [7] }],
+    ['absolute entry', { hooks_files: ['/etc/passwd'] }],
+    ['.. entry', { hooks_files: ['../x'] }],
+    ['inner .. entry', { hooks_files: ['lib/../x'] }],
+    ['backslash entry', { hooks_files: ['lib\\b.sh'] }],
+    ['control-char entry', { hooks_files: ['gsd-\u0001a.js'] }],
+    ['three-segment entry', { hooks_files: ['a/b/c.js'] }],
+    ['unsorted', { hooks_files: ['lib/b.sh', 'gsd-a.js'] }],
+    ['duplicated', { hooks_files: ['gsd-a.js', 'gsd-a.js'] }],
+    ['malformed hooks_digest', { hooks_digest: 'sha256:zz' }],
+    ['bare-hex hooks_digest', { hooks_digest: 'e'.repeat(64) }],
+    ['numeric hooks_digest', { hooks_digest: 42 }],
+    ['null hooks_digest', { hooks_digest: null }],
+  ];
+  for (const [label, patch] of cases) {
+    const bad = JSON.stringify(Object.assign({}, VALID_STAMP, patch));
+    assert.throws(
+      () => rs.readStamp({ readFileSync: stampReader(bad), stampPath: '/s/x.json' }),
+      (e) => e instanceof FailClosed,
+      label + ' should be rejected'
+    );
+  }
+});
+
+test('w1i guard: a legacy stamp with neither hook field still reads back (old readers and old stamps stay valid)', () => {
+  const legacy = Object.assign({}, VALID_STAMP);
+  delete legacy.hooks_files;
+  delete legacy.hooks_digest;
+  const got = rs.readStamp({ readFileSync: stampReader(JSON.stringify(legacy)), stampPath: '/s/x.json' });
+  assert.deepStrictEqual(got, legacy);
+});
+
+test('w1i guard: buildStamp without hooksFiles emits neither hook field (the legacy shape)', () => {
+  const s = rs.buildStamp({ sha: SHA_A, runtimeDigest: DIGEST, mode: 'payload-verified', engineVerified: false, now: 'x' });
+  assert.ok(!('hooks_files' in s));
+  assert.ok(!('hooks_digest' in s));
+  assert.strictEqual(s.schema, 1);
+});
+
+test('w1i: buildStamp with hooksFiles/hooksDigest emits sorted hooks_files and hooks_digest, schema still 1, and round-trips', () => {
+  const files = ['lib/b.sh', 'gsd-a.js'];
+  const s = rs.buildStamp({
+    sha: SHA_A, runtimeDigest: DIGEST, mode: 'installed', engineVerified: true, now: '2026-10-17T00:00:00.000Z',
+    hooksFiles: files, hooksDigest: HDIGEST,
+  });
+  assert.strictEqual(s.schema, 1);
+  assert.strictEqual(rs.STAMP_SCHEMA, 1);
+  assert.deepStrictEqual(s.hooks_files, ['gsd-a.js', 'lib/b.sh']);
+  assert.deepStrictEqual(files, ['lib/b.sh', 'gsd-a.js'], 'buildStamp sorts a copy');
+  assert.strictEqual(s.hooks_digest, HDIGEST);
+  const writes = [];
+  rs.writeStamp(s, { mkdirSync: () => {}, writeFileSync: (p, body) => writes.push(body), stampPath: '/s/runtime-stamp.json' });
+  const back = rs.readStamp({ readFileSync: stampReader(writes[0]), stampPath: '/s/runtime-stamp.json' });
+  assert.deepStrictEqual(back.hooks_files, ['gsd-a.js', 'lib/b.sh']);
+  assert.strictEqual(back.hooks_digest, HDIGEST);
+  assert.strictEqual(back.schema, 1);
+});
+
+test('w1i: evaluateDrift: a stamp with no hook fields is unverified, the reason says it predates hook coverage and to re-run sync', () => {
+  const legacy = { ...VALID_STAMP, sha: SHA_A, runtime_digest: DIGEST };
+  delete legacy.hooks_files;
+  delete legacy.hooks_digest;
+  const r = rs.evaluateDrift({ stamp: legacy, runtimeDigest: DIGEST, hooksDigest: null, upstream: FRESH_UPSTREAM });
+  assert.strictEqual(r.verdict, 'unverified');
+  assert.match(r.reason, /predates hook coverage/);
+  assert.ok(r.reason.includes('~/.claude/hooks'), r.reason);
+  assert.match(r.reason, /re-run[^.]*sync/, r.reason);
+});
+
+test('w1i: evaluateDrift: a hooks digest mismatch is unverified naming ~/.claude/hooks', () => {
+  const r = rs.evaluateDrift({
+    stamp: { ...VALID_STAMP, sha: SHA_A, runtime_digest: DIGEST },
+    runtimeDigest: DIGEST,
+    hooksDigest: 'sha256:' + '0'.repeat(64),
+    upstream: FRESH_UPSTREAM,
+  });
+  assert.strictEqual(r.verdict, 'unverified');
+  assert.ok(r.reason.includes('~/.claude/hooks'), r.reason);
+  assert.ok(r.reason.includes(HDIGEST.slice(0, 19)), 'the stamped hooks digest prefix is shown: ' + r.reason);
+});
+
+test('w1i: evaluateDrift: a hook-carrying stamp with an undefined measured hooksDigest is unverified', () => {
+  const r = rs.evaluateDrift({ stamp: { ...VALID_STAMP, runtime_digest: DIGEST }, runtimeDigest: DIGEST, upstream: FRESH_UPSTREAM });
+  assert.strictEqual(r.verdict, 'unverified');
+});
+
+test('w1i: evaluateDrift follows the D5 order: unstamped, runtime digest, missing hook fields, hooks digest, then sha', () => {
+  const legacy = { ...VALID_STAMP, sha: SHA_A, runtime_digest: DIGEST };
+  delete legacy.hooks_files;
+  delete legacy.hooks_digest;
+  const OTHER_RT = 'sha256:' + '1'.repeat(64);
+  const OTHER_H = 'sha256:' + '2'.repeat(64);
+  const behind = { sha: SHA_B, source: 'live', ageMs: 0 };
+  // 1. null stamp wins over everything
+  assert.strictEqual(rs.evaluateDrift({ stamp: null, runtimeDigest: OTHER_RT, hooksDigest: OTHER_H, upstream: behind }).verdict, 'unstamped');
+  // 2. a runtime digest mismatch gives the RUNTIME reason even when the hooks also differ
+  const rt = rs.evaluateDrift({ stamp: { ...VALID_STAMP, runtime_digest: DIGEST }, runtimeDigest: OTHER_RT, hooksDigest: OTHER_H, upstream: behind });
+  assert.strictEqual(rt.verdict, 'unverified');
+  assert.ok(rt.reason.includes('~/.claude/gsd-core'), rt.reason);
+  assert.ok(!rt.reason.includes('~/.claude/hooks'), 'the runtime reason, not the hooks one: ' + rt.reason);
+  // 3. missing hook fields beat a sha mismatch
+  const lg = rs.evaluateDrift({ stamp: legacy, runtimeDigest: DIGEST, hooksDigest: null, upstream: behind });
+  assert.strictEqual(lg.verdict, 'unverified');
+  assert.match(lg.reason, /predates hook coverage/);
+  // 4. a hooks digest mismatch beats a sha mismatch
+  const hm = rs.evaluateDrift({ stamp: { ...VALID_STAMP, runtime_digest: DIGEST }, runtimeDigest: DIGEST, hooksDigest: OTHER_H, upstream: behind });
+  assert.strictEqual(hm.verdict, 'unverified');
+  assert.ok(hm.reason.includes('~/.claude/hooks'), hm.reason);
+  // 5. everything matching: the sha decides
+  assert.strictEqual(rs.evaluateDrift({ stamp: { ...VALID_STAMP, runtime_digest: DIGEST }, runtimeDigest: DIGEST, hooksDigest: HDIGEST, upstream: behind }).verdict, 'drifted');
+  assert.strictEqual(rs.evaluateDrift({ stamp: { ...VALID_STAMP, runtime_digest: DIGEST }, runtimeDigest: DIGEST, hooksDigest: HDIGEST, upstream: FRESH_UPSTREAM }).verdict, 'fresh');
+});
+
+test('w1i guard: runtimeDigest of the runtime tree is unchanged by files in the sibling hooks dir', () => {
+  const without = rs.runtimeDigest('/h/.claude/gsd-core', makeFs('/h/.claude', { 'gsd-core/a.md': 'one' }));
+  const withHooks = rs.runtimeDigest('/h/.claude/gsd-core',
+    makeFs('/h/.claude', { 'gsd-core/a.md': 'one', 'hooks/gsd-a.js': 'x', 'hooks/lib/b.sh': 'y' }));
+  assert.strictEqual(without, withHooks);
 });

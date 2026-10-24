@@ -122,7 +122,7 @@ const ASK_LIMIT_NOTE =
  *   3. RES-01 action-first short-circuit — BEFORE any IO of any kind (D-06);
  *   4. no governed segment at all → allow;
  *   5. ROB-01 arming (D-07);
- *   6. the oracle: digest → stamp → upstream tip → evaluateDrift;
+ *   6. the oracle: digest → stamp → managed hooks → upstream tip → evaluateDrift;
  *   7. verdict → decision.
  *
  * @param {string} stdinString raw PreToolUse JSON
@@ -137,6 +137,9 @@ const ASK_LIMIT_NOTE =
  * @param {()=>number} [deps.now] the clock for the shared lookup budget (F9 R2 item 6)
  * @param {()=>string} deps.runtimeDigest digest of the installed runtime tree (may throw)
  * @param {()=>(Object|null)} deps.readStamp the toolkit stamp, or null when unstamped (may throw)
+ * @param {(stamp:(Object|null))=>(string|null)} deps.hooksDigest the managed gsd-core hooks digest
+ *   measured over the stamp's own `hooks_files`, or null when the stamp lists none (may throw
+ *   FailClosed, which denies; CTK-ADR-0011)
  * @param {()=>{sha:string, source:string, ageMs:number}} deps.upstreamTip the upstream tip
  *   (may throw UpstreamUnavailable → ask, or FailClosed → deny)
  * @param {Function} [deps.evaluateDrift] the pure verdict function (defaults to the oracle's)
@@ -205,9 +208,11 @@ function gate(stdinString, deps) {
   if (!armed) return allow();
 
   // (6) The oracle. Each of these may THROW; every throw except UpstreamUnavailable reaches
-  // runGate and DENIES (HARD-01).
+  // runGate and DENIES (HARD-01). The managed hooks under ~/.claude/hooks are measured over the
+  // stamp's own list (CTK-ADR-0011), OUTSIDE the narrow catch below, before any network call.
   const digest = deps.runtimeDigest();
   const stamp = deps.readStamp();
+  const hooksDigest = deps.hooksDigest(stamp);
 
   let upstream;
   try {
@@ -232,6 +237,7 @@ function gate(stdinString, deps) {
   const verdict = (deps.evaluateDrift || runtimeStamp.evaluateDrift)({
     stamp,
     runtimeDigest: digest,
+    hooksDigest,
     upstream,
   });
 
@@ -247,7 +253,7 @@ function gate(stdinString, deps) {
       'fixes that may already be upstream. One command resolves it, with no further decisions:\n\n  ' +
       REMEDIATION_COMMAND + '\n\n' +
       '(That command resolves the tip, verifies the installed payload against it, reinstalls from ' +
-      '`origin/' + runtimeStamp.UPSTREAM_REF + '` only if it actually differs, and stamps the ' +
+      '`origin/' + runtimeStamp.UPSTREAM_REF + '`, builds the managed hooks, reinstalls (in practice on every run, CTK-ADR-0011 Decision 7), and stamps the ' +
       'result. It never installs the PUBLISHED npm package, which can be far behind `' +
       runtimeStamp.UPSTREAM_REF + '`.)' +
       // quick-261007-rni F9 (PD-4), R2 item 8 (WR-02), R3 IN-01: a rule-c arm says the gate could not
@@ -299,6 +305,7 @@ function runRuntimeDriftGate(stdinString, deps = {}) {
       resolved.runtimeDigest = () => runtimeStamp.runtimeDigest(runtimeStamp.RUNTIME_ROOT);
     }
     if (!resolved.readStamp) resolved.readStamp = () => runtimeStamp.readStamp();
+    if (!resolved.hooksDigest) resolved.hooksDigest = (stamp) => runtimeStamp.hooksDigestForStamp(stamp, runtimeStamp.HOOKS_ROOT);
     if (!resolved.upstreamTip) resolved.upstreamTip = () => runtimeStamp.upstreamTip();
     return gate(stdinString, resolved);
   }, ctx);

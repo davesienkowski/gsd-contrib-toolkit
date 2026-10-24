@@ -28,6 +28,8 @@ const { FailClosed } = require('./lib/failclosed.cjs');
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
 const DIGEST = 'sha256:' + 'f'.repeat(64);
+/** The managed-hook digest a hook-carrying stamp records (quick 261017-w1i, CTK-ADR-0011). */
+const HDIGEST = 'sha256:' + 'e'.repeat(64);
 
 function input(command) {
   return JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
@@ -42,6 +44,8 @@ function stampAt(sha, digest) {
     engine_verified: false,
     installed_at: '2026-07-30T00:00:00.000Z',
     source: 'https://github.com/open-gsd/gsd-core.git#next',
+    hooks_files: ['gsd-a.js', 'lib/b.sh'],
+    hooks_digest: HDIGEST,
   };
 }
 
@@ -51,6 +55,7 @@ function stampAt(sha, digest) {
  */
 function scenario(over = {}) {
   const calls = { resolveRoot: 0, runtimeDigest: 0, readStamp: 0, upstreamTip: 0, segmentDirs: 0, resolvePushUrls: 0, urlRewrites: 0 };
+  calls.hooksDigest = 0;
   const deps = Object.assign(
     {
       resolveRoot: () => { calls.resolveRoot += 1; return '/tmp/gsd-core'; },
@@ -67,6 +72,7 @@ function scenario(over = {}) {
       urlRewrites: () => { calls.urlRewrites += 1; return []; },
       runtimeDigest: () => { calls.runtimeDigest += 1; return DIGEST; },
       readStamp: () => { calls.readStamp += 1; return stampAt(SHA_A, DIGEST); },
+      hooksDigest: () => { calls.hooksDigest += 1; return HDIGEST; },
       upstreamTip: () => { calls.upstreamTip += 1; return { sha: SHA_A, source: 'live', ageMs: 0 }; },
       overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
     },
@@ -379,6 +385,119 @@ for (const cmd of [
     assert.strictEqual(oracleCalls(calls), 0);
   });
 }
+
+// ───────────── quick 261017-w1i (CTK-ADR-0011): the gate re-measures the managed gsd-core hooks ─────────────
+//
+// The stamp now binds the managed hook set under ~/.claude/hooks. The gate measures it through
+// deps.hooksDigest(stamp) after readStamp and before upstreamTip, outside the narrow
+// UpstreamUnavailable catch, so a measurement failure denies through runGate.
+
+function hooklessStampAt(sha, digest) {
+  const s = stampAt(sha, digest);
+  delete s.hooks_files;
+  delete s.hooks_digest;
+  return s;
+}
+
+test('w1i: a stamp with no hook fields DENIES unverified, saying the stamp predates hook coverage', () => {
+  const { deps } = scenario({
+    readStamp: () => hooklessStampAt(SHA_A, DIGEST),
+    hooksDigest: () => null, // what the default seam returns for a hook-less stamp
+  });
+  const d = runRuntimeDriftGate(input('git push origin HEAD'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /unverified/);
+  assert.match(d.permissionDecisionReason, /predates hook coverage/);
+  assert.ok(d.permissionDecisionReason.includes(REMEDIATION_COMMAND));
+});
+
+test('w1i: a managed-hooks digest mismatch DENIES naming ~/.claude/hooks and quoting REMEDIATION_COMMAND', () => {
+  const { deps } = scenario({ hooksDigest: () => 'sha256:' + '0'.repeat(64) });
+  const d = runRuntimeDriftGate(input('gh pr create --title x --body y'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /unverified/);
+  assert.ok(d.permissionDecisionReason.includes('~/.claude/hooks'), d.permissionDecisionReason);
+  assert.ok(d.permissionDecisionReason.includes(REMEDIATION_COMMAND));
+});
+
+test('w1i: deps.hooksDigest receives the exact stamp object readStamp returned', () => {
+  const stamp = stampAt(SHA_A, DIGEST);
+  let seen;
+  const { deps } = scenario({
+    readStamp: () => stamp,
+    hooksDigest: (s) => { seen = s; return HDIGEST; },
+  });
+  const d = runRuntimeDriftGate(input('git push origin HEAD'), deps);
+  assert.strictEqual(seen, stamp);
+  assert.strictEqual(d.permissionDecision, 'allow');
+});
+
+test('w1i: a hooksDigest that throws FailClosed DENIES and upstreamTip is never called', () => {
+  const { deps, calls } = scenario({
+    hooksDigest: () => { throw new FailClosed('ENF-21: could not read the managed hook lib/b.sh'); },
+  });
+  const d = runRuntimeDriftGate(input('git push origin HEAD'), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.strictEqual(calls.upstreamTip, 0, 'the hooks are measured before the network is consulted');
+});
+
+test('w1i: with deps.hooksDigest deleted, a hook-less stamp is denied by the DEFAULT seam without touching ~/.claude/hooks', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const hooksRoot = path.join(os.homedir(), '.claude', 'hooks');
+  const touched = [];
+  const names = ['statSync', 'lstatSync', 'readdirSync', 'openSync', 'readFileSync'];
+  const saved = {};
+  for (const n of names) {
+    saved[n] = fs[n];
+    fs[n] = function spy(p, ...rest) {
+      if (typeof p === 'string' && (p === hooksRoot || p.startsWith(hooksRoot + path.sep))) touched.push(n + ' ' + p);
+      return saved[n].call(this, p, ...rest);
+    };
+  }
+  let d;
+  try {
+    const { deps } = scenario({ readStamp: () => hooklessStampAt(SHA_A, DIGEST) });
+    delete deps.hooksDigest;
+    d = runRuntimeDriftGate(input('git push origin HEAD'), deps);
+  } finally {
+    for (const n of names) fs[n] = saved[n];
+  }
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /unverified/);
+  assert.match(d.permissionDecisionReason, /predates hook coverage/);
+  assert.deepStrictEqual(touched, [], 'a hook-less stamp is decided without reading the hooks dir');
+});
+
+test('w1i: the oracle is consulted in the order digest -> stamp -> hooks -> tip, and only ONCE each', () => {
+  const order = [];
+  const { deps } = scenario({
+    runtimeDigest: () => { order.push('digest'); return DIGEST; },
+    readStamp: () => { order.push('stamp'); return stampAt(SHA_A, DIGEST); },
+    hooksDigest: () => { order.push('hooks'); return HDIGEST; },
+    upstreamTip: () => { order.push('tip'); return { sha: SHA_A, source: 'live', ageMs: 0 }; },
+  });
+  const d = runRuntimeDriftGate(input('git push origin HEAD'), deps);
+  assert.deepStrictEqual(order, ['digest', 'stamp', 'hooks', 'tip']);
+  assert.strictEqual(d.permissionDecision, 'allow');
+});
+
+test('w1i guard: UpstreamUnavailable still ASKS when the stamp carries matching hook fields', () => {
+  const { deps } = scenario({
+    upstreamTip: () => { throw new UpstreamUnavailable('offline'); },
+  });
+  const d = runRuntimeDriftGate(input('git push origin HEAD'), deps);
+  assert.strictEqual(d.permissionDecision, 'ask');
+  assert.match(d.permissionDecisionReason, /ENF-21/);
+});
+
+test('w1i guard: a non-governed command never measures the managed hooks', () => {
+  const { deps, calls } = scenario();
+  const d = runRuntimeDriftGate(input('git status'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.hooksDigest, 0);
+});
 
 // ───────────── quick-261007-rni F9: key a git push on its push TARGET (Revision 1 four-way rule) ─────────────
 //

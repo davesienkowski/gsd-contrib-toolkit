@@ -10,6 +10,8 @@
   record narrows that further: a check that *can* deny, whose input is *unobtainable*, resolves to
   `ask` — the third severity CTK-ADR-0005 itself introduced — and never to `allow`. Neither record is
   withdrawn.
+- **Amended by:** CTK-ADR-0011 (2026-10-17, Proposed): Decision 1's digest also covers the managed gsd-core hooks
+  under ~/.claude/hooks, and Decision 5's fast path also requires the hooks to be built and byte-equal.
 - **Relates to:** ENF-21 (`hooks/runtime-drift.cjs`), the first gate whose verdict depends on network
   state; CTK-ADR-0001 §Decision.2 (HARD-01 fail-closed) and §Decision.3 (reuse LIVE, never
   reimplement); CTK-ADR-0006 §Decision.8 (gate on `hasGovernedSegment`, never the chain aggregate).
