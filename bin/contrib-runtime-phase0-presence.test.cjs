@@ -97,6 +97,7 @@ for (const s of SECTIONS) {
     if (s.prose) {
       assert.ok(sec.includes('$HOME/.claude-contrib'), s.label + ' must suggest $HOME/.claude-contrib in the launch form');
     }
+    assert.ok(!sec.includes(ADR_LINK), s.label + ' must not link CTK-ADR-0013 as a markdown link (exact-set pin in bin/build-capability.test.cjs)');
   });
 
   if (s.prose) {
