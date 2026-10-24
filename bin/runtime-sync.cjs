@@ -106,7 +106,7 @@ const HOOK_MTIME_SLACK_MS = 2000;
 /**
  * Did this install write every managed hook (CTK-ADR-0011)? For each relpath under `hooksRoot`:
  * a stat failure or a non-regular file is MISSING; a write time below
- * `sinceMs - HOOK_MTIME_SLACK_MS` (or no finite mtime or ctime at all) is STALE. The write time is
+ * `sinceMs - HOOK_MTIME_SLACK_MS`, or above now + HOOK_MTIME_SLACK_MS (or no finite mtime or ctime at all), is STALE. The write time is
  * the later of `mtimeMs` and `ctimeMs`: install.js writes the top-level .js/.cjs/.sh hooks and a
  * subdirectory's .sh files with writeFileSync but copies everything else, including the lib/*.js
  * helpers, with copyFileSync, and a platform whose copy preserves the source mtime would otherwise
@@ -118,12 +118,16 @@ const HOOK_MTIME_SLACK_MS = 2000;
  * @param {string} hooksRoot the installed hooks dir
  * @param {string[]} files managed relpaths (POSIX)
  * @param {number} sinceMs the install start, captured immediately before install.js ran
- * @param {{statSync?:Function}} [deps]
+ * @param {{statSync?:Function, nowMs?:Function}} [deps]
  * @returns {{missing:string[], stale:string[]}}
  */
 function verifyHooksWritten(hooksRoot, files, sinceMs, deps = {}) {
   const statSync = deps.statSync || nodeFs.statSync;
   const floor = sinceMs - HOOK_MTIME_SLACK_MS;
+  // Ceiling (review m1): a write time ahead of the clock cannot be a write by this install, so a
+  // stale hook with a future mtime must not pass. Measured once, after install.js has returned.
+  const nowMs = deps.nowMs || (() => Date.now());
+  const ceiling = nowMs() + HOOK_MTIME_SLACK_MS;
   const missing = [];
   const stale = [];
   for (const rel of files) {
@@ -139,7 +143,8 @@ function verifyHooksWritten(hooksRoot, files, sinceMs, deps = {}) {
       continue;
     }
     const times = [st.mtimeMs, st.ctimeMs].map(Number).filter(Number.isFinite);
-    if (times.length === 0 || !(Math.max(...times) >= floor)) stale.push(rel);
+    const latest = Math.max(...times);
+    if (times.length === 0 || !(latest >= floor) || !(latest <= ceiling)) stale.push(rel);
   }
   return { missing, stale };
 }
@@ -546,7 +551,7 @@ function sync(deps = {}) {
       // cannot catch the measured defect (the stale hooks carry the right names), and bytes cannot
       // be compared (install.js rewrites hook content), so the check is existence + the later of
       // mtime and ctime.
-      const hv = verifyHooksWritten(hooksRoot, hooksFiles, installStartMs, { statSync });
+      const hv = verifyHooksWritten(hooksRoot, hooksFiles, installStartMs, { statSync, nowMs });
       if (hv.missing.length > 0 || hv.stale.length > 0) {
         log('ENF-21 sync ABORTED: install.js did not rewrite every managed gsd-core hook under');
         log(hooksRoot + ' - refusing to stamp an install that cannot be confirmed.');

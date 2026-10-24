@@ -682,6 +682,20 @@ test('w1i: verifyHooksWritten ignores a non-finite timestamp instead of letting 
   assert.deepStrictEqual(cli.verifyHooksWritten('/h', ['a.js'], since, statOf({ mtimeMs: NaN, ctimeMs: Infinity })), { missing: [], stale: ['a.js'] });
 });
 
+test('w1i: verifyHooksWritten rejects a write time ahead of the clock (a future-dated stale hook is not "written")', () => {
+  const now = NOW_MS;
+  const since = now - 1000;
+  const year2031 = Date.UTC(2031, 0, 1);
+  const statOf = (t) => ({ statSync: () => Object.assign({ isFile: () => true }, t), nowMs: () => now });
+  // future mtime, old ctime: the review's repro. Must be stale, not written.
+  assert.deepStrictEqual(cli.verifyHooksWritten('/h', ['a.js'], since, statOf({ mtimeMs: year2031, ctimeMs: since - 600000 })), { missing: [], stale: ['a.js'] });
+  // future ctime alone is stale too
+  assert.deepStrictEqual(cli.verifyHooksWritten('/h', ['a.js'], since, statOf({ ctimeMs: year2031 })), { missing: [], stale: ['a.js'] });
+  // within the skew slack ahead of the clock is still written
+  assert.deepStrictEqual(cli.verifyHooksWritten('/h', ['a.js'], since, statOf({ mtimeMs: now + cli.HOOK_MTIME_SLACK_MS - 1 })), { missing: [], stale: [] });
+  assert.deepStrictEqual(cli.verifyHooksWritten('/h', ['a.js'], since, statOf({ mtimeMs: now + cli.HOOK_MTIME_SLACK_MS + 1 })), { missing: [], stale: ['a.js'] });
+});
+
 test('w1i: the install start is captured BEFORE install.js (the clock moves +60 s once it has run)', () => {
   // Default mtimes are NOW_MS + 1. A start captured after install.js reads NOW_MS + 60000, so every
   // managed file would look stale and the sync would abort.
