@@ -49,6 +49,30 @@ function stampAt(sha, digest) {
   };
 }
 
+/** quick 261024-po0 (CTK-ADR-0013): the config-dir descriptors the classifier seam returns. */
+function po0Daily() {
+  return {
+    kind: 'daily', fromEnv: false, value: undefined, configDir: '/home/u/.claude',
+    runtimeRoot: '/home/u/.claude/gsd-core', hooksRoot: '/home/u/.claude/hooks', stateDir: '/home/u/.gsd-contrib',
+    runtimeLabel: '~/.claude/gsd-core', hooksLabel: '~/.claude/hooks',
+    reason: 'CLAUDE_CONFIG_DIR is unset, so the session uses the daily ~/.claude',
+  };
+}
+function po0Contrib(cfg = '/home/u/.claude-contrib') {
+  return {
+    kind: 'contrib', fromEnv: true, value: cfg, configDir: cfg,
+    runtimeRoot: cfg + '/gsd-core', hooksRoot: cfg + '/hooks', stateDir: '/home/u/.gsd-contrib/config-dirs/0123456789abcdef',
+    runtimeLabel: cfg + '/gsd-core', hooksLabel: cfg + '/hooks', reason: '',
+  };
+}
+function po0Invalid(value = 'rel/x') {
+  return {
+    kind: 'invalid', fromEnv: true, value, configDir: null, runtimeRoot: null, hooksRoot: null, stateDir: null,
+    runtimeLabel: null, hooksLabel: null,
+    reason: 'CLAUDE_CONFIG_DIR=' + JSON.stringify(value) + ' is not an absolute path',
+  };
+}
+
 /**
  * Build injectable deps plus a `calls` counter for every impure seam. The DEFAULT world is a
  * FRESH runtime inside a real gsd-core checkout, so each test overrides only what it is about.
@@ -56,8 +80,12 @@ function stampAt(sha, digest) {
 function scenario(over = {}) {
   const calls = { resolveRoot: 0, runtimeDigest: 0, readStamp: 0, upstreamTip: 0, segmentDirs: 0, resolvePushUrls: 0, urlRewrites: 0 };
   calls.hooksDigest = 0;
+  calls.classifyConfigDir = 0;
   const deps = Object.assign(
     {
+      // quick 261024-po0: the default world is the DAILY config dir (tilde labels), so every
+      // existing pin, including the ~/.claude/hooks one, keeps passing with the hint added.
+      classifyConfigDir: () => { calls.classifyConfigDir += 1; return po0Daily(); },
       resolveRoot: () => { calls.resolveRoot += 1; return '/tmp/gsd-core'; },
       // quick-261007-rni F9 (PD-7): the default world has NO remotes, so a push to a named remote
       // takes rule c, which is exactly the pre-F9 cwd rule. Tests that need a resolution inject one.
@@ -1261,3 +1289,167 @@ test('w1i guard: a non-governed command never measures the managed hooks', () =>
     }
   }
 }
+
+// ------------- quick 261024-po0 (CTK-ADR-0013): the gate follows the session's config dir -------------
+//
+// The classifier seam is consulted lazily, only after arming; an invalid CLAUDE_CONFIG_DIR denies;
+// the daily dir gets the start-a-contribution-session hint on deny and ask; the verdict mapping
+// (only fresh allows, only UpstreamUnavailable asks) is unchanged.
+
+const PO0_GOVERNED = 'gh pr create --repo open-gsd/gsd-core --title x --body y';
+
+function po0Hint() {
+  return require('./lib/runtime-stamp.cjs').CONTRIB_SESSION_HINT;
+}
+
+for (const cmd of ['git status', 'ls']) {
+  test('po0: non-governed `' + cmd + '` makes ZERO classifier calls (RES-01)', () => {
+    const { deps, calls } = scenario();
+    const d = runRuntimeDriftGate(input(cmd), deps);
+    assert.strictEqual(d.permissionDecision, 'allow');
+    assert.strictEqual(calls.classifyConfigDir, 0);
+    // Paired with a positive control: a governed command DOES classify, exactly once.
+    const g = scenario();
+    runRuntimeDriftGate(input(PO0_GOVERNED), g.deps);
+    assert.strictEqual(g.calls.classifyConfigDir, 1);
+  });
+}
+
+test('po0 guard: an unarmed governed command (a PR to another repo) makes ZERO classifier calls', () => {
+  const { deps, calls } = scenario({ resolveRoot: () => null });
+  const d = runRuntimeDriftGate(input('gh pr create --repo someone/else --title x --body y'), deps);
+  assert.strictEqual(d.permissionDecision, 'allow');
+  assert.strictEqual(calls.classifyConfigDir, 0);
+});
+
+test('po0: an invalid config dir DENIES naming CLAUDE_CONFIG_DIR and consults none of the oracle seams', () => {
+  const { deps, calls } = scenario({ classifyConfigDir: () => { calls.classifyConfigDir += 1; return po0Invalid('rel/x'); } });
+  const d = runRuntimeDriftGate(input(PO0_GOVERNED), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.ok(d.permissionDecisionReason.includes('CLAUDE_CONFIG_DIR'), d.permissionDecisionReason);
+  assert.strictEqual(calls.classifyConfigDir, 1);
+  assert.strictEqual(calls.runtimeDigest + calls.readStamp + calls.hooksDigest + calls.upstreamTip, 0);
+});
+
+test('po0: on the daily dir a drifted deny carries CONTRIB_SESSION_HINT', () => {
+  const { deps } = scenario({ upstreamTip: () => ({ sha: SHA_B, source: 'live', ageMs: 0 }) });
+  const d = runRuntimeDriftGate(input(PO0_GOVERNED), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.ok(d.permissionDecisionReason.includes(po0Hint()), d.permissionDecisionReason);
+  assert.ok(d.permissionDecisionReason.includes(REMEDIATION_COMMAND));
+});
+
+test('po0: on the daily dir an UpstreamUnavailable ask carries CONTRIB_SESSION_HINT', () => {
+  const { deps } = scenario({ upstreamTip: () => { throw new UpstreamUnavailable('offline'); } });
+  const d = runRuntimeDriftGate(input(PO0_GOVERNED), deps);
+  assert.strictEqual(d.permissionDecision, 'ask');
+  assert.ok(d.permissionDecisionReason.includes(po0Hint()), d.permissionDecisionReason);
+});
+
+test('po0: a contribution dir deny names its absolute runtime root and carries no hint', () => {
+  const { deps } = scenario({
+    classifyConfigDir: () => po0Contrib(),
+    upstreamTip: () => ({ sha: SHA_B, source: 'live', ageMs: 0 }),
+  });
+  const d = runRuntimeDriftGate(input(PO0_GOVERNED), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.ok(d.permissionDecisionReason.includes('/home/u/.claude-contrib/gsd-core'), d.permissionDecisionReason);
+  assert.ok(!d.permissionDecisionReason.includes(po0Hint()), 'no hint for a contribution dir');
+});
+
+test('po0: a contribution dir hooks mismatch names its absolute hooks root', () => {
+  const { deps } = scenario({
+    classifyConfigDir: () => po0Contrib(),
+    hooksDigest: () => 'sha256:' + '0'.repeat(64),
+  });
+  const d = runRuntimeDriftGate(input(PO0_GOVERNED), deps);
+  assert.strictEqual(d.permissionDecision, 'deny');
+  assert.ok(d.permissionDecisionReason.includes('/home/u/.claude-contrib/hooks'), d.permissionDecisionReason);
+});
+
+test('po0 guard: a fresh verdict still ALLOWS on the daily dir', () => {
+  const { deps } = scenario();
+  assert.strictEqual(runRuntimeDriftGate(input(PO0_GOVERNED), deps).permissionDecision, 'allow');
+});
+
+/** A real contribution dir with a tiny runtime and one managed hook. */
+function po0Tree(fs, path, dir) {
+  fs.mkdirSync(path.join(dir, 'gsd-core', 'workflows'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'gsd-core', 'workflows', 'a.md'), 'workflow a\n');
+  fs.mkdirSync(path.join(dir, 'hooks'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'hooks', 'gsd-a.js'), 'console.log("a");\n');
+}
+
+test('po0: real fixture: a stamped contribution dir ALLOWS, a second unstamped one DENIES naming its runtime root', (t) => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const crypto = require('node:crypto');
+  const rs = require('./lib/runtime-stamp.cjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'po0-gate-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home');
+  fs.mkdirSync(home);
+  const A = path.join(root, 'contrib-a');
+  const B = path.join(root, 'contrib-b');
+  po0Tree(fs, path, A);
+  po0Tree(fs, path, B);
+  const envA = { CLAUDE_CONFIG_DIR: A };
+  const key = crypto.createHash('sha256').update(path.resolve(A)).digest('hex').slice(0, 16);
+  const expected = path.join(home, '.gsd-contrib', 'config-dirs', key, 'runtime-stamp.json');
+  // SAFETY: prove the stamp path resolves under the temp home BEFORE the default write runs, so a
+  // module that ignores {env, homedir} fails here and never writes the real daily stamp.
+  assert.strictEqual(rs.stampPath(envA, { homedir: home }), expected);
+  const stamp = rs.buildStamp({
+    sha: SHA_A,
+    runtimeDigest: rs.runtimeDigest(path.join(A, 'gsd-core')),
+    mode: 'installed',
+    engineVerified: true,
+    now: '2026-10-24T00:00:00.000Z',
+    hooksFiles: ['gsd-a.js'],
+    hooksDigest: rs.hooksDigest(path.join(A, 'hooks'), ['gsd-a.js']),
+  });
+  assert.strictEqual(rs.writeStamp(stamp, { env: envA, homedir: home }), expected);
+  assert.ok(fs.existsSync(expected));
+  assert.ok(!fs.existsSync(path.join(home, '.gsd-contrib', 'runtime-stamp.json')), 'the daily stamp path is not used');
+
+  const base = {
+    upstreamTip: () => ({ sha: SHA_A, source: 'live', ageMs: 0 }),
+    overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
+    homedir: home,
+  };
+  const a = runRuntimeDriftGate(input(PO0_GOVERNED), Object.assign({ env: envA }, base));
+  assert.strictEqual(a.permissionDecision, 'allow', a.permissionDecisionReason);
+  const b = runRuntimeDriftGate(input(PO0_GOVERNED), Object.assign({ env: { CLAUDE_CONFIG_DIR: B } }, base));
+  assert.strictEqual(b.permissionDecision, 'deny');
+  assert.match(b.permissionDecisionReason, /unstamped/);
+  assert.ok(b.permissionDecisionReason.includes(path.join(B, 'gsd-core')), b.permissionDecisionReason);
+});
+
+test('po0: a spawned hooks/runtime-drift.cjs with CLAUDE_CONFIG_DIR=rel/x loads and DENIES naming CLAUDE_CONFIG_DIR', (t) => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { spawnSync } = require('node:child_process');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'po0-spawn-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (const d of ['home', 'state', 'log']) fs.mkdirSync(path.join(root, d));
+  const env = {
+    PATH: process.env.PATH || '',
+    HOME: path.join(root, 'home'),
+    CLAUDE_CONFIG_DIR: 'rel/x',
+    GSD_CONTRIB_STATE_DIR: path.join(root, 'state'),
+    GSD_CONTRIB_LOG_DIR: path.join(root, 'log'),
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_TERMINAL_PROMPT: '0',
+  };
+  const r = spawnSync(process.execPath, [path.join(__dirname, 'runtime-drift.cjs')], {
+    input: input(PO0_GOVERNED), env, cwd: root, encoding: 'utf8', timeout: 30000,
+  });
+  assert.strictEqual(r.status, 0, r.stderr);
+  const out = JSON.parse(r.stdout);
+  const hso = out.hookSpecificOutput || out;
+  assert.strictEqual(hso.permissionDecision, 'deny', r.stdout);
+  assert.ok(String(hso.permissionDecisionReason).includes('CLAUDE_CONFIG_DIR'), r.stdout);
+});
