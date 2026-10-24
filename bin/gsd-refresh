@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 #
-# gsd-refresh - one safe command to bring the GLOBAL gsd-core install to origin/next
-#               and re-apply local mods, with a pre-sync snapshot and rollback.
+# gsd-refresh - one safe command to bring a CONTRIBUTION config dir's gsd-core install to
+#               origin/next, with a pre-sync snapshot and rollback. Since CTK-ADR-0013 it never
+#               touches the daily ~/.claude (runtime-sync refuses it) and never re-applies local
+#               mods (a contribution dir stays pristine; the daily install's maintainer is
+#               ~/.gsd/local-mods/gsd-refresh.sh).
 #
 # WHY THIS EXISTS
 #   Two half-tools already do parts of the job but neither owns it:
@@ -11,6 +14,9 @@
 #   gsd-refresh chains them into ONE action, adds the missing safety net (a pre-sync
 #   snapshot + `--rollback`), and turns the after-the-fact drift report into a fail-loud
 #   ASSERTION so a mod that did not land is caught, not discovered later.
+#   (History: that was the Phase 1 MVP. CTK-ADR-0013, 2026-10-24, removed the re-apply and
+#   the assertion from `refresh`, since the only dir it may sync is a pristine contribution dir.
+#   `check` and `rebaseline` still read the local-mods audit.)
 #
 # WHAT IT DELIBERATELY DOES NOT DO
 #   * It does NOT mutate anything from a hook. The real reinstall (npm ci + install.js)
@@ -37,9 +43,6 @@ KEEP_SNAPSHOTS="${GSD_REFRESH_KEEP:-3}"
 # Directories under $CFG that can carry local mods (snapshot + restore targets).
 MOD_DIRS=(gsd-core agents skills hooks)
 
-# Re-apply scripts, in order. Each defaults to a dry run and needs --apply.
-REAPPLY=(grant-memtrace-to-agents.sh remove-mempalace.sh j2-dispatch-event-schema-version.sh install-planning-track-hooks.sh)
-
 # Expected post-reapply mod baseline (the assertion oracle). Override via a baseline
 # file at $LOCAL_MODS/.gsd-refresh-baseline (KEY=VALUE), or env, or `gsd-refresh rebaseline`.
 EXPECTED_MODIFIED="${GSD_REFRESH_EXPECT_MODIFIED:-12}"
@@ -60,11 +63,6 @@ preflight() {
   [ -f "$RUNTIME_SYNC" ]  || die "runtime-sync.cjs not found: $RUNTIME_SYNC"
   [ -f "$AUDIT" ]         || die "audit-local-mods.sh not found: $AUDIT"
   command -v node >/dev/null 2>&1 || die "node not on PATH"
-  local s missing=0
-  for s in "${REAPPLY[@]}"; do
-    [ -f "$LOCAL_MODS/$s" ] || { err "missing re-apply script: $LOCAL_MODS/$s"; missing=1; }
-  done
-  [ "$missing" = 0 ] || die "one or more re-apply scripts are missing"
 }
 
 # audit -> "MODIFIED MISSING" (two integers), or empty on parse failure.
@@ -87,7 +85,8 @@ snapshot() {
   {
     echo "created=$(date -Iseconds)"
     echo "manifest_version=$(grep -m1 '\"version\"' "$CFG/gsd-file-manifest.json" 2>/dev/null | tr -dc '0-9.' )"
-    printf 'audit='; audit_counts
+    # The local-mods audit describes the daily install; a contribution dir carries no mods (CTK-ADR-0013).
+    if [ "${CONTRIB_DIR:-0}" = 1 ]; then echo 'audit=skipped (contribution config dir)'; else printf 'audit='; audit_counts; fi
   } > "$dest/.snapshot-meta" 2>/dev/null || true
   # prune to KEEP_SNAPSHOTS most recent
   local old
@@ -128,34 +127,6 @@ restore_snapshot() {
   : > "$SENTINEL"
   ok "Rolled back to $id."
   say "${c_yel}RESTART your session${c_rst} for the restored definitions to load."
-}
-
-reapply() {
-  local s rc=0
-  for s in "${REAPPLY[@]}"; do
-    say "  -> $s --apply"
-    if ! bash "$LOCAL_MODS/$s" --apply; then
-      err "re-apply script failed: $s"
-      rc=1
-    fi
-  done
-  return $rc
-}
-
-assert_mods() {
-  local counts m d
-  counts="$(audit_counts)"
-  [ -n "$counts" ] || { err "could not parse audit output"; return 3; }
-  m="${counts% *}"; d="${counts#* }"
-  say "  audit: MODIFIED=$m (expect $EXPECTED_MODIFIED)  MISSING=$d (expect $EXPECTED_MISSING)"
-  if [ "$m" = "$EXPECTED_MODIFIED" ] && [ "$d" = "$EXPECTED_MISSING" ]; then
-    ok "  mod baseline verified."
-    return 0
-  fi
-  err "  MOD BASELINE MISMATCH - a mod may not have landed, or upstream changed the file set."
-  err "  Full audit follows; investigate, then re-run, or 'gsd-refresh rebaseline' if this is the new truth."
-  bash "$AUDIT" >&2
-  return 3
 }
 
 confirm() {
@@ -203,19 +174,23 @@ cmd_refresh() {
     err "$where_out"
     die "runtime-sync where exited $where_rc (an older runtime-sync without where?); refusing to snapshot or sync"
   fi
+  # where exit 0: a contribution config dir (CTK-ADR-0013). It must stay pristine, so the local
+  # mods the daily install carries are NEVER re-applied here; only the snapshot and the sync run.
+  CONTRIB_DIR=1
   say "== gsd-refresh =="
   say "$where_out"
-  warn "This will SYNC the global install from origin/next (reinstall the payload) and"
-  warn "re-apply your local mods. A snapshot is taken first so it is reversible."
+  warn "This will SYNC this contribution config dir from origin/next (reinstall the payload)."
+  warn "Local mods are not re-applied here: a contribution dir stays pristine (CTK-ADR-0013)."
+  warn "A snapshot is taken first so it is reversible."
   say  "  config dir : $CFG"
   say  "  snapshots  : $SNAP_ROOT (keep $KEEP_SNAPSHOTS)"
   confirm || { say "Aborted."; exit 1; }
 
-  say; say "[1/4] snapshotting current install ..."
+  say; say "[1/2] snapshotting current install ..."
   local snap; snap="$(snapshot)"
   ok "  saved: $snap"
 
-  say "[2/4] syncing from origin/next ..."
+  say "[2/2] syncing from origin/next ..."
   local sync_rc
   node "$RUNTIME_SYNC" sync; sync_rc=$?
   if [ "$sync_rc" = 3 ]; then
@@ -227,23 +202,13 @@ cmd_refresh() {
     exit 2
   fi
 
-  say "[3/4] re-applying local mods ..."
-  if ! reapply; then
-    err "one or more mods failed to re-apply."
-    err "Roll back with:  gsd-refresh --rollback $snap"
-    exit 2
-  fi
-
-  say "[4/4] verifying mod baseline ..."
-  if ! assert_mods; then
-    err "verification failed. Snapshot kept: $snap"
-    err "Roll back with:  gsd-refresh --rollback $snap"
-    exit 3
-  fi
+  # No re-apply and no mod-baseline assertion: the local mods belong to the daily install, which
+  # ~/.gsd/local-mods/gsd-refresh.sh maintains (CTK-ADR-0013).
+  say "  local mods: not re-applied (contribution config dir, CTK-ADR-0013)"
 
   : > "$SENTINEL"
   say
-  ok "Refresh complete and verified."
+  ok "Refresh complete: runtime-sync verified and stamped this contribution dir."
   warn ">> RESTART your Claude Code session now - the new agents/skills/hooks are on disk"
   warn ">> but will not be LIVE until the session reloads them."
 }
@@ -263,7 +228,7 @@ usage() {
 gsd-refresh - refresh the global gsd-core install to origin/next, keep local mods
 
 USAGE
-  gsd-refresh [--yes]         sync + re-apply mods + verify (with pre-sync snapshot)
+  gsd-refresh [--yes]         snapshot + sync a contribution config dir (no local mods, CTK-ADR-0013)
   gsd-refresh --check         read-only: drift + current mods + pending restart + snapshots
   gsd-refresh --rollback [id] restore the latest (or named) snapshot; then restart
   gsd-refresh --list          list snapshots
@@ -276,8 +241,7 @@ FLAGS
 EXIT CODES
   0  ok
   1  aborted, bad usage, or a preflight / runtime-sync where error
-  2  sync or a mod re-apply failed (roll back with --rollback)
-  3  mod-baseline mismatch after re-apply
+  2  sync failed (roll back with --rollback)
   4  runtime-sync refused this config dir (the daily install or an invalid CLAUDE_CONFIG_DIR);
      nothing was installed. The daily install is maintained by ~/.gsd/local-mods/gsd-refresh.sh.
 
