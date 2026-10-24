@@ -178,8 +178,19 @@ mods' own files (for example `artifact-gate.cjs`, `herdr-agent-state.sh`, `gsd-p
   The `hooks-build-failed` abort quotes the build's first stderr line (for example npm's
   `Missing script: "build:hooks"`), so the cause is visible without re-running anything. Do not
   hand-write the stamp to get past it.
-- **Residual:** a local mod that edits a managed hook would make the gate deny. None does as of the
-  2026-10-17 local-mods audit (31 modified and 1 missing file, none under `hooks/`).
+- **Residual, known consequence (corrected 2026-10-23):** a local mod that edits a managed hook makes
+  the gate deny. The 2026-10-17 local-mods audit (31 modified and 1 missing file, none under
+  `hooks/`) found none, but that is no longer true. Since 2026-10-22 three local mods patch six
+  managed hooks under `~/.claude/hooks`: `guards-fail-closed.sh` (`gsd-secret-read-guard.js`,
+  `gsd-write-guard.js`, `gsd-agent-isolation-guard.js`, `gsd-worktree-path-guard.js`),
+  `worker-state-record.sh` (`gsd-context-monitor.js`) and the quiet-workflow-advisory step in
+  `gsd-refresh.sh` (`gsd-workflow-guard.js`). Their header comments say `~/.claude/hooks` is outside
+  the ENF-21 digest; with this record that is false. After a local-mod restore
+  (`gsd-refresh.sh --restore-only`) the stamp re-measure of the hooks reads UNVERIFIED and the gate
+  denies. That is fail-closed, the same posture the runtime digest already has after local mods patch
+  `~/.claude/gsd-core`. Options, not decided here: (a) re-stamp after every restore, which is only
+  honest if the stamp is then taken over the patched bytes on purpose; (b) exclude the mod-patched
+  hooks from the managed set, which leaves those six files unbound by the gate.
 - **Out of scope, named:** the pre-existing whole-tree `runtime_digest` already reads `unverified`
   after local mods patch `~/.claude/gsd-core` (for example its `bin/lib` or `workflows`). This record
   does not change that.
