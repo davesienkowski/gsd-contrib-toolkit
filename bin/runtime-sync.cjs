@@ -100,7 +100,8 @@ const BUILD_HOOKS_TIMEOUT_MS = 120000;
 /**
  * How far before the install start a managed hook's write time (the later of mtime and ctime) may
  * sit and still count as written by this install (filesystem timestamp granularity and clock skew).
- * Older is stale: abort, no stamp. The name keeps "MTIME" for compatibility.
+ * Older is stale: abort, no stamp. The same slack is the upper bound: a write time later than the
+ * post-install clock plus the slack is stale too. The name keeps "MTIME" for compatibility.
  */
 const HOOK_MTIME_SLACK_MS = 2000;
 
@@ -334,7 +335,8 @@ function check(deps = {}) {
  *      `node <tmp>/bin/install.js --claude`, with the install start captured just before it;
  *   5. RE-verify by payload INVENTORY (D-13 — invariant under both installer transforms), then
  *      check every managed hook was WRITTEN by this install (exists, the later of mtime and ctime
- *      not older than the install start minus HOOK_MTIME_SLACK_MS; proves the write, not the
+ *      not older than the install start minus HOOK_MTIME_SLACK_MS and not later than the
+ *      post-install clock plus HOOK_MTIME_SLACK_MS; proves the write, not the
  *      bytes); on any
  *      mismatch abort WITHOUT stamping (T-0ov-06 — never stamp an install we could not confirm);
  *   6. stamp `installed` with a freshly computed whole-tree digest plus `hooks_files` (the built
