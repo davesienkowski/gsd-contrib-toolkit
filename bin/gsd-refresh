@@ -180,9 +180,31 @@ cmd_check() {
   say "-- snapshots --"; list_snapshots
 }
 
+# runtime-sync refuses the daily ~/.claude install and an invalid CLAUDE_CONFIG_DIR (exit 3,
+# CTK-ADR-0013). That is a refusal, not a failure: nothing was installed, so there is nothing to
+# roll back. The daily install is maintained by the local-mods refresh script, not this tool.
+refused_msg() {
+  err "runtime-sync refused this config dir ($CFG): it is the daily install or an invalid CLAUDE_CONFIG_DIR."
+  err "The daily install is maintained by ~/.gsd/local-mods/gsd-refresh.sh, not this tool."
+  err "$1"
+}
+
 cmd_refresh() {
   preflight
+  # Classify the config dir BEFORE the confirmation and the snapshot: snapshot() also prunes old
+  # snapshots, so a refused run that snapshotted first would not be side-effect free.
+  local where_out where_rc
+  where_out="$(node "$RUNTIME_SYNC" where 2>&1)"; where_rc=$?
+  if [ "$where_rc" = 3 ]; then
+    say "$where_out"
+    refused_msg "Nothing was installed, snapshotted or pruned."
+    exit 4
+  elif [ "$where_rc" != 0 ]; then
+    err "$where_out"
+    die "runtime-sync where exited $where_rc (an older runtime-sync without where?); refusing to snapshot or sync"
+  fi
   say "== gsd-refresh =="
+  say "$where_out"
   warn "This will SYNC the global install from origin/next (reinstall the payload) and"
   warn "re-apply your local mods. A snapshot is taken first so it is reversible."
   say  "  config dir : $CFG"
@@ -194,7 +216,12 @@ cmd_refresh() {
   ok "  saved: $snap"
 
   say "[2/4] syncing from origin/next ..."
-  if ! node "$RUNTIME_SYNC" sync; then
+  local sync_rc
+  node "$RUNTIME_SYNC" sync; sync_rc=$?
+  if [ "$sync_rc" = 3 ]; then
+    refused_msg "Nothing was installed; snapshot $snap is an unchanged copy and needs no roll-back."
+    exit 4
+  elif [ "$sync_rc" != 0 ]; then
     err "sync FAILED. Your install may be partial."
     err "Roll back with:  gsd-refresh --rollback $snap"
     exit 2
@@ -245,6 +272,14 @@ USAGE
 
 FLAGS
   --yes    skip confirmation prompts (for 'run often' use)
+
+EXIT CODES
+  0  ok
+  1  aborted, bad usage, or a preflight / runtime-sync where error
+  2  sync or a mod re-apply failed (roll back with --rollback)
+  3  mod-baseline mismatch after re-apply
+  4  runtime-sync refused this config dir (the daily install or an invalid CLAUDE_CONFIG_DIR);
+     nothing was installed. The daily install is maintained by ~/.gsd/local-mods/gsd-refresh.sh.
 
 NOTES
   * Nothing is LIVE until you restart your session (definitions load at session start).
