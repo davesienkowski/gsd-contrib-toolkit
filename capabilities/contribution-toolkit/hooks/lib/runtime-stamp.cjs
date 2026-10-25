@@ -86,6 +86,7 @@ const path = require('node:path');
 const { FailClosed } = require('./failclosed.cjs');
 const { readRegularFileBounded, writeRegularFile } = require('./regular-file.cjs');
 const { GSD_CORE_OWNER, GSD_CORE_REPO } = require('./resolve.cjs');
+const { assertNotRealUserState } = require('./test-fence.cjs');
 
 // ───────────────────────────── constants ─────────────────────────────
 
@@ -897,6 +898,7 @@ function writeStamp(stamp, deps = {}) {
   const mkdirSync = deps.mkdirSync || nodeFs.mkdirSync;
   const file = deps.stampPath || stampPath(deps.env, { homedir: deps.homedir });
   validateStamp(stamp, 'about to be written');
+  assertNotRealUserState(file); // under node --test only (quick 261024-po0 incident)
   mkdirSync(path.dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(stamp, null, 2) + '\n', { encoding: 'utf8' });
   return file;
@@ -1030,6 +1032,7 @@ function writeCacheLive(entry, deps = {}) {
   const mkdirSync = deps.mkdirSync || nodeFs.mkdirSync;
   try {
     const file = deps.cachePath || cachePath(deps.env, { homedir: deps.homedir });
+    assertNotRealUserState(file); // under node --test only; caught below, so a fenced write is a miss
     mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(file, JSON.stringify(entry, null, 2) + '\n', { encoding: 'utf8' });
   } catch (_) {

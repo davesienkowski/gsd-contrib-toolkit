@@ -18,6 +18,7 @@
  *   • the gate triggers on hasGovernedSegment, never on the chain aggregate (CTK-ADR-0006 §D.8).
  */
 
+require('./lib/test-isolate.cjs').isolateToolLog(); // never the real ~/.gsd-contrib tool log (quick 261024-po0)
 const test = require('node:test');
 const assert = require('node:assert');
 

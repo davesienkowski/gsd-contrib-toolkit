@@ -24,6 +24,16 @@ const REAL_HOME = os.userInfo().homedir;
 const SHA = 'a'.repeat(40);
 const DIGEST = 'sha256:' + 'f'.repeat(64);
 
+// The cases below trigger the fence on purpose; mark them expected so it does not fail this file.
+function expected(fn) {
+  process.env.GSD_CONTRIB_TEST_FENCE_EXPECTED = '1';
+  try {
+    return fn();
+  } finally {
+    delete process.env.GSD_CONTRIB_TEST_FENCE_EXPECTED;
+  }
+}
+
 function spy() {
   const calls = [];
   const fn = (...args) => { calls.push(args); };
@@ -39,11 +49,11 @@ test('po0: writeStamp refuses the real ~/.gsd-contrib stamp path under node --te
   const m = spy();
   const stamp = rs.buildStamp({ sha: SHA, runtimeDigest: DIGEST, mode: 'installed', engineVerified: true });
   assert.throws(
-    () => rs.writeStamp(stamp, {
+    () => expected(() => rs.writeStamp(stamp, {
       stampPath: path.join(REAL_HOME, '.gsd-contrib', 'runtime-stamp.json'),
       writeFileSync: w.fn,
       mkdirSync: m.fn,
-    }),
+    })),
     /test fence/
   );
   assert.strictEqual(w.calls.length, 0, 'no write may be attempted');
@@ -54,7 +64,7 @@ test('po0: writeStamp refuses a path inside the real ~/.claude under node --test
   const w = spy();
   const stamp = rs.buildStamp({ sha: SHA, runtimeDigest: DIGEST, mode: 'installed', engineVerified: true });
   assert.throws(
-    () => rs.writeStamp(stamp, { stampPath: path.join(REAL_HOME, '.claude', 'x', 'runtime-stamp.json'), writeFileSync: w.fn, mkdirSync: () => {} }),
+    () => expected(() => rs.writeStamp(stamp, { stampPath: path.join(REAL_HOME, '.claude', 'x', 'runtime-stamp.json'), writeFileSync: w.fn, mkdirSync: () => {} })),
     /test fence/
   );
   assert.strictEqual(w.calls.length, 0);
@@ -63,11 +73,11 @@ test('po0: writeStamp refuses a path inside the real ~/.claude under node --test
 test('po0: writeCacheLive never writes the real ~/.gsd-contrib cache under node --test', () => {
   const w = spy();
   const m = spy();
-  rs.writeCacheLive({ tip: SHA, fetched_at: new Date().toISOString() }, {
+  expected(() => rs.writeCacheLive({ tip: SHA, fetched_at: new Date().toISOString() }, {
     cachePath: path.join(REAL_HOME, '.gsd-contrib', 'upstream-tip-cache.json'),
     writeFileSync: w.fn,
     mkdirSync: m.fn,
-  });
+  }));
   assert.strictEqual(w.calls.length, 0, 'the cache write must be fenced');
   assert.strictEqual(m.calls.length, 0, 'the cache mkdir must be fenced');
 });
@@ -80,7 +90,7 @@ test('po0: tool-recorder appendRecord never writes the real ~/.gsd-contrib tool 
   env.HOME = REAL_HOME;
   let out;
   try {
-    out = recorder.appendRecord('{"x":1}', { env, fsImpl });
+    out = expected(() => recorder.appendRecord('{"x":1}', { env, fsImpl }));
   } catch (err) {
     assert.match(String(err && err.message), /test fence/);
   }
@@ -95,4 +105,32 @@ test('po0 guard: the fence leaves a temp path alone', (t) => {
   const stamp = rs.buildStamp({ sha: SHA, runtimeDigest: DIGEST, mode: 'installed', engineVerified: true });
   const file = rs.writeStamp(stamp, { stampPath: path.join(dir, 'runtime-stamp.json') });
   assert.ok(fs.existsSync(file));
+});
+
+test('po0 fence: an UNEXPECTED fire fails the test file even when the caller swallows the throw', (t) => {
+  // A child test file leaks the way the 15 gate test files did (the tool recorder, no
+  // GSD_CONTRIB_LOG_DIR, the real home) but with a spy fs, so even a broken fence writes nothing.
+  const fs = require('node:fs');
+  const { spawnSync } = require('node:child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'po0-fence-child-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const child = path.join(dir, 'leak.test.cjs');
+  fs.writeFileSync(child,
+    "'use strict';\n" +
+    "const { test } = require('node:test');\n" +
+    "const recorder = require(" + JSON.stringify(require.resolve('../tool-recorder.cjs')) + ");\n" +
+    "test('leaks but swallows', () => {\n" +
+    "  const fsImpl = new Proxy({}, { get: () => () => { throw new Error('spy'); } });\n" +
+    "  const env = Object.assign({}, process.env, { HOME: " + JSON.stringify(REAL_HOME) + " });\n" +
+    "  delete env.GSD_CONTRIB_LOG_DIR;\n" +
+    "  try { recorder.appendRecord('{}', { env, fsImpl }); } catch (_) { /* swallowed, like a gate */ }\n" +
+    "});\n");
+  const env = Object.assign({}, process.env);
+  delete env.GSD_CONTRIB_LOG_DIR;
+  delete env.GSD_CONTRIB_TEST_FENCE_EXPECTED;
+  delete env.NODE_TEST_CONTEXT;
+  const r = spawnSync(process.execPath, ['--test', child], { env, encoding: 'utf8', timeout: 60000 });
+  const out = (r.stdout || '') + (r.stderr || '');
+  assert.notStrictEqual(r.status, 0, 'the leaking child test file must fail; output:\n' + out);
+  assert.match(out, /GSD-CONTRIB-TEST-FENCE: 1 unexpected write/, out);
 });
