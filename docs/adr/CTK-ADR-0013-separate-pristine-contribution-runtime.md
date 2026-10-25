@@ -179,3 +179,23 @@ config dir carries its own settings, login (`.credentials.json`), plugins and `.
   daily stamp path.
 - **Expanding `~` or trimming the value like install.js.** Rejected: Claude Code reads such values
   against the working directory, so the session and the installer would read different dirs.
+
+## Note 2026-10-24: the first `sync` into an empty contribution dir (quick 261024-bl1)
+
+This record never exercised an empty config dir. The dev-env contrib runtime MVP (quick 261024-tnz) ran
+the first `runtime-sync sync` into a fresh dir and it aborted in about 4 s, before `npm ci` and
+install.js: `sync` computes `payloadDigest(<cfg>/gsd-core)` of the EXISTING runtime for its fast-path
+compare, and `runtimeDigest` fails closed on a missing root.
+
+Decision (sync only, record still Proposed, nothing above is withdrawn): an ENOENT on the runtime root
+or on a payload dir means "no existing runtime". `runtimeDigest` marks that one error (`missingRoot`);
+`sync` skips the fast-path compare, logs why, and takes the normal slow path (`npm ci`, `build:hooks`,
+install.js, hooks-written verification, stamp). Every other read error (EACCES, a root that is not a
+directory, an unreadable file) still aborts. `check` and the gate never read the marker and keep their
+current behavior on a missing root (unstamped, deny). The daily-dir refusal in Decision 4 still runs
+first, so an empty `~/.claude` is refused, not installed into.
+
+Limits: a partly present payload (some payload dirs missing, others not) also counts as no existing
+runtime and gets a full reinstall; the real classifier already refuses an unreadable tree below the
+config dir (invalid, exit 3), so the EACCES abort in `sync` itself is a second layer, tested with a
+stubbed classifier.

@@ -622,10 +622,14 @@ function runtimeDigest(root, deps = {}) {
   try {
     st = statSync(root);
   } catch (err) {
-    throw new FailClosed(
+    const missing = new FailClosed(
       'ENF-21: the gsd-core runtime root is missing or unreadable at ' + root +
         ' (' + ((err && err.message) || 'stat failure') + ') — cannot verify runtime freshness'
     );
+    // Only `sync` reads this marker (CTK-ADR-0013 note, 2026-10-24): an ENOENT on the root itself is
+    // "no runtime here yet". It is still a FailClosed throw for `check` and the gate, which ignore it.
+    if (err && err.code === 'ENOENT') missing.missingRoot = true;
+    throw missing;
   }
   if (!st || !st.isDirectory()) {
     throw new FailClosed('ENF-21: the gsd-core runtime root is not a directory: ' + root);

@@ -1293,13 +1293,19 @@ test('bl1: an UNREADABLE runtime root (EACCES) still aborts sync before npm ci o
   const cfg = path.join(root, 'contrib');
   const gc = path.join(cfg, 'gsd-core');
   for (const d of ['workflows', 'references', 'templates', 'contexts']) po0Fs.mkdirSync(path.join(gc, d), { recursive: true });
-  po0Fs.chmodSync(gc, 0o000);
-  t.after(() => po0Fs.chmodSync(gc, 0o755));
-  try { po0Fs.statSync(path.join(gc, 'workflows')); t.skip('this process can read through a mode-000 dir (root?)'); return; } catch (_) { /* EACCES, as the case needs */ }
+  // The classifier already refuses an unreadable gsd-core, so the unreadable dir is one level down:
+  // it classifies as contribution, and the payload digest hits EACCES on readdir (not ENOENT).
+  const locked = path.join(gc, 'workflows');
+  po0Fs.chmodSync(locked, 0o000);
+  try { po0Fs.readdirSync(locked); po0Fs.chmodSync(locked, 0o755); t.skip('this process can read a mode-000 dir (root?)'); return; } catch (_) { /* EACCES, as the case needs */ }
   const { deps, state } = firstSyncDeps(home, cfg);
-  const r = cli.sync(deps);
+  // The real classifier walks the tree and already refuses an unreadable one (invalid, exit 3); stub
+  // it to "contribution" so the case reaches the sync-layer digest and proves ITS error handling.
+  deps.oracle = Object.assign({}, deps.oracle, { classifyConfigDir: () => contribDesc(cfg) });
+  let r;
+  try { r = cli.sync(deps); } finally { po0Fs.chmodSync(locked, 0o755); } // before po0Home's cleanup
   assert.notStrictEqual(r.code, 0, state.logs.join('\n'));
-  assert.ok(state.logs.some((l) => /ABORTED.*EACCES/.test(l)), 'the abort names the permission error');
+  assert.ok(state.logs.some((l) => /ABORTED.*EACCES/.test(l)), 'the abort names the permission error: ' + state.logs.join('\n'));
   assert.ok(!ran(state, isNpmCi), 'no npm ci');
   assert.strictEqual(state.exec.filter(isInstall).length, 0, 'no install.js');
   assert.strictEqual(state.stamps.length, 0, 'no stamp');
