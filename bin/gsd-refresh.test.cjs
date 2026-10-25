@@ -296,3 +296,31 @@ test('po0 r2 guard: with the REAL runtime-sync where, --rollback from a scratch 
   assert.deepStrictEqual(tree(daily), before.cfg, 'the daily dir is untouched');
   assert.deepStrictEqual(tree(sc.snaps), before.snaps, 'the snapshots are untouched');
 });
+
+// ------------- quick 261024-po0 round 2b (fresh review WR-02, WR-03) -------------
+
+test('po0 r2b: a snapshot that cannot be written stops the refresh before sync (WR-02)', (t) => {
+  const sc = makeScratch(t);
+  fs.chmodSync(sc.snaps, 0o500);
+  t.after(() => fs.chmodSync(sc.snaps, 0o700));
+  const r = runMode(sc, ['--yes'], { STUB_WHERE_CODE: '0', STUB_SYNC_CODE: '0' });
+  assert.notStrictEqual(r.status, 0, 'an unwritable snapshot must fail the refresh; output:\n' + r.out);
+  const calls = fs.existsSync(sc.log) ? fs.readFileSync(sc.log, 'utf8') : '';
+  assert.ok(!calls.includes('sync'), 'sync must not run without a snapshot; calls:\n' + calls);
+  assert.ok(!r.out.includes('Refresh complete'), r.out);
+});
+
+test('po0 r2b: a snapshot root with a space still lists and rolls back the latest snapshot (WR-03)', (t) => {
+  const sc = makeScratch(t);
+  const spaced = path.join(sc.root, 'snap root');
+  fs.mkdirSync(spaced);
+  const sc2 = Object.assign({}, sc, { snaps: spaced });
+  fs.writeFileSync(path.join(sc.cfg, 'gsd-core', 'a.md'), 'A1\n');
+  assert.strictEqual(runMode(sc2, ['--yes'], { STUB_WHERE_CODE: '0', STUB_SYNC_CODE: '0' }).status, 0);
+  const list = runMode(sc2, ['--list'], {});
+  assert.match(list.out, /snap-\d{8}-\d{6}/, 'the snapshot is listed:\n' + list.out);
+  fs.writeFileSync(path.join(sc.cfg, 'gsd-core', 'a.md'), 'A2\n');
+  const back = runMode(sc2, ['--rollback', '--yes'], { STUB_WHERE_CODE: '0' });
+  assert.strictEqual(back.status, 0, back.out);
+  assert.strictEqual(fs.readFileSync(path.join(sc.cfg, 'gsd-core', 'a.md'), 'utf8'), 'A1\n');
+});

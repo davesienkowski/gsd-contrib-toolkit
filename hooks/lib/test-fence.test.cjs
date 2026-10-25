@@ -162,7 +162,11 @@ test('po0 r2: the fence holds under node --test --test-isolation=none (no NODE_T
   const env = Object.assign({}, process.env);
   delete env.NODE_TEST_CONTEXT;
   delete env.GSD_CONTRIB_TEST_FENCE_EXPECTED;
-  const r = spawnSync(process.execPath, ['--test', '--test-isolation=none', child], { env, encoding: 'utf8', timeout: 60000 });
+  // Node 22 knows only --experimental-test-isolation; Node 23+ (and 24) know --test-isolation (fresh review BL-01).
+  const flag = ['--test-isolation=none', '--experimental-test-isolation=none']
+    .find((f) => spawnSync(process.execPath, [f, '--version'], { encoding: 'utf8' }).status === 0);
+  assert.ok(flag, 'this node accepts neither isolation flag');
+  const r = spawnSync(process.execPath, ['--test', flag, child], { env, encoding: 'utf8', timeout: 60000 });
   const out = (r.stdout || '') + (r.stderr || '');
   assert.strictEqual(r.status, 0, 'the fence must fire in-process under isolation=none; output:\n' + out);
 });
