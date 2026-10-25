@@ -1238,3 +1238,98 @@ test('po0 r2: sync strips GSD_ALLOW_SYMLINKED_DEST and GSD_AGENTS_DIR from the i
   assert.strictEqual(inst.opts.env.KEEP_ME, 'x', 'the rest of the env is forwarded');
   assert.strictEqual(inst.opts.env.CLAUDE_CONFIG_DIR, CONTRIB_CFG);
 });
+
+// ------------- quick 261024-bl1 (CTK-ADR-0013 note, 2026-10-24): the first sync into an empty dir -------------
+//
+// The payload digest of the EXISTING runtime is real here (temp HOME, temp config dirs); only the
+// clone side, the network and the installer stay stubbed. A missing runtime root is "no existing
+// runtime" for sync alone; every other read error still aborts.
+
+/** syncDeps over the REAL classifier and the REAL runtime-side payload digest for config dir `cfg`. */
+function firstSyncDeps(home, cfg) {
+  const { deps, state } = syncDeps({
+    oracle: {
+      classifyConfigDir: oracle.classifyConfigDir,
+      payloadDigest: (root) => (String(root).startsWith(TMP) ? DIGEST : oracle.payloadDigest(root)),
+    },
+  });
+  delete deps.runtimeRoot; // the classified <cfg>/gsd-core, not the stub default
+  delete deps.hooksRoot;
+  deps.env = { CLAUDE_CONFIG_DIR: cfg };
+  deps.homedir = home;
+  return { deps, state };
+}
+
+test('bl1: the first sync into a MISSING contribution dir takes the slow path (npm ci, build:hooks, install.js) and stamps installed', (t) => {
+  const { root, home } = po0Home(t);
+  const cfg = path.join(root, 'contrib');
+  const { deps, state } = firstSyncDeps(home, cfg);
+  const r = cli.sync(deps);
+  assert.strictEqual(r.code, 0, state.logs.join('\n'));
+  assert.strictEqual(r.mode, 'installed');
+  assert.ok(ran(state, isNpmCi), 'npm ci ran');
+  assert.ok(ran(state, isBuildHooks), 'build:hooks ran');
+  assert.strictEqual(state.exec.filter(isInstall).length, 1, 'install.js ran once');
+  assert.strictEqual(state.stamps.length, 1);
+  assert.strictEqual(state.stamps[0].mode, 'installed');
+  assert.ok(state.logs.some((l) => /no existing runtime/i.test(l)), 'the log says why the fast path was skipped');
+});
+
+test('bl1: the first sync into an EMPTY contribution dir, and one holding only an empty gsd-core, takes the slow path too', (t) => {
+  const { root, home } = po0Home(t);
+  for (const sub of [[], ['gsd-core'], ['gsd-core', 'workflows']]) {
+    const cfg = path.join(root, 'contrib-' + sub.length);
+    po0Fs.mkdirSync(path.join(cfg, ...sub), { recursive: true });
+    const { deps, state } = firstSyncDeps(home, cfg);
+    const r = cli.sync(deps);
+    assert.strictEqual(r.code, 0, sub.join('/') + '\n' + state.logs.join('\n'));
+    assert.ok(ran(state, isNpmCi), sub.join('/') + ': npm ci ran');
+    assert.strictEqual(state.exec.filter(isInstall).length, 1);
+  }
+});
+
+test('bl1: an UNREADABLE runtime root (EACCES) still aborts sync before npm ci or install.js, with no stamp and the tmpdir removed', (t) => {
+  const { root, home } = po0Home(t);
+  const cfg = path.join(root, 'contrib');
+  const gc = path.join(cfg, 'gsd-core');
+  for (const d of ['workflows', 'references', 'templates', 'contexts']) po0Fs.mkdirSync(path.join(gc, d), { recursive: true });
+  po0Fs.chmodSync(gc, 0o000);
+  t.after(() => po0Fs.chmodSync(gc, 0o755));
+  try { po0Fs.statSync(path.join(gc, 'workflows')); t.skip('this process can read through a mode-000 dir (root?)'); return; } catch (_) { /* EACCES, as the case needs */ }
+  const { deps, state } = firstSyncDeps(home, cfg);
+  const r = cli.sync(deps);
+  assert.notStrictEqual(r.code, 0, state.logs.join('\n'));
+  assert.ok(state.logs.some((l) => /ABORTED.*EACCES/.test(l)), 'the abort names the permission error');
+  assert.ok(!ran(state, isNpmCi), 'no npm ci');
+  assert.strictEqual(state.exec.filter(isInstall).length, 0, 'no install.js');
+  assert.strictEqual(state.stamps.length, 0, 'no stamp');
+  assert.ok(state.rm.some((c) => c.path === TMP), 'the tmpdir was removed');
+});
+
+test('bl1: a runtime root that is a FILE (not a directory) still aborts', (t) => {
+  const { root, home } = po0Home(t);
+  const cfg = path.join(root, 'contrib');
+  po0Fs.mkdirSync(cfg);
+  po0Fs.writeFileSync(path.join(cfg, 'gsd-core'), 'x');
+  const { deps, state } = firstSyncDeps(home, cfg);
+  const r = cli.sync(deps);
+  assert.notStrictEqual(r.code, 0, state.logs.join('\n'));
+  assert.ok(!ran(state, isNpmCi));
+  assert.strictEqual(state.stamps.length, 0);
+});
+
+test('bl1: the daily dir still refuses first, even when it is empty', (t) => {
+  const { home } = po0Home(t);
+  const daily = path.join(home, '.claude');
+  po0Fs.mkdirSync(daily);
+  const { deps, state } = firstSyncDeps(home, daily);
+  po0AssertRefused(cli.sync(deps), state, 'refused-daily-config-dir');
+});
+
+test('bl1: runtimeDigest and payloadDigest still THROW on a missing root (check and the gate keep failing closed)', (t) => {
+  const { root } = po0Home(t);
+  assert.throws(() => oracle.runtimeDigest(path.join(root, 'nope')), /missing or unreadable/);
+  assert.throws(() => oracle.payloadDigest(path.join(root, 'nope')), /missing or unreadable/);
+  const c = checkDeps({ oracle: { runtimeDigest: () => oracle.runtimeDigest(path.join(root, 'nope')) } });
+  assert.throws(() => cli.check(c.deps), /missing or unreadable/, 'check keeps its behavior on a missing root');
+});
