@@ -120,6 +120,12 @@ config dir carries its own settings, login (`.credentials.json`), plugins and `.
   daily stamp with fixture values (the old content was not recoverable; the fixture file was archived,
   so the daily dir reads unstamped). A test that exercises a default write path must assert that the
   resolved path lies under its temp dir before any write, or inject the path; the po0 tests now do.
+  Backstop (added 2026-10-24 on the coordinator's request): `hooks/lib/test-fence.cjs` makes the stamp,
+  tip-cache and tool-log writers refuse any path inside the real home's `.gsd-contrib` or `.claude`
+  while `NODE_TEST_CONTEXT` is set, and an unexpected refusal fails the test file through its exit
+  code. Its first full run found 18 pre-existing test files that appended to the real tool log; they now
+  call `hooks/lib/test-isolate.cjs` for a temp `GSD_CONTRIB_LOG_DIR`. Limits: a test file run directly
+  with `node file.test.cjs` is not fenced, and only those three writers are.
 
 ## Alternatives considered
 
