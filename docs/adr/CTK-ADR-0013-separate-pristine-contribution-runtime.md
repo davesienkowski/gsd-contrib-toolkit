@@ -51,18 +51,30 @@ config dir carries its own settings, login (`.credentials.json`), plugins and `.
    `~/.gsd-contrib/runtime-stamp.json` does not move: readers outside the toolkit bind to it); any other
    dir uses `~/.gsd-contrib/config-dirs/<first 16 hex of sha256(path.resolve(cfg))>`.
    `GSD_CONTRIB_STATE_DIR` still overrides both.
-4. **The daily signal.** A config dir is the daily install when its realpath equals the realpath of
-   `~/.claude`, or when its realpath, or the realpath of its `gsd-core` or `hooks`, lies at or inside
-   `~/.claude` by a segment-wise path test (so a sibling `~/.claude-contrib` is not inside). A path
-   that does not exist yet resolves through its deepest existing ancestor, and a dangling symlink is
-   followed through readlink (at most 8 hops), so `cfg/hooks -> ~/.claude/<not yet>` is daily too
-   (added 2026-10-24 on an independent verifier finding). No durable local-mods marker exists via the
-   paths read, so none is used.
+4. **The daily signal.** The daily dirs are `$HOME/.claude` and `<passwd home>/.claude` (the passwd
+   home is `os.userInfo().homedir`), so a changed `HOME` cannot unlock the account's real daily dir. A
+   config dir is the daily install when its realpath equals the realpath of a daily dir, lies at or
+   inside one, or contains one (so `CLAUDE_CONFIG_DIR=$HOME` is refused), or when any top-level entry
+   that install.js writes (`gsd-core`, `hooks`, `agents`, `skills`, `commands`, `scripts`, `workflows`,
+   `gsd-pristine`, `gsd-migration-journal`, `settings.json`, `gsd-file-manifest.json`) resolves at or
+   inside one, by a segment-wise path test (so a sibling `~/.claude-contrib` is not inside). Other
+   entries, such as a `rules/` link into the daily dir, are not written by install.js and are not
+   checked. A path that does not exist yet resolves through its deepest existing ancestor, and a
+   dangling symlink is followed through readlink, so `cfg/hooks -> ~/.claude/<not yet>` is daily too
+   (added 2026-10-24 on an independent verifier finding). A classification that cannot be decided
+   refuses as invalid, never as a contribution dir: an unreadable passwd home, more than 8 dangling
+   symlink hops, or a realpath or readlink error other than "absent" or "not a symlink" (EACCES, ELOOP,
+   ENOTDIR and the like). The passwd home, the entry list and the uncertainty rule were added 2026-10-24
+   in round 2 on the independent review (WR-02, WR-03, WR-04, IN-01). No durable local-mods marker
+   exists via the paths read, so none is used.
 5. **`sync` refuses the daily or an invalid dir** with exit 3, before any network call, tmpdir, clone,
    `npm ci` or install, and prints how to start a contribution session. There is no override: no flag,
    env variable or prompt, because no toolkit use legitimately reinstalls the daily install. For a
    contribution dir `sync` runs `install.js --claude --global --config-dir <cfg>` with
-   `CLAUDE_CONFIG_DIR=<cfg>` in the child env, and writes the stamp into that dir's state dir.
+   `CLAUDE_CONFIG_DIR=<cfg>` in the child env, and writes the stamp into that dir's state dir. The
+   child env drops `GSD_ALLOW_SYMLINKED_DEST` (which disables install.js's symlinked-destination
+   guard) and `GSD_AGENTS_DIR` (which redirects its agents dir), so an inherited opt-in cannot let
+   install.js write through a symlink into the daily dir.
 6. **A read-only `where` verb** prints the config dir, its classification, runtime root, hooks root and
    state dir, and exits 0 for a contribution dir and 3 for the daily or an invalid dir. It writes nothing.
 7. **`check` and the gate keep their verdicts.** Only `fresh` allows and an unobtainable upstream tip is
@@ -72,17 +84,25 @@ config dir carries its own settings, login (`.credentials.json`), plugins and `.
 8. **The skills' Phase 0 runs `where` first** (sweep step 0b, core-contribution RT0) and stops with the
    launch form `CLAUDE_CONFIG_DIR=<absolute path> claude` on a non-zero exit. That step is advisory,
    model-driven text; the floors are Decision 5 and the ENF-21 gate at file and push time.
-9. **`bin/gsd-refresh` follows the same line.** It runs `where` before its confirmation and snapshot,
-   maps a refusal (from `where` or from `sync`) to exit 4 with a message naming
-   `~/.gsd/local-mods/gsd-refresh.sh` as the daily install's maintainer, and never re-applies local mods:
-   the only dir it may sync is a pristine contribution dir, which must stay pristine. Its `check` and
-   `rebaseline` subcommands still read the local-mods audit.
+9. **`bin/gsd-refresh` follows the same line.** Every mode that writes (refresh and `--rollback`) runs
+   `where` first, before any confirmation, snapshot, prune or restore, and maps a refusal (from `where`
+   or from `sync`) to exit 4 with a message naming `~/.gsd/local-mods/gsd-refresh.sh` as the daily
+   install's maintainer. Snapshots are kept per config dir (under a key of the dir's realpath, each
+   recording `config_dir=` in its meta), so pruning stays within one dir and a rollback restores only a
+   snapshot taken of the same dir; a named id must match the snapshot-id form. It never re-applies
+   local mods: the only dir it may sync is a pristine contribution dir, which must stay pristine.
+   `rebaseline` is retired (it fed the removed mod-baseline assertion; it now exits 1 and writes
+   nothing). `check` and `--list` only read; `check` still prints the local-mods audit. The rollback
+   classification, the per-dir snapshots and the retirement were added 2026-10-24 in round 2 on the
+   independent review (CR-01).
 
 ## Consequences
 
 - **Positive:** `sync` can no longer reinstall the daily install, from a sweep, a submit flow or
-  `bin/gsd-refresh`. A contribution session's ENF-21 measures its own pristine runtime and managed
-  hooks. The daily stamp's outside readers keep their path.
+  `bin/gsd-refresh`, and `bin/gsd-refresh --rollback` can no longer restore into it. A contribution
+  session's ENF-21 measures its own pristine runtime and managed hooks. The daily stamp's outside
+  readers keep their path. This covers `runtime-sync` and `bin/gsd-refresh` only: `bin/contrib-capability.cjs`
+  still writes the daily dir (the capability-delivery residual below).
 - **Negative / accepted (adopter cost):** a user with one config dir can no longer sync at all without
   creating a second config dir and logging in there. The login is per dir (its own
   `.credentials.json`); never copy one, since a shared refresh token races.
@@ -107,11 +127,17 @@ config dir carries its own settings, login (`.credentials.json`), plugins and `.
 - **Residual (per-dir surfaces):** plugins (the guard plugin included), MCP servers and push
   allowlists are per config dir, and a fresh contribution dir has none until it is provisioned; until
   then a contribution session is less guarded than a daily one.
-- **Residual (gsd-refresh):** `bin/gsd-refresh` no longer re-applies local mods, but its `check` and
-  `rebaseline` still read the hard-wired `~/.gsd/local-mods` audit, and whether to retire it (it is
-  also linked onto the user's PATH) is an open follow-up. In the other direction the local-mods refresh
+- **Residual (gsd-refresh):** `bin/gsd-refresh` no longer re-applies local mods and its writing modes
+  refuse the daily dir, but its read-only `check` still prints the hard-wired `~/.gsd/local-mods`
+  audit, and whether to retire the command (it is also linked onto the user's PATH) is an open
+  follow-up. Snapshots taken before round 2 sit flat in the snapshot root, carry no `config_dir=`, and
+  are never listed or restored by it. In the other direction the local-mods refresh
   tool, run inside a contribution session, would follow the exported `CLAUDE_CONFIG_DIR` and install
   into the contribution dir; that tool lives outside this repo.
+- **Residual (classification depth):** only the top-level entries install.js writes are checked; a
+  symlink deeper down (for example `skills/gsd-x -> ~/.claude/...`) is left to install.js's own
+  symlinked-destination guard, which `sync` keeps armed by dropping `GSD_ALLOW_SYMLINKED_DEST`. That
+  guard was read on the install paths in gsd-core `next` 354d727b, not on every write.
 - **Residual (not measured):** a differently cased spelling of `~/.claude` on a case-insensitive
   filesystem; `~/.gsd` capabilities are shared across config dirs (they are not ENF-21-bound); wiring
   the gates user-scope in the contribution dir is the maintainer's decision and is not built.
@@ -124,8 +150,14 @@ config dir carries its own settings, login (`.credentials.json`), plugins and `.
   tip-cache and tool-log writers refuse any path inside the real home's `.gsd-contrib` or `.claude`
   while `NODE_TEST_CONTEXT` is set, and an unexpected refusal fails the test file through its exit
   code. Its first full run found 18 pre-existing test files that appended to the real tool log; they now
-  call `hooks/lib/test-isolate.cjs` for a temp `GSD_CONTRIB_LOG_DIR`. Limits: a test file run directly
-  with `node file.test.cjs` is not fenced, and only those three writers are.
+  call `hooks/lib/test-isolate.cjs` for a temp `GSD_CONTRIB_LOG_DIR`. Since round 2 the fence also arms
+  when the process was started with `--test`, so `node --test --test-isolation=none` (which leaves
+  `NODE_TEST_CONTEXT` unset) is fenced too, and its own tests name the real paths without relying on
+  `HOME`, so the suite is green under a temp `HOME`. Limits: a test file run directly with
+  `node file.test.cjs` is not fenced, nor is a child spawned with an env that drops
+  `NODE_TEST_CONTEXT`; only those three writers are fenced (the writers of `~/.claude`, such as
+  install.js through `sync`, `bin/contrib-capability.cjs` and `bin/gsd-refresh`, are not); and paths are
+  compared lexically, without realpath, so a symlink into the real state dir is not caught.
 
 ## Alternatives considered
 
@@ -134,8 +166,9 @@ config dir carries its own settings, login (`.credentials.json`), plugins and `.
 - **An explicit, logged override for the refusal.** Rejected: no toolkit use reinstalls the daily
   install, and an override is the path the incident took by accident.
 - **Copying or symlinking the daily `settings.json`.** Rejected: install.js dedupes hook entries by file
-  stem (a copy keeps the daily hooks) and writes absolute hook paths into the file (a symlink would
-  rewrite the daily one).
+  stem, so a copy keeps the daily hooks; it writes the file by temp file plus rename, so a symlink is
+  replaced by a regular file that carries the daily hook entries (and since round 2 a symlinked
+  `settings.json` into the daily dir makes the config dir classify as daily).
 - **Per-config-dir state for the daily dir too.** Rejected: readers outside the toolkit bind to the
   daily stamp path.
 - **Expanding `~` or trimming the value like install.js.** Rejected: Claude Code reads such values

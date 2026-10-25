@@ -5,6 +5,8 @@ Status note (2026-10-24): superseded for the toolkit command by
 mods-intact goal no longer holds for `bin/gsd-refresh`: that command now refreshes only a pristine
 contribution config dir (`runtime-sync sync` refuses the daily `~/.claude`) and never re-applies local
 mods. The daily install, local mods included, is maintained by `~/.gsd/local-mods/gsd-refresh.sh`.
+Its `--rollback` also refuses the daily dir and restores only a snapshot of the same config dir
+(snapshots are kept per dir), and `rebaseline` is retired (round 2, same date).
 The text below is the 2026-08-07 design as written.
 
 Status: exploration output (2026-08-07). Not yet built. Build home: gsd-contrib-toolkit.
