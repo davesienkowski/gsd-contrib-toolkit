@@ -37,6 +37,12 @@
  *       is Accepted (2026-10-24 sign-off), amends CTK-ADR-0007 Decision 1 and Decision 5, is plain ASCII,
  *       has an Accepted row in docs/adr/README.md, and CTK-ADR-0007 carries exactly one Amended by line
  *       naming it (its Accepted Status line, pinned by 36-06c, is unchanged).
+ *   (l) Quick 261024-po0: CTK-ADR-0013 (separate pristine contribution runtime) exists once, is Proposed
+ *       (2026-10-24), is plain ASCII, amends CTK-ADR-0011 and relates to CTK-ADR-0007 (never amends it),
+ *       has a Proposed row in docs/adr/README.md, and its Decision and Consequences carry the pinned
+ *       content; CTK-ADR-0011 carries exactly one Amended by bullet naming it plus dated notes inside its
+ *       CLAUDE_CONFIG_DIR residual and its local-mods residual (its Status, Amends and ASCII pins above
+ *       are unchanged); the README rows and the DESIGN-gsd-refresh.md status note name CTK-ADR-0013.
  *
  * Dave accepted CTK-ADR-0008, CTK-ADR-0009 and CTK-ADR-0010 on 2026-10-06 by explicit sign-off (quick
  * 261006-p4t); (a), (b), (e) and (f) pin that acceptance. A later change of decision is a superseding or
@@ -803,4 +809,151 @@ test('261021-rud: CTK-ADR-0012 records the landed Self-test template, Reviewed o
   // Decision 6 and the baseline row are left as accepted (the record's own Review rule).
   assert.match(text, /because the upstream template has not\s+landed it/, 'Decision 6 text unchanged');
   assert.match(text, /\| Self-test report in the fix template \| \*\*Not landed\.\*\*/, 'baseline row unchanged');
+});
+
+// -- quick 261024-po0 (l): CTK-ADR-0013 separate pristine contribution runtime; CTK-ADR-0011 amended ------
+
+/** The text of a `## <name>` section, up to the next `## ` heading (whitespace collapsed). */
+function adrSection(file, name) {
+  const text = fs.readFileSync(file, 'utf8');
+  const start = text.indexOf('\n## ' + name + '\n');
+  assert.ok(start >= 0, path.basename(file) + ' has a "## ' + name + '" section');
+  const rest = text.slice(start + 1);
+  const next = rest.indexOf('\n## ', 1);
+  return (next >= 0 ? rest.slice(0, next) : rest).replace(/\s+/g, ' ');
+}
+
+/** Every `- **Residual...` bullet (its line to the next `- **` line or heading) whose text contains marker. */
+function residualBullets(file, marker) {
+  const lines = fs.readFileSync(file, 'utf8').split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].startsWith('- **Residual')) continue;
+    const b = [lines[i]];
+    for (let j = i + 1; j < lines.length && !/^- \*\*/.test(lines[j]) && !/^#/.test(lines[j]); j++) b.push(lines[j]);
+    const text = b.join(' ').replace(/\s+/g, ' ');
+    if (text.includes(marker)) out.push(text);
+  }
+  return out;
+}
+
+test('po0: exactly one CTK-ADR-0013 file, and its Status line says Proposed (2026-10-24), not Accepted', () => {
+  const line = statusLine(adrFile(13));
+  assert.match(line, /^- \*\*Status:\*\* Proposed \(2026-10-24\)/, line);
+  assert.doesNotMatch(line, /Accepted/, line);
+});
+
+test('po0: docs/adr/README.md row for CTK-ADR-0013 says Proposed (not Accepted), milestone v2.8', () => {
+  const cells = readmeRow('CTK-ADR-0013').split('|').map((c) => c.trim());
+  assert.ok(cells.includes('Proposed'), JSON.stringify(cells));
+  assert.ok(!cells.includes('Accepted'), JSON.stringify(cells));
+  assert.ok(cells.includes('v2.8'), JSON.stringify(cells));
+  assert.ok(cells.some((c) => c.includes('(' + path.basename(adrFile(13)) + ')')), 'the row links the exact file name');
+});
+
+test('po0: every byte of CTK-ADR-0013 is plain ASCII', () => {
+  const buf = fs.readFileSync(adrFile(13));
+  const bad = [];
+  for (let i = 0; i < buf.length; i++) if (buf[i] > 0x7e || (buf[i] < 0x20 && buf[i] !== 0x0a)) bad.push(i);
+  assert.deepStrictEqual(bad.slice(0, 10), [], 'non-ASCII or control bytes at offsets ' + bad.slice(0, 10).join(','));
+});
+
+test('po0: CTK-ADR-0013 amends CTK-ADR-0011 only and relates to CTK-ADR-0007', () => {
+  const amends = headerBullet(adrFile(13), 'Amends');
+  assert.strictEqual(amends.length, 1, JSON.stringify(amends));
+  assert.ok(amends[0].includes('CTK-ADR-0011'), amends[0]);
+  assert.ok(!amends[0].includes('CTK-ADR-0007'), 'the Amends bullet does not name CTK-ADR-0007: ' + amends[0]);
+  const rel = headerBullet(adrFile(13), 'Relates to');
+  assert.strictEqual(rel.length, 1, JSON.stringify(rel));
+  assert.ok(rel[0].includes('CTK-ADR-0007'), rel[0]);
+});
+
+test('po0: CTK-ADR-0011 has exactly one Amended by bullet, and it names CTK-ADR-0013', () => {
+  const hits = headerBullet(adrFile(11), 'Amended by');
+  assert.strictEqual(hits.length, 1, JSON.stringify(hits));
+  assert.ok(hits[0].includes('CTK-ADR-0013'), hits[0]);
+  assert.ok(hits[0].includes('2026-10-24'), hits[0]);
+});
+
+test('po0: CTK-ADR-0011 CLAUDE_CONFIG_DIR residual carries a dated note naming CTK-ADR-0013', () => {
+  const hits = residualBullets(adrFile(11), 'if `CLAUDE_CONFIG_DIR` points');
+  assert.strictEqual(hits.length, 1, JSON.stringify(hits));
+  assert.ok(hits[0].includes('2026-10-24'), hits[0]);
+  assert.ok(hits[0].includes('CTK-ADR-0013'), hits[0]);
+});
+
+test('po0: CTK-ADR-0011 local-mods residual carries a dated note naming CTK-ADR-0013', () => {
+  const hits = residualBullets(adrFile(11), 'a local mod that edits a managed hook');
+  assert.strictEqual(hits.length, 1, JSON.stringify(hits));
+  assert.ok(hits[0].includes('2026-10-24'), hits[0]);
+  assert.ok(hits[0].includes('CTK-ADR-0013'), hits[0]);
+});
+
+test('po0: CTK-ADR-0013 Decision names --config-dir, where, config-dirs, no override and the gsd-refresh rule', () => {
+  const d = adrSection(adrFile(13), 'Decision');
+  for (const s of ['--config-dir', 'where', 'config-dirs', 'gsd-refresh']) assert.ok(d.includes(s), 'Decision names ' + s);
+  assert.match(d, /no override/i);
+  assert.match(d, /never re-applies local mods/, 'Decision records that gsd-refresh never re-applies local mods');
+});
+
+test('po0: CTK-ADR-0013 Consequences names the adopter cost and every pinned residual', () => {
+  const c = adrSection(adrFile(13), 'Consequences');
+  for (const s of ['second config dir', '354d727b', 'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB', 'stem', 'generated',
+    'project settings', 'CLAUDE_DIR', 'gsd-refresh', '.credentials.json']) {
+    assert.ok(c.includes(s), 'Consequences names ' + s);
+  }
+  // The Task 1 incident class (a red test that wrote the real stamp) is recorded as a test-discipline residual.
+  assert.match(c, /test discipline/i, 'Consequences records the test-discipline residual');
+  assert.match(c, /before (any|the) (default )?write/i, 'the residual says the resolved path is asserted before any write');
+});
+
+test('po0: README.md runtime-drift row and bin/ row name the session config dir, where and CTK-ADR-0013', () => {
+  const lines = fs.readFileSync(path.join(REPO, 'README.md'), 'utf8').split('\n');
+  const drift = lines.find((l) => l.startsWith('| `runtime-drift.cjs` |'));
+  assert.ok(drift, 'README.md has the runtime-drift.cjs row');
+  for (const s of ['$CLAUDE_CONFIG_DIR/gsd-core', 'CTK-ADR-0013']) assert.ok(drift.includes(s), 'runtime-drift row names ' + s);
+  const bin = lines.find((l) => l.startsWith('| `bin/`'));
+  assert.ok(bin, 'README.md has the bin/ row');
+  assert.ok(bin.includes('runtime-sync where'), 'bin/ row names runtime-sync where');
+  assert.match(bin, /refuses the daily/, 'bin/ row says sync refuses the daily install');
+});
+
+test('po0: DESIGN-gsd-refresh.md opens with a dated note that CTK-ADR-0013 superseded its mods-intact goal', () => {
+  const head = fs.readFileSync(path.join(REPO, 'DESIGN-gsd-refresh.md'), 'utf8').split('\n').slice(0, 12).join(' ');
+  assert.ok(head.includes('2026-10-24'), head);
+  assert.ok(head.includes('CTK-ADR-0013'), head);
+  assert.match(head, /supersed/i, head);
+  assert.ok(head.includes('~/.gsd/local-mods/gsd-refresh.sh'), 'names the daily install maintainer: ' + head);
+});
+
+// -- quick 261024-po0 round 2: CTK-ADR-0013 matches the round-2 code (review CR-01, WR-02..06, IN-02) --
+
+test('po0 r2: CTK-ADR-0013 Decision records rollback classification, per-dir snapshots, uncertainty refusal, passwd home, install-written entries and the stripped env', () => {
+  const d = adrSection(adrFile(13), 'Decision');
+  assert.match(d, /--rollback/, 'Decision names --rollback');
+  assert.match(d, /snapshots? (are |is )?kept per config dir|per-config-dir snapshot/i, 'Decision says snapshots are per config dir');
+  assert.match(d, /rebaseline` is retired|retires? `rebaseline`/, 'Decision says rebaseline is retired');
+  assert.match(d, /passwd home/, 'Decision names the passwd home');
+  assert.match(d, /uncertain|cannot (be )?decide/i, 'Decision says an undecidable classification refuses');
+  for (const s of ['agents', 'skills', 'commands', 'GSD_ALLOW_SYMLINKED_DEST']) assert.ok(d.includes(s), 'Decision names ' + s);
+});
+
+test('po0 r2: CTK-ADR-0013 makes no blanket "never touches the daily" claim and names contrib-capability as the writer it does not cover', () => {
+  const text = fs.readFileSync(adrFile(13), 'utf8').replace(/\s+/g, ' ');
+  assert.doesNotMatch(text, /never touches the daily/i);
+  const c = adrSection(adrFile(13), 'Consequences');
+  assert.match(c, /--rollback/, 'Consequences names --rollback among the refused writers');
+  assert.match(c, /contrib-capability/, 'Consequences names the contrib-capability writer it does not cover');
+});
+
+test('po0 r2: CTK-ADR-0013 test-discipline residual names isolation=none as fenced and the lexical-path limit', () => {
+  const b = residualBullets(adrFile(13), 'test discipline');
+  assert.strictEqual(b.length, 1);
+  assert.match(b[0], /--test-isolation=none/);
+  assert.match(b[0], /lexical/i);
+});
+
+test('po0 r2: CTK-ADR-0013 no longer says a symlinked settings.json would rewrite the daily one (IN-02)', () => {
+  const text = fs.readFileSync(adrFile(13), 'utf8').replace(/\s+/g, ' ');
+  assert.doesNotMatch(text, /a symlink would rewrite the daily one/);
 });

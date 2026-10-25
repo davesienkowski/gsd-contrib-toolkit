@@ -5,8 +5,19 @@
  * bin/runtime-sync.cjs — the ENF-21 runtime-freshness CLI.
  *
  *   node bin/runtime-sync.cjs check   read-only: print the drift verdict, mutate nothing
- *   node bin/runtime-sync.cjs sync    remediate: bring `~/.claude/gsd-core` to `origin/next`
+ *   node bin/runtime-sync.cjs sync    remediate: bring `<config dir>/gsd-core` to `origin/next`
  *                                     and stamp it — one command, no prompts, no decisions
+ *   node bin/runtime-sync.cjs where   read-only: print the session's config dir, its
+ *                                     classification, roots and state dir (CTK-ADR-0013)
+ *
+ * -- THE CONFIG DIR, AND THE DAILY-INSTALL REFUSAL (CTK-ADR-0013, quick 261024-po0) --------
+ * Every verb first classifies the session's Claude config dir (CLAUDE_CONFIG_DIR when it is an
+ * absolute path, else ~/.claude; hooks/lib/runtime-stamp.cjs classifyConfigDir). `sync` REFUSES
+ * (exit 3) the daily ~/.claude and an invalid value BEFORE anything else: no tip lookup, no
+ * tmpdir, no git, npm or install.js, no stamp. There is no override: the daily install has its
+ * own maintainer (the local-mods refresh tool), and contribution work runs in its own config dir.
+ * For a contribution dir, install.js gets `--claude --global --config-dir <cfg>` and
+ * CLAUDE_CONFIG_DIR=<cfg>, and the stamp lands in that dir's own state dir.
  *
  * ── WHY THE REMEDIATION IS *NOT* IN THE HOOK (D-08) ─────────────────────────────────────
  * ENF-21's deny reason quotes `sync` verbatim rather than performing it, and both skills run
@@ -38,7 +49,7 @@
  * `runtime_digest` (+ the managed-hook fields below). Do not quietly promote it to a gate input.
  *
  * ── THE MANAGED gsd-core HOOKS (CTK-ADR-0011, quick 261017-w1i) ─────────────────────────
- * gsd-core installs its hooks into `~/.claude/hooks` only from a BUILT `hooks/dist`, which is
+ * gsd-core installs its hooks into `<config dir>/hooks` only from a BUILT `hooks/dist`, which is
  * gitignored and produced by `npm run build:hooks` alone (`npm ci`'s `prepare` runs build:lib
  * only). Without the build, install.js silently keeps the OLD hooks. So:
  *   - the fast path above may stamp ONLY when the payload digests are equal AND an early
@@ -49,7 +60,7 @@
  *     reinstalls (CTK-ADR-0011 Decision 7; removing the fast path is a follow-up);
  *   - the slow path runs `npm run build:hooks` between `npm ci` and install.js, and aborts with NO
  *     stamp when the build fails or leaves `hooks/dist` with no regular file;
- *   - after install.js, every managed hook must exist as a regular file under `~/.claude/hooks`
+ *   - after install.js, every managed hook must exist as a regular file under `<config dir>/hooks`
  *     whose later of mtime and ctime is no older than the install start minus HOOK_MTIME_SLACK_MS
  *     and no later than the post-install clock plus HOOK_MTIME_SLACK_MS (a future-dated file is stale)
  *     (ctime because a copy API may carry the source's mtime over, never its ctime). That proves each
@@ -249,17 +260,24 @@ function symlinkPreflight(runtimeRoot, log, deps = {}) {
 
 const USAGE = [
 
-  'usage: node bin/runtime-sync.cjs <check|sync>',
+  'usage: node bin/runtime-sync.cjs <check|sync|where>',
   '',
-  '  check   read-only. Print the ENF-21 runtime-freshness verdict and exit:',
-  '            0 = fresh, 1 = drifted/unstamped/unverified, 2 = the upstream tip is unobtainable.',
-  '            Writes nothing.',
-  '  sync    bring the installed gsd-core runtime at ~/.claude/gsd-core to the current',
+  '  The config dir is CLAUDE_CONFIG_DIR when it is an absolute path, else ~/.claude (CTK-ADR-0013).',
+  '',
+  '  check   read-only. Print the ENF-21 runtime-freshness verdict for <config dir>/gsd-core and exit:',
+  '            0 = fresh, 1 = drifted/unstamped/unverified, 2 = the upstream tip is unobtainable,',
+  '            3 = CLAUDE_CONFIG_DIR is invalid (empty, relative or starting with ~). Writes nothing.',
+  '  sync    bring the installed gsd-core runtime at <config dir>/gsd-core to the current',
   '            open-gsd/gsd-core origin/next tip and stamp it. No prompts, no decisions.',
   '            Also builds (npm run build:hooks) and verifies the managed gsd-core hooks',
-  '            under ~/.claude/hooks, and stamps them (CTK-ADR-0011). In practice it reinstalls',
+  '            under <config dir>/hooks, and stamps them (CTK-ADR-0011). In practice it reinstalls',
   '            on every run: install.js writes the package version into the managed hooks',
   '            ({{GSD_VERSION}}), so they never byte-match the clone and the fast path cannot fire.',
+  '            Exit 3: sync refuses the daily ~/.claude (or a dir resolving into it) and an invalid',
+  '            CLAUDE_CONFIG_DIR, before touching anything; no override. Start a contribution session.',
+  '  where   read-only. Print the config dir, its classification (daily, contrib or invalid), the',
+  '            runtime root, the hooks root and the state dir. Exit 0 for a contribution dir,',
+  '            3 for the daily or an invalid dir. Writes nothing.',
 ].join('\n');
 
 /**
@@ -276,37 +294,65 @@ function oracleOf(over) {
  * `check` — the READ-ONLY verdict. It runs the exact same `evaluateDrift` the gate runs, so it
  * can never report `fresh` about a runtime the gate would deny.
  *
+ * Since CTK-ADR-0013 it measures the session's config dir: an invalid CLAUDE_CONFIG_DIR exits 3
+ * before measuring anything; on the daily dir a non-fresh or unknown result also prints
+ * CONTRIB_SESSION_HINT (codes 0/1/2 unchanged); a contribution dir's reasons name its absolute roots.
+ *
  * @param {Object} [deps]
  * @param {Object} [deps.oracle] the runtime-stamp module (or a partial override)
- * @param {string} [deps.runtimeRoot]
- * @param {string} [deps.hooksRoot] the managed hooks dir (defaults to the oracle's HOOKS_ROOT)
+ * @param {Object} [deps.env] the environment to classify (defaults to process.env)
+ * @param {string} [deps.homedir] the home dir for the classification (defaults to os.homedir())
+ * @param {string} [deps.runtimeRoot] defaults to the classified `<config dir>/gsd-core`
+ * @param {string} [deps.hooksRoot] the managed hooks dir (defaults to the classified `<config dir>/hooks`)
  * @param {(line:string)=>void} [deps.log]
  * @returns {{code:number, verdict:string, reason?:string}}
  */
 function check(deps = {}) {
   const O = oracleOf(deps.oracle);
   const log = deps.log || ((l) => process.stdout.write(String(l) + '\n'));
-  const runtimeRoot = deps.runtimeRoot || O.RUNTIME_ROOT;
-  const hooksRoot = deps.hooksRoot || O.HOOKS_ROOT;
+  const env = deps.env || process.env;
+  const desc = O.classifyConfigDir(env, { homedir: deps.homedir });
+  if (desc.kind === 'invalid') {
+    log('ENF-21 runtime freshness: INVALID CONFIG DIR - ' + desc.reason);
+    log('');
+    log(O.CONTRIB_SESSION_HINT);
+    return { code: 3, verdict: 'invalid-config-dir', reason: desc.reason };
+  }
+  const daily = desc.kind === 'daily';
+  const hint = () => {
+    if (!daily) return;
+    log('');
+    log(O.CONTRIB_SESSION_HINT);
+  };
+  const runtimeRoot = deps.runtimeRoot || desc.runtimeRoot;
+  const hooksRoot = deps.hooksRoot || desc.hooksRoot;
 
   const digest = O.runtimeDigest(runtimeRoot);
-  const stamp = O.readStamp();
+  const stamp = O.readStamp({ stampPath: path.join(desc.stateDir, O.STAMP_FILENAME) });
   // CTK-ADR-0011: the same one helper the gate calls, measured on every call (no cache).
   const hooksDigest = O.hooksDigestForStamp(stamp, hooksRoot);
 
   let upstream;
   try {
-    upstream = O.upstreamTip();
+    upstream = O.upstreamTip({ cachePath: path.join(desc.stateDir, O.CACHE_FILENAME) });
   } catch (err) {
     if (err instanceof O.UpstreamUnavailable || err instanceof defaultOracle.UpstreamUnavailable) {
       log('ENF-21 runtime freshness: UNKNOWN — ' + ((err && err.message) || 'the upstream tip is unobtainable'));
       log('  (this is a network limit, not drift; re-run when github is reachable)');
+      hint();
       return { code: 2, verdict: 'unknown', reason: (err && err.message) || '' };
     }
     throw err;
   }
 
-  const v = O.evaluateDrift({ stamp, runtimeDigest: digest, hooksDigest, upstream });
+  const v = O.evaluateDrift({
+    stamp,
+    runtimeDigest: digest,
+    hooksDigest,
+    upstream,
+    runtimeLabel: desc.runtimeLabel,
+    hooksLabel: desc.hooksLabel,
+  });
   if (v.verdict === 'fresh') {
     log('ENF-21 runtime freshness: fresh — ' + v.reason);
     return { code: 0, verdict: v.verdict, reason: v.reason };
@@ -315,7 +361,49 @@ function check(deps = {}) {
   log('');
   log('Remediate with:');
   log('  ' + O.REMEDIATION_COMMAND);
+  hint();
   return { code: 1, verdict: v.verdict, reason: v.reason };
+}
+
+/**
+ * install.js overrides that would let it write outside, or through a symlink out of, the classified
+ * config dir (review WR-04, quick 261024-po0 round 2; read at gsd-core origin/next 354d727b):
+ * GSD_ALLOW_SYMLINKED_DEST disables its symlinked-destination guard, GSD_AGENTS_DIR redirects the
+ * agents dir. Never forwarded to the install child.
+ */
+const INSTALL_ENV_STRIP = Object.freeze(['GSD_ALLOW_SYMLINKED_DEST', 'GSD_AGENTS_DIR']);
+
+/** The install.js child env: the parent env minus INSTALL_ENV_STRIP, with the config dir set. */
+function installEnv(env, configDirEnv, configDir) {
+  const out = Object.assign({}, env, { [configDirEnv]: configDir });
+  for (const k of INSTALL_ENV_STRIP) delete out[k];
+  return out;
+}
+
+/**
+ * `where` - READ-ONLY: print the session's config dir, its classification, the runtime root, the
+ * hooks root and the state dir (CTK-ADR-0013). Exit 0 for a contribution dir, 3 for the daily or
+ * an invalid dir (with the reason and CONTRIB_SESSION_HINT). Reads only (realpath); writes nothing.
+ *
+ * @param {Object} [deps] `oracle`, `env`, `homedir`, `log`
+ * @returns {{code:number, kind:string}}
+ */
+function where(deps = {}) {
+  const O = oracleOf(deps.oracle);
+  const log = deps.log || ((l) => process.stdout.write(String(l) + '\n'));
+  const env = deps.env || process.env;
+  const desc = O.classifyConfigDir(env, { homedir: deps.homedir });
+  const show = (v) => (typeof v === 'string' && v.length > 0 ? v : '(none)');
+  log('config dir: ' + show(desc.configDir) + (desc.fromEnv ? ' (from CLAUDE_CONFIG_DIR)' : ' (CLAUDE_CONFIG_DIR unset)'));
+  log('classification: ' + desc.kind);
+  log('runtime root: ' + show(desc.runtimeRoot));
+  log('hooks root: ' + show(desc.hooksRoot));
+  log('state dir: ' + show(desc.stateDir));
+  if (desc.kind === 'contrib') return { code: 0, kind: desc.kind };
+  log('');
+  log((desc.kind === 'daily' ? 'Not a contribution session: ' : 'Invalid config dir: ') + desc.reason);
+  log(O.CONTRIB_SESSION_HINT);
+  return { code: 3, kind: desc.kind };
 }
 
 /**
@@ -329,10 +417,13 @@ function check(deps = {}) {
  *      under `~/.claude/hooks`; all equal: stamp `payload-verified` and stop; an early build
  *      failure, an empty `hooks/dist` or any hook difference is INCONCLUSIVE and falls through
  *      (CTK-ADR-0011);
+ *   0. classify the session's config dir and REFUSE (exit 3) the daily install or an invalid
+ *      value before every other step (CTK-ADR-0013);
  *   4. otherwise (after the symlinked-root preflight, D-12) `npm ci` (which runs `prepare` →
  *      `build:lib`, producing the gitignored `bin/lib/*.cjs` the installer requires), then
  *      `npm run build:hooks` (a failure or an empty `hooks/dist` aborts WITHOUT stamping), then
- *      `node <tmp>/bin/install.js --claude`, with the install start captured just before it;
+ *      `node <tmp>/bin/install.js --claude --global --config-dir <cfg>` with CLAUDE_CONFIG_DIR=<cfg>
+ *      in its env, with the install start captured just before it;
  *   5. RE-verify by payload INVENTORY (D-13 — invariant under both installer transforms), then
  *      check every managed hook was WRITTEN by this install (exists, the later of mtime and ctime
  *      not older than the install start minus HOOK_MTIME_SLACK_MS and not later than the
@@ -350,15 +441,34 @@ function check(deps = {}) {
 function sync(deps = {}) {
   const O = oracleOf(deps.oracle);
   const log = deps.log || ((l) => process.stdout.write(String(l) + '\n'));
+  const env = deps.env || process.env;
+
+  // (0) CTK-ADR-0013: classify the session's config dir FIRST, and refuse the daily install and an
+  // invalid value before ANY other step: no tip lookup, no tmpdir, no git, npm or install.js, no
+  // stamp. There is no override (flag, env variable or prompt).
+  const desc = O.classifyConfigDir(env, { homedir: deps.homedir });
+  if (desc.kind !== 'contrib') {
+    const daily = desc.kind === 'daily';
+    log('ENF-21 sync REFUSED: the config dir is ' + (daily ? 'the daily install' : 'invalid') + ' - ' + desc.reason + '.');
+    log(daily
+      ? 'sync never reinstalls the daily install (it has its own maintainer); nothing was touched.'
+      : 'sync never guesses a config dir; nothing was touched.');
+    log('');
+    log(O.CONTRIB_SESSION_HINT);
+    return { code: 3, reason: daily ? 'refused-daily-config-dir' : 'refused-invalid-config-dir' };
+  }
+
   const execFileSync = deps.execFileSync || require('node:child_process').execFileSync;
   const mkdtempSync = deps.mkdtempSync || nodeFs.mkdtempSync;
   const mkdirSync = deps.mkdirSync || nodeFs.mkdirSync;
   const rmSync = deps.rmSync || nodeFs.rmSync;
   const now = deps.now || (() => new Date().toISOString());
-  const runtimeRoot = deps.runtimeRoot || O.RUNTIME_ROOT;
-  const hooksRoot = deps.hooksRoot || O.HOOKS_ROOT;
+  const runtimeRoot = deps.runtimeRoot || desc.runtimeRoot;
+  const hooksRoot = deps.hooksRoot || desc.hooksRoot;
+  const stampFile = path.join(desc.stateDir, O.STAMP_FILENAME);
   const statSync = deps.statSync || nodeFs.statSync;
   const nowMs = deps.nowMs || (() => Date.now());
+  log('Config dir: ' + desc.configDir + ' (runtime ' + runtimeRoot + ', hooks ' + hooksRoot + ', stamp ' + stampFile + ')');
 
   // (1) The target tip. Resolved BEFORE any tmpdir exists, so an outage costs nothing.
   let tip;
@@ -517,14 +627,18 @@ function sync(deps = {}) {
         return { code: 1, reason: 'hooks-dist-unsafe-name' };
       }
 
-      log('  node bin/install.js --claude …');
+      log('  node bin/install.js --claude --global --config-dir ' + desc.configDir + ' ...');
       // Captured immediately BEFORE install.js: every managed hook it writes must be newer.
       const installStartMs = nowMs();
-      execFileSync(process.execPath, [path.join(tmp, 'bin', 'install.js'), '--claude'], {
+      // CTK-ADR-0013: the config dir is named explicitly (the flag beats the env in install.js, and
+      // --global makes the scope explicit instead of relying on install.js's non-TTY default), and
+      // the child env carries the same dir, so flag and env agree.
+      execFileSync(process.execPath, [path.join(tmp, 'bin', 'install.js'), '--claude', '--global', '--config-dir', desc.configDir], {
         cwd: tmp,
         encoding: 'utf8',
         timeout: INSTALL_TIMEOUT_MS,
         stdio: ['ignore', 'pipe', 'pipe'],
+        env: installEnv(env, O.CONFIG_DIR_ENV, desc.configDir),
       });
 
       // (5) Re-verify by INVENTORY. An install we cannot confirm is never stamped (T-0ov-06).
@@ -543,7 +657,7 @@ function sync(deps = {}) {
         if (missing.length) log('  missing (' + missing.length + '): ' + missing.slice(0, 5).join(', '));
         if (extra.length) log('  unexpected (' + extra.length + '): ' + extra.slice(0, 5).join(', '));
         log('');
-        log('Do not work around it by hand-writing ~/.gsd-contrib/runtime-stamp.json — that');
+        log('Do not work around it by hand-writing the stamp (' + stampFile + ') - that');
         log('forges the very evidence the gate exists to check. See CTK-ADR-0007 §Decision.7.');
         return { code: 1, reason: 'post-install-mismatch' };
       }
@@ -562,12 +676,12 @@ function sync(deps = {}) {
         log('This check proves each managed hook was WRITTEN by this install (a regular file whose');
         log('later of mtime and ctime is between the install start minus ' + HOOK_MTIME_SLACK_MS + ' ms and now plus ' + HOOK_MTIME_SLACK_MS + ' ms); it does');
         log('not prove the bytes. A miss here means the hooks were not installed where this tool measures');
-        log('them (for example a CLAUDE_CONFIG_DIR pointing elsewhere), a partial install, or a filesystem');
+        log('them (for example an install.js that ignored --config-dir), a partial install, or a filesystem');
         log('whose clock or timestamps lag the install start, or run ahead of the clock, by more than the slack.');
         if (hv.missing.length) log('  missing (' + hv.missing.length + '): ' + hv.missing.slice(0, 5).join(', '));
         if (hv.stale.length) log('  not rewritten (' + hv.stale.length + '): ' + hv.stale.slice(0, 5).join(', '));
         log('');
-        log('Do not work around it by hand-writing ~/.gsd-contrib/runtime-stamp.json - that');
+        log('Do not work around it by hand-writing the stamp (' + stampFile + ') - that');
         log('forges the very evidence the gate exists to check. See CTK-ADR-0011.');
         return { code: 1, reason: 'post-install-hooks-mismatch' };
       }
@@ -589,8 +703,9 @@ function sync(deps = {}) {
       hooksFiles,
       hooksDigest: O.hooksDigest(hooksRoot, hooksFiles),
     });
-    O.writeStamp(stamp);
-    log('Stamped: sha=' + tip.slice(0, 8) + ' mode=' + mode + ' engine_verified=' + engineVerified);
+    // CTK-ADR-0013: one classification per run decides where the stamp lands, the path where reports.
+    O.writeStamp(stamp, { stampPath: stampFile });
+    log('Stamped: sha=' + tip.slice(0, 8) + ' mode=' + mode + ' engine_verified=' + engineVerified + ' at ' + stampFile);
     return { code: 0, mode, stamp };
   } catch (err) {
     log('ENF-21 sync ABORTED: ' + ((err && err.message) || 'unknown failure'));
@@ -618,6 +733,7 @@ function main(argv, deps = {}) {
   const sub = (argv && argv[0]) || '';
   if (sub === 'check') return (deps.checkImpl || check)(deps).code;
   if (sub === 'sync') return (deps.syncImpl || sync)(deps).code;
+  if (sub === 'where') return (deps.whereImpl || where)(deps).code;
   log(USAGE);
   return 2;
 }
@@ -633,6 +749,7 @@ module.exports = {
   verifyHooksWritten,
   check,
   sync,
+  where,
   main,
   USAGE,
   NPM_CI_TIMEOUT_MS,
@@ -640,4 +757,5 @@ module.exports = {
   CLONE_TIMEOUT_MS,
   BUILD_HOOKS_TIMEOUT_MS,
   HOOK_MTIME_SLACK_MS,
+  INSTALL_ENV_STRIP,
 };

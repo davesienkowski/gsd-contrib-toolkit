@@ -957,3 +957,451 @@ test('w1i guard: runtimeDigest of the runtime tree is unchanged by files in the 
     makeFs('/h/.claude', { 'gsd-core/a.md': 'one', 'hooks/gsd-a.js': 'x', 'hooks/lib/b.sh': 'y' }));
   assert.strictEqual(without, withHooks);
 });
+
+// ------------- quick 261024-po0 (CTK-ADR-0013): the session's Claude config dir -------------
+//
+// The oracle's roots and state follow CLAUDE_CONFIG_DIR (else <home>/.claude). Every case injects
+// `env`, `homedir` and (where realpath matters) `realpathSync`, so the runner's own environment
+// never leaks in. New exports are touched only inside test bodies, so a missing export fails its
+// own case and never crashes this file.
+
+const po0Crypto = require('node:crypto');
+
+const PO0_HOME = '/h';
+const PO0_DAILY = '/h/.claude';
+
+/** A realpathSync stub: listed paths map to their target, every other path throws ENOENT. */
+function po0Realpath(map = {}) {
+  return (p) => {
+    const k = path.resolve(String(p));
+    if (Object.prototype.hasOwnProperty.call(map, k)) return map[k];
+    const e = new Error('ENOENT: no such file or directory, realpath ' + k);
+    e.code = 'ENOENT';
+    throw e;
+  };
+}
+
+/** The per-config-dir state key, computed independently of the module under test. */
+function po0Key(cfg) {
+  return po0Crypto.createHash('sha256').update(path.resolve(cfg)).digest('hex').slice(0, 16);
+}
+
+test('po0: classifyConfigDir with CLAUDE_CONFIG_DIR unset is daily <home>/.claude with tilde labels', () => {
+  const d = rs.classifyConfigDir({}, { homedir: PO0_HOME, realpathSync: po0Realpath() });
+  assert.strictEqual(d.kind, 'daily');
+  assert.strictEqual(d.fromEnv, false);
+  assert.strictEqual(d.configDir, PO0_DAILY);
+  assert.strictEqual(d.runtimeRoot, path.join(PO0_DAILY, 'gsd-core'));
+  assert.strictEqual(d.hooksRoot, path.join(PO0_DAILY, 'hooks'));
+  assert.strictEqual(d.stateDir, path.join(PO0_HOME, '.gsd-contrib'));
+  assert.strictEqual(d.runtimeLabel, '~/.claude/gsd-core');
+  assert.strictEqual(d.hooksLabel, '~/.claude/hooks');
+});
+
+test('po0: classifyConfigDir with an undefined CLAUDE_CONFIG_DIR value is treated as unset (daily)', () => {
+  const d = rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: undefined }, { homedir: PO0_HOME, realpathSync: po0Realpath() });
+  assert.strictEqual(d.kind, 'daily');
+  assert.strictEqual(d.configDir, PO0_DAILY);
+});
+
+test('po0: classifyConfigDir with an absolute non-daily value is contrib with absolute roots and a per-dir state dir', () => {
+  const cfg = '/h/.claude-contrib';
+  const d = rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: cfg }, { homedir: PO0_HOME, realpathSync: po0Realpath() });
+  assert.strictEqual(d.kind, 'contrib');
+  assert.strictEqual(d.fromEnv, true);
+  assert.strictEqual(d.value, cfg);
+  assert.strictEqual(d.configDir, cfg);
+  assert.strictEqual(d.runtimeRoot, path.join(cfg, 'gsd-core'));
+  assert.strictEqual(d.hooksRoot, path.join(cfg, 'hooks'));
+  assert.strictEqual(d.stateDir, path.join(PO0_HOME, '.gsd-contrib', 'config-dirs', po0Key(cfg)));
+  assert.strictEqual(d.runtimeLabel, path.join(cfg, 'gsd-core'));
+  assert.strictEqual(d.hooksLabel, path.join(cfg, 'hooks'));
+});
+
+test('po0: classifyConfigDir resolves an absolute value with path.resolve (a trailing slash and a doubled slash collapse)', () => {
+  const a = rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: '/srv//contrib/' }, { homedir: PO0_HOME, realpathSync: po0Realpath() });
+  assert.strictEqual(a.kind, 'contrib');
+  assert.strictEqual(a.configDir, '/srv/contrib');
+  assert.strictEqual(a.value, '/srv//contrib/', 'the raw value is kept verbatim beside the resolved dir');
+});
+
+for (const value of ['', '   ', 'rel/x', './x', '~', '~/x', '~user/x']) {
+  test('po0: classifyConfigDir with CLAUDE_CONFIG_DIR=' + JSON.stringify(value) + ' is invalid, never normalized', () => {
+    const d = rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: value }, { homedir: PO0_HOME, realpathSync: po0Realpath() });
+    assert.strictEqual(d.kind, 'invalid');
+    assert.strictEqual(d.fromEnv, true);
+    assert.strictEqual(d.value, value);
+    assert.strictEqual(d.configDir, null);
+    assert.strictEqual(d.runtimeRoot, null);
+    assert.strictEqual(d.hooksRoot, null);
+    assert.strictEqual(d.stateDir, null);
+    assert.strictEqual(typeof d.reason, 'string');
+    assert.ok(d.reason.includes(JSON.stringify(value)), 'the reason quotes the raw value: ' + d.reason);
+    assert.ok(d.reason.includes('CLAUDE_CONFIG_DIR'), d.reason);
+  });
+}
+
+test('po0: resolveConfigDir is pure and reports unset, valid and invalid values', () => {
+  assert.deepStrictEqual(rs.resolveConfigDir({}, PO0_HOME), { configDir: PO0_DAILY, fromEnv: false, invalid: false });
+  const ok = rs.resolveConfigDir({ CLAUDE_CONFIG_DIR: '/c/x/' }, PO0_HOME);
+  assert.strictEqual(ok.configDir, '/c/x');
+  assert.strictEqual(ok.fromEnv, true);
+  assert.strictEqual(ok.invalid, false);
+  const bad = rs.resolveConfigDir({ CLAUDE_CONFIG_DIR: '~/x' }, PO0_HOME);
+  assert.strictEqual(bad.invalid, true);
+  assert.strictEqual(bad.configDir, null);
+  assert.ok(bad.reason.includes(JSON.stringify('~/x')));
+  assert.strictEqual(rs.CONFIG_DIR_ENV, 'CLAUDE_CONFIG_DIR');
+});
+
+test('po0: isDailyConfigDir is true for the daily dir itself, with a trailing slash, a doubled slash and a symlink to it', () => {
+  const rp = po0Realpath({ '/h/.claude': '/h/.claude', '/links/daily': '/h/.claude' });
+  const o = { homedir: PO0_HOME, realpathSync: rp };
+  assert.strictEqual(rs.isDailyConfigDir('/h/.claude', o), true);
+  assert.strictEqual(rs.isDailyConfigDir('/h/.claude/', o), true);
+  assert.strictEqual(rs.isDailyConfigDir('/h//.claude', o), true);
+  assert.strictEqual(rs.isDailyConfigDir('/links/daily', o), true);
+});
+
+test('po0: isDailyConfigDir is true when cfg/gsd-core or cfg/hooks resolves at or inside the daily dir, or cfg lies inside it', () => {
+  const rp = po0Realpath({
+    '/h/.claude': '/h/.claude',
+    '/c1/gsd-core': '/h/.claude/gsd-core',
+    '/c2/hooks': '/h/.claude/hooks',
+    '/c3/gsd-core': '/h/.claude',
+  });
+  const o = { homedir: PO0_HOME, realpathSync: rp };
+  assert.strictEqual(rs.isDailyConfigDir('/c1', o), true, 'gsd-core symlinked into the daily dir');
+  assert.strictEqual(rs.isDailyConfigDir('/c2', o), true, 'hooks symlinked into the daily dir');
+  assert.strictEqual(rs.isDailyConfigDir('/c3', o), true, 'gsd-core resolving AT the daily dir');
+  assert.strictEqual(rs.isDailyConfigDir('/h/.claude/nested', o), true, 'cfg inside the daily dir');
+});
+
+test('po0: isDailyConfigDir is false for the sibling <home>/.claude-contrib (a string-prefix collision) and an unrelated dir', () => {
+  const rp = po0Realpath({ '/h/.claude': '/h/.claude' });
+  const o = { homedir: PO0_HOME, realpathSync: rp };
+  assert.strictEqual(rs.isDailyConfigDir('/h/.claude-contrib', o), false);
+  assert.strictEqual(rs.isDailyConfigDir('/srv/contrib', o), false);
+});
+
+test('po0: isDailyConfigDir falls back to path.resolve when realpath throws for every path', () => {
+  const o = { homedir: PO0_HOME, realpathSync: po0Realpath() };
+  assert.strictEqual(rs.isDailyConfigDir('/h/.claude/', o), true);
+  assert.strictEqual(rs.isDailyConfigDir('/h/.claude-contrib', o), false);
+});
+
+test('po0: classifyConfigDir is daily for an absolute value that is a symlink to the daily dir, with a reason', () => {
+  const rp = po0Realpath({ '/h/.claude': '/h/.claude', '/links/daily': '/h/.claude' });
+  const d = rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: '/links/daily' }, { homedir: PO0_HOME, realpathSync: rp });
+  assert.strictEqual(d.kind, 'daily');
+  assert.strictEqual(d.stateDir, path.join(PO0_HOME, '.gsd-contrib'), 'the daily stamp path does not move');
+  assert.ok(d.reason.length > 0, 'the daily reason says which test made it daily');
+});
+
+test('po0: resolveStateDir per config dir: override wins, daily keeps ~/.gsd-contrib, contrib gets config-dirs/<16 hex>', () => {
+  const o = { homedir: PO0_HOME };
+  assert.strictEqual(rs.resolveStateDir({}, o), path.join(PO0_HOME, '.gsd-contrib'));
+  assert.strictEqual(rs.resolveStateDir({ CLAUDE_CONFIG_DIR: '/h/.claude' }, o), path.join(PO0_HOME, '.gsd-contrib'));
+  const a = rs.resolveStateDir({ CLAUDE_CONFIG_DIR: '/c/a' }, o);
+  const b = rs.resolveStateDir({ CLAUDE_CONFIG_DIR: '/c/b' }, o);
+  assert.strictEqual(a, path.join(PO0_HOME, '.gsd-contrib', 'config-dirs', po0Key('/c/a')));
+  assert.notStrictEqual(a, b, 'two contribution dirs get two state dirs');
+  assert.strictEqual(rs.resolveStateDir({ CLAUDE_CONFIG_DIR: '/c/a/' }, o), a, 'a trailing slash maps to the same key');
+  assert.strictEqual(rs.resolveStateDir({ CLAUDE_CONFIG_DIR: '/c/a', GSD_CONTRIB_STATE_DIR: '/s' }, o), '/s');
+  assert.strictEqual(rs.resolveStateDir({ CLAUDE_CONFIG_DIR: 'rel/x', GSD_CONTRIB_STATE_DIR: '/s' }, o), '/s',
+    'the override wins over every config dir, an invalid one included');
+  assert.strictEqual(rs.stampPath({ CLAUDE_CONFIG_DIR: '/c/a' }, o), path.join(a, 'runtime-stamp.json'));
+  assert.strictEqual(rs.cachePath({ CLAUDE_CONFIG_DIR: '/c/a' }, o), path.join(a, 'upstream-tip-cache.json'));
+  assert.strictEqual(rs.stampPath({}, o), path.join(PO0_HOME, '.gsd-contrib', 'runtime-stamp.json'));
+});
+
+test('po0: resolveStateDir throws FailClosed for an invalid CLAUDE_CONFIG_DIR with no override', () => {
+  assert.throws(() => rs.resolveStateDir({ CLAUDE_CONFIG_DIR: 'rel/x' }, { homedir: PO0_HOME }), FailClosed);
+  assert.throws(() => rs.resolveStateDir({ CLAUDE_CONFIG_DIR: '' }, { homedir: PO0_HOME }), FailClosed);
+});
+
+test('po0: runtimeRootFor and hooksRootFor return the classified roots and throw FailClosed on invalid', () => {
+  const o = { homedir: PO0_HOME, realpathSync: po0Realpath() };
+  assert.strictEqual(rs.runtimeRootFor({}, o), path.join(PO0_DAILY, 'gsd-core'));
+  assert.strictEqual(rs.hooksRootFor({}, o), path.join(PO0_DAILY, 'hooks'));
+  assert.strictEqual(rs.runtimeRootFor({ CLAUDE_CONFIG_DIR: '/c/a' }, o), '/c/a/gsd-core');
+  assert.strictEqual(rs.hooksRootFor({ CLAUDE_CONFIG_DIR: '/c/a' }, o), '/c/a/hooks');
+  assert.throws(() => rs.runtimeRootFor({ CLAUDE_CONFIG_DIR: '~/x' }, o), FailClosed);
+  assert.throws(() => rs.hooksRootFor({ CLAUDE_CONFIG_DIR: './x' }, o), FailClosed);
+});
+
+test('po0: CONTRIB_SESSION_HINT is one printable-ASCII string naming the launch form, the default and the scrub variable', () => {
+  const h = rs.CONTRIB_SESSION_HINT;
+  assert.strictEqual(typeof h, 'string');
+  assert.ok(h.includes('CLAUDE_CONFIG_DIR='), h);
+  assert.ok(h.includes('$HOME/.claude-contrib'), h);
+  assert.ok(h.includes('CLAUDE_CODE_SUBPROCESS_ENV_SCRUB'), h);
+  assert.ok(/^[\x20-\x7e\n]*$/.test(h), 'printable ASCII only');
+});
+
+function po0LoadChild(value) {
+  const { spawnSync } = require('node:child_process');
+  const nodeOs = require('node:os');
+  const nodeFs = require('node:fs');
+  const home = nodeFs.mkdtempSync(path.join(nodeOs.tmpdir(), 'po0-load-'));
+  const env = { PATH: process.env.PATH || '', HOME: home };
+  if (value !== undefined) env.CLAUDE_CONFIG_DIR = value;
+  const mod = path.join(__dirname, 'runtime-stamp.cjs');
+  const r = spawnSync(process.execPath, ['-e',
+    'const m=require(' + JSON.stringify(mod) + ');process.stdout.write(JSON.stringify({r:m.RUNTIME_ROOT,h:m.HOOKS_ROOT}))'],
+  { env, encoding: 'utf8', timeout: 30000 });
+  nodeFs.rmSync(home, { recursive: true, force: true });
+  return { home, r };
+}
+
+for (const value of ['', 'rel/x', '~/x']) {
+  test('po0: requiring runtime-stamp.cjs with CLAUDE_CONFIG_DIR=' + JSON.stringify(value) + ' never throws and keeps the daily default constants', () => {
+    const { home, r } = po0LoadChild(value);
+    assert.strictEqual(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.strictEqual(out.r, path.join(home, '.claude', 'gsd-core'));
+    assert.strictEqual(out.h, path.join(path.dirname(out.r), 'hooks'));
+    // Paired with a function call: the decision paths use the functions, which refuse the value.
+    assert.strictEqual(rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: value }, { homedir: home }).kind, 'invalid');
+  });
+}
+
+test('po0: requiring runtime-stamp.cjs with an absolute CLAUDE_CONFIG_DIR sets RUNTIME_ROOT to <value>/gsd-core', () => {
+  const { r } = po0LoadChild('/srv/po0-contrib');
+  assert.strictEqual(r.status, 0, r.stderr);
+  const out = JSON.parse(r.stdout);
+  assert.strictEqual(out.r, path.join('/srv/po0-contrib', 'gsd-core'));
+  assert.strictEqual(out.h, path.join('/srv/po0-contrib', 'hooks'));
+});
+
+test('po0: evaluateDrift names runtimeLabel and hooksLabel in its unverified reasons when given', () => {
+  const OTHER_RT = 'sha256:' + '1'.repeat(64);
+  const OTHER_H = 'sha256:' + '2'.repeat(64);
+  const HD = 'sha256:' + 'e'.repeat(64);
+  const RD = 'sha256:' + 'f'.repeat(64);
+  const base = {
+    schema: rs.STAMP_SCHEMA, sha: SHA_A, runtime_digest: RD, mode: 'installed', engine_verified: true,
+    installed_at: '2026-10-24T00:00:00.000Z', source: rs.UPSTREAM_URL + '#' + rs.UPSTREAM_REF,
+    hooks_files: ['gsd-a.js'], hooks_digest: HD,
+  };
+  const labels = { runtimeLabel: '/c/a/gsd-core', hooksLabel: '/c/a/hooks' };
+  const up = { sha: SHA_A, source: 'live', ageMs: 0 };
+  const rt = rs.evaluateDrift(Object.assign({ stamp: base, runtimeDigest: OTHER_RT, hooksDigest: HD, upstream: up }, labels));
+  assert.ok(rt.reason.includes('/c/a/gsd-core'), rt.reason);
+  assert.ok(!rt.reason.includes('~/.claude/gsd-core'), rt.reason);
+  const legacy = Object.assign({}, base);
+  delete legacy.hooks_files;
+  delete legacy.hooks_digest;
+  const lg = rs.evaluateDrift(Object.assign({ stamp: legacy, runtimeDigest: RD, hooksDigest: null, upstream: up }, labels));
+  assert.ok(lg.reason.includes('/c/a/hooks'), lg.reason);
+  const hm = rs.evaluateDrift(Object.assign({ stamp: base, runtimeDigest: RD, hooksDigest: OTHER_H, upstream: up }, labels));
+  assert.ok(hm.reason.includes('/c/a/hooks'), hm.reason);
+  assert.ok(!hm.reason.includes('~/.claude/hooks'), hm.reason);
+});
+
+test('po0 guard: evaluateDrift without labels keeps ~/.claude/gsd-core and ~/.claude/hooks', () => {
+  const RD = 'sha256:' + 'f'.repeat(64);
+  const HD = 'sha256:' + 'e'.repeat(64);
+  const base = {
+    schema: rs.STAMP_SCHEMA, sha: SHA_A, runtime_digest: RD, mode: 'installed', engine_verified: true,
+    installed_at: '2026-10-24T00:00:00.000Z', source: rs.UPSTREAM_URL + '#' + rs.UPSTREAM_REF,
+    hooks_files: ['gsd-a.js'], hooks_digest: HD,
+  };
+  const up = { sha: SHA_A, source: 'live', ageMs: 0 };
+  assert.ok(rs.evaluateDrift({ stamp: base, runtimeDigest: 'sha256:' + '1'.repeat(64), hooksDigest: HD, upstream: up })
+    .reason.includes('~/.claude/gsd-core'));
+  assert.ok(rs.evaluateDrift({ stamp: base, runtimeDigest: RD, hooksDigest: 'sha256:' + '2'.repeat(64), upstream: up })
+    .reason.includes('~/.claude/hooks'));
+});
+
+test('po0: readStamp/writeStamp round-trip and upstreamTip cache writes land in the per-config-dir state dir', (t) => {
+  const nodeFs = require('node:fs');
+  const nodeOs = require('node:os');
+  const home = nodeFs.mkdtempSync(path.join(nodeOs.tmpdir(), 'po0-state-'));
+  t.after(() => nodeFs.rmSync(home, { recursive: true, force: true }));
+  const cfg = path.join(home, 'contrib-a');
+  const env = { CLAUDE_CONFIG_DIR: cfg };
+  const stateDir = path.join(home, '.gsd-contrib', 'config-dirs', po0Key(cfg));
+  // SAFETY: prove the default paths resolve under the temp home BEFORE any default write runs, so
+  // a module that ignores {env, homedir} fails here and never writes the real daily stamp or cache.
+  assert.strictEqual(rs.stampPath(env, { homedir: home }), path.join(stateDir, 'runtime-stamp.json'));
+  assert.strictEqual(rs.cachePath(env, { homedir: home }), path.join(stateDir, 'upstream-tip-cache.json'));
+  const stamp = rs.buildStamp({
+    sha: SHA_A, runtimeDigest: 'sha256:' + 'f'.repeat(64), mode: 'installed', engineVerified: true,
+    now: '2026-10-24T00:00:00.000Z', hooksFiles: ['gsd-a.js'], hooksDigest: 'sha256:' + 'e'.repeat(64),
+  });
+  const written = rs.writeStamp(stamp, { env, homedir: home });
+  assert.strictEqual(written, path.join(stateDir, 'runtime-stamp.json'));
+  assert.ok(nodeFs.existsSync(written));
+  assert.ok(!nodeFs.existsSync(path.join(home, '.gsd-contrib', 'runtime-stamp.json')), 'the daily stamp is untouched');
+  assert.deepStrictEqual(rs.readStamp({ env, homedir: home }), stamp);
+  assert.strictEqual(rs.readStamp({ env: { CLAUDE_CONFIG_DIR: path.join(home, 'contrib-b') }, homedir: home }), null,
+    'a second contribution dir has its own (absent) stamp');
+  const tip = rs.upstreamTip({ env, homedir: home, fetchTip: () => SHA_B, now: () => Date.parse('2026-10-24T00:00:00.000Z') });
+  assert.strictEqual(tip.sha, SHA_B);
+  const cache = JSON.parse(nodeFs.readFileSync(path.join(stateDir, 'upstream-tip-cache.json'), 'utf8'));
+  assert.strictEqual(cache.sha, SHA_B);
+  assert.ok(!nodeFs.existsSync(path.join(home, '.gsd-contrib', 'upstream-tip-cache.json')), 'the daily cache is untouched');
+});
+
+// Verifier finding (quick 261024-po0): a DANGLING symlink cannot be realpath'd, and the plain
+// path.resolve fallback is the link's own path, so a cfg/hooks or cfg/gsd-core link aimed at a
+// not-yet-existing path inside the daily dir classified as a contribution dir. Real fs, temp home.
+test('po0: a dangling cfg/hooks or cfg/gsd-core symlink aimed inside the daily dir is daily', (t) => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'po0-dangling-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const home = path.join(root, 'h');
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+  for (const sub of ['hooks', 'gsd-core']) {
+    const cfg = path.join(root, 'c-' + sub);
+    fs.mkdirSync(cfg);
+    fs.symlinkSync(path.join(home, '.claude', sub + '-not-yet'), path.join(cfg, sub));
+    assert.strictEqual(fs.existsSync(path.join(cfg, sub)), false, 'the link must dangle');
+    assert.strictEqual(rs.isDailyConfigDir(cfg, { homedir: home }), true, 'dangling ' + sub + ' link into the daily dir');
+    // A relative dangling link is resolved against the link's own directory.
+    const cfgRel = path.join(root, 'r-' + sub);
+    fs.mkdirSync(cfgRel);
+    fs.symlinkSync(path.relative(cfgRel, path.join(home, '.claude', sub + '-later')), path.join(cfgRel, sub));
+    assert.strictEqual(rs.isDailyConfigDir(cfgRel, { homedir: home }), true, 'relative dangling ' + sub + ' link');
+  }
+  // A dangling link that points OUTSIDE the daily dir stays a contribution dir.
+  const ok = path.join(root, 'ok');
+  fs.mkdirSync(ok);
+  fs.symlinkSync(path.join(root, 'elsewhere', 'hooks'), path.join(ok, 'hooks'));
+  assert.strictEqual(rs.isDailyConfigDir(ok, { homedir: home }), false);
+});
+
+// ------------- quick 261024-po0 round 2 (review WR-02, WR-03, WR-04, IN-01) -------------
+//
+// Real fs under a temp root, or injected stubs; nothing reads or writes the real ~/.claude except the
+// read-only realpath of the passwd home that WR-03 adds (where a stub is not injected).
+
+function r2Root(t) {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'po0-r2-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const home = path.join(root, 'h');
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+  return { fs, root, home };
+}
+
+test('po0 r2: a dangling symlink chain past the hop cap is INVALID (refused), never a contribution dir (WR-02)', (t) => {
+  const { fs, root, home } = r2Root(t);
+  const cfg = path.join(root, 'cfg');
+  fs.mkdirSync(cfg);
+  // cfg/hooks -> l1 -> l2 -> ... -> l10 -> <home>/.claude/notyet (dangling at the end)
+  const links = path.join(root, 'links');
+  fs.mkdirSync(links);
+  fs.symlinkSync(path.join(home, '.claude', 'notyet'), path.join(links, 'l10'));
+  for (let i = 9; i >= 1; i -= 1) fs.symlinkSync(path.join(links, 'l' + (i + 1)), path.join(links, 'l' + i));
+  fs.symlinkSync(path.join(links, 'l1'), path.join(cfg, 'hooks'));
+  const d = rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: cfg }, { homedir: home, userInfo: () => ({ homedir: home }) });
+  assert.strictEqual(d.kind, 'invalid', 'a classification that cannot be resolved must refuse; got ' + d.kind);
+  assert.match(d.reason, /could not classify/);
+  assert.strictEqual(d.configDir, null);
+});
+
+test('po0 r2: a realpath error other than ENOENT (EACCES, ELOOP) is INVALID, never a contribution dir (WR-02)', () => {
+  for (const code of ['EACCES', 'ELOOP', 'ENOTDIR']) {
+    const realpathSync = (p) => {
+      const e = new Error(code + ': realpath ' + p);
+      e.code = path.resolve(String(p)) === '/srv/contrib' ? code : 'ENOENT';
+      throw e;
+    };
+    const d = rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: '/srv/contrib' },
+      { homedir: PO0_HOME, realpathSync, userInfo: () => ({ homedir: PO0_HOME }) });
+    assert.strictEqual(d.kind, 'invalid', code + ' must refuse; got ' + d.kind);
+    assert.match(d.reason, new RegExp(code));
+  }
+});
+
+test('po0 r2: the daily signal also uses the passwd home, so HOME=/other cannot unlock the real daily dir (WR-03)', () => {
+  const o = { homedir: '/other', realpathSync: po0Realpath(), userInfo: () => ({ homedir: '/p' }) };
+  const d = rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: '/p/.claude' }, o);
+  assert.strictEqual(d.kind, 'daily', 'the passwd home\'s .claude is daily even when HOME differs');
+  assert.strictEqual(rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: '/p/.claude/x' }, o).kind, 'daily');
+  assert.strictEqual(rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: '/other/.claude' }, o).kind, 'daily', '$HOME/.claude stays daily');
+  assert.strictEqual(rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: '/p/.claude-contrib' }, o).kind, 'contrib');
+});
+
+test('po0 r2: an unreadable passwd home is INVALID (refused), not ignored (WR-02/WR-03)', () => {
+  const o = { homedir: PO0_HOME, realpathSync: po0Realpath(), userInfo: () => { throw new Error('ENOENT: no passwd entry'); } };
+  const d = rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: '/srv/contrib' }, o);
+  assert.strictEqual(d.kind, 'invalid');
+  assert.match(d.reason, /passwd/);
+});
+
+test('po0 r2: agents, skills, commands, scripts, settings.json or the manifest symlinked into the daily dir is daily (WR-04)', (t) => {
+  const { fs, root, home } = r2Root(t);
+  const names = ['agents', 'skills', 'commands', 'scripts', 'gsd-pristine', 'settings.json', 'gsd-file-manifest.json'];
+  for (const name of names) {
+    const cfg = path.join(root, 'c-' + name);
+    fs.mkdirSync(cfg);
+    fs.symlinkSync(path.join(home, '.claude', name), path.join(cfg, name));
+    const d = rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: cfg }, { homedir: home, userInfo: () => ({ homedir: home }) });
+    assert.strictEqual(d.kind, 'daily', name + ' symlinked into the daily dir must be daily; got ' + d.kind);
+    assert.ok(d.reason.includes(name), 'the reason names ' + name + ': ' + d.reason);
+  }
+  // A user-owned link elsewhere (rules/ into the daily dir is the planned provisioning) stays contrib.
+  const ok = path.join(root, 'ok');
+  fs.mkdirSync(ok);
+  fs.symlinkSync(path.join(home, '.claude', 'rules'), path.join(ok, 'rules'));
+  fs.symlinkSync(path.join(root, 'elsewhere-agents'), path.join(ok, 'agents'));
+  assert.strictEqual(rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: ok }, { homedir: home, userInfo: () => ({ homedir: home }) }).kind, 'contrib');
+});
+
+test('po0 r2: a config dir that CONTAINS the daily dir (CLAUDE_CONFIG_DIR=$HOME) is daily (IN-01)', () => {
+  const o = { homedir: PO0_HOME, realpathSync: po0Realpath(), userInfo: () => ({ homedir: PO0_HOME }) };
+  assert.strictEqual(rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: '/h' }, o).kind, 'daily');
+  assert.strictEqual(rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: '/' }, o).kind, 'daily');
+});
+
+// ------------- quick 261024-po0 round 2b (fresh review WR-01, IN-01) -------------
+// install.js writes the hooks bundle (and other payload) with plain writeFileSync, which follows a
+// symlinked or hardlinked file into the daily dir. So a link anywhere under an install-written entry
+// classifies too: a symlink into a daily dir is daily, a hardlinked regular file is uncertain (refused).
+
+test('po0 r2b: a symlinked hook FILE, a symlinked hooks/lib or a deep symlink into the daily dir is daily (WR-01)', (t) => {
+  const { fs, root, home } = r2Root(t);
+  fs.mkdirSync(path.join(home, '.claude', 'hooks', 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.claude', 'hooks', 'gsd-x.js'), 'daily\n');
+  const o = { homedir: home, userInfo: () => ({ homedir: home }) };
+  const cases = {
+    file: (cfg) => { fs.mkdirSync(path.join(cfg, 'hooks')); fs.symlinkSync(path.join(home, '.claude', 'hooks', 'gsd-x.js'), path.join(cfg, 'hooks', 'gsd-x.js')); },
+    lib: (cfg) => { fs.mkdirSync(path.join(cfg, 'hooks')); fs.symlinkSync(path.join(home, '.claude', 'hooks', 'lib'), path.join(cfg, 'hooks', 'lib')); },
+    deep: (cfg) => { fs.mkdirSync(path.join(cfg, 'gsd-core', 'a', 'b'), { recursive: true }); fs.symlinkSync(path.join(home, '.claude', 'hooks'), path.join(cfg, 'gsd-core', 'a', 'b', 'c')); },
+  };
+  for (const [name, make] of Object.entries(cases)) {
+    const cfg = path.join(root, 'c-' + name);
+    fs.mkdirSync(cfg);
+    make(cfg);
+    const d = rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: cfg }, o);
+    assert.strictEqual(d.kind, 'daily', name + ': got ' + d.kind + ' ' + d.reason);
+  }
+  // A deep symlink to somewhere else (the .agents skills layout) stays a contribution dir.
+  const ok = path.join(root, 'ok');
+  fs.mkdirSync(path.join(ok, 'skills'), { recursive: true });
+  fs.symlinkSync(path.join(root, 'agents-skills', 'x'), path.join(ok, 'skills', 'x'));
+  assert.strictEqual(rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: ok }, o).kind, 'contrib');
+});
+
+test('po0 r2b: a hardlinked file under an install-written entry (cp -al) is INVALID, never contrib (WR-01)', (t) => {
+  const { fs, root, home } = r2Root(t);
+  fs.mkdirSync(path.join(home, '.claude', 'hooks'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.claude', 'hooks', 'gsd-x.js'), 'daily\n');
+  const cfg = path.join(root, 'cfg');
+  fs.mkdirSync(path.join(cfg, 'hooks'), { recursive: true });
+  fs.linkSync(path.join(home, '.claude', 'hooks', 'gsd-x.js'), path.join(cfg, 'hooks', 'gsd-x.js'));
+  const d = rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: cfg }, { homedir: home, userInfo: () => ({ homedir: home }) });
+  assert.strictEqual(d.kind, 'invalid', 'got ' + d.kind);
+  assert.match(d.reason, /hard ?link/i);
+});
+
+test('po0 r2b: the install-written list carries the further entries install.js writes (IN-01)', () => {
+  for (const n of ['gsd-local-patches', 'gsd-migration-backups', '.gsd-staging', '.gsd-profile', 'gsd-install-state.json']) {
+    assert.ok(rs.INSTALL_WRITTEN_ENTRIES.includes(n), n);
+  }
+});

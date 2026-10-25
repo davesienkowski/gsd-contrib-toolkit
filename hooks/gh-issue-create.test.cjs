@@ -8,6 +8,7 @@
  * filesystem walk, no real gsd-core checkout required for the unit suite.
  */
 
+require('./lib/test-isolate.cjs').isolateToolLog(); // never the real ~/.gsd-contrib tool log (quick 261024-po0)
 const test = require('node:test');
 const assert = require('node:assert');
 

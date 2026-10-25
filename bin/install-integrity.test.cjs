@@ -34,6 +34,7 @@
  * sandbox, never the real checkout. The sandbox is disposed in a finally (no temp residue leaks).
  */
 
+require('../hooks/lib/test-isolate.cjs').isolateToolLog(); // never the real ~/.gsd-contrib tool log (quick 261024-po0)
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

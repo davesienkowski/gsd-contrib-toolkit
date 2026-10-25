@@ -93,6 +93,8 @@
  * @module hooks/runtime-drift
  */
 
+const path = require('node:path');
+
 const { parseCommandForGates } = require('./lib/argv.cjs');
 const { hasGovernedSegment, isNonGovernedCommand, classifyAction } = require('./lib/classify.cjs');
 const { runGate, readHookInput, deny, allow, ask, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
@@ -100,7 +102,7 @@ const { resolveRootForCommand, commandTargetsGsdCore, segmentRepoTarget, ghRepoB
 const { classifyPushTarget, createLookupBudget, resolvePushUrlsLive, urlRewritesLive } = require('./lib/push-target.cjs');
 const runtimeStamp = require('./lib/runtime-stamp.cjs');
 
-const { UpstreamUnavailable, REMEDIATION_COMMAND } = runtimeStamp;
+const { UpstreamUnavailable, REMEDIATION_COMMAND, CONTRIB_SESSION_HINT } = runtimeStamp;
 
 /**
  * D-06: the filing/pushing surface, and ONLY that. Frozen so a future edit is a visible
@@ -122,8 +124,11 @@ const ASK_LIMIT_NOTE =
  *   3. RES-01 action-first short-circuit — BEFORE any IO of any kind (D-06);
  *   4. no governed segment at all → allow;
  *   5. ROB-01 arming (D-07);
- *   6. the oracle: digest → stamp → managed hooks → upstream tip → evaluateDrift;
- *   7. verdict → decision.
+ *   6. the oracle: classify the session's config dir FIRST (CTK-ADR-0013: realpath IO, so never
+ *      before arming; an invalid CLAUDE_CONFIG_DIR throws FailClosed and denies), then
+ *      digest -> stamp -> managed hooks -> upstream tip -> evaluateDrift;
+ *   7. verdict -> decision (unchanged: only fresh allows, only UpstreamUnavailable asks; the daily
+ *      config dir adds the start-a-contribution-session text to the deny and the ask).
  *
  * @param {string} stdinString raw PreToolUse JSON
  * @param {Object} deps
@@ -143,6 +148,9 @@ const ASK_LIMIT_NOTE =
  * @param {()=>{sha:string, source:string, ageMs:number}} deps.upstreamTip the upstream tip
  *   (may throw UpstreamUnavailable → ask, or FailClosed → deny)
  * @param {Function} [deps.evaluateDrift] the pure verdict function (defaults to the oracle's)
+ * @param {()=>Object} [deps.classifyConfigDir] the session's config-dir descriptor (CTK-ADR-0013;
+ *   a zero-argument seam, called once, only after arming; defaults to the oracle's classifier
+ *   over process.env)
  * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
  */
 function gate(stdinString, deps) {
@@ -208,8 +216,19 @@ function gate(stdinString, deps) {
   if (!armed) return allow();
 
   // (6) The oracle. Each of these may THROW; every throw except UpstreamUnavailable reaches
-  // runGate and DENIES (HARD-01). The managed hooks under ~/.claude/hooks are measured over the
-  // stamp's own list (CTK-ADR-0011), OUTSIDE the narrow catch below, before any network call.
+  // runGate and DENIES (HARD-01). CTK-ADR-0013: the session's config dir is classified FIRST and
+  // only here, after arming, so a non-governed command still costs no IO; an invalid
+  // CLAUDE_CONFIG_DIR denies through FailClosed. The managed hooks under <config dir>/hooks are
+  // measured over the stamp's own list (CTK-ADR-0011), OUTSIDE the narrow catch below, before any
+  // network call.
+  const cfg = (deps.classifyConfigDir || (() => runtimeStamp.classifyConfigDir(process.env)))();
+  if (!cfg || cfg.kind === 'invalid') {
+    throw new FailClosed(
+      'ENF-21: ' + ((cfg && cfg.reason) || 'the session\'s CLAUDE_CONFIG_DIR could not be classified') +
+        '. The gate cannot tell which gsd-core runtime this session runs. ' + CONTRIB_SESSION_HINT
+    );
+  }
+  const dailyHint = cfg.kind === 'daily' ? '\n\n' + CONTRIB_SESSION_HINT : '';
   const digest = deps.runtimeDigest();
   const stamp = deps.readStamp();
   const hooksDigest = deps.hooksDigest(stamp);
@@ -228,7 +247,7 @@ function gate(stdinString, deps) {
           'This is a NETWORK limit, not a policy decision — proceeding means you may be filing ' +
           'against a stale engine, so "I reproduced this locally" may not match CI. ' +
           'To resolve it deterministically once you are back online:\n\n  ' +
-          REMEDIATION_COMMAND + '\n\n' + ASK_LIMIT_NOTE
+          REMEDIATION_COMMAND + '\n\n' + ASK_LIMIT_NOTE + dailyHint
       );
     }
     throw err;
@@ -239,6 +258,8 @@ function gate(stdinString, deps) {
     runtimeDigest: digest,
     hooksDigest,
     upstream,
+    runtimeLabel: cfg.runtimeLabel,
+    hooksLabel: cfg.hooksLabel,
   });
 
   // (7) Verdict → decision. ONLY `fresh` allows.
@@ -247,7 +268,7 @@ function gate(stdinString, deps) {
   return deny(
     'Blocked by the ENF-21 runtime-freshness gate (verdict: ' + verdict.verdict + '). ' +
       'You are about to file/push against `open-gsd/gsd-core`, but the gsd-core runtime installed ' +
-      'at `' + runtimeStamp.RUNTIME_ROOT + '` is not provably at the current `origin/' +
+      'at `' + cfg.runtimeRoot + '` is not provably at the current `origin/' +
       runtimeStamp.UPSTREAM_REF + '` tip — ' + verdict.reason + '.\n\n' +
       'Contributing against a stale engine produces local results that disagree with CI, and ' +
       'fixes that may already be upstream. One command resolves it, with no further decisions:\n\n  ' +
@@ -264,7 +285,8 @@ function gate(stdinString, deps) {
         ? '\n\nNote: ENF-21 could not confirm where this push goes (' + unresolvedPhrase + '), so the ' +
           'gate fell back to the gsd-core-checkout rule: this command runs in a gsd-core checkout (or ' +
           'names open-gsd/gsd-core), so it is gated like any push from there.'
-        : '')
+        : '') +
+      dailyHint
   );
 }
 
@@ -301,12 +323,27 @@ function runRuntimeDriftGate(stdinString, deps = {}) {
     }
     if (!resolved.resolvePushUrls) resolved.resolvePushUrls = resolvePushUrlsLive;
     if (!resolved.urlRewrites) resolved.urlRewrites = urlRewritesLive; // F9 R2 item 5
-    if (!resolved.runtimeDigest) {
-      resolved.runtimeDigest = () => runtimeStamp.runtimeDigest(runtimeStamp.RUNTIME_ROOT);
+    // CTK-ADR-0013: ONE memoized classification of the session's config dir per invocation. It is
+    // a closure, so nothing is classified until gate() calls it after arming; the default seams
+    // below measure its roots and read its per-config-dir stamp and tip cache.
+    if (!resolved.classifyConfigDir) {
+      let memo = null;
+      resolved.classifyConfigDir = () => {
+        if (memo === null) memo = runtimeStamp.classifyConfigDir(deps.env || process.env, { homedir: deps.homedir });
+        return memo;
+      };
     }
-    if (!resolved.readStamp) resolved.readStamp = () => runtimeStamp.readStamp();
-    if (!resolved.hooksDigest) resolved.hooksDigest = (stamp) => runtimeStamp.hooksDigestForStamp(stamp, runtimeStamp.HOOKS_ROOT);
-    if (!resolved.upstreamTip) resolved.upstreamTip = () => runtimeStamp.upstreamTip();
+    const cfg = () => resolved.classifyConfigDir();
+    if (!resolved.runtimeDigest) {
+      resolved.runtimeDigest = () => runtimeStamp.runtimeDigest(cfg().runtimeRoot);
+    }
+    if (!resolved.readStamp) {
+      resolved.readStamp = () => runtimeStamp.readStamp({ stampPath: path.join(cfg().stateDir, runtimeStamp.STAMP_FILENAME) });
+    }
+    if (!resolved.hooksDigest) resolved.hooksDigest = (stamp) => runtimeStamp.hooksDigestForStamp(stamp, cfg().hooksRoot);
+    if (!resolved.upstreamTip) {
+      resolved.upstreamTip = () => runtimeStamp.upstreamTip({ cachePath: path.join(cfg().stateDir, runtimeStamp.CACHE_FILENAME) });
+    }
     return gate(stdinString, resolved);
   }, ctx);
 }

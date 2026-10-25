@@ -18,6 +18,7 @@
  *   - a config-read throw → fail-closed DENY (HARD-01), override-escapable (HARD-03)
  */
 
+require('./lib/test-isolate.cjs').isolateToolLog(); // never the real ~/.gsd-contrib tool log (quick 261024-po0)
 const test = require('node:test');
 const assert = require('node:assert');
 

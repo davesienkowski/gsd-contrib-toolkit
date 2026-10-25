@@ -81,6 +81,7 @@ const path = require('node:path');
 
 const { parseCommand } = require('./lib/argv.cjs');
 const { classifyAction } = require('./lib/classify.cjs');
+const { assertNotRealUserState } = require('./lib/test-fence.cjs');
 
 /** Default log directory (D1). `GSD_CONTRIB_LOG_DIR` overrides the DIRECTORY, not the filename. */
 const LOG_DIRNAME = '.gsd-contrib';
@@ -394,6 +395,8 @@ function appendRecord(line, deps = {}) {
   const impl = deps.fsImpl || fs;
   const dir = resolveLogDir(env);
   const file = path.join(dir, LOG_FILENAME);
+  // Under node --test only (quick 261024-po0): a test must never append to the real tool log.
+  assertNotRealUserState(file);
 
   try {
     impl.mkdirSync(dir, { recursive: true });

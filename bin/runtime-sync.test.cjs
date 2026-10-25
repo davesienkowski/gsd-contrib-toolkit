@@ -53,6 +53,32 @@ function stampAt(sha, digest) {
   };
 }
 
+// quick 261024-po0 (CTK-ADR-0013): the classified config-dir descriptors the stubbed oracle returns.
+const CONTRIB_CFG = '/home/u/.claude-contrib';
+const CONTRIB_STATE = '/home/u/.gsd-contrib/config-dirs/0123456789abcdef';
+function contribDesc(cfg = CONTRIB_CFG, stateDir = CONTRIB_STATE) {
+  return {
+    kind: 'contrib', fromEnv: true, value: cfg, configDir: cfg,
+    runtimeRoot: path.join(cfg, 'gsd-core'), hooksRoot: path.join(cfg, 'hooks'), stateDir,
+    runtimeLabel: path.join(cfg, 'gsd-core'), hooksLabel: path.join(cfg, 'hooks'), reason: '',
+  };
+}
+function dailyDesc() {
+  return {
+    kind: 'daily', fromEnv: false, value: undefined, configDir: '/home/u/.claude',
+    runtimeRoot: '/home/u/.claude/gsd-core', hooksRoot: '/home/u/.claude/hooks', stateDir: '/home/u/.gsd-contrib',
+    runtimeLabel: '~/.claude/gsd-core', hooksLabel: '~/.claude/hooks',
+    reason: 'CLAUDE_CONFIG_DIR is unset, so the session uses the daily ~/.claude',
+  };
+}
+function invalidDesc(value = 'rel/x') {
+  return {
+    kind: 'invalid', fromEnv: true, value, configDir: null, runtimeRoot: null, hooksRoot: null, stateDir: null,
+    runtimeLabel: null, hooksLabel: null,
+    reason: 'CLAUDE_CONFIG_DIR=' + JSON.stringify(value) + ' is not an absolute path',
+  };
+}
+
 /**
  * Build injectable deps for `sync`.
  *
@@ -131,6 +157,8 @@ function syncDeps(over = {}) {
     {
       runtimeRoot: '/home/u/.claude/gsd-core',
       oracle: Object.assign({}, oracle, {
+        // po0: the default world is a contribution session (the only kind sync may install into).
+        classifyConfigDir: () => contribDesc(),
         fetchTipLive: () => (over.tip === undefined ? TIP : over.tip),
         payloadDigest,
         payloadInventory,
@@ -167,9 +195,9 @@ function syncDeps(over = {}) {
           }
           return '';
         }
-        // A REAL install (no --config-dir) is what can change the runtime payload; the D-11
-        // projection install writes only into its sandbox and must not advance the sequence.
-        if (args.some((a) => String(a).includes('install.js')) && !args.includes('--config-dir')) {
+        // po0: every install.js call is a real install (the D-11 projection is gone, and the real
+        // install now carries --config-dir <cfg>), so each one advances the sequence.
+        if (args.some((a) => String(a).includes('install.js'))) {
           realInstalls += 1;
         }
         return '';
@@ -200,6 +228,8 @@ function checkDeps(over = {}) {
   const deps = {
     runtimeRoot: '/home/u/.claude/gsd-core',
     oracle: Object.assign({}, oracle, {
+      // po0: the default check world is the daily dir (tilde labels), so the existing pins hold.
+      classifyConfigDir: () => dailyDesc(),
       runtimeDigest: () => DIGEST,
       // Stubbed so the real helper never reads /home/u/.claude/hooks; records the root it was given.
       hooksDigestForStamp: (stamp, root) => {
@@ -300,10 +330,10 @@ test('sync SLOW PATH: payload differs → npm ci THEN install.js, re-verified, s
   assert.strictEqual(state.stamps[0].engine_verified, true);
 });
 
-test('sync SLOW PATH: npm ci runs in the CLONE with a bounded timeout, install.js runs via node', () => {
+test('po0: sync SLOW PATH: npm ci runs in the CLONE, install.js runs via node with --claude --global --config-dir <cfg> and CLAUDE_CONFIG_DIR=<cfg>', () => {
   const STALE = 'sha256:' + '1'.repeat(64);
   const { deps, state } = syncDeps({
-    digests: { clone: DIGEST, projection: DIGEST, runtime: [STALE, DIGEST] },
+    digests: { clone: DIGEST, runtime: [STALE, DIGEST] },
   });
   const calls = [];
   let real = 0;
@@ -311,25 +341,28 @@ test('sync SLOW PATH: npm ci runs in the CLONE with a bounded timeout, install.j
     calls.push({ file, args, opts });
     state.exec.push({ file, args });
     if (file === 'git' && args[0] === '-C' && args[2] === 'rev-parse') return TIP + '\n';
-    if (args.some((a) => String(a).includes('install.js')) && !args.includes('--config-dir')) real += 1;
+    if (args.some((a) => String(a).includes('install.js'))) real += 1;
     return '';
   };
   // Re-point the digest stub at this test's own install counter.
-  const projRe = /\.enf21-projection/;
   deps.oracle.payloadDigest = (root) => {
     const s = String(root);
-    if (projRe.test(s)) return DIGEST;
     if (s.startsWith(TMP)) return DIGEST;
     return real === 0 ? STALE : DIGEST;
   };
-  cli.sync(deps);
+  const r = cli.sync(deps);
+  assert.strictEqual(r.code, 0, state.logs.join('\n'));
   const ci = calls.find(isNpmCi);
   assert.strictEqual(ci.opts.cwd, TMP);
   assert.strictEqual(ci.opts.timeout, 600000);
-  // The REAL install — the projection install is the one carrying --config-dir.
-  const inst = calls.find((c) => isInstall(c) && !c.args.includes('--config-dir'));
+  const installs = calls.filter(isInstall);
+  assert.strictEqual(installs.length, 1, 'exactly one install.js call');
+  const inst = installs[0];
   assert.strictEqual(inst.file, process.execPath);
-  assert.deepStrictEqual(inst.args, [path.join(TMP, 'bin', 'install.js'), '--claude']);
+  assert.deepStrictEqual(inst.args,
+    [path.join(TMP, 'bin', 'install.js'), '--claude', '--global', '--config-dir', CONTRIB_CFG]);
+  assert.ok(inst.opts.env && inst.opts.env.CLAUDE_CONFIG_DIR === CONTRIB_CFG,
+    'the child env carries the same config dir as the flag');
   assert.strictEqual(inst.opts.timeout, 300000);
 });
 
@@ -376,13 +409,17 @@ test('sync D-13: a matching inventory CONFIRMS the install even when the DIGEST 
   assert.strictEqual(state.stamps[0].engine_verified, true);
 });
 
-test('sync D-13: no sandboxed projection install is attempted any more (it was unsound)', () => {
+test('po0: sync D-13: exactly one install.js call, whose --config-dir is the classified config dir, never a sandbox under the clone tmpdir', () => {
   const STALE = 'sha256:' + '1'.repeat(64);
   const { deps, state } = syncDeps({ digests: { clone: DIGEST, runtime: [STALE, STALE] } });
   cli.sync(deps);
-  const proj = state.exec.find((c) => isInstall(c) && c.args.includes('--config-dir'));
-  assert.strictEqual(proj, undefined,
-    'a sandboxed projection can never match a real install — it must not be run');
+  const installs = state.exec.filter(isInstall);
+  assert.strictEqual(installs.length, 1, 'a sandboxed projection install must not be run (it was unsound)');
+  const i = installs[0].args.indexOf('--config-dir');
+  assert.ok(i >= 0, 'the real install names its config dir explicitly');
+  const cfg = installs[0].args[i + 1];
+  assert.strictEqual(cfg, CONTRIB_CFG);
+  assert.ok(!String(cfg).startsWith(TMP), 'the config dir is not a projection sandbox inside the clone tmpdir');
 });
 
 // ───────────────────────────── sync: the race guard ─────────────────────────────
@@ -874,15 +911,18 @@ test('w1i: check over a managed-hooks digest mismatch returns code 1 naming ~/.c
   assert.strictEqual(state.stamps.length, 0);
 });
 
-test('w1i: check measures the hooks under deps.hooksRoot, defaulting to oracle.HOOKS_ROOT', () => {
+test('po0: check measures the hooks under deps.hooksRoot, defaulting to the classified descriptor\'s hooks root', () => {
   const a = checkDeps();
   a.deps.hooksRoot = '/x/hooks';
   assert.strictEqual(cli.check(a.deps).code, 0);
   assert.deepStrictEqual(a.state.hooksRoots, ['/x/hooks']);
   const b = checkDeps();
   assert.strictEqual(cli.check(b.deps).code, 0);
-  assert.strictEqual(typeof oracle.HOOKS_ROOT, 'string');
-  assert.deepStrictEqual(b.state.hooksRoots, [oracle.HOOKS_ROOT]);
+  assert.deepStrictEqual(b.state.hooksRoots, ['/home/u/.claude/hooks']);
+  const c = checkDeps({ oracle: { classifyConfigDir: () => contribDesc() } });
+  delete c.deps.runtimeRoot;
+  assert.strictEqual(cli.check(c.deps).code, 0);
+  assert.deepStrictEqual(c.state.hooksRoots, [path.join(CONTRIB_CFG, 'hooks')]);
 });
 
 test('w1i: verifyHooksWritten over a real temp dir reports {missing, stale}; a directory at a listed path is missing; a backdated mtime with a fresh ctime is written', (t) => {
@@ -909,4 +949,292 @@ test('w1i: verifyHooksWritten over a real temp dir reports {missing, stale}; a d
   const future = Date.now() + cli.HOOK_MTIME_SLACK_MS + 60000;
   assert.deepStrictEqual(cli.verifyHooksWritten(root, ['gsd-a.js', 'lib/b.sh'], future), { missing: [], stale: ['gsd-a.js', 'lib/b.sh'] });
   assert.deepStrictEqual(cli.verifyHooksWritten(root, ['gsd-a.js'], since), { missing: [], stale: [] });
+});
+
+// ------------- quick 261024-po0 (CTK-ADR-0013): sync refuses the daily install; where; check -------------
+//
+// Every new export (where) is touched only inside a test body. Cases that use the REAL classifier
+// pass `deps.env` and `deps.homedir` explicitly, so the runner's own CLAUDE_CONFIG_DIR never leaks in.
+
+const po0Fs = require('node:fs');
+const po0Os = require('node:os');
+const po0Crypto = require('node:crypto');
+
+function po0Key(cfg) {
+  return po0Crypto.createHash('sha256').update(path.resolve(cfg)).digest('hex').slice(0, 16);
+}
+
+/** A real temp HOME for the real-classifier cases, removed after the test. */
+function po0Home(t) {
+  const root = po0Fs.mkdtempSync(path.join(po0Os.tmpdir(), 'po0-sync-'));
+  t.after(() => po0Fs.rmSync(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home');
+  po0Fs.mkdirSync(home);
+  return { root, home };
+}
+
+function po0AssertRefused(r, state, reason) {
+  assert.strictEqual(r.code, 3, state.logs.join('\n'));
+  assert.strictEqual(r.reason, reason);
+  assert.deepStrictEqual(state.exec, [], 'no execFileSync call at all: the ls-remote tip lookup never ran');
+  assert.strictEqual(state.mkdtemp, 0, 'no tmpdir was created');
+  assert.strictEqual(state.stamps.length, 0, 'no stamp was written');
+}
+
+for (const [label, desc, reason] of [
+  ['daily', dailyDesc(), 'refused-daily-config-dir'],
+  ['invalid', invalidDesc('rel/x'), 'refused-invalid-config-dir'],
+]) {
+  test('po0: sync with a ' + label + ' config dir (stubbed classifier) refuses with code 3 before any exec, tmpdir or stamp, printing the hint', () => {
+    const { deps, state } = syncDeps({ oracle: { classifyConfigDir: () => desc } });
+    const r = cli.sync(deps);
+    po0AssertRefused(r, state, reason);
+    const out = state.logs.join('\n');
+    assert.match(out, /ENF-21 sync REFUSED:/);
+    assert.ok(out.includes('CLAUDE_CONFIG_DIR='), out);
+    assert.ok(out.includes('$HOME/.claude-contrib'), out);
+    assert.ok(out.includes('CLAUDE_CODE_SUBPROCESS_ENV_SCRUB'), out);
+    assert.ok(out.includes(oracle.CONTRIB_SESSION_HINT), 'the single-source hint is quoted verbatim');
+  });
+}
+
+test('po0: sync with the REAL classifier refuses the daily dir: variable unset, the explicit daily path, and a real symlink to it', (t) => {
+  const { root, home } = po0Home(t);
+  const daily = path.join(home, '.claude');
+  po0Fs.mkdirSync(daily);
+  const link = path.join(root, 'daily-link');
+  po0Fs.symlinkSync(daily, link);
+  for (const env of [{}, { CLAUDE_CONFIG_DIR: daily }, { CLAUDE_CONFIG_DIR: link }]) {
+    const { deps, state } = syncDeps({ oracle: { classifyConfigDir: oracle.classifyConfigDir } });
+    deps.env = env;
+    deps.homedir = home;
+    const r = cli.sync(deps);
+    po0AssertRefused(r, state, 'refused-daily-config-dir');
+  }
+  assert.deepStrictEqual(po0Fs.readdirSync(home), ['.claude'], 'the refused runs wrote nothing under HOME');
+});
+
+test('po0: sync with the REAL classifier refuses an invalid CLAUDE_CONFIG_DIR', (t) => {
+  const { home } = po0Home(t);
+  for (const value of ['', 'rel/x', '~/x']) {
+    const { deps, state } = syncDeps({ oracle: { classifyConfigDir: oracle.classifyConfigDir } });
+    deps.env = { CLAUDE_CONFIG_DIR: value };
+    deps.homedir = home;
+    po0AssertRefused(cli.sync(deps), state, 'refused-invalid-config-dir');
+  }
+});
+
+test('po0: sync with the REAL classifier and a contribution dir reaches install.js with that dir and stamps into its per-dir state', (t) => {
+  const { root, home } = po0Home(t);
+  const cfg = path.join(root, 'contrib');
+  const STALE = 'sha256:' + '1'.repeat(64);
+  const seen = [];
+  const { deps, state } = syncDeps({
+    digests: { clone: DIGEST, runtime: [STALE, DIGEST] },
+    oracle: {
+      classifyConfigDir: oracle.classifyConfigDir,
+      writeStamp: (s, o) => { state.stamps.push(s); seen.push(o); return o && o.stampPath; },
+    },
+  });
+  deps.env = { CLAUDE_CONFIG_DIR: cfg };
+  deps.homedir = home;
+  const r = cli.sync(deps);
+  assert.strictEqual(r.code, 0, state.logs.join('\n'));
+  const inst = state.exec.filter(isInstall);
+  assert.strictEqual(inst.length, 1);
+  assert.deepStrictEqual(inst[0].args, [path.join(TMP, 'bin', 'install.js'), '--claude', '--global', '--config-dir', cfg]);
+  assert.strictEqual(seen.length, 1);
+  assert.strictEqual(seen[0].stampPath,
+    path.join(home, '.gsd-contrib', 'config-dirs', po0Key(cfg), 'runtime-stamp.json'),
+    'the stamp lands in the contribution dir\'s own state dir, the one where reports');
+});
+
+test('po0: sync passes stampPath = <descriptor stateDir>/runtime-stamp.json to writeStamp (stubbed classifier)', () => {
+  const STALE = 'sha256:' + '1'.repeat(64);
+  const seen = [];
+  const { deps, state } = syncDeps({
+    digests: { clone: DIGEST, runtime: [STALE, DIGEST] },
+    oracle: { writeStamp: (s, o) => { state.stamps.push(s); seen.push(o); return '/s'; } },
+  });
+  const r = cli.sync(deps);
+  assert.strictEqual(r.code, 0, state.logs.join('\n'));
+  assert.strictEqual(seen.length, 1);
+  assert.ok(seen[0] && seen[0].stampPath === path.join(CONTRIB_STATE, 'runtime-stamp.json'), JSON.stringify(seen[0]));
+});
+
+function po0WhereDeps(desc) {
+  const state = { logs: [], writes: [] };
+  const deps = {
+    oracle: {
+      classifyConfigDir: () => desc,
+      writeStamp: () => { state.writes.push('stamp'); },
+      writeCacheLive: () => { state.writes.push('cache'); },
+    },
+    log: (l) => state.logs.push(String(l)),
+  };
+  return { deps, state };
+}
+
+test('po0: where for a contribution dir exits 0 and prints the config dir, classification, runtime root, hooks root and state dir', () => {
+  const { deps, state } = po0WhereDeps(contribDesc());
+  const r = cli.where(deps);
+  assert.strictEqual(r.code, 0);
+  assert.strictEqual(r.kind, 'contrib');
+  const out = state.logs.join('\n');
+  assert.match(out, /config dir: \/home\/u\/\.claude-contrib/);
+  assert.match(out, /classification: contrib/);
+  assert.ok(out.includes('runtime root: ' + path.join(CONTRIB_CFG, 'gsd-core')), out);
+  assert.ok(out.includes('hooks root: ' + path.join(CONTRIB_CFG, 'hooks')), out);
+  assert.ok(out.includes('state dir: ' + CONTRIB_STATE), out);
+  assert.ok(!out.includes(oracle.CONTRIB_SESSION_HINT), 'no hint for a contribution dir');
+  assert.deepStrictEqual(state.writes, [], 'where writes nothing');
+});
+
+for (const [label, desc] of [['daily', dailyDesc()], ['invalid', invalidDesc('~/x')]]) {
+  test('po0: where for a ' + label + ' config dir exits 3 with the reason and the hint, writing nothing', () => {
+    const { deps, state } = po0WhereDeps(desc);
+    const r = cli.where(deps);
+    assert.strictEqual(r.code, 3);
+    assert.strictEqual(r.kind, label);
+    const out = state.logs.join('\n');
+    assert.match(out, new RegExp('classification: ' + label));
+    assert.ok(out.includes(desc.reason), out);
+    assert.ok(out.includes(oracle.CONTRIB_SESSION_HINT), out);
+    if (label === 'invalid') assert.match(out, /runtime root: \(none\)/);
+    assert.deepStrictEqual(state.writes, []);
+  });
+}
+
+test('po0: check with an invalid config dir returns 3 before measuring anything', () => {
+  const boom = (n) => () => { throw new Error(n + ' must not be called for an invalid config dir'); };
+  const { deps, state } = checkDeps({
+    oracle: {
+      classifyConfigDir: () => invalidDesc('rel/x'),
+      runtimeDigest: boom('runtimeDigest'),
+      readStamp: boom('readStamp'),
+      hooksDigestForStamp: boom('hooksDigestForStamp'),
+      upstreamTip: boom('upstreamTip'),
+    },
+  });
+  const r = cli.check(deps);
+  assert.strictEqual(r.code, 3);
+  assert.strictEqual(r.verdict, 'invalid-config-dir');
+  const out = state.logs.join('\n');
+  assert.ok(out.includes(invalidDesc('rel/x').reason), out);
+  assert.ok(out.includes(oracle.CONTRIB_SESSION_HINT), out);
+});
+
+test('po0: check on the daily dir appends the hint after a non-fresh verdict and after an unknown one, never after fresh', () => {
+  const drift = checkDeps({ oracle: { upstreamTip: () => ({ sha: OTHER, source: 'live', ageMs: 0 }) } });
+  assert.strictEqual(cli.check(drift.deps).code, 1);
+  assert.ok(drift.state.logs.join('\n').includes(oracle.CONTRIB_SESSION_HINT));
+  const unknown = checkDeps({ oracle: { upstreamTip: () => { throw new oracle.UpstreamUnavailable('offline'); } } });
+  assert.strictEqual(cli.check(unknown.deps).code, 2);
+  assert.ok(unknown.state.logs.join('\n').includes(oracle.CONTRIB_SESSION_HINT));
+  const fresh = checkDeps();
+  assert.strictEqual(cli.check(fresh.deps).code, 0);
+  assert.ok(!fresh.state.logs.join('\n').includes(oracle.CONTRIB_SESSION_HINT));
+});
+
+test('po0: check for a contribution dir names its absolute roots and carries no hint', () => {
+  const rt = checkDeps({ oracle: { classifyConfigDir: () => contribDesc(), runtimeDigest: () => 'sha256:' + '0'.repeat(64) } });
+  delete rt.deps.runtimeRoot;
+  const r = cli.check(rt.deps);
+  assert.strictEqual(r.code, 1);
+  assert.ok(r.reason.includes(path.join(CONTRIB_CFG, 'gsd-core')), r.reason);
+  assert.ok(!rt.state.logs.join('\n').includes(oracle.CONTRIB_SESSION_HINT));
+  const hk = checkDeps({ oracle: { classifyConfigDir: () => contribDesc(), hooksDigestForStamp: () => 'sha256:' + '3'.repeat(64) } });
+  delete hk.deps.runtimeRoot;
+  const r2 = cli.check(hk.deps);
+  assert.strictEqual(r2.code, 1);
+  assert.ok(r2.reason.includes(path.join(CONTRIB_CFG, 'hooks')), r2.reason);
+  assert.ok(!r2.reason.includes('~/.claude/hooks'), r2.reason);
+});
+
+test('po0: check reads the stamp and the tip cache from the descriptor\'s state dir', () => {
+  const seen = {};
+  const { deps } = checkDeps({
+    oracle: {
+      classifyConfigDir: () => contribDesc(),
+      readStamp: (o) => { seen.stamp = o; return stampAt(TIP, DIGEST); },
+      upstreamTip: (o) => { seen.tip = o; return { sha: TIP, source: 'live', ageMs: 0 }; },
+    },
+  });
+  assert.strictEqual(cli.check(deps).code, 0);
+  assert.strictEqual(seen.stamp && seen.stamp.stampPath, path.join(CONTRIB_STATE, 'runtime-stamp.json'));
+  assert.strictEqual(seen.tip && seen.tip.cachePath, path.join(CONTRIB_STATE, 'upstream-tip-cache.json'));
+});
+
+test('po0: main dispatches where, and a bare invocation prints USAGE naming check|sync|where and exit 3, returning 2', () => {
+  const { deps } = po0WhereDeps(contribDesc());
+  assert.strictEqual(cli.main(['where'], deps), 0);
+  const d3 = po0WhereDeps(dailyDesc());
+  assert.strictEqual(cli.main(['where'], d3.deps), 3);
+  const logs = [];
+  assert.strictEqual(cli.main([], { log: (l) => logs.push(String(l)) }), 2);
+  const out = logs.join('\n');
+  assert.ok(out.includes('<check|sync|where>'), out);
+  assert.match(out, /\b3\b/);
+  assert.match(out, /refuses/i);
+});
+
+/** Spawn the real CLI with an env built from scratch over a scratch HOME. */
+function po0Spawn(verb, home, extra = {}) {
+  const { spawnSync } = require('node:child_process');
+  const env = Object.assign({
+    PATH: process.env.PATH || '',
+    HOME: home,
+    HTTPS_PROXY: 'http://127.0.0.1:9',
+    https_proxy: 'http://127.0.0.1:9',
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_TERMINAL_PROMPT: '0',
+  }, extra);
+  return spawnSync(process.execPath, [path.join(__dirname, 'runtime-sync.cjs'), verb], { env, encoding: 'utf8', timeout: 30000 });
+}
+
+test('po0: spawned `where` over a scratch HOME exits 3 with CLAUDE_CONFIG_DIR unset, 0 naming <cfg>/gsd-core for an absolute contribution dir', (t) => {
+  const { root, home } = po0Home(t);
+  const unset = po0Spawn('where', home);
+  assert.strictEqual(unset.status, 3, unset.stdout + unset.stderr);
+  assert.ok(unset.stdout.includes('CLAUDE_CONFIG_DIR='), unset.stdout);
+  const cfg = path.join(root, 'contrib');
+  const ok = po0Spawn('where', home, { CLAUDE_CONFIG_DIR: cfg });
+  assert.strictEqual(ok.status, 0, ok.stdout + ok.stderr);
+  assert.ok(ok.stdout.includes(path.join(cfg, 'gsd-core')), ok.stdout);
+  assert.deepStrictEqual(po0Fs.readdirSync(home), [], 'where wrote nothing under HOME');
+});
+
+test('po0: spawned `sync` over a scratch HOME with CLAUDE_CONFIG_DIR unset exits 3, clones nothing and leaves HOME empty', (t) => {
+  const { home } = po0Home(t);
+  const r = po0Spawn('sync', home);
+  assert.strictEqual(r.status, 3, r.stdout + r.stderr);
+  assert.ok(!r.stdout.includes('Cloning'), r.stdout);
+  assert.deepStrictEqual(po0Fs.readdirSync(home), [], 'the refused sync wrote nothing under HOME');
+});
+
+// quick 261024-po0 round 2 (review WR-04): install.js's symlinked-destination guard must not be
+// disabled by an inherited opt-in, so the child env drops it (and the agents-dir redirect).
+test('po0 r2: sync strips GSD_ALLOW_SYMLINKED_DEST and GSD_AGENTS_DIR from the install.js child env', () => {
+  const STALE = 'sha256:' + '1'.repeat(64);
+  const { deps, state } = syncDeps({ digests: { clone: DIGEST, runtime: [STALE, DIGEST] } });
+  deps.env = { PATH: process.env.PATH, CLAUDE_CONFIG_DIR: CONTRIB_CFG, GSD_ALLOW_SYMLINKED_DEST: '1', GSD_AGENTS_DIR: '/home/u/.claude/agents', KEEP_ME: 'x' };
+  const calls = [];
+  let real = 0;
+  deps.execFileSync = (file, args, opts) => {
+    calls.push({ file, args, opts });
+    state.exec.push({ file, args });
+    if (file === 'git' && args[0] === '-C' && args[2] === 'rev-parse') return TIP + '\n';
+    if (args.some((a) => String(a).includes('install.js'))) real += 1;
+    return '';
+  };
+  deps.oracle.payloadDigest = (root) => (String(root).startsWith(TMP) ? DIGEST : (real === 0 ? STALE : DIGEST));
+  const r = cli.sync(deps);
+  assert.strictEqual(r.code, 0, state.logs.join('\n'));
+  const inst = calls.filter(isInstall)[0];
+  assert.ok(inst, 'install.js ran');
+  assert.ok(!('GSD_ALLOW_SYMLINKED_DEST' in inst.opts.env), 'GSD_ALLOW_SYMLINKED_DEST must not reach install.js');
+  assert.ok(!('GSD_AGENTS_DIR' in inst.opts.env), 'GSD_AGENTS_DIR must not reach install.js');
+  assert.strictEqual(inst.opts.env.KEEP_ME, 'x', 'the rest of the env is forwarded');
+  assert.strictEqual(inst.opts.env.CLAUDE_CONFIG_DIR, CONTRIB_CFG);
 });

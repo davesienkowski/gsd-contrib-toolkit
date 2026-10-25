@@ -10,6 +10,9 @@
 - **Amends:** CTK-ADR-0007 Decision 1 (the digest scope now also covers the managed gsd-core hooks
   under ~/.claude/hooks) and Decision 5 (what the fast path proves). CTK-ADR-0007 is not withdrawn;
   its Status stays Accepted and it carries a back-link to this record.
+- **Amended by:** CTK-ADR-0013 (2026-10-24, Proposed): ENF-21 measures the session's Claude config dir
+  (CLAUDE_CONFIG_DIR, else ~/.claude) with per-config-dir state, and runtime-sync sync refuses the daily
+  install.
 - **Relates to:** ENF-21 (`hooks/runtime-drift.cjs`), its remediation CLI (`bin/runtime-sync.cjs`) and
   its oracle (`hooks/lib/runtime-stamp.cjs`); CTK-ADR-0001 Decision 3 (reuse the LIVE upstream script,
   never reimplement it); CTK-ADR-0010's W5 row (a gate hot-path file is read only through the bounded
@@ -164,6 +167,9 @@ mods' own files (for example `artifact-gate.cjs`, `herdr-agent-state.sh`, `gsd-p
 - **Residual:** if `CLAUDE_CONFIG_DIR` points the install somewhere other than `~/.claude`, the
   post-install check finds the managed hooks missing or stale and aborts (fail closed, no stamp), the
   same assumption `RUNTIME_ROOT` already makes.
+  Amended 2026-10-24 by CTK-ADR-0013 (Proposed): the toolkit now resolves its roots from
+  `CLAUDE_CONFIG_DIR` and passes `--config-dir` to install.js, so this abort no longer applies to a
+  valid contribution dir; an invalid value is refused instead.
 - **Residual:** a copy API that preserves the source's mtime (plausibly `copyFileSync` on some
   platforms; not measured here) no longer makes the sync abort, because the check also reads ctime.
   What still makes it abort, never stamp falsely: a filesystem whose clock or timestamps lag the
@@ -196,6 +202,10 @@ mods' own files (for example `artifact-gate.cjs`, `herdr-agent-state.sh`, `gsd-p
   `~/.claude/gsd-core`. Options, not decided here: (a) re-stamp after every restore, which is only
   honest if the stamp is then taken over the patched bytes on purpose; (b) exclude the mod-patched
   hooks from the managed set, which leaves those six files unbound by the gate.
+  Amended 2026-10-24 by CTK-ADR-0013 (Proposed): contribution work runs in a separate pristine config
+  dir and `sync` refuses the daily install, so the toolkit no longer reinstalls over the daily dir's
+  local mods. The daily stamp goes stale and a daily session's gate denies filing with the
+  start-a-contribution-session text; options (a) and (b) stay undecided for the daily dir.
 - **Out of scope, named:** the pre-existing whole-tree `runtime_digest` already reads `unverified`
   after local mods patch `~/.claude/gsd-core` (for example its `bin/lib` or `workflows`). This record
   does not change that.

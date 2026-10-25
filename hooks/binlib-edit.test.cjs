@@ -30,6 +30,7 @@
  *     case-insensitive bin/lib segments; NT-03 the reason names src/*.cts; NT-04 symlink guards
  */
 
+require('./lib/test-isolate.cjs').isolateToolLog(); // never the real ~/.gsd-contrib tool log (quick 261024-po0)
 const test = require('node:test');
 const assert = require('node:assert');
 const os = require('node:os');
