@@ -310,13 +310,18 @@ function isAtOrInside(p, base) {
 /**
  * The top-level entries of a config dir that gsd-core's install.js writes (read at gsd-core
  * origin/next 354d727b). Any of them resolving into the daily install makes the dir daily: install.js
- * would write through it (review WR-04, quick 261024-po0 round 2). Other entries (rules/, CLAUDE.md,
- * user-owned links) are not written by install.js and are not checked.
+ * would write through it (review WR-04, quick 261024-po0 round 2; the last five from the fresh
+ * round-2 review IN-01). Other entries (rules/, CLAUDE.md, user-owned links) are not written by
+ * install.js and are not checked.
  */
 const INSTALL_WRITTEN_ENTRIES = Object.freeze([
   'gsd-core', 'hooks', 'agents', 'skills', 'commands', 'scripts', 'workflows', 'gsd-pristine',
-  'gsd-migration-journal', 'settings.json', 'gsd-file-manifest.json',
+  'gsd-migration-journal', 'settings.json', 'gsd-file-manifest.json', 'gsd-local-patches',
+  'gsd-migration-backups', '.gsd-staging', '.gsd-profile', 'gsd-install-state.json',
 ]);
+
+/** The most entries walked under the install-written entries before the classification gives up. */
+const DEEP_WALK_LIMIT = 200000;
 
 /** A classification that cannot be decided; classifyConfigDir turns it into `invalid` (refuse). */
 class ClassificationUncertain extends Error {
@@ -347,6 +352,8 @@ function dailyConfigDirReason(configDir, opts = {}) {
   const userInfo = opts.userInfo || os.userInfo;
   const realpathSync = opts.realpathSync || nodeFs.realpathSync;
   const readlinkSync = opts.readlinkSync || nodeFs.readlinkSync;
+  const lstatSync = opts.lstatSync || nodeFs.lstatSync;
+  const readdirSync = opts.readdirSync || nodeFs.readdirSync;
   let passwdHome;
   try {
     passwdHome = userInfo().homedir;
@@ -397,14 +404,61 @@ function dailyConfigDirReason(configDir, opts = {}) {
     if (isAtOrInside(cfg, daily)) return 'the config dir ' + configDir + ' lies inside the daily install ' + daily;
     if (isAtOrInside(daily, cfg)) return 'the config dir ' + configDir + ' contains the daily install ' + daily;
   }
-  for (const sub of INSTALL_WRITTEN_ENTRIES) {
-    const r = rp(path.join(configDir, sub));
+  const intoDaily = (p) => {
+    const r = rp(p);
     for (const daily of dailies) {
-      if (isAtOrInside(r, daily)) {
-        return 'the config dir\'s ' + sub + ' (' + path.join(configDir, sub) + ') resolves to ' + r +
-          ', inside the daily install ' + daily;
-      }
+      if (isAtOrInside(r, daily)) return 'the config dir\'s ' + path.relative(configDir, p) + ' (' + p + ') resolves to ' + r +
+        ', inside the daily install ' + daily;
     }
+    return null;
+  };
+  for (const sub of INSTALL_WRITTEN_ENTRIES) {
+    const why = intoDaily(path.join(configDir, sub));
+    if (why !== null) return why;
+  }
+  // Below the top level (fresh round-2 review WR-01): install.js writes payload files with plain
+  // writeFileSync, which follows a symlinked or hardlinked FILE. So every symlink under an
+  // install-written entry is resolved like the entry itself, and a hardlinked regular file (whose
+  // other names cannot be found cheaply) is uncertain. Entries that are themselves symlinks were
+  // resolved above and are not descended.
+  const lst = (p) => {
+    try {
+      return lstatSync(p);
+    } catch (e) {
+      if (code(e) === 'ENOENT') return null;
+      throw new ClassificationUncertain('lstat ' + p + ' failed with ' + code(e));
+    }
+  };
+  let walked = 0;
+  const walk = (p, st) => {
+    walked += 1;
+    if (walked > DEEP_WALK_LIMIT) throw new ClassificationUncertain('more than ' + DEEP_WALK_LIMIT + ' entries under ' + configDir);
+    if (st.isSymbolicLink()) return intoDaily(p);
+    if (st.isFile() && st.nlink > 1) {
+      throw new ClassificationUncertain(p + ' is a hard link (' + st.nlink + ' names); install.js would write through it');
+    }
+    if (!st.isDirectory()) return null;
+    let names;
+    try {
+      names = readdirSync(p);
+    } catch (e) {
+      throw new ClassificationUncertain('readdir ' + p + ' failed with ' + code(e));
+    }
+    for (const n of names) {
+      const c = path.join(p, String(n));
+      const cst = lst(c);
+      if (cst === null) continue;
+      const why = walk(c, cst);
+      if (why !== null) return why;
+    }
+    return null;
+  };
+  for (const sub of INSTALL_WRITTEN_ENTRIES) {
+    const p = path.join(configDir, sub);
+    const st = lst(p);
+    if (st === null || st.isSymbolicLink()) continue;
+    const why = walk(p, st);
+    if (why !== null) return why;
   }
   return null;
 }

@@ -302,8 +302,12 @@ test('po0 r2 guard: with the REAL runtime-sync where, --rollback from a scratch 
 test('po0 r2b: a snapshot that cannot be written stops the refresh before sync (WR-02)', (t) => {
   const sc = makeScratch(t);
   fs.chmodSync(sc.snaps, 0o500);
-  t.after(() => fs.chmodSync(sc.snaps, 0o700));
-  const r = runMode(sc, ['--yes'], { STUB_WHERE_CODE: '0', STUB_SYNC_CODE: '0' });
+  let r;
+  try {
+    r = runMode(sc, ['--yes'], { STUB_WHERE_CODE: '0', STUB_SYNC_CODE: '0' });
+  } finally {
+    fs.chmodSync(sc.snaps, 0o700); // before the scratch cleanup, which runs first among the after hooks
+  }
   assert.notStrictEqual(r.status, 0, 'an unwritable snapshot must fail the refresh; output:\n' + r.out);
   const calls = fs.existsSync(sc.log) ? fs.readFileSync(sc.log, 'utf8') : '';
   assert.ok(!calls.includes('sync'), 'sync must not run without a snapshot; calls:\n' + calls);

@@ -1358,3 +1358,50 @@ test('po0 r2: a config dir that CONTAINS the daily dir (CLAUDE_CONFIG_DIR=$HOME)
   assert.strictEqual(rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: '/h' }, o).kind, 'daily');
   assert.strictEqual(rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: '/' }, o).kind, 'daily');
 });
+
+// ------------- quick 261024-po0 round 2b (fresh review WR-01, IN-01) -------------
+// install.js writes the hooks bundle (and other payload) with plain writeFileSync, which follows a
+// symlinked or hardlinked file into the daily dir. So a link anywhere under an install-written entry
+// classifies too: a symlink into a daily dir is daily, a hardlinked regular file is uncertain (refused).
+
+test('po0 r2b: a symlinked hook FILE, a symlinked hooks/lib or a deep symlink into the daily dir is daily (WR-01)', (t) => {
+  const { fs, root, home } = r2Root(t);
+  fs.mkdirSync(path.join(home, '.claude', 'hooks', 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.claude', 'hooks', 'gsd-x.js'), 'daily\n');
+  const o = { homedir: home, userInfo: () => ({ homedir: home }) };
+  const cases = {
+    file: (cfg) => { fs.mkdirSync(path.join(cfg, 'hooks')); fs.symlinkSync(path.join(home, '.claude', 'hooks', 'gsd-x.js'), path.join(cfg, 'hooks', 'gsd-x.js')); },
+    lib: (cfg) => { fs.mkdirSync(path.join(cfg, 'hooks')); fs.symlinkSync(path.join(home, '.claude', 'hooks', 'lib'), path.join(cfg, 'hooks', 'lib')); },
+    deep: (cfg) => { fs.mkdirSync(path.join(cfg, 'gsd-core', 'a', 'b'), { recursive: true }); fs.symlinkSync(path.join(home, '.claude', 'hooks'), path.join(cfg, 'gsd-core', 'a', 'b', 'c')); },
+  };
+  for (const [name, make] of Object.entries(cases)) {
+    const cfg = path.join(root, 'c-' + name);
+    fs.mkdirSync(cfg);
+    make(cfg);
+    const d = rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: cfg }, o);
+    assert.strictEqual(d.kind, 'daily', name + ': got ' + d.kind + ' ' + d.reason);
+  }
+  // A deep symlink to somewhere else (the .agents skills layout) stays a contribution dir.
+  const ok = path.join(root, 'ok');
+  fs.mkdirSync(path.join(ok, 'skills'), { recursive: true });
+  fs.symlinkSync(path.join(root, 'agents-skills', 'x'), path.join(ok, 'skills', 'x'));
+  assert.strictEqual(rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: ok }, o).kind, 'contrib');
+});
+
+test('po0 r2b: a hardlinked file under an install-written entry (cp -al) is INVALID, never contrib (WR-01)', (t) => {
+  const { fs, root, home } = r2Root(t);
+  fs.mkdirSync(path.join(home, '.claude', 'hooks'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.claude', 'hooks', 'gsd-x.js'), 'daily\n');
+  const cfg = path.join(root, 'cfg');
+  fs.mkdirSync(path.join(cfg, 'hooks'), { recursive: true });
+  fs.linkSync(path.join(home, '.claude', 'hooks', 'gsd-x.js'), path.join(cfg, 'hooks', 'gsd-x.js'));
+  const d = rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: cfg }, { homedir: home, userInfo: () => ({ homedir: home }) });
+  assert.strictEqual(d.kind, 'invalid', 'got ' + d.kind);
+  assert.match(d.reason, /hard ?link/i);
+});
+
+test('po0 r2b: the install-written list carries the further entries install.js writes (IN-01)', () => {
+  for (const n of ['gsd-local-patches', 'gsd-migration-backups', '.gsd-staging', '.gsd-profile', 'gsd-install-state.json']) {
+    assert.ok(rs.INSTALL_WRITTEN_ENTRIES.includes(n), n);
+  }
+});

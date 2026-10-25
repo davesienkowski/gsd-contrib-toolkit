@@ -56,16 +56,19 @@ config dir carries its own settings, login (`.credentials.json`), plugins and `.
    config dir is the daily install when its realpath equals the realpath of a daily dir, lies at or
    inside one, or contains one (so `CLAUDE_CONFIG_DIR=$HOME` is refused), or when any top-level entry
    that install.js writes (`gsd-core`, `hooks`, `agents`, `skills`, `commands`, `scripts`, `workflows`,
-   `gsd-pristine`, `gsd-migration-journal`, `settings.json`, `gsd-file-manifest.json`) resolves at or
-   inside one, by a segment-wise path test (so a sibling `~/.claude-contrib` is not inside). Other
-   entries, such as a `rules/` link into the daily dir, are not written by install.js and are not
-   checked. A path that does not exist yet resolves through its deepest existing ancestor, and a
+   `gsd-pristine`, `gsd-migration-journal`, `settings.json`, `gsd-file-manifest.json`,
+   `gsd-local-patches`, `gsd-migration-backups`, `.gsd-staging`, `.gsd-profile`,
+   `gsd-install-state.json`), or any symlink anywhere below one of them, resolves at or inside one, by
+   a segment-wise path test (so a sibling `~/.claude-contrib` is not inside). install.js writes payload
+   files with plain `writeFileSync`, which follows a symlinked or hardlinked file, so a hardlinked
+   regular file below those entries (a `cp -al` copy) is uncertain and refuses. Other entries, such as
+   a `rules/` link into the daily dir, are not written by install.js and are not checked. A path that does not exist yet resolves through its deepest existing ancestor, and a
    dangling symlink is followed through readlink, so `cfg/hooks -> ~/.claude/<not yet>` is daily too
    (added 2026-10-24 on an independent verifier finding). A classification that cannot be decided
    refuses as invalid, never as a contribution dir: an unreadable passwd home, more than 8 dangling
    symlink hops, or a realpath or readlink error other than "absent" or "not a symlink" (EACCES, ELOOP,
-   ENOTDIR and the like). The passwd home, the entry list and the uncertainty rule were added 2026-10-24
-   in round 2 on the independent review (WR-02, WR-03, WR-04, IN-01). No durable local-mods marker
+   ENOTDIR and the like), or more than 200000 entries below them. The passwd home, the entry list, the
+   deep walk and the uncertainty rule were added 2026-10-24 in round 2 on two independent reviews. No durable local-mods marker
    exists via the paths read, so none is used.
 5. **`sync` refuses the daily or an invalid dir** with exit 3, before any network call, tmpdir, clone,
    `npm ci` or install, and prints how to start a contribution session. There is no override: no flag,
@@ -134,10 +137,12 @@ config dir carries its own settings, login (`.credentials.json`), plugins and `.
   are never listed or restored by it. In the other direction the local-mods refresh
   tool, run inside a contribution session, would follow the exported `CLAUDE_CONFIG_DIR` and install
   into the contribution dir; that tool lives outside this repo.
-- **Residual (classification depth):** only the top-level entries install.js writes are checked; a
-  symlink deeper down (for example `skills/gsd-x -> ~/.claude/...`) is left to install.js's own
-  symlinked-destination guard, which `sync` keeps armed by dropping `GSD_ALLOW_SYMLINKED_DEST`. That
-  guard was read on the install paths in gsd-core `next` 354d727b, not on every write.
+- **Residual (classification depth):** the walk covers only the entries install.js writes (read at
+  gsd-core `next` 354d727b); if upstream starts writing a new top-level entry, a link through it is not
+  seen until the list is updated. A hardlink is refused by its link count, not traced, so any
+  hardlinked file there refuses, wherever its other name is. `sync` also drops
+  `GSD_ALLOW_SYMLINKED_DEST`, keeping install.js's own symlinked-destination guard armed as a second
+  layer.
 - **Residual (not measured):** a differently cased spelling of `~/.claude` on a case-insensitive
   filesystem; `~/.gsd` capabilities are shared across config dirs (they are not ENF-21-bound); wiring
   the gates user-scope in the contribution dir is the maintainer's decision and is not built.
@@ -153,7 +158,8 @@ config dir carries its own settings, login (`.credentials.json`), plugins and `.
   call `hooks/lib/test-isolate.cjs` for a temp `GSD_CONTRIB_LOG_DIR`. Since round 2 the fence also arms
   when the process was started with `--test`, so `node --test --test-isolation=none` (which leaves
   `NODE_TEST_CONTEXT` unset) is fenced too, and its own tests name the real paths without relying on
-  `HOME`, so the suite is green under a temp `HOME`. Limits: a test file run directly with
+  `HOME`, so the suite is green under a temp `HOME` (measured on Node 22 and 24; the isolation test
+  passes the flag spelling the running node accepts). Limits: a test file run directly with
   `node file.test.cjs` is not fenced, nor is a child spawned with an env that drops
   `NODE_TEST_CONTEXT`; only those three writers are fenced (the writers of `~/.claude`, such as
   install.js through `sync`, `bin/contrib-capability.cjs` and `bin/gsd-refresh`, are not); and paths are

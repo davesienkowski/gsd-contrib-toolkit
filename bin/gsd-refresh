@@ -103,6 +103,8 @@ audit_counts() {
     END { if (m!="" && d!="") print m, d }'
 }
 
+# Sets SNAP_ID. Call it directly, never inside $(...): its die must end the run (fresh round-2
+# review WR-02: in a command substitution a failed snapshot still let the sync run).
 snapshot() {
   local id
   id="snap-$(date +%Y%m%d-%H%M%S)-$$"
@@ -110,7 +112,7 @@ snapshot() {
   mkdir -p "$dest" || die "cannot create snapshot dir $dest"
   local d
   for d in "${MOD_DIRS[@]}"; do
-    [ -e "$CFG/$d" ] && cp -a "$CFG/$d" "$dest/" || true
+    if [ -e "$CFG/$d" ]; then cp -a "$CFG/$d" "$dest/" || die "cannot snapshot $CFG/$d into $dest"; fi
   done
   # record provenance
   {
@@ -122,10 +124,10 @@ snapshot() {
   } > "$dest/.snapshot-meta" 2>/dev/null || die "cannot write $dest/.snapshot-meta"
   # prune to KEEP_SNAPSHOTS most recent, within this config dir's snapshots only
   local old
-  ls -1dt "$SNAP_DIR"/snap-* 2>/dev/null | tail -n +"$((KEEP_SNAPSHOTS+1))" | while read -r old; do
+  ls -1dt -- "$SNAP_DIR"/snap-* 2>/dev/null | tail -n +"$((KEEP_SNAPSHOTS+1))" | while read -r old; do
     rm -rf "$old"
   done
-  printf '%s' "$id"
+  SNAP_ID="$id"
 }
 
 # Read-only: this config dir's snapshots (they live under a per-dir key since round 2).
@@ -137,10 +139,12 @@ list_snapshots() {
   dir="$SNAP_ROOT/$key"
   [ -d "$dir" ] || { say "(no snapshots yet for $real)"; return 0; }
   local any=0 s
-  for s in $(ls -1dt "$dir"/snap-* 2>/dev/null); do
+  # Line-wise, so a snapshot root with a space still lists (fresh round-2 review WR-03).
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
     any=1
-    printf '  %s  %s\n' "$(basename "$s")" "$c_dim$(grep -h '^created=' "$s/.snapshot-meta" 2>/dev/null | cut -d= -f2-)$c_rst"
-  done
+    printf '  %s  %s\n' "${s##*/}" "$c_dim$(grep -h '^created=' "$s/.snapshot-meta" 2>/dev/null | cut -d= -f2-)$c_rst"
+  done < <(ls -1dt -- "$dir"/snap-* 2>/dev/null)
   [ "$any" = 1 ] || say "(no snapshots yet)"
 }
 
@@ -155,7 +159,7 @@ restore_snapshot() {
   if [ -n "$id" ]; then
     [[ "$id" =~ ^snap-[0-9]{8}-[0-9]{6}(-[0-9]+)?$ ]] || die "not a snapshot id: $id"
   else
-    id="$(ls -1dt "$SNAP_DIR"/snap-* 2>/dev/null | head -1 | xargs -r basename)"
+    id="$(ls -1dt -- "$SNAP_DIR"/snap-* 2>/dev/null | head -1)"; id="${id##*/}"
     [ -n "$id" ] || die "no snapshots of this config dir ($CFG_REAL) to roll back to"
   fi
   local src="$SNAP_DIR/$id"
@@ -217,7 +221,7 @@ cmd_refresh() {
   confirm || { say "Aborted."; exit 1; }
 
   say; say "[1/2] snapshotting current install ..."
-  local snap; snap="$(snapshot)"
+  snapshot; local snap="$SNAP_ID"
   ok "  saved: $snap"
 
   say "[2/2] syncing from origin/next ..."
