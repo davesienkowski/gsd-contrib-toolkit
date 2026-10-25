@@ -319,12 +319,26 @@ function isAtOrInside(p, base) {
 function dailyConfigDirReason(configDir, opts = {}) {
   const home = opts.homedir === undefined ? os.homedir() : opts.homedir;
   const realpathSync = opts.realpathSync || nodeFs.realpathSync;
-  const rp = (p) => {
+  const readlinkSync = opts.readlinkSync || nodeFs.readlinkSync;
+  // realpath, else (a path that does not exist yet) the realpath of its deepest existing ancestor
+  // plus the rest. A DANGLING symlink is followed through readlink first (verifier finding, quick
+  // 261024-po0): otherwise `cfg/hooks -> ~/.claude/<not yet>` would resolve to the link's own path
+  // and the dir would read as a contribution dir. At most 8 dangling-link hops, then the link's own path.
+  const rp = (p, hops = 0) => {
+    const abs = path.resolve(p);
     try {
-      return path.resolve(String(realpathSync(p)));
-    } catch (_) {
-      return path.resolve(p);
+      return path.resolve(String(realpathSync(abs)));
+    } catch (_) { /* absent, dangling or unreadable: fall through */ }
+    let target = null;
+    try {
+      target = String(readlinkSync(abs));
+    } catch (_) { /* not a symlink */ }
+    if (target !== null) {
+      return hops < 8 ? rp(path.resolve(path.dirname(abs), target), hops + 1) : abs;
     }
+    // Walking up to the parent shortens the path, so it terminates without spending a link hop.
+    const parent = path.dirname(abs);
+    return parent === abs ? abs : path.join(rp(parent, hops), path.basename(abs));
   };
   const daily = rp(path.join(home, '.claude'));
   const cfg = rp(configDir);

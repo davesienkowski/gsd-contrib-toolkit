@@ -1243,3 +1243,32 @@ test('po0: readStamp/writeStamp round-trip and upstreamTip cache writes land in 
   assert.strictEqual(cache.sha, SHA_B);
   assert.ok(!nodeFs.existsSync(path.join(home, '.gsd-contrib', 'upstream-tip-cache.json')), 'the daily cache is untouched');
 });
+
+// Verifier finding (quick 261024-po0): a DANGLING symlink cannot be realpath'd, and the plain
+// path.resolve fallback is the link's own path, so a cfg/hooks or cfg/gsd-core link aimed at a
+// not-yet-existing path inside the daily dir classified as a contribution dir. Real fs, temp home.
+test('po0: a dangling cfg/hooks or cfg/gsd-core symlink aimed inside the daily dir is daily', (t) => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'po0-dangling-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const home = path.join(root, 'h');
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+  for (const sub of ['hooks', 'gsd-core']) {
+    const cfg = path.join(root, 'c-' + sub);
+    fs.mkdirSync(cfg);
+    fs.symlinkSync(path.join(home, '.claude', sub + '-not-yet'), path.join(cfg, sub));
+    assert.strictEqual(fs.existsSync(path.join(cfg, sub)), false, 'the link must dangle');
+    assert.strictEqual(rs.isDailyConfigDir(cfg, { homedir: home }), true, 'dangling ' + sub + ' link into the daily dir');
+    // A relative dangling link is resolved against the link's own directory.
+    const cfgRel = path.join(root, 'r-' + sub);
+    fs.mkdirSync(cfgRel);
+    fs.symlinkSync(path.relative(cfgRel, path.join(home, '.claude', sub + '-later')), path.join(cfgRel, sub));
+    assert.strictEqual(rs.isDailyConfigDir(cfgRel, { homedir: home }), true, 'relative dangling ' + sub + ' link');
+  }
+  // A dangling link that points OUTSIDE the daily dir stays a contribution dir.
+  const ok = path.join(root, 'ok');
+  fs.mkdirSync(ok);
+  fs.symlinkSync(path.join(root, 'elsewhere', 'hooks'), path.join(ok, 'hooks'));
+  assert.strictEqual(rs.isDailyConfigDir(ok, { homedir: home }), false);
+});

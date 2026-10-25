@@ -53,8 +53,11 @@ config dir carries its own settings, login (`.credentials.json`), plugins and `.
    `GSD_CONTRIB_STATE_DIR` still overrides both.
 4. **The daily signal.** A config dir is the daily install when its realpath equals the realpath of
    `~/.claude`, or when its realpath, or the realpath of its `gsd-core` or `hooks`, lies at or inside
-   `~/.claude` by a segment-wise path test (so a sibling `~/.claude-contrib` is not inside). No durable
-   local-mods marker exists via the paths read, so none is used.
+   `~/.claude` by a segment-wise path test (so a sibling `~/.claude-contrib` is not inside). A path
+   that does not exist yet resolves through its deepest existing ancestor, and a dangling symlink is
+   followed through readlink (at most 8 hops), so `cfg/hooks -> ~/.claude/<not yet>` is daily too
+   (added 2026-10-24 on an independent verifier finding). No durable local-mods marker exists via the
+   paths read, so none is used.
 5. **`sync` refuses the daily or an invalid dir** with exit 3, before any network call, tmpdir, clone,
    `npm ci` or install, and prints how to start a contribution session. There is no override: no flag,
    env variable or prompt, because no toolkit use legitimately reinstalls the daily install. For a
