@@ -192,7 +192,7 @@ or on a payload dir means "no existing runtime". `runtimeDigest` marks that one 
 `sync` skips the fast-path compare, logs why, and takes the normal slow path (`npm ci`, `build:hooks`,
 install.js, hooks-written verification, stamp). Every other read error (EACCES, a root that is not a
 directory, an unreadable file) still aborts. `check` and the gate never read the marker and keep their
-current behavior on a missing root (unstamped, deny). The daily-dir refusal in Decision 4 still runs
+current behavior on a missing root (`check` throws the fail-closed error, the gate denies). The daily-dir refusal in Decision 4 still runs
 first, so an empty `~/.claude` is refused, not installed into.
 
 Limits: a partly present payload (some payload dirs missing, others not) also counts as no existing
