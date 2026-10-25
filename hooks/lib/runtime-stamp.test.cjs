@@ -1272,3 +1272,89 @@ test('po0: a dangling cfg/hooks or cfg/gsd-core symlink aimed inside the daily d
   fs.symlinkSync(path.join(root, 'elsewhere', 'hooks'), path.join(ok, 'hooks'));
   assert.strictEqual(rs.isDailyConfigDir(ok, { homedir: home }), false);
 });
+
+// ------------- quick 261024-po0 round 2 (review WR-02, WR-03, WR-04, IN-01) -------------
+//
+// Real fs under a temp root, or injected stubs; nothing reads or writes the real ~/.claude except the
+// read-only realpath of the passwd home that WR-03 adds (where a stub is not injected).
+
+function r2Root(t) {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'po0-r2-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const home = path.join(root, 'h');
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+  return { fs, root, home };
+}
+
+test('po0 r2: a dangling symlink chain past the hop cap is INVALID (refused), never a contribution dir (WR-02)', (t) => {
+  const { fs, root, home } = r2Root(t);
+  const cfg = path.join(root, 'cfg');
+  fs.mkdirSync(cfg);
+  // cfg/hooks -> l1 -> l2 -> ... -> l10 -> <home>/.claude/notyet (dangling at the end)
+  const links = path.join(root, 'links');
+  fs.mkdirSync(links);
+  fs.symlinkSync(path.join(home, '.claude', 'notyet'), path.join(links, 'l10'));
+  for (let i = 9; i >= 1; i -= 1) fs.symlinkSync(path.join(links, 'l' + (i + 1)), path.join(links, 'l' + i));
+  fs.symlinkSync(path.join(links, 'l1'), path.join(cfg, 'hooks'));
+  const d = rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: cfg }, { homedir: home, userInfo: () => ({ homedir: home }) });
+  assert.strictEqual(d.kind, 'invalid', 'a classification that cannot be resolved must refuse; got ' + d.kind);
+  assert.match(d.reason, /could not classify/);
+  assert.strictEqual(d.configDir, null);
+});
+
+test('po0 r2: a realpath error other than ENOENT (EACCES, ELOOP) is INVALID, never a contribution dir (WR-02)', () => {
+  for (const code of ['EACCES', 'ELOOP', 'ENOTDIR']) {
+    const realpathSync = (p) => {
+      const e = new Error(code + ': realpath ' + p);
+      e.code = path.resolve(String(p)) === '/srv/contrib' ? code : 'ENOENT';
+      throw e;
+    };
+    const d = rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: '/srv/contrib' },
+      { homedir: PO0_HOME, realpathSync, userInfo: () => ({ homedir: PO0_HOME }) });
+    assert.strictEqual(d.kind, 'invalid', code + ' must refuse; got ' + d.kind);
+    assert.match(d.reason, new RegExp(code));
+  }
+});
+
+test('po0 r2: the daily signal also uses the passwd home, so HOME=/other cannot unlock the real daily dir (WR-03)', () => {
+  const o = { homedir: '/other', realpathSync: po0Realpath(), userInfo: () => ({ homedir: '/p' }) };
+  const d = rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: '/p/.claude' }, o);
+  assert.strictEqual(d.kind, 'daily', 'the passwd home\'s .claude is daily even when HOME differs');
+  assert.strictEqual(rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: '/p/.claude/x' }, o).kind, 'daily');
+  assert.strictEqual(rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: '/other/.claude' }, o).kind, 'daily', '$HOME/.claude stays daily');
+  assert.strictEqual(rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: '/p/.claude-contrib' }, o).kind, 'contrib');
+});
+
+test('po0 r2: an unreadable passwd home is INVALID (refused), not ignored (WR-02/WR-03)', () => {
+  const o = { homedir: PO0_HOME, realpathSync: po0Realpath(), userInfo: () => { throw new Error('ENOENT: no passwd entry'); } };
+  const d = rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: '/srv/contrib' }, o);
+  assert.strictEqual(d.kind, 'invalid');
+  assert.match(d.reason, /passwd/);
+});
+
+test('po0 r2: agents, skills, commands, scripts, settings.json or the manifest symlinked into the daily dir is daily (WR-04)', (t) => {
+  const { fs, root, home } = r2Root(t);
+  const names = ['agents', 'skills', 'commands', 'scripts', 'gsd-pristine', 'settings.json', 'gsd-file-manifest.json'];
+  for (const name of names) {
+    const cfg = path.join(root, 'c-' + name);
+    fs.mkdirSync(cfg);
+    fs.symlinkSync(path.join(home, '.claude', name), path.join(cfg, name));
+    const d = rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: cfg }, { homedir: home, userInfo: () => ({ homedir: home }) });
+    assert.strictEqual(d.kind, 'daily', name + ' symlinked into the daily dir must be daily; got ' + d.kind);
+    assert.ok(d.reason.includes(name), 'the reason names ' + name + ': ' + d.reason);
+  }
+  // A user-owned link elsewhere (rules/ into the daily dir is the planned provisioning) stays contrib.
+  const ok = path.join(root, 'ok');
+  fs.mkdirSync(ok);
+  fs.symlinkSync(path.join(home, '.claude', 'rules'), path.join(ok, 'rules'));
+  fs.symlinkSync(path.join(root, 'elsewhere-agents'), path.join(ok, 'agents'));
+  assert.strictEqual(rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: ok }, { homedir: home, userInfo: () => ({ homedir: home }) }).kind, 'contrib');
+});
+
+test('po0 r2: a config dir that CONTAINS the daily dir (CLAUDE_CONFIG_DIR=$HOME) is daily (IN-01)', () => {
+  const o = { homedir: PO0_HOME, realpathSync: po0Realpath(), userInfo: () => ({ homedir: PO0_HOME }) };
+  assert.strictEqual(rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: '/h' }, o).kind, 'daily');
+  assert.strictEqual(rs.classifyConfigDir({ CLAUDE_CONFIG_DIR: '/' }, o).kind, 'daily');
+});

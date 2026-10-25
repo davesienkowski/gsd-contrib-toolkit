@@ -143,3 +143,127 @@ test('po0: a contribution dir (where 0, sync 0) is refreshed WITHOUT re-applying
   assert.strictEqual(r.snapDirs.length, 1, 'the pre-sync snapshot is still taken');
   assert.ok(r.out.includes('not re-applied'), 'output must say the local mods are not re-applied:\n' + r.out);
 });
+
+// ------------- quick 261024-po0 round 2 (review CR-01): every writing mode classifies first -------------
+//
+// `--rollback` used to restore the newest snapshot in a SHARED snapshot root into whatever $CFG was,
+// with no classification: from a daily session it replaced ~/.claude/{gsd-core,agents,skills,hooks}
+// with a pristine contribution copy. Same scratch discipline as above: every writable path is
+// pre-asserted under the scratch root before the spawn.
+
+function runMode(sc, args, codes, cfg) {
+  const env = {
+    PATH: process.env.PATH,
+    HOME: sc.home,
+    CLAUDE_CONFIG_DIR: cfg || sc.cfg,
+    GSD_LOCAL_MODS: sc.mods,
+    GSD_RUNTIME_SYNC: sc.stub,
+    GSD_REFRESH_SNAPSHOTS: sc.snaps,
+    STUB_LOG: sc.log,
+    ...codes,
+  };
+  for (const key of ['HOME', 'CLAUDE_CONFIG_DIR', 'GSD_LOCAL_MODS', 'GSD_RUNTIME_SYNC', 'GSD_REFRESH_SNAPSHOTS', 'STUB_LOG']) {
+    const p = path.resolve(env[key]);
+    assert.ok(path.isAbsolute(env[key]), key + ' must be absolute: ' + env[key]);
+    assert.ok(inside(p, sc.root) && p !== sc.root, key + ' must resolve under the scratch root ' + sc.root + ': ' + p);
+    for (const real of realHomeRoots()) assert.ok(!inside(p, real), key + ' must not resolve inside ' + real + ': ' + p);
+  }
+  assert.ok(fs.statSync(sc.stub).isFile(), 'the stub runtime-sync must exist at GSD_RUNTIME_SYNC');
+  const r = spawnSync('bash', [SCRIPT, ...args], { env, input: '', encoding: 'utf8', timeout: 60000 });
+  return { status: r.status, out: (r.stdout || '') + (r.stderr || ''), error: r.error };
+}
+
+/** Every file under `dir` (relative path -> content), for before/after comparison. */
+function tree(dir) {
+  const out = {};
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else out[path.relative(dir, p)] = fs.readFileSync(p, 'utf8');
+    }
+  };
+  if (fs.existsSync(dir)) walk(dir);
+  return out;
+}
+
+/** All snap-* dirs anywhere under the snapshot root (flat or per config dir). */
+function allSnaps(snaps) {
+  return Object.keys(tree(snaps)).filter((f) => f.endsWith('.snapshot-meta')).map((f) => path.dirname(f)).sort();
+}
+
+test('po0 r2: --rollback in the daily dir (where 3) exits 4, restores nothing and writes nothing (CR-01)', (t) => {
+  const sc = makeScratch(t);
+  fs.writeFileSync(path.join(sc.cfg, 'gsd-core', 'modded.md'), 'local mod\n');
+  // A snapshot in the flat layout the old script reads: a pristine contribution copy.
+  const snap = path.join(sc.snaps, 'snap-20261024-000000');
+  fs.mkdirSync(path.join(snap, 'gsd-core'), { recursive: true });
+  fs.writeFileSync(path.join(snap, 'gsd-core', 'pristine.md'), 'pristine\n');
+  fs.writeFileSync(path.join(snap, '.snapshot-meta'), 'created=2026-10-24T00:00:00\n');
+  const before = { cfg: tree(sc.cfg), snaps: tree(sc.snaps) };
+  for (const args of [['--rollback', '--yes'], ['--rollback', '--yes', 'snap-20261024-000000']]) {
+    const r = runMode(sc, args, { STUB_WHERE_CODE: '3' });
+    assert.ifError(r.error);
+    assert.strictEqual(r.status, 4, args.join(' ') + ': exit 4 expected; output:\n' + r.out);
+    assert.ok(r.out.includes('refused'), 'output must name the refusal:\n' + r.out);
+    assert.deepStrictEqual(tree(sc.cfg), before.cfg, 'the config dir must be untouched (no restore, no sentinel)');
+    assert.deepStrictEqual(tree(sc.snaps), before.snaps, 'the snapshots must be untouched');
+  }
+});
+
+test('po0 r2: --rollback in a contribution dir restores only a snapshot taken of THAT dir (CR-01)', (t) => {
+  const sc = makeScratch(t);
+  const cfgB = path.join(sc.root, 'cfgB');
+  fs.mkdirSync(path.join(cfgB, 'gsd-core'), { recursive: true });
+  fs.writeFileSync(path.join(sc.cfg, 'gsd-core', 'a.md'), 'A1\n');
+  fs.writeFileSync(path.join(cfgB, 'gsd-core', 'b.md'), 'B1\n');
+  // Snapshot dir A through a refresh (where 0, sync 0).
+  const ref = runMode(sc, ['--yes'], { STUB_WHERE_CODE: '0', STUB_SYNC_CODE: '0' });
+  assert.strictEqual(ref.status, 0, ref.out);
+  const snapsA = allSnaps(sc.snaps);
+  assert.strictEqual(snapsA.length, 1, 'one snapshot of A');
+  const meta = fs.readFileSync(path.join(sc.snaps, snapsA[0], '.snapshot-meta'), 'utf8');
+  assert.ok(meta.includes('config_dir=' + sc.cfg), 'the snapshot records its config dir:\n' + meta);
+  // From B, neither the latest nor A's named snapshot may be restored.
+  const beforeB = tree(cfgB);
+  const latestB = runMode(sc, ['--rollback', '--yes'], { STUB_WHERE_CODE: '0' }, cfgB);
+  assert.notStrictEqual(latestB.status, 0, 'no snapshot of B exists; output:\n' + latestB.out);
+  const namedB = runMode(sc, ['--rollback', '--yes', path.basename(snapsA[0])], { STUB_WHERE_CODE: '0' }, cfgB);
+  assert.notStrictEqual(namedB.status, 0, 'A\'s snapshot must not restore into B; output:\n' + namedB.out);
+  assert.deepStrictEqual(tree(cfgB), beforeB, 'B must be untouched');
+  // A path-traversal id is refused too.
+  const trav = runMode(sc, ['--rollback', '--yes', '../' + path.basename(snapsA[0])], { STUB_WHERE_CODE: '0' }, cfgB);
+  assert.notStrictEqual(trav.status, 0, trav.out);
+  assert.deepStrictEqual(tree(cfgB), beforeB, 'B must be untouched after a traversal id');
+  // From A, the rollback restores A.
+  fs.writeFileSync(path.join(sc.cfg, 'gsd-core', 'a.md'), 'A2-broken\n');
+  const backA = runMode(sc, ['--rollback', '--yes'], { STUB_WHERE_CODE: '0' });
+  assert.strictEqual(backA.status, 0, backA.out);
+  assert.strictEqual(fs.readFileSync(path.join(sc.cfg, 'gsd-core', 'a.md'), 'utf8'), 'A1\n', 'A restored from its own snapshot');
+});
+
+test('po0 r2: snapshot pruning stays within one config dir (CR-01)', (t) => {
+  const sc = makeScratch(t);
+  const cfgB = path.join(sc.root, 'cfgB');
+  fs.mkdirSync(path.join(cfgB, 'gsd-core'), { recursive: true });
+  const keep1 = { STUB_WHERE_CODE: '0', STUB_SYNC_CODE: '0', GSD_REFRESH_KEEP: '1' };
+  assert.strictEqual(runMode(sc, ['--yes'], keep1, cfgB).status, 0);
+  const snapB = allSnaps(sc.snaps);
+  assert.strictEqual(snapB.length, 1);
+  assert.strictEqual(runMode(sc, ['--yes'], keep1).status, 0);
+  assert.strictEqual(runMode(sc, ['--yes'], keep1).status, 0);
+  const all = allSnaps(sc.snaps);
+  assert.ok(all.includes(snapB[0]), 'B\'s snapshot survives A\'s pruning; left: ' + all.join(', '));
+  assert.strictEqual(all.length, 2, 'A keeps 1, B keeps 1; left: ' + all.join(', '));
+});
+
+test('po0 r2: rebaseline is retired: it exits non-zero and writes no baseline file (CR-01: check every writing mode)', (t) => {
+  const sc = makeScratch(t);
+  for (const where of ['0', '3']) {
+    const r = runMode(sc, ['rebaseline'], { STUB_WHERE_CODE: where });
+    assert.ifError(r.error);
+    assert.notStrictEqual(r.status, 0, 'rebaseline must not succeed; output:\n' + r.out);
+    assert.ok(r.out.includes('retired'), r.out);
+    assert.ok(!fs.existsSync(path.join(sc.mods, '.gsd-refresh-baseline')), 'no baseline file may be written');
+  }
+});

@@ -1212,3 +1212,29 @@ test('po0: spawned `sync` over a scratch HOME with CLAUDE_CONFIG_DIR unset exits
   assert.ok(!r.stdout.includes('Cloning'), r.stdout);
   assert.deepStrictEqual(po0Fs.readdirSync(home), [], 'the refused sync wrote nothing under HOME');
 });
+
+// quick 261024-po0 round 2 (review WR-04): install.js's symlinked-destination guard must not be
+// disabled by an inherited opt-in, so the child env drops it (and the agents-dir redirect).
+test('po0 r2: sync strips GSD_ALLOW_SYMLINKED_DEST and GSD_AGENTS_DIR from the install.js child env', () => {
+  const STALE = 'sha256:' + '1'.repeat(64);
+  const { deps, state } = syncDeps({ digests: { clone: DIGEST, runtime: [STALE, DIGEST] } });
+  deps.env = { PATH: process.env.PATH, CLAUDE_CONFIG_DIR: CONTRIB_CFG, GSD_ALLOW_SYMLINKED_DEST: '1', GSD_AGENTS_DIR: '/home/u/.claude/agents', KEEP_ME: 'x' };
+  const calls = [];
+  let real = 0;
+  deps.execFileSync = (file, args, opts) => {
+    calls.push({ file, args, opts });
+    state.exec.push({ file, args });
+    if (file === 'git' && args[0] === '-C' && args[2] === 'rev-parse') return TIP + '\n';
+    if (args.some((a) => String(a).includes('install.js'))) real += 1;
+    return '';
+  };
+  deps.oracle.payloadDigest = (root) => (String(root).startsWith(TMP) ? DIGEST : (real === 0 ? STALE : DIGEST));
+  const r = cli.sync(deps);
+  assert.strictEqual(r.code, 0, state.logs.join('\n'));
+  const inst = calls.filter(isInstall)[0];
+  assert.ok(inst, 'install.js ran');
+  assert.ok(!('GSD_ALLOW_SYMLINKED_DEST' in inst.opts.env), 'GSD_ALLOW_SYMLINKED_DEST must not reach install.js');
+  assert.ok(!('GSD_AGENTS_DIR' in inst.opts.env), 'GSD_AGENTS_DIR must not reach install.js');
+  assert.strictEqual(inst.opts.env.KEEP_ME, 'x', 'the rest of the env is forwarded');
+  assert.strictEqual(inst.opts.env.CLAUDE_CONFIG_DIR, CONTRIB_CFG);
+});
