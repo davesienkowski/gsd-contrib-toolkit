@@ -525,7 +525,18 @@ function sync(deps = {}) {
     let engineVerified = false;
     let hooksFiles = null;
     let fastPath = false;
-    const payloadEqual = O.payloadDigest(cloneRoot) === O.payloadDigest(runtimeRoot);
+    // CTK-ADR-0013 note (2026-10-24): a runtime root that is MISSING (ENOENT on it or a payload dir)
+    // is "no existing runtime", the state of a fresh contribution dir: skip the fast-path compare and
+    // take the slow path. Every other read error (EACCES, a non-directory, an unreadable file) still
+    // throws to the caller's abort. `check` and the gate never reach this and still fail closed.
+    let existingDigest = null;
+    try {
+      existingDigest = O.payloadDigest(runtimeRoot);
+    } catch (err) {
+      if (!(err && err.missingRoot === true)) throw err;
+      log('No existing runtime at ' + runtimeRoot + ' (' + firstLine(err) + ') - skipping the fast-path compare.');
+    }
+    const payloadEqual = existingDigest !== null && O.payloadDigest(cloneRoot) === existingDigest;
 
     if (payloadEqual) {
       // Byte-equality with the raw clone. Only possible when BOTH install transforms happen to be
