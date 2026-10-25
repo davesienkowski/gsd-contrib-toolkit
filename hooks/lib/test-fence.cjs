@@ -7,12 +7,16 @@
  * test's temp home and overwrote the real ~/.gsd-contrib/runtime-stamp.json with fixture values. Per-test
  * temp dirs are still the rule; this is the backstop that turns the next such slip into a loud failure.
  *
- * Armed only when NODE_TEST_CONTEXT is set: `node --test` sets it in every test-file process, and a child
- * spawned with that process's env inherits it. A hook run by the harness never has it, so production
- * behavior is unchanged. The real home is os.userInfo().homedir, which a test cannot move by setting HOME.
- * Fenced: any path at or inside <real home>/.gsd-contrib or <real home>/.claude. Not fenced: a test file
- * run directly with `node file.test.cjs` (no NODE_TEST_CONTEXT). An unexpected fire also sets the
- * process exit code to 1 at exit, so the leaking test file fails even when the caller swallowed the throw.
+ * Armed when NODE_TEST_CONTEXT is set (`node --test` sets it in every test-file process, and a child
+ * spawned with that process's env inherits it) or when this process was started with `--test` (review
+ * WR-06: `node --test --test-isolation=none` runs every file in the runner process and leaves
+ * NODE_TEST_CONTEXT unset). A hook run by the harness has neither, so production behavior is
+ * unchanged. The real home is os.userInfo().homedir, which a test cannot move by setting HOME.
+ * Fenced: any path at or inside <real home>/.gsd-contrib or <real home>/.claude, compared lexically
+ * (no realpath). Not fenced: a test file run directly with `node file.test.cjs` (neither signal), a
+ * child spawned with an env that drops NODE_TEST_CONTEXT, and writers other than the three that call
+ * this. An unexpected fire also sets the process exit code to 1 at exit, so the leaking test file
+ * fails even when the caller swallowed the throw.
  *
  * @module hooks/lib/test-fence
  */
@@ -55,8 +59,13 @@ function failOnExit(abs) {
  * @param {Object} [env] defaults to process.env
  * @throws {Error} "test fence: ..." when armed and the path is fenced
  */
+/** True when this process is a `node --test` runner (its own execArgv, not an env a test can edit). */
+function startedWithTest() {
+  return process.execArgv.some((a) => a === '--test' || a.startsWith('--test-isolation'));
+}
+
 function assertNotRealUserState(file, env = process.env) {
-  if (!env || !env.NODE_TEST_CONTEXT) return;
+  if (!(env && env.NODE_TEST_CONTEXT) && !startedWithTest()) return;
   const home = realHome();
   if (home === null) return;
   const abs = path.resolve(String(file));

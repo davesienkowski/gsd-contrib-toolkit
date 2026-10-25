@@ -85,9 +85,9 @@ test('po0: writeCacheLive never writes the real ~/.gsd-contrib cache under node 
 test('po0: tool-recorder appendRecord never writes the real ~/.gsd-contrib tool log under node --test', () => {
   const calls = [];
   const fsImpl = new Proxy({}, { get: (_, k) => (...a) => { calls.push(k); throw new Error('spy ' + String(k)); } });
-  const env = Object.assign({}, process.env);
-  delete env.GSD_CONTRIB_LOG_DIR;
-  env.HOME = REAL_HOME;
+  // The real log dir is named through GSD_CONTRIB_LOG_DIR, not HOME: the default resolves through
+  // os.homedir() (the PROCESS HOME), so a HOME in this env would not reach it under a temp HOME (WR-05).
+  const env = Object.assign({}, process.env, { GSD_CONTRIB_LOG_DIR: path.join(REAL_HOME, '.gsd-contrib') });
   let out;
   try {
     out = expected(() => recorder.appendRecord('{"x":1}', { env, fsImpl }));
@@ -121,8 +121,7 @@ test('po0 fence: an UNEXPECTED fire fails the test file even when the caller swa
     "const recorder = require(" + JSON.stringify(require.resolve('../tool-recorder.cjs')) + ");\n" +
     "test('leaks but swallows', () => {\n" +
     "  const fsImpl = new Proxy({}, { get: () => () => { throw new Error('spy'); } });\n" +
-    "  const env = Object.assign({}, process.env, { HOME: " + JSON.stringify(REAL_HOME) + " });\n" +
-    "  delete env.GSD_CONTRIB_LOG_DIR;\n" +
+    "  const env = Object.assign({}, process.env, { GSD_CONTRIB_LOG_DIR: " + JSON.stringify(path.join(REAL_HOME, '.gsd-contrib')) + " });\n" +
     "  try { recorder.appendRecord('{}', { env, fsImpl }); } catch (_) { /* swallowed, like a gate */ }\n" +
     "});\n");
   const env = Object.assign({}, process.env);
@@ -133,4 +132,37 @@ test('po0 fence: an UNEXPECTED fire fails the test file even when the caller swa
   const out = (r.stdout || '') + (r.stderr || '');
   assert.notStrictEqual(r.status, 0, 'the leaking child test file must fail; output:\n' + out);
   assert.match(out, /GSD-CONTRIB-TEST-FENCE: 1 unexpected write/, out);
+});
+
+// Review WR-06: `node --test --test-isolation=none` runs every file in the runner process and leaves
+// NODE_TEST_CONTEXT unset; the fence must still hold there. The child uses spy writers, so even an
+// unarmed fence writes nothing.
+test('po0 r2: the fence holds under node --test --test-isolation=none (no NODE_TEST_CONTEXT)', (t) => {
+  const fs = require('node:fs');
+  const { spawnSync } = require('node:child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'po0-fence-iso-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const child = path.join(dir, 'iso.test.cjs');
+  fs.writeFileSync(child,
+    "'use strict';\n" +
+    "const { test } = require('node:test');\n" +
+    "const assert = require('node:assert');\n" +
+    "const rs = require(" + JSON.stringify(require.resolve('./runtime-stamp.cjs')) + ");\n" +
+    "test('fenced in-process', () => {\n" +
+    "  assert.ok(!process.env.NODE_TEST_CONTEXT, 'isolation=none leaves NODE_TEST_CONTEXT unset');\n" +
+    "  const calls = [];\n" +
+    "  const stamp = rs.buildStamp({ sha: 'a'.repeat(40), runtimeDigest: 'sha256:' + 'f'.repeat(64), mode: 'installed', engineVerified: true });\n" +
+    "  process.env.GSD_CONTRIB_TEST_FENCE_EXPECTED = '1';\n" +
+    "  try {\n" +
+    "    assert.throws(() => rs.writeStamp(stamp, { stampPath: " + JSON.stringify(path.join(REAL_HOME, '.gsd-contrib', 'runtime-stamp.json')) + ",\n" +
+    "      writeFileSync: (...a) => calls.push(a), mkdirSync: (...a) => calls.push(a), renameSync: (...a) => calls.push(a) }), /test fence/);\n" +
+    "  } finally { delete process.env.GSD_CONTRIB_TEST_FENCE_EXPECTED; }\n" +
+    "  assert.strictEqual(calls.length, 0);\n" +
+    "});\n");
+  const env = Object.assign({}, process.env);
+  delete env.NODE_TEST_CONTEXT;
+  delete env.GSD_CONTRIB_TEST_FENCE_EXPECTED;
+  const r = spawnSync(process.execPath, ['--test', '--test-isolation=none', child], { env, encoding: 'utf8', timeout: 60000 });
+  const out = (r.stdout || '') + (r.stderr || '');
+  assert.strictEqual(r.status, 0, 'the fence must fire in-process under isolation=none; output:\n' + out);
 });

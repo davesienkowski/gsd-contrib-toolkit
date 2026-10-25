@@ -96,7 +96,10 @@ function runRefresh(sc, codes) {
   const r = spawnSync('bash', [SCRIPT, '--yes'], { env, input: '', encoding: 'utf8', timeout: 60000 });
   const out = (r.stdout || '') + (r.stderr || '');
   const calls = fs.existsSync(sc.log) ? fs.readFileSync(sc.log, 'utf8') : '';
-  const snapDirs = fs.readdirSync(sc.snaps).filter((n) => n.startsWith('snap-'));
+  // Round 2: snapshots live under a per-config-dir key, so count snap-* dirs at any depth.
+  const snapDirs = [];
+  const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) { if (e.name.startsWith('snap-')) snapDirs.push(e.name); else walk(path.join(d, e.name)); } };
+  walk(sc.snaps);
   return { status: r.status, out, calls, snapDirs, error: r.error };
 }
 
@@ -266,4 +269,30 @@ test('po0 r2: rebaseline is retired: it exits non-zero and writes no baseline fi
     assert.ok(r.out.includes('retired'), r.out);
     assert.ok(!fs.existsSync(path.join(sc.mods, '.gsd-refresh-baseline')), 'no baseline file may be written');
   }
+});
+
+test('po0 r2 guard: with the REAL runtime-sync where, --rollback from a scratch daily dir exits 4 and restores nothing', (t) => {
+  // End to end through the real classifier (read-only `where`). HOME is the scratch home and
+  // CLAUDE_CONFIG_DIR is that home's .claude, so the real classifier reads it as daily.
+  const sc = makeScratch(t);
+  const daily = path.join(sc.home, '.claude');
+  fs.mkdirSync(path.join(daily, 'gsd-core'), { recursive: true });
+  fs.writeFileSync(path.join(daily, 'gsd-core', 'modded.md'), 'local mod\n');
+  const key = require('node:crypto').createHash('sha256').update(fs.realpathSync(daily)).digest('hex').slice(0, 16);
+  const snap = path.join(sc.snaps, key, 'snap-20261024-000000');
+  fs.mkdirSync(path.join(snap, 'gsd-core'), { recursive: true });
+  fs.writeFileSync(path.join(snap, 'gsd-core', 'pristine.md'), 'pristine\n');
+  fs.writeFileSync(path.join(snap, '.snapshot-meta'), 'config_dir=' + fs.realpathSync(daily) + '\n');
+  const env = { PATH: process.env.PATH, HOME: sc.home, CLAUDE_CONFIG_DIR: daily, GSD_LOCAL_MODS: sc.mods,
+    GSD_RUNTIME_SYNC: path.join(__dirname, 'runtime-sync.cjs'), GSD_REFRESH_SNAPSHOTS: sc.snaps };
+  for (const key2 of ['HOME', 'CLAUDE_CONFIG_DIR', 'GSD_LOCAL_MODS', 'GSD_REFRESH_SNAPSHOTS']) {
+    assert.ok(inside(path.resolve(env[key2]), sc.root), key2 + ' must be under the scratch root');
+  }
+  const before = { cfg: tree(daily), snaps: tree(sc.snaps) };
+  const r = spawnSync('bash', [SCRIPT, '--rollback', '--yes'], { env, input: '', encoding: 'utf8', timeout: 60000 });
+  const out = (r.stdout || '') + (r.stderr || '');
+  assert.strictEqual(r.status, 4, out);
+  assert.match(out, /classification: daily/);
+  assert.deepStrictEqual(tree(daily), before.cfg, 'the daily dir is untouched');
+  assert.deepStrictEqual(tree(sc.snaps), before.snaps, 'the snapshots are untouched');
 });

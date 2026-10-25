@@ -366,6 +366,21 @@ function check(deps = {}) {
 }
 
 /**
+ * install.js overrides that would let it write outside, or through a symlink out of, the classified
+ * config dir (review WR-04, quick 261024-po0 round 2; read at gsd-core origin/next 354d727b):
+ * GSD_ALLOW_SYMLINKED_DEST disables its symlinked-destination guard, GSD_AGENTS_DIR redirects the
+ * agents dir. Never forwarded to the install child.
+ */
+const INSTALL_ENV_STRIP = Object.freeze(['GSD_ALLOW_SYMLINKED_DEST', 'GSD_AGENTS_DIR']);
+
+/** The install.js child env: the parent env minus INSTALL_ENV_STRIP, with the config dir set. */
+function installEnv(env, configDirEnv, configDir) {
+  const out = Object.assign({}, env, { [configDirEnv]: configDir });
+  for (const k of INSTALL_ENV_STRIP) delete out[k];
+  return out;
+}
+
+/**
  * `where` - READ-ONLY: print the session's config dir, its classification, the runtime root, the
  * hooks root and the state dir (CTK-ADR-0013). Exit 0 for a contribution dir, 3 for the daily or
  * an invalid dir (with the reason and CONTRIB_SESSION_HINT). Reads only (realpath); writes nothing.
@@ -623,7 +638,7 @@ function sync(deps = {}) {
         encoding: 'utf8',
         timeout: INSTALL_TIMEOUT_MS,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: Object.assign({}, env, { [O.CONFIG_DIR_ENV]: desc.configDir }),
+        env: installEnv(env, O.CONFIG_DIR_ENV, desc.configDir),
       });
 
       // (5) Re-verify by INVENTORY. An install we cannot confirm is never stamped (T-0ov-06).
@@ -742,4 +757,5 @@ module.exports = {
   CLONE_TIMEOUT_MS,
   BUILD_HOOKS_TIMEOUT_MS,
   HOOK_MTIME_SLACK_MS,
+  INSTALL_ENV_STRIP,
 };

@@ -308,48 +308,102 @@ function isAtOrInside(p, base) {
 }
 
 /**
+ * The top-level entries of a config dir that gsd-core's install.js writes (read at gsd-core
+ * origin/next 354d727b). Any of them resolving into the daily install makes the dir daily: install.js
+ * would write through it (review WR-04, quick 261024-po0 round 2). Other entries (rules/, CLAUDE.md,
+ * user-owned links) are not written by install.js and are not checked.
+ */
+const INSTALL_WRITTEN_ENTRIES = Object.freeze([
+  'gsd-core', 'hooks', 'agents', 'skills', 'commands', 'scripts', 'workflows', 'gsd-pristine',
+  'gsd-migration-journal', 'settings.json', 'gsd-file-manifest.json',
+]);
+
+/** A classification that cannot be decided; classifyConfigDir turns it into `invalid` (refuse). */
+class ClassificationUncertain extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'ClassificationUncertain';
+  }
+}
+
+/**
  * Why `configDir` is the daily install, or null when it is not (CTK-ADR-0013 Decision 4). Paths
- * are compared by realpath, falling back to path.resolve when realpath throws (a dir that does
- * not exist yet). Daily when the dir IS the daily `<home>/.claude` (a symlink to it included),
- * lies inside it, or when its `gsd-core` or `hooks` resolves at or inside it.
+ * are compared by realpath, falling back to the realpath of the deepest existing ancestor for a
+ * path that does not exist yet. Daily when the dir IS a daily `<home>/.claude` (a symlink to it
+ * included), lies inside it, contains it, or when one of INSTALL_WRITTEN_ENTRIES resolves at or
+ * inside it. The daily dirs are `$HOME/.claude` AND `<passwd home>/.claude` (review WR-03), so a
+ * changed HOME cannot unlock the account's real daily dir.
+ *
+ * THROWS ClassificationUncertain when it cannot decide (review WR-02): the passwd home is
+ * unreadable, a dangling symlink chain passes 8 hops, or realpath/readlink fails with anything other
+ * than "absent" (ENOENT) or "not a symlink" (EINVAL).
  *
  * @param {string} configDir
- * @param {{homedir?:string, realpathSync?:Function}} [opts]
+ * @param {{homedir?:string, userInfo?:Function, realpathSync?:Function, readlinkSync?:Function}} [opts]
  * @returns {(string|null)}
  */
 function dailyConfigDirReason(configDir, opts = {}) {
   const home = opts.homedir === undefined ? os.homedir() : opts.homedir;
+  const userInfo = opts.userInfo || os.userInfo;
   const realpathSync = opts.realpathSync || nodeFs.realpathSync;
   const readlinkSync = opts.readlinkSync || nodeFs.readlinkSync;
+  let passwdHome;
+  try {
+    passwdHome = userInfo().homedir;
+  } catch (e) {
+    throw new ClassificationUncertain('the passwd home could not be read (' + (e && e.message) + ')');
+  }
+  if (typeof passwdHome !== 'string' || !path.isAbsolute(passwdHome)) {
+    throw new ClassificationUncertain('the passwd home is not an absolute path: ' + JSON.stringify(passwdHome));
+  }
+  const code = (e) => (e && typeof e.code === 'string' ? e.code : 'UNKNOWN');
   // realpath, else (a path that does not exist yet) the realpath of its deepest existing ancestor
   // plus the rest. A DANGLING symlink is followed through readlink first (verifier finding, quick
   // 261024-po0): otherwise `cfg/hooks -> ~/.claude/<not yet>` would resolve to the link's own path
-  // and the dir would read as a contribution dir. At most 8 dangling-link hops, then the link's own path.
+  // and the dir would read as a contribution dir.
   const rp = (p, hops = 0) => {
     const abs = path.resolve(p);
     try {
       return path.resolve(String(realpathSync(abs)));
-    } catch (_) { /* absent, dangling or unreadable: fall through */ }
+    } catch (e) {
+      if (code(e) !== 'ENOENT') {
+        throw new ClassificationUncertain('realpath ' + abs + ' failed with ' + code(e));
+      }
+    }
     let target = null;
     try {
       target = String(readlinkSync(abs));
-    } catch (_) { /* not a symlink */ }
+    } catch (e) {
+      if (code(e) !== 'ENOENT' && code(e) !== 'EINVAL') {
+        throw new ClassificationUncertain('readlink ' + abs + ' failed with ' + code(e));
+      }
+    }
     if (target !== null) {
-      return hops < 8 ? rp(path.resolve(path.dirname(abs), target), hops + 1) : abs;
+      if (hops >= 8) throw new ClassificationUncertain('more than 8 dangling symlink hops at ' + abs);
+      return rp(path.resolve(path.dirname(abs), target), hops + 1);
     }
     // Walking up to the parent shortens the path, so it terminates without spending a link hop.
     const parent = path.dirname(abs);
     return parent === abs ? abs : path.join(rp(parent, hops), path.basename(abs));
   };
-  const daily = rp(path.join(home, '.claude'));
+  const dailies = [];
+  for (const h of [home, passwdHome]) {
+    const d = rp(path.join(h, '.claude'));
+    if (!dailies.includes(d)) dailies.push(d);
+  }
   const cfg = rp(configDir);
-  if (cfg === daily) return 'the config dir ' + configDir + ' is the daily install ' + daily;
-  if (isAtOrInside(cfg, daily)) return 'the config dir ' + configDir + ' lies inside the daily install ' + daily;
-  for (const sub of ['gsd-core', 'hooks']) {
+  for (const daily of dailies) {
+    if (cfg === daily) return 'the config dir ' + configDir + ' is the daily install ' + daily;
+    if (isAtOrInside(cfg, daily)) return 'the config dir ' + configDir + ' lies inside the daily install ' + daily;
+    if (isAtOrInside(daily, cfg)) return 'the config dir ' + configDir + ' contains the daily install ' + daily;
+  }
+  for (const sub of INSTALL_WRITTEN_ENTRIES) {
     const r = rp(path.join(configDir, sub));
-    if (isAtOrInside(r, daily)) {
-      return 'the config dir\'s ' + sub + ' (' + path.join(configDir, sub) + ') resolves to ' + r +
-        ', inside the daily install ' + daily;
+    for (const daily of dailies) {
+      if (isAtOrInside(r, daily)) {
+        return 'the config dir\'s ' + sub + ' (' + path.join(configDir, sub) + ') resolves to ' + r +
+          ', inside the daily install ' + daily;
+      }
     }
   }
   return null;
@@ -402,9 +456,22 @@ function classifyConfigDir(env = process.env, opts = {}) {
     };
   }
   const cfg = r.configDir;
-  const why = r.fromEnv
-    ? dailyConfigDirReason(cfg, { homedir: home, realpathSync: opts.realpathSync })
-    : CONFIG_DIR_ENV + ' is unset, so the session uses the daily ~/.claude';
+  let why;
+  try {
+    why = r.fromEnv
+      ? dailyConfigDirReason(cfg, {
+        homedir: home, userInfo: opts.userInfo, realpathSync: opts.realpathSync, readlinkSync: opts.readlinkSync,
+      })
+      : CONFIG_DIR_ENV + ' is unset, so the session uses the daily ~/.claude';
+  } catch (e) {
+    // Any uncertainty refuses (review WR-02): never read as a contribution dir.
+    return {
+      kind: 'invalid', fromEnv: true, value, configDir: null, runtimeRoot: null, hooksRoot: null,
+      stateDir: null, runtimeLabel: null, hooksLabel: null,
+      reason: 'could not classify ' + CONFIG_DIR_ENV + '=' + JSON.stringify(value) + ': ' +
+        String((e && e.message) || e) + '; refusing rather than treating it as a contribution dir',
+    };
+  }
   const daily = why !== null;
   const override = stateDirOverride(env);
   const stateDir = override !== null
@@ -1260,6 +1327,7 @@ module.exports = {
   // config dir (CTK-ADR-0013)
   resolveConfigDir,
   isDailyConfigDir,
+  INSTALL_WRITTEN_ENTRIES,
   classifyConfigDir,
   runtimeRootFor,
   hooksRootFor,
