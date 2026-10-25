@@ -925,3 +925,35 @@ test('po0: DESIGN-gsd-refresh.md opens with a dated note that CTK-ADR-0013 super
   assert.match(head, /supersed/i, head);
   assert.ok(head.includes('~/.gsd/local-mods/gsd-refresh.sh'), 'names the daily install maintainer: ' + head);
 });
+
+// -- quick 261024-po0 round 2: CTK-ADR-0013 matches the round-2 code (review CR-01, WR-02..06, IN-02) --
+
+test('po0 r2: CTK-ADR-0013 Decision records rollback classification, per-dir snapshots, uncertainty refusal, passwd home, install-written entries and the stripped env', () => {
+  const d = adrSection(adrFile(13), 'Decision');
+  assert.match(d, /--rollback/, 'Decision names --rollback');
+  assert.match(d, /snapshots? (are |is )?kept per config dir|per-config-dir snapshot/i, 'Decision says snapshots are per config dir');
+  assert.match(d, /rebaseline` is retired|retires? `rebaseline`/, 'Decision says rebaseline is retired');
+  assert.match(d, /passwd home/, 'Decision names the passwd home');
+  assert.match(d, /uncertain|cannot (be )?decide/i, 'Decision says an undecidable classification refuses');
+  for (const s of ['agents', 'skills', 'commands', 'GSD_ALLOW_SYMLINKED_DEST']) assert.ok(d.includes(s), 'Decision names ' + s);
+});
+
+test('po0 r2: CTK-ADR-0013 makes no blanket "never touches the daily" claim and names contrib-capability as the writer it does not cover', () => {
+  const text = fs.readFileSync(adrFile(13), 'utf8').replace(/\s+/g, ' ');
+  assert.doesNotMatch(text, /never touches the daily/i);
+  const c = adrSection(adrFile(13), 'Consequences');
+  assert.match(c, /--rollback/, 'Consequences names --rollback among the refused writers');
+  assert.match(c, /contrib-capability/, 'Consequences names the contrib-capability writer it does not cover');
+});
+
+test('po0 r2: CTK-ADR-0013 test-discipline residual names isolation=none as fenced and the lexical-path limit', () => {
+  const b = residualBullets(adrFile(13), 'test discipline');
+  assert.strictEqual(b.length, 1);
+  assert.match(b[0], /--test-isolation=none/);
+  assert.match(b[0], /lexical/i);
+});
+
+test('po0 r2: CTK-ADR-0013 no longer says a symlinked settings.json would rewrite the daily one (IN-02)', () => {
+  const text = fs.readFileSync(adrFile(13), 'utf8').replace(/\s+/g, ' ');
+  assert.doesNotMatch(text, /a symlink would rewrite the daily one/);
+});
