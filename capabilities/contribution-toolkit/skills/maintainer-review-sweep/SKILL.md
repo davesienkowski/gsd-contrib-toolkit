@@ -113,6 +113,7 @@ Run in order. **Adversarial gate between every phase:** before advancing, state 
 | "Has the base touched this PR's files?" | `bin/pr-status.cjs --overlap --repo <owner>/<repo> <n>` |
 | What the latest change request asked, what happened since, who needs a re-request | `bin/pr-status.cjs --cr --repo <owner>/<repo> <n>` (a structural checklist; `unparsed` or `none` means read the review) |
 | Is the PR body stale, is the Self-test report bound to the head | `bin/pr-status.cjs --body --repo <owner>/<repo> <n>` (unresolved shas are "check", never stale) |
+| Is a red Required tests the base's fault (`fix-next`?), what does Reviewed or maintainer say, why is Self-test report red | `bin/pr-status.cjs --body --repo <owner>/<repo> <n>`: its `base:`, `reviewed-or-maintainer:` and `self-test:` lines, judged by the LIVE gsd-core policy scripts (red base and reviewer-side red are never author work; Self-test is advisory) |
 | Which files conflict with the base, and which commits touched them | `bin/base-conflicts.cjs --repo <owner>/<repo> --pr <n> --cwd <worktree>` (read-only; warns when the local base is not the remote tip and prints the fetch, never runs it) |
 | Which remote to push a PR fix to | `bin/push-target.cjs --repo <owner>/<repo> --cwd <worktree> <n>` (prints the command, never pushes) |
 | "Found something to fix / file mid-sweep" | `/gsd-submit` with the [hand-off packet](#authoring-hand-off-sweep--contribution) — the sweep adjudicates, it does not author |

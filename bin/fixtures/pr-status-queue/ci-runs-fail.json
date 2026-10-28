@@ -1,0 +1,20 @@
+{
+  "provenance": {
+    "source": "synthetic from absent.json",
+    "edits": "maintainers present; the workflow runs read fails with 403",
+    "expected": {
+      "mode": "absent"
+    }
+  },
+  "repo": {
+    "default_branch": "next"
+  },
+  "rulesBranches": {
+    "next": []
+  },
+  "rulesets": [],
+  "rulesetDetails": {},
+  "fail": {
+    "runs": "gh: Resource not accessible by integration (HTTP 403)"
+  }
+}

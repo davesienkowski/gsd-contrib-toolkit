@@ -18,6 +18,8 @@
  * The --cr and --body reads (quick 261023-2u4): `gh api ... repos/O/R/pulls/N/reviews/<id>/comments` (at
  * servePrExtra below) and `gh pr view N ... --json body,baseRefOid,changedFiles` -> fx.bodyView (absent ->
  * gh's not-found message, exit 1; provenance.bodyFail = stderr, exit 1). Every other `pr view` returns fx.view.
+ * The gsd-core CI-check reads (quick 261028-owj: workflow runs and run attempts, .github/MAINTAINERS contents,
+ * collaborator permission) are served from $PR_STATUS_STUB_QUEUE; see serveQueue below.
  */
 
 const fs = require('node:fs');
@@ -40,25 +42,58 @@ function done(code) {
  *   repos/O/R                           -> repo (default { default_branch: 'next' })
  * `fail.<rules|rulesets|ruleset|repo>` makes that read exit 1 with the given stderr. With --slurp the
  * body is wrapped in one page, as gh --paginate --slurp does. Returns null for any other path.
+ *
+ * The gsd-core CI-check reads (quick 261028-owj) come from the same queue file, also per repo, all single
+ * GETs (no --paginate):
+ *   repos/O/R/actions/workflows/<file>/runs?branch=<b>&...  -> baseRuns[<b>] (default {"workflow_runs":[]})
+ *   repos/O/R/actions/runs/<id>/attempts/<n>                -> attempts["<id>/<n>"], else 404
+ *   repos/O/R/contents/.github/MAINTAINERS[?ref=...]        -> {content: base64(maintainers), encoding: 'base64'}
+ *                                                              from the `maintainers` text key, else 404 (any ref)
+ *   repos/O/R/collaborators/<login>/permission              -> roles[<login>] (an object, or a bare role name
+ *                                                              string for {permission, role_name}), else 404
+ * `fail.<runs|attempt|maintainers|permission>` makes that read exit 1 with the given stderr; for permission
+ * it may also be an object keyed by login (only those logins fail).
  */
 function serveQueue(apiPath, slurp) {
-  const [p] = apiPath.split('?');
+  const [p, query] = apiPath.split('?');
   let kind = null;
   let key = null;
   let m;
-  if ((m = /^repos\/[^/]+\/[^/]+\/rules\/branches\/(.+)$/.exec(p))) [kind, key] = ['rules', decodeURIComponent(m[1])];
+  if ((m = /^repos\/[^/]+\/[^/]+\/actions\/workflows\/[^/]+\/runs$/.exec(p))) [kind, key] = ['runs', new URLSearchParams(query || '').get('branch') || ''];
+  else if ((m = /^repos\/[^/]+\/[^/]+\/actions\/runs\/(\d+)\/attempts\/(\d+)$/.exec(p))) [kind, key] = ['attempt', `${m[1]}/${m[2]}`];
+  else if (/^repos\/[^/]+\/[^/]+\/contents\/\.github\/MAINTAINERS$/.test(p)) kind = 'maintainers';
+  else if ((m = /^repos\/[^/]+\/[^/]+\/collaborators\/([^/]+)\/permission$/.exec(p))) [kind, key] = ['permission', decodeURIComponent(m[1])];
+  else if ((m = /^repos\/[^/]+\/[^/]+\/rules\/branches\/(.+)$/.exec(p))) [kind, key] = ['rules', decodeURIComponent(m[1])];
   else if (/^repos\/[^/]+\/[^/]+\/rulesets$/.test(p)) kind = 'rulesets';
   else if ((m = /^repos\/[^/]+\/[^/]+\/rulesets\/(\d+)$/.exec(p))) [kind, key] = ['ruleset', m[1]];
   else if (/^repos\/[^/]+\/[^/]+$/.test(p)) kind = 'repo';
   if (!kind) return null;
   const file = process.env.PR_STATUS_STUB_QUEUE;
   const q = file ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
-  if (q.fail && q.fail[kind]) {
-    process.stderr.write(q.fail[kind] + '\n');
+  const failSpec = q.fail && q.fail[kind];
+  const failMsg = failSpec && typeof failSpec === 'object' ? failSpec[key] : failSpec;
+  if (failMsg) {
+    process.stderr.write(failMsg + '\n');
     return done(1);
   }
+  const notFound = () => {
+    process.stderr.write('gh: Not Found (HTTP 404)\n');
+    return done(1);
+  };
   let body;
-  if (kind === 'rules') body = (q.rulesBranches && q.rulesBranches[key]) || [];
+  if (kind === 'runs') body = (q.baseRuns && q.baseRuns[key]) || { workflow_runs: [] };
+  else if (kind === 'attempt') {
+    body = q.attempts && q.attempts[key];
+    if (!body) return notFound();
+  } else if (kind === 'maintainers') {
+    if (typeof q.maintainers !== 'string') return notFound();
+    body = { name: 'MAINTAINERS', path: '.github/MAINTAINERS', encoding: 'base64', content: Buffer.from(q.maintainers, 'utf8').toString('base64') };
+  } else if (kind === 'permission') {
+    const hit = Object.keys(q.roles || {}).find((k) => k.toLowerCase() === key.toLowerCase());
+    if (hit === undefined) return notFound();
+    const role = q.roles[hit];
+    body = typeof role === 'string' ? { permission: role, role_name: role } : role;
+  } else if (kind === 'rules') body = (q.rulesBranches && q.rulesBranches[key]) || [];
   else if (kind === 'rulesets') body = q.rulesets || [];
   else if (kind === 'repo') body = q.repo || { default_branch: 'next' };
   else {
