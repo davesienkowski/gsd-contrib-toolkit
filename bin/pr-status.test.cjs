@@ -1496,7 +1496,7 @@ test('owj reviewed: an approval on an older commit is red fail_stale_approval_on
   const r = runInProc(t, ['900066'], { queue: 'ci-policies.json', policies: fakePolicies() });
   assert.match(r.stdout, /^ {2}reviewed-or-maintainer: red \(fail_stale_approval_only: .*\); reviewer-side, not author work$/m);
   assert.doesNotMatch(r.stdout, /ball: AUTHOR/);
-  assert.match(r.stdout, /^ {2}ball: REVIEWER owes a review \(approved but blocked: approval on an older commit, Reviewed or maintainer red \(reviewer-side\)\)$/m);
+  assert.match(r.stdout, /^ {2}ball: REVIEWER owes a review \(approved but blocked: approval on an older commit, Reviewed or maintainer red \(fail_stale_approval_only, reviewer-side\)\)$/m);
 });
 
 test('owj reviewed: a failed permission read makes the verdict unknown and the policy is not called with partial roles', (t) => {
@@ -1669,4 +1669,54 @@ test('owj live: the LIVE gsd-core scripts give the hand-derived verdicts on the 
   assert.equal(by[900068].policies.selfTest.reason, 'ok_report');
   assert.equal(by[900069].policies.selfTest.reason, 'fail_stale_sha');
   assert.equal(by[900070].policies.selfTest.reason, 'fail_malformed_json');
+});
+
+// ---- review fixes (quick 261028-owj REVIEW MJ-01, MJ-02, MN-04) ----
+
+test('owj MJ-01: a red Base branch health check over a live green base asks for a re-run, never a fix-forward wait', (t) => {
+  const r = runInProc(t, ['900061'], { queue: 'ci-base-green.json', policies: fakePolicies() });
+  const ball = r.stdout.split('\n').find((l) => l.startsWith('  ball: '));
+  assert.ok(ball, r.stdout);
+  assert.doesNotMatch(ball, /wait for a fix-forward/);
+  assert.match(ball, /^ {2}ball: MAINTAINER not ready .*live base next is green now: re-run the check/);
+});
+
+test('owj MJ-01: with fix-next already on the PR the ball does not advise applying it', (t) => {
+  const r = runInProc(t, ['900073'], { queue: 'ci-base-red.json', policies: fakePolicies() });
+  const ball = r.stdout.split('\n').find((l) => l.startsWith('  ball: '));
+  assert.match(ball, /^ {2}ball: MAINTAINER not ready .*base next red; fix-next present: re-run the Base branch health check/);
+  assert.doesNotMatch(ball, /or fix-next if this PR is the fix/);
+});
+
+test('owj MJ-01: a stale red Reviewed or maintainer check beside a live green verdict is the maintainer re-run, not a review owed', (t) => {
+  const r = runInProc(t, ['900072'], { queue: 'ci-policies.json', policies: fakePolicies() });
+  assert.match(r.stdout, /^ {2}reviewed-or-maintainer: green \(ok_approved/m);
+  assert.match(r.stdout, /^ {2}ball: MAINTAINER not ready .*Reviewed or maintainer check red but the live verdict is green \(ok_approved\): re-run the check/m);
+  assert.doesNotMatch(r.stdout, /ball: REVIEWER/);
+});
+
+test('owj MJ-02: the policy scripts are never loaded from the current directory (a PR-head checkout could judge itself)', (t) => {
+  const fake = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-status-cwd-core-'));
+  t.after(() => fs.rmSync(fake, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(fake, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(fake, 'gsd-core', 'bin', 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(fake, 'scripts', 'pr-target-policy.cjs'), 'module.exports = {};\n');
+  const before = process.cwd();
+  process.chdir(fake);
+  let r;
+  try {
+    r = runInProc(t, ['900061'], { queue: 'ci-base-red.json' });
+  } finally {
+    process.chdir(before);
+  }
+  assert.match(r.stdout, /^ {2}policies: unknown \(/m);
+  assert.ok(!r.stdout.includes(fake), 'the cwd checkout is neither used nor tried');
+});
+
+test('owj MN-04: with no policies read (issue-status reuses derive) an advisory red is named without the --body hint', () => {
+  const fx = loadFixture('ci-selftest-malformed.json');
+  const d = prStatus.derive({ view: fx.view, reviews: fx.reviews, checks: fx.checks });
+  const line = prStatus.ballLineOf(d);
+  assert.match(line, /^ {2}ball: MAINTAINER ready .*advisory red: Self-test report/);
+  assert.doesNotMatch(line, /--body/);
 });

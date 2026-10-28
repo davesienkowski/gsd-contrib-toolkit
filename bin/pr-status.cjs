@@ -603,7 +603,7 @@ function derive({ view, reviews, checks, queue, timeline, timelineError, overlap
     .sort((a, b) => (a.login < b.login ? -1 : a.login > b.login ? 1 : 0));
 
   const q = queue || null; // null = not read (library callers); the CLI always reads it
-  const ball = decideBall(v, latest, req, head, checkSummary, q);
+  const ball = decideBall(v, latest, req, head, checkSummary, q, policies || null);
 
   return {
     number: v.number,
@@ -644,7 +644,28 @@ function ballOf(owner, fields) {
   return Object.assign({ owner, login: null, reRequested: null, reason: '', ready: false, blockers: [], mergeCaveat: null }, fields);
 }
 
-function decideBall(v, latest, req, head, checks, queue) {
+/**
+ * The blocker text for a red Base branch health (or base-attributed Required tests) check, from the live base
+ * verdict when one was read (review MJ-01): the check name alone cannot say whether the base is still red.
+ */
+function baseBlocker(branch, base) {
+  const b = branch || 'the base';
+  if (!base) return `Base branch health check red (live base not read)`;
+  if (base.status === 'green') return `Base branch health check red but the live base ${b} is green now: re-run the check (maintainer)`;
+  if (base.status === 'red' && base.fixNext === 'present') return `base ${b} red; fix-next present: re-run the Base branch health check or re-queue (maintainer)`;
+  if (base.status === 'red') return `base ${b} red: wait for a fix-forward, or fix-next if this PR is the fix`;
+  return `Base branch health check red (live base ${b} unknown)`;
+}
+
+/** The blocker text for a red Reviewed or maintainer check, from the live verdict when one was read (review MJ-01). */
+function reviewedBlocker(reviewed) {
+  if (reviewed && reviewed.status === 'green') return `Reviewed or maintainer check red but the live verdict is green (${reviewed.reason}): re-run the check (maintainer)`;
+  if (reviewed && reviewed.status === 'red') return `Reviewed or maintainer red (${reviewed.reason}, reviewer-side)`;
+  if (reviewed) return 'Reviewed or maintainer red (live verdict unknown, reviewer-side)';
+  return 'Reviewed or maintainer red (reviewer-side)';
+}
+
+function decideBall(v, latest, req, head, checks, queue, policies) {
   if (v.state !== 'OPEN') return ballOf('n/a', { reason: `state ${v.state}` });
   if (v.isDraft) return ballOf('n/a', { reason: 'draft' });
   const entries = [...latest.values()];
@@ -673,8 +694,9 @@ function decideBall(v, latest, req, head, checks, queue) {
     if (!approvals.some((e) => head !== '' && String(e.r.commit_id || '') === head)) blockers.push('approval on an older commit');
     if (req.all.length) blockers.push(`review requests pending (${req.all.join(', ')})`);
     if (g.author.length) blockers.push('checks failing');
-    if (g.base.length) blockers.push(`base ${v.baseRefName} red: wait for a fix-forward, or fix-next if this PR is the fix`);
-    if (g.reviewer.length) blockers.push('Reviewed or maintainer red (reviewer-side)');
+    const pol = policies || {};
+    if (g.base.length) blockers.push(baseBlocker(v.baseRefName, pol.base));
+    if (g.reviewer.length) blockers.push(reviewedBlocker(pol.reviewed));
     if (checks.counts.pending > 0) blockers.push('checks pending');
     if (v.mergeStateStatus === 'DIRTY') blockers.push('DIRTY (merge conflicts)');
     // BEHIND is deliberately absent (CTK-ADR-0012): it is reported as an informational note instead.
@@ -687,7 +709,9 @@ function decideBall(v, latest, req, head, checks, queue) {
       return ballOf('maintainer', { ready: true, reason: 'ready for maintainer', entersQueue: active, mergeCaveat, advisory: g.advisory });
     }
     const authorOwes = g.author.length > 0 || v.mergeStateStatus === 'DIRTY';
-    const owner = authorOwes ? 'author' : req.all.length || g.reviewer.length ? 'reviewer' : 'maintainer';
+    // A stale red Reviewed or maintainer check beside a live green verdict owes no review, only a re-run.
+    const reviewOwed = g.reviewer.length > 0 && !(pol.reviewed && pol.reviewed.status === 'green');
+    const owner = authorOwes ? 'author' : req.all.length || reviewOwed ? 'reviewer' : 'maintainer';
     return ballOf(owner, { blockers, reason: 'approved but blocked' });
   }
 
@@ -1414,7 +1438,7 @@ function checkoutHead(root) {
 
 /**
  * The three LIVE policy modules, loaded once per run. deps.policies (tests) injects them; deps.policyRoot names
- * the only root to try; otherwise GSD_CORE_ROOT, the cwd's gsd-core, ~/repos/gsd-core, ~/gsd-core in that order
+ * the only root to try; otherwise GSD_CORE_ROOT, ~/repos/gsd-core, ~/gsd-core in that order (never the cwd: review MJ-02)
  * (each through resolveGsdCoreRoot, so the sentinel layout applies). A throw anywhere is the one `error` that
  * makes every verdict unknown.
  *
@@ -1430,7 +1454,9 @@ function loadPolicySources(deps, cache) {
     } else {
       const { resolveGsdCoreRoot, requireLiveScript } = require('../hooks/lib/resolve.cjs');
       const home = os.homedir();
-      const candidates = deps.policyRoot ? [deps.policyRoot] : [process.env.GSD_CORE_ROOT, process.cwd(), path.join(home, 'repos', 'gsd-core'), path.join(home, 'gsd-core')].filter(Boolean);
+      // Never the cwd (review MJ-02): run from a worktree of a PR head, the PR's own edited policy would judge
+      // the PR with the user's gh token. Upstream CI checks the scripts out at the BASE sha for the same reason.
+      const candidates = deps.policyRoot ? [deps.policyRoot] : [process.env.GSD_CORE_ROOT, path.join(home, 'repos', 'gsd-core'), path.join(home, 'gsd-core')].filter(Boolean);
       let root = null;
       for (const c of candidates) {
         try {
@@ -1690,6 +1716,8 @@ function advisoryText(name, policies) {
   const st = policies && policies.selfTest;
   if (name === CHECK_SELF_TEST && st && st.reason) return `${name} ${st.reason}`;
   if (name === CHECK_SELF_TEST && st && st.status === 'unknown') return `${name} (verdict unknown)`;
+  // No policies read at all (bin/issue-status.cjs reuses derive): name the check, never a flag that caller lacks.
+  if (!policies) return name;
   return `${name} (${NEEDS_BODY})`;
 }
 
@@ -1742,13 +1770,20 @@ function selfTestLine(s) {
 }
 
 /** The policies / base / reviewed-or-maintainer / self-test lines of one PR block (empty when none was consulted). */
+/** A path under the home dir printed as ~/..., so a pasted snapshot does not carry the user's home path (review NT-03). */
+function tildeHome(p) {
+  const home = os.homedir();
+  const s = String(p == null ? '' : p);
+  return home && (s === home || s.startsWith(home + path.sep)) ? '~' + s.slice(home.length) : s;
+}
+
 function policyLines(p) {
   const lines = [];
   if (!p) return lines;
   if (p.source) {
     lines.push(
       p.source.status === 'live'
-        ? `  policies: LIVE gsd-core scripts at ${clean(p.source.root)} HEAD ${p.source.head ? clean(short(p.source.head, 9)) : 'unknown'}`
+        ? `  policies: LIVE gsd-core scripts at ${clean(tildeHome(p.source.root))} HEAD ${p.source.head ? clean(short(p.source.head, 9)) : 'unknown'}`
         : `  policies: unknown (${clean(p.source.error) || 'unknown error'})`
     );
   }
