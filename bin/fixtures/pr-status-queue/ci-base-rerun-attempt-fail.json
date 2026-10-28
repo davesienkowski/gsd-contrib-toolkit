@@ -1,0 +1,45 @@
+{
+  "provenance": {
+    "source": "synthetic from ci-base-rerun.json",
+    "edits": "fail.attempt: the previous-attempt read exits 1",
+    "expected": {
+      "mode": "absent"
+    }
+  },
+  "repo": {
+    "default_branch": "next"
+  },
+  "rulesBranches": {
+    "next": []
+  },
+  "rulesets": [],
+  "rulesetDetails": {},
+  "baseRuns": {
+    "next": {
+      "workflow_runs": [
+        {
+          "id": 880001,
+          "name": "Tests",
+          "event": "push",
+          "head_branch": "next",
+          "head_sha": "dead00000000000000000000000000000000beef",
+          "status": "in_progress",
+          "conclusion": null,
+          "run_attempt": 2,
+          "html_url": "https://github.com/open-gsd/gsd-core/actions/runs/880001"
+        }
+      ]
+    }
+  },
+  "attempts": {
+    "880001/1": {
+      "id": 880001,
+      "run_attempt": 1,
+      "status": "completed",
+      "conclusion": "failure"
+    }
+  },
+  "fail": {
+    "attempt": "gh: Server Error (HTTP 502)"
+  }
+}

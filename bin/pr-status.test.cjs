@@ -1720,3 +1720,59 @@ test('owj MN-04: with no policies read (issue-status reuses derive) an advisory 
   assert.match(line, /^ {2}ball: MAINTAINER ready .*advisory red: Self-test report/);
   assert.doesNotMatch(line, /--body/);
 });
+
+// ---- refute-pass fixes (quick 261028-owj REFUTE C4, C3, C9-5) ----
+
+test('owj C4: a failed previous-attempt read makes the base unknown, never a definite red', (t) => {
+  const r = runInProc(t, ['900061'], { queue: 'ci-base-rerun-attempt-fail.json', policies: fakePolicies() });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^ {2}base: next unknown \(previous attempt read failed: gh: Server Error \(HTTP 502\)\)/m);
+});
+
+test('owj C4: a reviews reply that is not an array of pages makes reviewed-or-maintainer unknown', () => {
+  const fx = loadFixture('ci-reviewed-approved.json');
+  const gh = (args) => {
+    if (args[0] === 'pr' && args[1] === 'view') return fx.view;
+    if (args[0] === 'pr' && args[1] === 'checks') return fx.checks;
+    if (args[0] === 'api' && /\/reviews\?/.test(args[args.length - 1])) return { message: 'not pages' };
+    throw new Error('unexpected read ' + JSON.stringify(args));
+  };
+  const pr = prStatus.fetchPr(String(fx.view.number), 'open-gsd/gsd-core', { gh, sleep: () => {} });
+  const out = prStatus.fetchPolicies('open-gsd/gsd-core', pr, { body: false }, { gh, policies: fakePolicies() });
+  assert.equal(out.reviewed.status, 'unknown');
+  assert.match(out.reviewed.error, /reviews reply was not an array of pages/);
+});
+
+test('owj C3: a relative GSD_CORE_ROOT is ignored (it would resolve against the cwd)', (t) => {
+  const prev = process.env.GSD_CORE_ROOT;
+  const r = (() => {
+    const stub = makeStub(t);
+    return { stub };
+  })();
+  // runInProc deletes GSD_CORE_ROOT, so call the loader through runCli with the env set around it.
+  const keys = ['PATH', 'PR_STATUS_STUB_FIXTURES', 'PR_STATUS_STUB_LOG', 'PR_STATUS_STUB_QUEUE', 'HOME', 'GSD_CORE_ROOT'];
+  const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  let stdout = '';
+  try {
+    process.env.PATH = r.stub.bin + path.delimiter + process.env.PATH;
+    process.env.PR_STATUS_STUB_FIXTURES = FIXTURES_DIR;
+    process.env.PR_STATUS_STUB_LOG = r.stub.logFile;
+    process.env.PR_STATUS_STUB_QUEUE = path.join(QUEUE_DIR, 'ci-base-red.json');
+    process.env.HOME = r.stub.home;
+    process.env.GSD_CORE_ROOT = 'relative/gsd-core';
+    prStatus.runCli(['900061'], { stdout: { write: (x) => { stdout += x; } }, stderr: { write: () => {} }, sleep: () => {} });
+  } finally {
+    for (const k of keys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+  assert.equal(process.env.GSD_CORE_ROOT, prev);
+  assert.match(stdout, /^ {2}policies: unknown \(/m);
+  assert.ok(!/relative\/gsd-core/.test(stdout), 'the relative value is not tried');
+});
+
+test('owj C9-5: only Base branch health red over a live green base says re-run on the base line', (t) => {
+  const r = runInProc(t, ['900074'], { queue: 'ci-base-green.json', policies: fakePolicies() });
+  assert.match(r.stdout, /^ {2}base: next green now .*; Base branch health red is from an earlier run: the live base is green now, re-run the check \(fix-next: absent\)$/m);
+});

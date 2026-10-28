@@ -227,7 +227,8 @@ function fetchPr(number, repo, deps = {}, options = {}) {
     else if (err && /no checks reported/i.test(String(err.stderr || ''))) checks = [];
     else throw err;
   }
-  return { view, reviews, checks: Array.isArray(checks) ? checks : [], timeline, timelineError };
+  // reviewsShapeOk: false when the reviews reply was not an array of pages (the policies then read unknown).
+  return { view, reviews, reviewsShapeOk: Array.isArray(pages), checks: Array.isArray(checks) ? checks : [], timeline, timelineError };
 }
 
 /**
@@ -1456,7 +1457,9 @@ function loadPolicySources(deps, cache) {
       const home = os.homedir();
       // Never the cwd (review MJ-02): run from a worktree of a PR head, the PR's own edited policy would judge
       // the PR with the user's gh token. Upstream CI checks the scripts out at the BASE sha for the same reason.
-      const candidates = deps.policyRoot ? [deps.policyRoot] : [process.env.GSD_CORE_ROOT, path.join(home, 'repos', 'gsd-core'), path.join(home, 'gsd-core')].filter(Boolean);
+      // A relative GSD_CORE_ROOT would resolve against the cwd, so only an absolute one counts (refute pass C3).
+      const envRoot = process.env.GSD_CORE_ROOT && path.isAbsolute(process.env.GSD_CORE_ROOT) ? process.env.GSD_CORE_ROOT : null;
+      const candidates = deps.policyRoot ? [deps.policyRoot] : [envRoot, path.join(home, 'repos', 'gsd-core'), path.join(home, 'gsd-core')].filter(Boolean);
       let root = null;
       for (const c of candidates) {
         try {
@@ -1521,8 +1524,10 @@ function readBaseHealth(repo, branch, deps, cache, src) {
       try {
         const prev = gh(['api', `repos/${repo}/actions/runs/${encodeURIComponent(String(newest.id))}/attempts/${Number(newest.run_attempt) - 1}`]);
         newest.previous_attempt_conclusion = prev && typeof prev.conclusion === 'string' ? prev.conclusion : 'unknown';
-      } catch {
-        newest.previous_attempt_conclusion = 'unknown';
+      } catch (err) {
+        // Upstream CI reads a failed attempt read as not-success (RED, fail closed: it is a gate). pr-status is a
+        // report (CTK-ADR-0012 Decision 3): a verdict resting on a read that failed is unknown (refute pass C4).
+        throw new Error(`previous attempt read failed: ${firstErrorLine(err)}`);
       }
     }
     const c = src.ci.classifyBaseRuns(payload);
@@ -1604,6 +1609,8 @@ function reviewedVerdict(repo, pr, deps, cache, src) {
     const author = String((v.author && v.author.login) || '');
     const head = String(v.headRefOid || '');
     if (!author || !/^[0-9a-f]{40}$/i.test(head)) throw new Error('the view lacks the author login or a 40-hex head sha');
+    // A reviews reply of another shape was flattened to [] by fetchPr: never a definite verdict from it (refute pass C4).
+    if (pr.reviewsShapeOk === false) throw new Error('the reviews reply was not an array of pages');
     const m = readMaintainers(repo, v, deps, cache);
     if (m.error) throw new Error(m.error);
     const parsed = src.reviewed.parseMaintainers(m.text);
@@ -1743,6 +1750,7 @@ function baseLine(b) {
       : `Required tests red is not base health (the Base branch health check passed): also failing ${b.othersFailing.map(clean).join(', ')}`;
   }
   else if (b.requiredRed) note = 'Required tests red is not attributed to base health (the Base branch health check is not failing)';
+  else if (b.baseHealthRed && b.status === 'green') note = 'Base branch health red is from an earlier run: the live base is green now, re-run the check';
   else if (b.baseHealthRed) note = 'Base branch health red is the base, not this PR';
   return `  base: ${head}${note ? `; ${note}` : ''} (fix-next: ${clean(b.fixNext)})`;
 }
