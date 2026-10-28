@@ -1,0 +1,89 @@
+{
+  "provenance": {
+    "source": "synthetic from approved-ready.json",
+    "edits": "approved on the head; Required tests, Base branch health and one test shard failing",
+    "checksExit": 1,
+    "expected": {
+      "owner": "author",
+      "ready": false
+    }
+  },
+  "view": {
+    "number": 900063,
+    "state": "OPEN",
+    "isDraft": false,
+    "author": {
+      "login": "contrib-a"
+    },
+    "headRefOid": "b7c0ffee00000000000000000000000000000001",
+    "baseRefName": "next",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "APPROVED",
+    "reviewRequests": [],
+    "commits": [
+      {
+        "oid": "b7c0ffee00000000000000000000000000000001",
+        "committedDate": "2026-10-28T09:00:00Z",
+        "messageHeadline": "fix: synthetic"
+      }
+    ],
+    "updatedAt": "2026-10-28T10:01:00Z",
+    "headRefName": "fix/synthetic",
+    "title": "fix: synthetic change",
+    "labels": [],
+    "baseRefOid": "ba5e000000000000000000000000000000000abc"
+  },
+  "reviews": [
+    [
+      {
+        "id": 7003,
+        "user": {
+          "login": "alice",
+          "type": "User"
+        },
+        "state": "APPROVED",
+        "submitted_at": "2026-10-28T10:00:00Z",
+        "commit_id": "b7c0ffee00000000000000000000000000000001"
+      }
+    ]
+  ],
+  "checks": [
+    {
+      "name": "Changeset Required",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Changeset"
+    },
+    {
+      "name": "lint-tests",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Tests"
+    },
+    {
+      "name": "test (ubuntu-latest, 24, shard 3/3)",
+      "state": "SUCCESS",
+      "bucket": "pass",
+      "workflow": "Tests"
+    },
+    {
+      "name": "Required tests",
+      "state": "FAILURE",
+      "bucket": "fail",
+      "workflow": "Tests"
+    },
+    {
+      "name": "Base branch health",
+      "state": "FAILURE",
+      "bucket": "fail",
+      "workflow": "Tests"
+    },
+    {
+      "name": "test (windows-latest, 24, shard 2/3)",
+      "state": "FAILURE",
+      "bucket": "fail",
+      "workflow": "Tests"
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "provenance": {
+    "source": "synthetic from absent.json",
+    "edits": "adds baseRuns.next: newest run is an in-flight attempt 2 whose attempt 1 failed",
+    "expected": {
+      "mode": "absent"
+    }
+  },
+  "repo": {
+    "default_branch": "next"
+  },
+  "rulesBranches": {
+    "next": []
+  },
+  "rulesets": [],
+  "rulesetDetails": {},
+  "baseRuns": {
+    "next": {
+      "workflow_runs": [
+        {
+          "id": 880001,
+          "name": "Tests",
+          "event": "push",
+          "head_branch": "next",
+          "head_sha": "dead00000000000000000000000000000000beef",
+          "status": "in_progress",
+          "conclusion": null,
+          "run_attempt": 2,
+          "html_url": "https://github.com/open-gsd/gsd-core/actions/runs/880001"
+        }
+      ]
+    }
+  },
+  "attempts": {
+    "880001/1": {
+      "id": 880001,
+      "run_attempt": 1,
+      "status": "completed",
+      "conclusion": "failure"
+    }
+  }
+}

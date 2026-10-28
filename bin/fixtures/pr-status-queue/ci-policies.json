@@ -1,0 +1,28 @@
+{
+  "provenance": {
+    "source": "synthetic from absent.json",
+    "edits": "adds maintainers text (maint-m) and roles (alice write, rita read)",
+    "expected": {
+      "mode": "absent"
+    }
+  },
+  "repo": {
+    "default_branch": "next"
+  },
+  "rulesBranches": {
+    "next": []
+  },
+  "rulesets": [],
+  "rulesetDetails": {},
+  "maintainers": "# synthetic MAINTAINERS\nmaint-m\n",
+  "roles": {
+    "alice": {
+      "permission": "write",
+      "role_name": "write"
+    },
+    "rita": {
+      "permission": "read",
+      "role_name": "read"
+    }
+  }
+}

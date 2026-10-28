@@ -59,7 +59,7 @@ function makeStub(t) {
   fs.chmodSync(gh, 0o755);
   const logFile = path.join(dir, 'argv.log');
   fs.writeFileSync(logFile, '');
-  return { bin, logFile };
+  return { bin, logFile, home: dir };
 }
 
 /** Run the CLI through the stub; returns { status, stdout, stderr, log }. Never throws on exit != 0. */
@@ -69,7 +69,11 @@ function runThroughStub(t, args, opts = {}) {
     PATH: stub.bin + path.delimiter + process.env.PATH,
     PR_STATUS_STUB_FIXTURES: opts.fixturesDir || FIXTURES_DIR,
     PR_STATUS_STUB_LOG: stub.logFile,
-  });
+    // 261028-owj: no gsd-core checkout resolves unless a test names one (GSD_CORE_ROOT), so a run never
+    // reads the real ~/repos/gsd-core and prints the same policies line on every machine.
+    HOME: stub.home,
+  }, opts.env || {});
+  if (!(opts.env && opts.env.GSD_CORE_ROOT)) delete env.GSD_CORE_ROOT;
   if (opts.queue) env.PR_STATUS_STUB_QUEUE = path.join(QUEUE_DIR, opts.queue);
   else delete env.PR_STATUS_STUB_QUEUE;
   let status = 0;
@@ -1291,4 +1295,371 @@ test('2u4 rerequest: a review consumes a request only when submitted strictly la
   const [later] = prStatus.deriveRerequests(view, review('2026-10-21T10:00:01Z'), [req]);
   assert.deepEqual(later.ending, { kind: 'consumed', id: '1', state: 'CHANGES_REQUESTED', time: '2026-10-21T10:00:01Z' });
   assert.equal(later.needed, true);
+});
+
+// --- quick 261028-owj: pr-status models three gsd-core CI checks (base health, reviewed or maintainer, self-test) ---
+//
+// Verdict tests inject the policy modules (deps.policies) so they run on any machine; the fakes below only
+// have the exported shape of the live scripts (enough to drive pr-status's wiring and rendering). Two tests
+// read the LIVE gsd-core scripts (the selfTestBlock parity check and the fixture verdicts) and skip, with a
+// named reason, when no checkout resolves.
+
+const CI_HEAD = 'b7c0ffee00000000000000000000000000000001';
+const CI_BASE_SHA = 'ba5e000000000000000000000000000000000abc';
+const CI_RUN_SHA = 'dead00000000000000000000000000000000beef';
+
+function fakePolicies(over = {}) {
+  const calls = { classify: [], reviewed: [], selfTest: [] };
+  const ci = {
+    VERDICT: { CLEAN: 'CLEAN', RED: 'RED', BYPASSED: 'BYPASSED', SKIPPED_NOT_APPLICABLE: 'SKIPPED_NOT_APPLICABLE', INDETERMINATE: 'INDETERMINATE' },
+    BYPASS_LABEL: 'fix-next',
+    TESTS_WORKFLOW_FILE: 'test.yml',
+    classifyBaseRuns(payload) {
+      calls.classify.push(JSON.parse(JSON.stringify(payload)));
+      const runs = payload && payload.workflow_runs;
+      if (!Array.isArray(runs)) return { verdict: 'INDETERMINATE', run: null, reason: 'malformed-payload' };
+      if (runs.length === 0) return { verdict: 'CLEAN', run: null, reason: 'resolved' };
+      const n = runs[0];
+      if (n.status !== 'completed') {
+        const prior = n.previous_attempt_conclusion;
+        if (typeof prior === 'string' && prior !== 'success') return { verdict: 'RED', run: n, reason: 'rerun-in-flight-after-failure' };
+        return { verdict: 'CLEAN', run: n, reason: 'newest-in-flight' };
+      }
+      return { verdict: n.conclusion === 'success' ? 'CLEAN' : 'RED', run: n, reason: 'resolved' };
+    },
+  };
+  const reviewed = {
+    REASON: {},
+    APPROVER_ROLES: new Set(['write', 'maintain', 'admin']),
+    parseMaintainers(text) {
+      const logins = new Set(String(text).split(/\r?\n/).map((l) => l.replace(/#.*$/, '').trim().toLowerCase()).filter(Boolean));
+      return { ok: logins.size > 0, logins, invalid: [] };
+    },
+    evaluateReviewed(input) {
+      calls.reviewed.push(input);
+      const author = input.authorLogin.toLowerCase();
+      if (input.maintainers.has(author)) return { ok: true, reason: 'ok_maintainer_author' };
+      const standing = new Map();
+      for (const r of input.reviews) standing.set(r.user.login.toLowerCase(), r);
+      let stale = false;
+      for (const [login, r] of standing) {
+        if (login === author || r.state !== 'APPROVED') continue;
+        if (!['write', 'maintain', 'admin'].includes(input.roles[login])) continue;
+        if (r.commit_id === input.headSha) return { ok: true, reason: 'ok_approved' };
+        stale = true;
+      }
+      return { ok: false, reason: stale ? 'fail_stale_approval_only' : 'fail_no_approval' };
+    },
+  };
+  const selfTest = {
+    REASON: {},
+    evaluateSelfTestReport(input) {
+      calls.selfTest.push(input);
+      return over.selfTest ? over.selfTest(input) : { ok: true, reason: 'ok_report', problems: [] };
+    },
+  };
+  return { ciNextHealth: ci, reviewedOrMaintainer: reviewed, selfTestReport: selfTest, root: '/fake/gsd-core', head: 'f'.repeat(40), calls };
+}
+
+/**
+ * Run runCli IN PROCESS (deps.policies injected) with the stub gh first on PATH. The stub and its env are
+ * the same ones the process tests use; the environment is restored before returning.
+ */
+function runInProc(t, args, opts = {}) {
+  const stub = makeStub(t);
+  const keys = ['PATH', 'PR_STATUS_STUB_FIXTURES', 'PR_STATUS_STUB_LOG', 'PR_STATUS_STUB_QUEUE', 'HOME', 'GSD_CORE_ROOT'];
+  const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  process.env.PATH = stub.bin + path.delimiter + process.env.PATH;
+  process.env.PR_STATUS_STUB_FIXTURES = FIXTURES_DIR;
+  process.env.PR_STATUS_STUB_LOG = stub.logFile;
+  process.env.HOME = stub.home;
+  delete process.env.GSD_CORE_ROOT;
+  if (opts.queue) process.env.PR_STATUS_STUB_QUEUE = path.join(QUEUE_DIR, opts.queue);
+  else delete process.env.PR_STATUS_STUB_QUEUE;
+  let stdout = '';
+  let stderr = '';
+  let status;
+  try {
+    status = prStatus.runCli(args, {
+      stdout: { write: (x) => { stdout += x; } },
+      stderr: { write: (x) => { stderr += x; } },
+      sleep: () => {},
+      policies: opts.policies,
+      policyRoot: opts.policyRoot,
+    });
+  } finally {
+    for (const k of keys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+  const log = fs.readFileSync(stub.logFile, 'utf8').split('\n').filter(Boolean);
+  return { status, stdout, stderr, log };
+}
+
+const calls = (r) => r.log.map((l) => JSON.parse(l));
+const apiPaths = (r, re) => calls(r).filter((c) => c[0] === 'api').map((c) => c.find((a) => a.startsWith('repos/'))).filter((p) => re.test(p));
+
+test('owj base: a red base with no fix-next is not author work; the base line names the red run sha', (t) => {
+  const pol = fakePolicies();
+  const r = runInProc(t, ['900061'], { queue: 'ci-base-red.json', policies: pol });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^ {2}policies: LIVE gsd-core scripts at \/fake\/gsd-core HEAD fffffffff$/m);
+  assert.match(
+    r.stdout,
+    new RegExp(`^ {2}base: next RED \\(Tests run on ${CI_RUN_SHA.slice(0, 12)}, conclusion failure, reason resolved\\) https://github\\.com/open-gsd/gsd-core/actions/runs/880001; Required tests red is base health, not this PR \\(fix-next: absent\\)$`, 'm')
+  );
+  assert.doesNotMatch(r.stdout, /ball: AUTHOR/, 'a red base is never author work');
+  assert.match(r.stdout, /^ {2}ball: MAINTAINER not ready \(approved but blocked: base next red: wait for a fix-forward, or fix-next if this PR is the fix\)$/m);
+  assert.ok(!r.log.some((l) => l.startsWith('REFUSED')), r.log.join(' | '));
+  assert.deepEqual(apiPaths(r, /actions\/workflows/), [`repos/open-gsd/gsd-core/actions/workflows/test.yml/runs?branch=next&event=push&per_page=5`]);
+  for (const c of calls(r)) assert.ok(!c.some((a) => /^(-X|--method|-f|-F|--field|--input)/.test(a)) && !c.some((a) => /graphql/i.test(a)), `read-only: ${c.join(' ')}`);
+});
+
+test('owj base: --json carries the policies verdicts and the ball is the maintainer', (t) => {
+  const r = runInProc(t, ['--json', '900061'], { queue: 'ci-base-red.json', policies: fakePolicies() });
+  const d = JSON.parse(r.stdout)[0];
+  assert.equal(d.ball.owner, 'maintainer');
+  assert.equal(d.policies.base.status, 'red');
+  assert.equal(d.policies.base.fixNext, 'absent');
+  assert.equal(d.policies.base.run.sha, CI_RUN_SHA);
+  assert.equal(d.policies.source.root, '/fake/gsd-core');
+});
+
+test('owj base: the fix-next label is named present; Required tests red stays author-side when Base branch health passes', (t) => {
+  const r = runInProc(t, ['900062'], { queue: 'ci-base-red.json', policies: fakePolicies() });
+  assert.match(r.stdout, /^ {2}base: next RED .*\(fix-next: present\)$/m);
+  assert.match(r.stdout, /^ {2}ball: AUTHOR owes fixes \(approved but blocked: checks failing\)$/m);
+});
+
+test('owj base: Required tests red with another Tests job also red stays author-side and names the job', (t) => {
+  const r = runInProc(t, ['900063'], { queue: 'ci-base-red.json', policies: fakePolicies() });
+  assert.match(r.stdout, /^ {2}base: next RED .*; Required tests red is not only base health: also failing test \(windows-latest, 24, shard 2\/3\) \(fix-next: absent\)$/m);
+  assert.match(r.stdout, /^ {2}ball: AUTHOR owes fixes /m);
+});
+
+test('owj base: a green live base is said so; a captured fixture without labels reads fix-next unknown', (t) => {
+  const green = runInProc(t, ['900061'], { queue: 'ci-base-green.json', policies: fakePolicies() });
+  assert.match(green.stdout, /^ {2}base: next green now /m);
+  const old = runInProc(t, ['5153'], { policies: fakePolicies() });
+  assert.match(old.stdout, /^ {2}base: next green now .*\(fix-next: unknown\)$/m, 'a view without labels is unknown, never absent');
+});
+
+test('owj base: an in-flight re-run reads the previous attempt and hands it to classifyBaseRuns', (t) => {
+  const pol = fakePolicies();
+  const r = runInProc(t, ['900061'], { queue: 'ci-base-rerun.json', policies: pol });
+  assert.deepEqual(apiPaths(r, /attempts/), ['repos/open-gsd/gsd-core/actions/runs/880001/attempts/1']);
+  assert.equal(pol.calls.classify[0].workflow_runs[0].previous_attempt_conclusion, 'failure');
+  assert.match(r.stdout, /^ {2}base: next RED \(Tests run on dead00000000, conclusion in_progress, reason rerun-in-flight-after-failure\)/m);
+});
+
+test('owj base: a failed runs read is unknown with the error named, the PR block and exit code unaffected', (t) => {
+  const bad = runInProc(t, ['900061'], { queue: 'ci-runs-fail.json', policies: fakePolicies() });
+  assert.equal(bad.status, 0, bad.stderr);
+  assert.match(bad.stdout, /^ {2}base: next unknown \(.*runs read failed.*\)/m);
+});
+
+test('owj base: the base runs are read once per repo and base across PRs', (t) => {
+  const r = runInProc(t, ['900061', '900063'], { queue: 'ci-base-red.json', policies: fakePolicies() });
+  assert.equal(apiPaths(r, /actions\/workflows/).length, 1);
+});
+
+test('owj reviewed: an author listed in MAINTAINERS is ok_maintainer_author with no permission read; MAINTAINERS is read at the base sha', (t) => {
+  const r = runInProc(t, ['900064'], { queue: 'ci-policies.json', policies: fakePolicies() });
+  assert.match(r.stdout, /^ {2}reviewed-or-maintainer: green \(ok_maintainer_author\)$/m);
+  assert.deepEqual(apiPaths(r, /collaborators/), []);
+  assert.deepEqual(apiPaths(r, /contents/), [`repos/open-gsd/gsd-core/contents/.github/MAINTAINERS?ref=${CI_BASE_SHA}`]);
+});
+
+test('owj reviewed: a current-head approval by a write user is ok_approved by that login; the policy gets complete input', (t) => {
+  const pol = fakePolicies();
+  const r = runInProc(t, ['900065'], { queue: 'ci-policies.json', policies: pol });
+  assert.match(r.stdout, /^ {2}reviewed-or-maintainer: green \(ok_approved by alice\)$/m);
+  assert.deepEqual(apiPaths(r, /collaborators/), ['repos/open-gsd/gsd-core/collaborators/alice/permission']);
+  const input = pol.calls.reviewed[0];
+  assert.equal(input.authorLogin, 'contrib-a');
+  assert.equal(input.headSha, CI_HEAD);
+  assert.equal(input.reviewsComplete, true);
+  assert.deepEqual(input.roles, { alice: 'write' });
+  assert.deepEqual([...input.maintainers], ['maint-m']);
+  assert.equal(input.reviews.length, 1);
+});
+
+test('owj reviewed: an approval on an older commit is red fail_stale_approval_only, labelled reviewer-side, never author work', (t) => {
+  const r = runInProc(t, ['900066'], { queue: 'ci-policies.json', policies: fakePolicies() });
+  assert.match(r.stdout, /^ {2}reviewed-or-maintainer: red \(fail_stale_approval_only: .*\); reviewer-side, not author work$/m);
+  assert.doesNotMatch(r.stdout, /ball: AUTHOR/);
+  assert.match(r.stdout, /^ {2}ball: REVIEWER owes a review \(approved but blocked: approval on an older commit, Reviewed or maintainer red \(reviewer-side\)\)$/m);
+});
+
+test('owj reviewed: a failed permission read makes the verdict unknown and the policy is not called with partial roles', (t) => {
+  const pol = fakePolicies();
+  const r = runInProc(t, ['900065'], { queue: 'ci-permission-fail.json', policies: pol });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^ {2}reviewed-or-maintainer: unknown \(.*alice.*HTTP 403.*\)$/m);
+  assert.equal(pol.calls.reviewed.length, 0);
+});
+
+test('owj reviewed: an unreadable MAINTAINERS file is unknown, not the policy reason', (t) => {
+  const pol = fakePolicies();
+  const r = runInProc(t, ['900065'], { policies: pol });
+  assert.match(r.stdout, /^ {2}reviewed-or-maintainer: unknown \(MAINTAINERS read failed: .*\)$/m);
+  assert.equal(pol.calls.reviewed.length, 0);
+});
+
+test('owj reviewed: MAINTAINERS and permissions are read once per repo across PRs', (t) => {
+  const r = runInProc(t, ['900065', '900066'], { queue: 'ci-policies.json', policies: fakePolicies() });
+  assert.equal(apiPaths(r, /contents/).length, 1);
+  assert.equal(apiPaths(r, /collaborators/).length, 1);
+});
+
+test('owj self-test: fail_suite_not_passed is printed as advisory (never a defect) and the PR stays MAINTAINER ready', (t) => {
+  const pol = fakePolicies({ selfTest: () => ({ ok: false, reason: 'fail_suite_not_passed', problems: ['the full suite must have passed'] }) });
+  const r = runInProc(t, ['--body', '900067'], { queue: 'ci-policies.json', policies: pol });
+  assert.match(r.stdout, /^ {2}self-test: red \(fail_suite_not_passed: advisory; the full suite did not pass with 0 failures, e\.g\. a known environment failure\)$/m);
+  assert.doesNotMatch(r.stdout, /defect/i);
+  assert.match(r.stdout, /^ {2}ball: MAINTAINER ready \(.*advisory red: Self-test report fail_suite_not_passed.*\)$/m);
+  assert.doesNotMatch(r.stdout, /ball:.*checks green/, 'a ready line must not claim every check is green');
+  const input = pol.calls.selfTest[0];
+  assert.equal(input.headRef, 'fix/synthetic');
+  assert.equal(input.title, 'fix: synthetic change');
+  assert.equal(input.authorLogin, 'contrib-a');
+  assert.equal(input.headSha, CI_HEAD);
+  assert.deepEqual([...input.maintainers], ['maint-m']);
+  assert.match(input.body, /## Self-test report/);
+});
+
+test('owj self-test: ok_report is green; fail_stale_sha and fail_malformed_json print the policy reason and its first problem', (t) => {
+  const bodyOf = (n) => JSON.parse(fs.readFileSync(path.join(FIXTURES_DIR, n), 'utf8')).bodyView.body;
+  const pol = fakePolicies({
+    selfTest: (input) => {
+      if (input.body === bodyOf('ci-selftest-ok.json')) return { ok: true, reason: 'ok_report', problems: [] };
+      if (input.body === bodyOf('ci-selftest-stale.json')) return { ok: false, reason: 'fail_stale_sha', problems: ['head_sha is not the PR current head'] };
+      return { ok: false, reason: 'fail_malformed_json', problems: ['the report is not valid JSON: Unexpected end'] };
+    },
+  });
+  const r = runInProc(t, ['--body', '900068', '900069', '900070'], { queue: 'ci-policies.json', policies: pol });
+  assert.match(r.stdout, /^ {2}self-test: green \(ok_report\)$/m);
+  assert.match(r.stdout, /^ {2}self-test: red \(fail_stale_sha: head_sha is not the PR current head\)$/m);
+  assert.match(r.stdout, /^ {2}self-test: red \(fail_malformed_json: the report is not valid JSON: Unexpected end\)$/m);
+});
+
+test('owj self-test: without --body a red Self-test report says to run with --body and the policy is not called', (t) => {
+  const pol = fakePolicies();
+  const r = runInProc(t, ['900067'], { queue: 'ci-policies.json', policies: pol });
+  assert.match(r.stdout, /^ {2}self-test: red \(run with --body for the reason\)$/m);
+  assert.match(r.stdout, /^ {2}ball: MAINTAINER ready \(.*advisory red: Self-test report \(run with --body for the reason\).*\)$/m);
+  assert.equal(pol.calls.selfTest.length, 0);
+});
+
+test('owj self-test: a view without headRefName/title reads unknown, never ok_not_a_fix', (t) => {
+  const stripped = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-status-owj-'));
+  t.after(() => fs.rmSync(stripped, { recursive: true, force: true }));
+  const fx = loadFixture('ci-selftest-suite-failed.json');
+  delete fx.view.headRefName;
+  delete fx.view.title;
+  fs.writeFileSync(path.join(stripped, 'x.json'), JSON.stringify(fx));
+  // runInProc pins FIXTURES_DIR, so the alternate fixtures dir goes through the process runner, with the
+  // LIVE scripts when a checkout resolves (the in-process fakes cannot be injected there).
+  const root = liveRoot();
+  if (!root) return t.skip('no gsd-core checkout resolvable (set GSD_CORE_ROOT or clone ~/repos/gsd-core)');
+  const r = runThroughStub(t, ['--body', '900067'], { fixturesDir: stripped, queue: 'ci-policies.json', env: { GSD_CORE_ROOT: root } });
+  assert.match(r.stdout, /^ {2}self-test: unknown \(.*headRefName.*\)$/m);
+  assert.doesNotMatch(r.stdout, /ok_not_a_fix/);
+});
+
+test('owj policies: no resolvable gsd-core checkout prints policies unknown, every verdict unknown, exit 0, ball unchanged', (t) => {
+  const r = runThroughStub(t, ['--body', '900061', '900065'], { queue: 'ci-policies.json' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^ {2}policies: unknown \(.*\)$/m);
+  assert.match(r.stdout, /^ {2}base: next unknown \(/m);
+  assert.match(r.stdout, /^ {2}reviewed-or-maintainer: unknown \(/m);
+  assert.doesNotMatch(r.stdout, /ball: AUTHOR/);
+  assert.ok(/^[\t\n\x20-\x7e]*$/.test(r.stdout), 'ASCII even for a loader error message');
+  assert.ok(!r.log.some((l) => l.startsWith('REFUSED')));
+  assert.equal(r.log.map((l) => JSON.parse(l)).filter((c) => c[0] === 'api' && c.some((a) => /actions|contents|collaborators/.test(a))).length, 0, 'no policy read without a loaded policy');
+});
+
+test('owj policies: a PR with none of the four checks prints no policies lines and makes no policy read', (t) => {
+  const r = runInProc(t, ['5235'], { policies: fakePolicies() });
+  assert.doesNotMatch(r.stdout, /policies:|base:|reviewed-or-maintainer:|self-test:/);
+  assert.equal(apiPaths(r, /actions|contents|collaborators/).length, 0);
+});
+
+test('owj policies: the footer names the policy reads only when a block consulted them', (t) => {
+  const withPolicies = runInProc(t, ['900061'], { queue: 'ci-base-red.json', policies: fakePolicies() });
+  assert.match(withPolicies.stdout, /Policy lines \(/);
+  assert.ok(withPolicies.stdout.includes(FOOTER_START), 'the main footer is unchanged');
+  const without = runInProc(t, ['5235'], { policies: fakePolicies() });
+  assert.doesNotMatch(without.stdout, /Policy lines \(/);
+});
+
+// --- selfTestBlock versus the LIVE extractReport (drift check) ---
+
+function liveRoot() {
+  const { resolveGsdCoreRoot } = require('../hooks/lib/resolve.cjs');
+  const candidates = [process.env.GSD_CORE_ROOT, path.join(os.homedir(), 'repos', 'gsd-core')].filter(Boolean);
+  for (const c of candidates) {
+    try {
+      return resolveGsdCoreRoot(c);
+    } catch {
+      // try the next candidate
+    }
+  }
+  return null;
+}
+
+test('owj parity: selfTestBlock equals the LIVE extractReport over every fixture body and synthetic bodies', (t) => {
+  const root = liveRoot();
+  if (!root) return t.skip('no gsd-core checkout resolvable (set GSD_CORE_ROOT or clone ~/repos/gsd-core)');
+  const { requireLiveScript } = require('../hooks/lib/resolve.cjs');
+  const live = requireLiveScript(root, 'scripts/self-test-report-policy.cjs');
+  const fence = '`'.repeat(3);
+  const synthetic = [
+    '',
+    'no section at all',
+    `## Self-test report\n\n${fence}json\n{"a":1}\n${fence}\n`,
+    `### Self-test report\n${fence}json\n{"a":1}\n${fence}\n`,
+    `## **Self-test report**\n${fence}JSON title="x"\n{"a":1}\n${fence}\n`,
+    `## Self-test report\n\n${fence}text\nnot json\n${fence}\n\n${fence}json\n{"b":2}\n${fence}\n`,
+    `## Self-test report\n\n<!--\n${fence}json\n{"hidden":1}\n${fence}\n-->\n${fence}json\n{"shown":1}\n${fence}\n`,
+    `## Self-test report\n\n## Other\n\n${fence}json\n{"late":1}\n${fence}\n`,
+    `## Self-test report\n\n${fence}json\n# not a heading\n{"c":3}\n${fence}\n`,
+    `## Self-test report\r\n\r\n${fence}json\r\n{"crlf":1}\r\n${fence}\r\n`,
+    `## Self-test report\n\n${fence}json\n{"unterminated":1}\n`,
+    `~~~json\n{"before":1}\n~~~\n## Self-test report\n\n~~~json\n{"tilde":1}\n~~~\n`,
+    `## Self-test report\n\n${fence}${fence.slice(0, 1)}json\n{"four":1}\n${fence}${fence.slice(0, 1)}\n`,
+    `# Self-test report #\n${fence}json\n{"closed-heading":1}\n${fence}\n`,
+    `## Self-test report\n\n${' '.repeat(2000)}${fence}json\n{"wide":1}\n${fence}\n`,
+  ];
+  const bodies = [...synthetic];
+  for (const f of ALL_FIXTURES) {
+    const fx = loadFixture(f);
+    if (fx.bodyView && typeof fx.bodyView.body === 'string') bodies.push(fx.bodyView.body);
+  }
+  assert.ok(bodies.length > synthetic.length, 'the fixtures contribute bodies (non-vacuous)');
+  assert.ok(bodies.some((b) => live.extractReport(b).found), 'at least one body holds a report the live script finds (non-vacuous)');
+  assert.ok(bodies.some((b) => !live.extractReport(b).found), 'at least one body holds none');
+  for (const b of bodies) {
+    const r = live.extractReport(b);
+    assert.equal(prStatus.selfTestBlock(b), r.found ? r.json : null, `body: ${JSON.stringify(b.slice(0, 80))}`);
+  }
+});
+
+test('owj live: the LIVE gsd-core scripts give the hand-derived verdicts on the owj fixtures', (t) => {
+  const root = liveRoot();
+  if (!root) return t.skip('no gsd-core checkout resolvable (set GSD_CORE_ROOT or clone ~/repos/gsd-core)');
+  const r = runInProc(t, ['--json', '--body', '900061', '900064', '900065', '900066', '900067', '900068', '900069', '900070'], { queue: 'ci-policies.json', policyRoot: root });
+  assert.equal(r.status, 0, r.stderr);
+  const by = Object.fromEntries(JSON.parse(r.stdout).map((d) => [d.number, d]));
+  assert.equal(by[900061].policies.source.status, 'live');
+  assert.equal(by[900061].policies.base.status, 'green', 'ci-policies.json holds no baseRuns, so the live base reads clean');
+  assert.equal(by[900064].policies.reviewed.reason, 'ok_maintainer_author');
+  assert.equal(by[900065].policies.reviewed.reason, 'ok_approved');
+  assert.equal(by[900065].policies.reviewed.approver, 'alice');
+  assert.equal(by[900066].policies.reviewed.reason, 'fail_stale_approval_only');
+  assert.equal(by[900067].policies.selfTest.reason, 'fail_suite_not_passed');
+  assert.equal(by[900068].policies.selfTest.reason, 'ok_report');
+  assert.equal(by[900069].policies.selfTest.reason, 'fail_stale_sha');
+  assert.equal(by[900070].policies.selfTest.reason, 'fail_malformed_json');
 });

@@ -1,0 +1,34 @@
+{
+  "provenance": {
+    "source": "synthetic from absent.json",
+    "edits": "adds baseRuns.next: newest push Tests run concluded failure",
+    "expected": {
+      "mode": "absent"
+    }
+  },
+  "repo": {
+    "default_branch": "next"
+  },
+  "rulesBranches": {
+    "next": []
+  },
+  "rulesets": [],
+  "rulesetDetails": {},
+  "baseRuns": {
+    "next": {
+      "workflow_runs": [
+        {
+          "id": 880001,
+          "name": "Tests",
+          "event": "push",
+          "head_branch": "next",
+          "head_sha": "dead00000000000000000000000000000000beef",
+          "status": "completed",
+          "conclusion": "failure",
+          "run_attempt": 1,
+          "html_url": "https://github.com/open-gsd/gsd-core/actions/runs/880001"
+        }
+      ]
+    }
+  }
+}
