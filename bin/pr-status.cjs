@@ -23,7 +23,7 @@
  *
  * CONTRACT — READ-ONLY gh only. Per PR three reads (four when mergeable is UNKNOWN: the view is read
  * twice), every one carrying the repo:
- *   1. gh pr view N --repo R --json <twelve fields>
+ *   1. gh pr view N --repo R --json <sixteen fields>
  *   2. gh api --paginate --slurp "repos/R/pulls/N/reviews?per_page=100"   (REST GET; carries commit_id)
  *   3. gh pr checks N --repo R --json name,state,bucket,workflow,completedAt,link
  * plus, once per repo and base branch per run (cached, quick 261021-n2m, CTK-ADR-0012), the merge-queue
@@ -50,8 +50,21 @@
  * and, only with --body (same quick), the timeline read above plus one more read per PR, after 12:
  *  13. gh pr view N --repo R --json body,baseRefOid,changedFiles   (a separate view, so a push between the two
  *      views can move the head: the body lines name the head they compared against)
- * A failed timeline, overlap, inline-comments or body read is named on its own line and never fails the PR block or
- * the exit code.
+ * and, only when a gsd-core CI check is on the PR (quick 261028-owj; CTK-ADR-0012 fail-open, CTK-ADR-0001 LIVE reuse),
+ * the policy reads, all REST GETs, each cached per repo (and base or sha) per run:
+ *  14. gh api "repos/R/actions/workflows/<TESTS_WORKFLOW_FILE>/runs?branch=<base>&event=push&per_page=5"   (only when
+ *      "Required tests" or "Base branch health" fails; mirrors the fetcher in gsd-core scripts/ci-next-health.cjs
+ *      main(), source sha 65638993a: when the newest run has run_attempt > 1 the previous attempt is read too)
+ *  15. gh api "repos/R/actions/runs/<id>/attempts/<n>"   (that previous attempt)
+ *  16. gh api "repos/R/contents/.github/MAINTAINERS?ref=<baseRefOid>"   (when "Reviewed or maintainer" is present, or
+ *      "Self-test report" is present with --body; the ref is the base branch name when the view has no baseRefOid)
+ *  17. gh api "repos/R/collaborators/<login>/permission"   (each approving reviewer, only when the author is not
+ *      listed in MAINTAINERS)
+ * The verdicts come from the LIVE gsd-core scripts (scripts/ci-next-health.cjs classifyBaseRuns,
+ * reviewed-or-maintainer-policy.cjs, self-test-report-policy.cjs) loaded through hooks/lib/resolve.cjs; no rule is
+ * copied here. An unresolvable checkout, a failed read or incomplete input prints `unknown (<why>)` for that verdict.
+ * A failed timeline, overlap, inline-comments, body or policy read is named on its own line and never fails the PR
+ * block or the exit code.
  * Any queue read that fails makes the mode `unknown` with the error named; it never fails the PR block
  * or the exit code (fail open to informational). Known limit: a queue configured through classic branch
  * protection rather than a ruleset is not visible to these reads.
@@ -75,8 +88,15 @@
  *     base requires up-to-date branches (GitHub reports BEHIND only then), so the maintainer runs Update
  *     branch at merge time: the ready line carries "maintainer: Update branch at merge time; never --admin"
  *     and a BEHIND note explains it. When the queue is active the ready line says it enters the queue.
+ *   - Failing checks are split (CI CHECKS below) before they block: only author-side failures make the author owe;
+ *     a red base is base-side, a red Reviewed or maintainer is reviewer-side, a red Self-test report is advisory.
  *   - Only dismissed reviews and nobody requested -> maintainer, re-approval needed. Pending requests
  *     -> reviewer. Else none. A draft or non-OPEN PR gets no ball.
+ * CI CHECKS (quick 261028-owj): "Required tests" red counts as base health, not this PR, only when "Base branch
+ * health" itself fails and no other job of workflow Tests fails (otherwise it stays author work); "Base branch
+ * health" red is base-side (the base owner waits for a fix-forward, or fix-next when this PR is the fix);
+ * "Reviewed or maintainer" red is reviewer-side; "Self-test report" red is advisory (every result of that policy
+ * is advisory; fail_suite_not_passed is printed as such) and never blocks the ready line.
  * reviewDecision is a cross-check: when GitHub's value disagrees with this reading a note line says so.
  *
  * No shell: execFileSync with argv arrays; PR numbers are validated as digits. Node built-ins only.
@@ -85,10 +105,12 @@
  */
 
 const { execFileSync } = require('node:child_process');
+const os = require('node:os');
+const path = require('node:path');
 
 const DEFAULT_REPO = 'open-gsd/gsd-core';
 const VIEW_FIELDS =
-  'number,state,isDraft,author,headRefOid,baseRefName,mergeable,mergeStateStatus,reviewDecision,reviewRequests,commits,updatedAt';
+  'number,state,isDraft,author,headRefOid,baseRefName,mergeable,mergeStateStatus,reviewDecision,reviewRequests,commits,updatedAt,headRefName,title,labels,baseRefOid';
 const CHECK_FIELDS = 'name,state,bucket,workflow,completedAt,link';
 const BODY_FIELDS = 'body,baseRefOid,changedFiles'; // the --body view (quick 261023-2u4), read apart from VIEW_FIELDS
 const BUCKETS = Object.freeze(['pass', 'fail', 'pending', 'skipping', 'cancel']);
@@ -97,7 +119,7 @@ const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const USAGE =
   'usage: pr-status [--json] [--overlap] [--cr [--reviewer <login>]] [--body] [--repo owner/name] <pr-number...>  (default repo ' +
   DEFAULT_REPO +
-  ')';
+  '; policy lines for the gsd-core CI checks Required tests, Base branch health, Reviewed or maintainer and Self-test report print on their own when those checks are on the PR; the Self-test verdict needs --body)';
 const FOOTER =
   'Snapshot is point-in-time (three separate gh reads per PR, and separate merge-queue reads per base branch; ' +
   'plus a timeline read when a review was dismissed, and files and compare reads with --overlap); re-run before any write. ' +
@@ -106,12 +128,24 @@ const FOOTER =
 // R8: printed after FOOTER (which stays byte-identical) only when --cr or --body added reads.
 const CR_FOOTER =
   "With --cr or --body: the timeline, the chosen change request's inline comments and the body view are further separate reads, so the head can move between them; re-run before any write.";
+// 261028-owj: printed after FOOTER (which stays byte-identical) only when a block consulted the policy scripts.
+const POLICY_FOOTER =
+  'Policy lines (policies, base, reviewed-or-maintainer, self-test): the workflow-run, MAINTAINERS and collaborator-permission reads are further separate reads, ' +
+  'and the verdicts are those of the LIVE gsd-core scripts at the checkout named on the policies line, which can differ from the CI that ran; re-run before any write.';
 const MAX_BUFFER = 64 * 1024 * 1024; // review listings carry full bodies; 1 MiB (the default) is not enough
 const UNKNOWN_RETRY_MS = 2000;
 const MERGE_CAVEAT = 'Update branch at merge time; never --admin';
 const COMPARE_FILE_CAP = 300; // GitHub's compare endpoint lists at most 300 files
 const PR_FILE_CAP = 3000; // GitHub's pulls/N/files lists at most 3000 files
 const BRANCH_PATTERN = /^[A-Za-z0-9._/-]+$/;
+const CHECK_REQUIRED = 'Required tests';
+const CHECK_BASE_HEALTH = 'Base branch health';
+const CHECK_REVIEWED = 'Reviewed or maintainer';
+const CHECK_SELF_TEST = 'Self-test report';
+const TESTS_WORKFLOW_NAME = 'Tests'; // the workflow name `gh pr checks` reports for the two Tests-workflow checks above
+const LOGIN_PATH_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/; // the login check of the upstream reviewed-or-maintainer workflow
+const SUITE_ADVISORY = 'advisory; the full suite did not pass with 0 failures, e.g. a known environment failure';
+const NEEDS_BODY = 'run with --body for the reason';
 const MAX_MESSAGE = 300; // a dismissal message is printed on one line, cut at this length
 
 /** The read-only argv arrays for one PR (view, reviews, checks, and the timeline read only for a dismissed review). */
@@ -264,9 +298,10 @@ function fetchCr(number, repo, pr, reviewer, deps = {}) {
  * --body: one more read-only view (body, baseRefOid, changedFiles) and the --body verdict. A failed read is
  * named, never a thrown PR error (CONTEXT D2 f).
  *
+ * @param {object} [sink] when given, receives { bodyView, bodyError } (the raw read) for fetchPolicies
  * @returns {object} deriveBody result, or { error }
  */
-function fetchBody(number, repo, pr, deps = {}) {
+function fetchBody(number, repo, pr, deps = {}, sink = null) {
   const gh = deps.gh || defaultGh;
   let bodyView = null;
   let bodyError = null;
@@ -277,6 +312,8 @@ function fetchBody(number, repo, pr, deps = {}) {
     bodyView = null;
     bodyError = firstErrorLine(err);
   }
+  // The Self-test policy needs the body text itself, which deriveBody does not keep: hand it to the caller.
+  if (sink) Object.assign(sink, { bodyView, bodyError });
   return deriveBody({ view: pr.view, reviews: pr.reviews, timeline: pr.timeline, timelineError: pr.timelineError, bodyView, bodyError });
 }
 
@@ -473,6 +510,32 @@ function requestEntry(r) {
   return r.login ? { kind: 'user', name: String(r.login) } : null;
 }
 
+/**
+ * Split the failing checks by whose work they are (quick 261028-owj). The names are the gsd-core CI checks as
+ * `gh pr checks` reports them. "Required tests" counts as base health only when "Base branch health" itself
+ * fails and no other job of workflow Tests fails; otherwise it stays author work (a shard failure is the PR's).
+ *
+ * @returns {{groups: {author: string[], base: string[], reviewer: string[], advisory: string[]}, requiredRed: boolean,
+ *   baseHealthRed: boolean, otherTests: string[], attributed: boolean}}
+ */
+function partitionChecks(checks) {
+  const failing = (Array.isArray(checks) ? checks : []).filter((c) => c && c.bucket === 'fail');
+  const names = (list) => [...new Set(list.map((c) => String(c.name)))].sort();
+  const has = (n) => failing.some((c) => c.name === n);
+  const requiredRed = has(CHECK_REQUIRED);
+  const baseHealthRed = has(CHECK_BASE_HEALTH);
+  const otherTests = names(failing.filter((c) => c.workflow === TESTS_WORKFLOW_NAME && c.name !== CHECK_REQUIRED && c.name !== CHECK_BASE_HEALTH));
+  const attributed = requiredRed && baseHealthRed && otherTests.length === 0;
+  const pick = (test) => names(failing.filter((c) => test(String(c.name))));
+  const groups = {
+    base: pick((n) => n === CHECK_BASE_HEALTH || (n === CHECK_REQUIRED && attributed)),
+    reviewer: pick((n) => n === CHECK_REVIEWED),
+    advisory: pick((n) => n === CHECK_SELF_TEST),
+    author: pick((n) => ![CHECK_BASE_HEALTH, CHECK_REVIEWED, CHECK_SELF_TEST].includes(n) && !(n === CHECK_REQUIRED && attributed)),
+  };
+  return { groups, requiredRed, baseHealthRed, otherTests, attributed };
+}
+
 function summarizeChecks(checks) {
   const counts = { pass: 0, fail: 0, pending: 0, skipping: 0, cancel: 0 };
   const failing = [];
@@ -485,17 +548,18 @@ function summarizeChecks(checks) {
   }
   failing.sort();
   pending.sort();
-  return { total: (checks || []).length, counts, failing, pending };
+  return { total: (checks || []).length, counts, failing, pending, ...partitionChecks(checks) };
 }
 
 /**
  * Pure verdict over the three reads.
  *
- * @param {{view: object, reviews: object[], checks: object[], queue?: object}} input reviews may be flat or
- *   page-nested; queue is a fetchQueue/deriveQueue result for the PR's base (absent input = not read)
+ * @param {{view: object, reviews: object[], checks: object[], queue?: object, policies?: object}} input reviews may be
+ *   flat or page-nested; queue is a fetchQueue/deriveQueue result for the PR's base (absent input = not read);
+ *   policies is a fetchPolicies result (absent = not read; the ball never depends on it, only on the check names)
  * @returns {object} snapshot with checks summary, reviewers, requested, queue and ball
  */
-function derive({ view, reviews, checks, queue, timeline, timelineError, overlap, cr, body }) {
+function derive({ view, reviews, checks, queue, timeline, timelineError, overlap, cr, body, policies }) {
   const v = view || {};
   const head = String(v.headRefOid || '');
   const authorLogin = lower(v.author && v.author.login);
@@ -563,6 +627,7 @@ function derive({ view, reviews, checks, queue, timeline, timelineError, overlap
     overlap: overlap || null, // null = --overlap not given
     cr: cr || null, // null = --cr not given (a deriveCr result otherwise)
     body: body || null, // null = --body not given (a deriveBody result otherwise)
+    policies: policies || null, // null = no gsd-core CI check consulted (a fetchPolicies result otherwise)
   };
 }
 
@@ -603,9 +668,13 @@ function decideBall(v, latest, req, head, checks, queue) {
   const approvals = entries.filter((e) => e.r.state === 'APPROVED');
   if (approvals.length) {
     const blockers = [];
+    // Without a groups split (a hand-built summary) every failing check is author work, as before 261028-owj.
+    const g = checks.groups || { author: checks.counts.fail > 0 ? ['?'] : [], base: [], reviewer: [], advisory: [] };
     if (!approvals.some((e) => head !== '' && String(e.r.commit_id || '') === head)) blockers.push('approval on an older commit');
     if (req.all.length) blockers.push(`review requests pending (${req.all.join(', ')})`);
-    if (checks.counts.fail > 0) blockers.push('checks failing');
+    if (g.author.length) blockers.push('checks failing');
+    if (g.base.length) blockers.push(`base ${v.baseRefName} red: wait for a fix-forward, or fix-next if this PR is the fix`);
+    if (g.reviewer.length) blockers.push('Reviewed or maintainer red (reviewer-side)');
     if (checks.counts.pending > 0) blockers.push('checks pending');
     if (v.mergeStateStatus === 'DIRTY') blockers.push('DIRTY (merge conflicts)');
     // BEHIND is deliberately absent (CTK-ADR-0012): it is reported as an informational note instead.
@@ -614,10 +683,11 @@ function decideBall(v, latest, req, head, checks, queue) {
       // GitHub reports BEHIND only when the base requires up-to-date branches (CTK-ADR-0012), so without an
       // active queue the merge needs an Update branch first: the maintainer's step, never the author's.
       const mergeCaveat = !active && v.mergeStateStatus === 'BEHIND' ? MERGE_CAVEAT : null;
-      return ballOf('maintainer', { ready: true, reason: 'ready for maintainer', entersQueue: active, mergeCaveat });
+      // A red Self-test report is advisory: it never blocks, and the ready line names it instead of saying "green".
+      return ballOf('maintainer', { ready: true, reason: 'ready for maintainer', entersQueue: active, mergeCaveat, advisory: g.advisory });
     }
-    const authorOwes = checks.counts.fail > 0 || v.mergeStateStatus === 'DIRTY';
-    const owner = authorOwes ? 'author' : req.all.length ? 'reviewer' : 'maintainer';
+    const authorOwes = g.author.length > 0 || v.mergeStateStatus === 'DIRTY';
+    const owner = authorOwes ? 'author' : req.all.length || g.reviewer.length ? 'reviewer' : 'maintainer';
     return ballOf(owner, { blockers, reason: 'approved but blocked' });
   }
 
@@ -657,7 +727,9 @@ function ballLine(d) {
   }
   if (b.owner === 'reviewer') return `  ball: REVIEWER owes a first review (requests pending: ${d.requested.map(clean).join(', ')})`;
   if (b.owner === 'maintainer' && b.ready) {
-    const base = '  ball: MAINTAINER ready (approved on the head, no change request, no pending requests, checks green, not DIRTY';
+    const advisory = Array.isArray(b.advisory) && b.advisory.length ? b.advisory.map((n) => advisoryText(n, d.policies)).join('; ') : null;
+    const green = advisory ? `no blocking check red (advisory red: ${advisory})` : 'checks green';
+    const base = `  ball: MAINTAINER ready (approved on the head, no change request, no pending requests, ${green}, not DIRTY`;
     if (b.entersQueue) return `${base}; enters the merge queue on ${clean(d.queue.base)})`;
     return b.mergeCaveat ? `${base}; maintainer: ${b.mergeCaveat})` : `${base})`;
   }
@@ -747,6 +819,7 @@ function formatText(d) {
   }
   for (const x of d.dismissals || []) lines.push(dismissalLine(x));
   lines.push(`  requested: ${d.requested.length ? d.requested.map(clean).join(', ') : 'none'}`);
+  lines.push(...policyLines(d.policies));
   const bl = ballLine(d);
   if (bl) lines.push(bl);
   if (d.mergeStateStatus === 'BEHIND') lines.push(behindNote(d.queue));
@@ -1312,6 +1385,374 @@ function bodyLines(b) {
   return lines;
 }
 
+// ---- gsd-core CI checks (quick 261028-owj, CTK-ADR-0012): base health, reviewed-or-maintainer, self-test ----
+//
+// The verdicts are the LIVE gsd-core scripts' (CTK-ADR-0001: no vendored fallback, no copied rule). Everything
+// here is reading (REST GETs through `gh api`), shaping the input those scripts take, and printing what they
+// answer. Any failed read or incomplete input makes that verdict `unknown (<why>)`; nothing here throws into
+// the PR block or changes the exit code (fail open to informational).
+
+const LIVE_SCRIPTS = Object.freeze({
+  ci: 'scripts/ci-next-health.cjs',
+  reviewed: 'scripts/reviewed-or-maintainer-policy.cjs',
+  selfTest: 'scripts/self-test-report-policy.cjs',
+});
+
+function newPolicyCache() {
+  return { sources: null, base: new Map(), maintainers: new Map(), permissions: new Map() };
+}
+
+/** Best-effort `git rev-parse HEAD` of the checkout the policies came from ('' when unreadable). */
+function checkoutHead(root) {
+  try {
+    const out = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).trim();
+    return /^[0-9a-f]{40}$/.test(out) ? out : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The three LIVE policy modules, loaded once per run. deps.policies (tests) injects them; deps.policyRoot names
+ * the only root to try; otherwise GSD_CORE_ROOT, the cwd's gsd-core, ~/repos/gsd-core, ~/gsd-core in that order
+ * (each through resolveGsdCoreRoot, so the sentinel layout applies). A throw anywhere is the one `error` that
+ * makes every verdict unknown.
+ *
+ * @returns {{ok: true, root: string, head: string, ci: object, reviewed: object, selfTest: object} | {ok: false, error: string}}
+ */
+function loadPolicySources(deps, cache) {
+  if (cache.sources) return cache.sources;
+  let result;
+  try {
+    if (deps.policies) {
+      const p = deps.policies;
+      result = { ok: true, root: String(p.root || '(injected)'), head: String(p.head || ''), ci: p.ciNextHealth, reviewed: p.reviewedOrMaintainer, selfTest: p.selfTestReport };
+    } else {
+      const { resolveGsdCoreRoot, requireLiveScript } = require('../hooks/lib/resolve.cjs');
+      const home = os.homedir();
+      const candidates = deps.policyRoot ? [deps.policyRoot] : [process.env.GSD_CORE_ROOT, process.cwd(), path.join(home, 'repos', 'gsd-core'), path.join(home, 'gsd-core')].filter(Boolean);
+      let root = null;
+      for (const c of candidates) {
+        try {
+          root = resolveGsdCoreRoot(c);
+          break;
+        } catch {
+          // try the next candidate
+        }
+      }
+      if (!root) throw new Error(`no gsd-core checkout resolvable (tried ${candidates.join(', ')})`);
+      result = {
+        ok: true,
+        root,
+        head: checkoutHead(root),
+        ci: requireLiveScript(root, LIVE_SCRIPTS.ci),
+        reviewed: requireLiveScript(root, LIVE_SCRIPTS.reviewed),
+        selfTest: requireLiveScript(root, LIVE_SCRIPTS.selfTest),
+      };
+    }
+  } catch (err) {
+    result = { ok: false, error: firstErrorLine(err) };
+  }
+  cache.sources = result;
+  return result;
+}
+
+function needFunctions(mod, names, what) {
+  for (const n of names) if (!mod || typeof mod[n] !== 'function') throw new Error(`${what} does not export ${n}`);
+}
+
+/** fix-next on the PR: present, absent, or unknown (the view carries no labels list, as old captures do not). */
+function fixNextState(view, label) {
+  if (!view || !Array.isArray(view.labels) || typeof label !== 'string') return 'unknown';
+  return view.labels.some((l) => (l && typeof l === 'object' ? l.name : l) === label) ? 'present' : 'absent';
+}
+
+/**
+ * The base branch's Tests health, through the LIVE classifyBaseRuns (sync). The read mirrors the fetcher in
+ * gsd-core scripts/ci-next-health.cjs main() (source sha 65638993a): newest push-event runs of the Tests workflow
+ * file on the base, and when the newest run has run_attempt > 1 its previous attempt's conclusion is attached (an
+ * unreadable attempt reads 'unknown', as upstream does). Cached per repo and base for the run.
+ */
+function readBaseHealth(repo, branch, deps, cache, src) {
+  const key = `${repo}\0${branch}`;
+  if (cache.base.has(key)) return cache.base.get(key);
+  const gh = deps.gh || defaultGh;
+  let out;
+  try {
+    if (!BRANCH_PATTERN.test(branch)) throw new Error(`base branch name not usable in a path: ${branch}`);
+    needFunctions(src.ci, ['classifyBaseRuns'], 'ci-next-health.cjs');
+    if (typeof src.ci.TESTS_WORKFLOW_FILE !== 'string') throw new Error('ci-next-health.cjs does not export TESTS_WORKFLOW_FILE');
+    let payload;
+    try {
+      payload = gh(['api', `repos/${repo}/actions/workflows/${src.ci.TESTS_WORKFLOW_FILE}/runs?branch=${encodeURIComponent(branch)}&event=push&per_page=5`]);
+    } catch (err) {
+      throw new Error(`workflow runs read failed: ${firstErrorLine(err)}`);
+    }
+    const newest = payload && Array.isArray(payload.workflow_runs) ? payload.workflow_runs[0] : undefined;
+    // classifyBaseRuns ignores the field on a completed run, so read the attempt whenever run_attempt > 1
+    // (its in-flight test is not exported).
+    if (newest && Number(newest.run_attempt) > 1) {
+      try {
+        const prev = gh(['api', `repos/${repo}/actions/runs/${encodeURIComponent(String(newest.id))}/attempts/${Number(newest.run_attempt) - 1}`]);
+        newest.previous_attempt_conclusion = prev && typeof prev.conclusion === 'string' ? prev.conclusion : 'unknown';
+      } catch {
+        newest.previous_attempt_conclusion = 'unknown';
+      }
+    }
+    const c = src.ci.classifyBaseRuns(payload);
+    const V = src.ci.VERDICT || {};
+    const run = c && c.run
+      ? { sha: String(c.run.head_sha || ''), conclusion: c.run.conclusion == null ? null : String(c.run.conclusion), status: String(c.run.status || ''), attempt: Number(c.run.run_attempt) || null, url: String(c.run.html_url || '') }
+      : null;
+    if (c && c.verdict === V.RED) out = { status: 'red', reason: String(c.reason), run };
+    else if (c && c.verdict === V.CLEAN) out = { status: 'green', reason: String(c.reason), run };
+    else out = { status: 'unknown', error: `Tests health indeterminate (${c && c.reason})` };
+  } catch (err) {
+    out = { status: 'unknown', error: firstErrorLine(err) };
+  }
+  cache.base.set(key, out);
+  return out;
+}
+
+function baseVerdict(repo, v, part, deps, cache, src) {
+  const branch = String(v.baseRefName || '');
+  const facts = {
+    branch,
+    requiredRed: part.requiredRed,
+    baseHealthRed: part.baseHealthRed,
+    attributed: part.attributed,
+    othersFailing: part.otherTests,
+    fixNext: src.ok ? fixNextState(v, src.ci && src.ci.BYPASS_LABEL) : 'unknown',
+  };
+  if (!src.ok) return { ...facts, status: 'unknown', error: `policy scripts unavailable: ${src.error}` };
+  return { ...facts, ...readBaseHealth(repo, branch, deps, cache, src) };
+}
+
+/** The base branch's .github/MAINTAINERS text at the base sha (the branch name when the view has no baseRefOid), cached. */
+function readMaintainers(repo, v, deps, cache) {
+  const sha = /^[0-9a-f]{40}$/i.test(String(v.baseRefOid || '')) ? String(v.baseRefOid) : '';
+  const ref = sha || String(v.baseRefName || '');
+  const key = `${repo}\0${ref}`;
+  if (!cache.maintainers.has(key)) {
+    const gh = deps.gh || defaultGh;
+    let out;
+    try {
+      if (!BRANCH_PATTERN.test(ref)) throw new Error(`no usable base ref in the PR view: ${ref}`);
+      const reply = gh(['api', `repos/${repo}/contents/.github/MAINTAINERS?ref=${encodeURIComponent(ref)}`]);
+      if (!reply || reply.encoding !== 'base64' || typeof reply.content !== 'string') throw new Error('contents reply is not a base64 file');
+      out = { text: Buffer.from(reply.content, 'base64').toString('utf8'), refKind: sha ? 'sha' : 'branch', ref };
+    } catch (err) {
+      out = { error: `MAINTAINERS read failed: ${firstErrorLine(err)}` };
+    }
+    cache.maintainers.set(key, out);
+  }
+  return cache.maintainers.get(key);
+}
+
+/** One collaborator's role_name (cached per repo and login); throws when the read fails or has no role_name. */
+function readRole(repo, login, deps, cache) {
+  const key = `${repo}\0${login.toLowerCase()}`;
+  if (!cache.permissions.has(key)) {
+    const gh = deps.gh || defaultGh;
+    let out;
+    try {
+      const reply = gh(['api', `repos/${repo}/collaborators/${encodeURIComponent(login)}/permission`]);
+      if (!reply || typeof reply.role_name !== 'string') throw new Error('permission reply has no role_name');
+      out = { role: reply.role_name };
+    } catch (err) {
+      out = { error: `permission read failed for ${login}: ${firstErrorLine(err)}` };
+    }
+    cache.permissions.set(key, out);
+  }
+  const got = cache.permissions.get(key);
+  if (got.error) throw new Error(got.error);
+  return got.role;
+}
+
+/** Fail-closed shaping of what evaluateReviewed takes; reviewed-or-maintainer.yml is the workflow it mirrors. */
+function reviewedVerdict(repo, pr, deps, cache, src) {
+  if (!src.ok) return { status: 'unknown', error: `policy scripts unavailable: ${src.error}` };
+  const v = pr.view || {};
+  try {
+    needFunctions(src.reviewed, ['parseMaintainers', 'evaluateReviewed'], 'reviewed-or-maintainer-policy.cjs');
+    const author = String((v.author && v.author.login) || '');
+    const head = String(v.headRefOid || '');
+    if (!author || !/^[0-9a-f]{40}$/i.test(head)) throw new Error('the view lacks the author login or a 40-hex head sha');
+    const m = readMaintainers(repo, v, deps, cache);
+    if (m.error) throw new Error(m.error);
+    const parsed = src.reviewed.parseMaintainers(m.text);
+    const maintainers = parsed.ok ? parsed.logins : new Set();
+    const flat = (Array.isArray(pr.reviews) ? pr.reviews : []).flat().filter((r) => r && r.user && r.user.login);
+    // The workflow reads the permission of every login with an APPROVED review; the author and bots never
+    // count (the policy skips them), and a maintainer author needs no approver, so those reads are skipped.
+    const authorIsMaintainer = maintainers.has(author.toLowerCase());
+    const byLogin = (a, b) => (lower(a) < lower(b) ? -1 : lower(a) > lower(b) ? 1 : 0);
+    const candidates = authorIsMaintainer
+      ? []
+      : [
+          ...new Set(
+            flat
+              .filter((r) => r.state === 'APPROVED' && r.user.type !== 'Bot' && LOGIN_PATH_PATTERN.test(String(r.user.login)) && lower(r.user.login) !== lower(author))
+              .map((r) => String(r.user.login))
+          ),
+        ].sort(byLogin);
+    const roles = {};
+    for (const login of candidates) roles[login.toLowerCase()] = readRole(repo, login, deps, cache);
+    // reviewsComplete is true for the reason the workflow states: `gh api --paginate --slurp` returns every page or throws.
+    const input = { authorLogin: author, maintainers, reviews: flat, roles, headSha: head, reviewsComplete: true };
+    const res = src.reviewed.evaluateReviewed(input);
+    let approver = null;
+    if (res.ok && !authorIsMaintainer) {
+      // Which approver satisfied it: ask the same policy about each candidate alone (no rule is re-derived here).
+      approver =
+        candidates.find((login) => {
+          const lc = login.toLowerCase();
+          return src.reviewed.evaluateReviewed({ ...input, reviews: flat.filter((r) => lower(r.user.login) === lc), roles: { [lc]: roles[lc] } }).ok;
+        }) || null;
+    }
+    return { status: res.ok ? 'green' : 'red', reason: String(res.reason), approver, maintainersRef: m.refKind === 'branch' ? m.ref : null };
+  } catch (err) {
+    return { status: 'unknown', error: firstErrorLine(err) };
+  }
+}
+
+function selfTestVerdict(repo, pr, opts, deps, cache, src) {
+  if (!src.ok) return { status: 'unknown', error: `policy scripts unavailable: ${src.error}` };
+  const v = pr.view || {};
+  try {
+    needFunctions(src.selfTest, ['evaluateSelfTestReport'], 'self-test-report-policy.cjs');
+    needFunctions(src.reviewed, ['parseMaintainers'], 'reviewed-or-maintainer-policy.cjs');
+    // Without a string headRefName and title the policy would read the PR as "not a fix" and answer ok_not_a_fix.
+    if (typeof v.headRefName !== 'string' || typeof v.title !== 'string') throw new Error('the view lacks headRefName/title, so a fix PR cannot be told from another');
+    const author = String((v.author && v.author.login) || '');
+    const head = String(v.headRefOid || '');
+    if (!author || !/^[0-9a-f]{40}$/i.test(head)) throw new Error('the view lacks the author login or a 40-hex head sha');
+    const bodyView = opts && opts.bodyView;
+    if (!bodyView || typeof bodyView.body !== 'string') throw new Error(`body not read${opts && opts.bodyError ? `: ${opts.bodyError}` : ''}`);
+    const m = readMaintainers(repo, v, deps, cache);
+    if (m.error) throw new Error(m.error);
+    const parsed = src.reviewed.parseMaintainers(m.text);
+    const res = src.selfTest.evaluateSelfTestReport({
+      body: bodyView.body,
+      headRef: v.headRefName,
+      title: v.title,
+      authorLogin: author,
+      headSha: head,
+      maintainers: parsed.ok ? parsed.logins : new Set(),
+    });
+    return { status: res.ok ? 'green' : 'red', reason: String(res.reason), problem: Array.isArray(res.problems) && res.problems.length ? String(res.problems[0]) : null };
+  } catch (err) {
+    return { status: 'unknown', error: firstErrorLine(err) };
+  }
+}
+
+/**
+ * The three gsd-core CI-check verdicts of one PR (null when no such check is on it). Reads are gated to
+ * relevance: workflow runs only when Required tests or Base branch health fails; MAINTAINERS and permissions
+ * only when Reviewed or maintainer is present, or Self-test report is present with --body (the only time its
+ * verdict is computed; without --body a red one says to run with --body). Never throws.
+ *
+ * @param {string} repo owner/name
+ * @param {{view: object, reviews: object[], checks: object[]}} pr fetchPr result
+ * @param {{body?: boolean, bodyView?: (object|null), bodyError?: (string|null)}} opts
+ * @param {{gh?: Function, policies?: object, policyRoot?: string}} [deps] deps.policies injects the three modules
+ *   ({ciNextHealth, reviewedOrMaintainer, selfTestReport, root?, head?}); deps.policyRoot names the only root tried
+ * @param {object} [cache] newPolicyCache(), shared across the PRs of one run
+ * @returns {{source: (object|null), base: (object|null), reviewed: (object|null), selfTest: (object|null)}|null}
+ */
+function fetchPolicies(repo, pr, opts, deps = {}, cache = newPolicyCache()) {
+  const checks = Array.isArray(pr && pr.checks) ? pr.checks : [];
+  const v = (pr && pr.view) || {};
+  const part = partitionChecks(checks);
+  const present = (n) => checks.some((c) => c && c.name === n);
+  const wantBase = part.requiredRed || part.baseHealthRed;
+  const wantReviewed = present(CHECK_REVIEWED);
+  const selfRed = part.groups.advisory.length > 0;
+  const wantSelf = present(CHECK_SELF_TEST) && Boolean(opts && opts.body);
+  if (!wantBase && !wantReviewed && !wantSelf && !selfRed) return null;
+  const out = { source: null, base: null, reviewed: null, selfTest: null };
+  if (selfRed && !wantSelf) out.selfTest = { status: 'red', reason: null, needsBody: true };
+  if (!wantBase && !wantReviewed && !wantSelf) return out;
+  try {
+    const src = loadPolicySources(deps, cache);
+    out.source = src.ok ? { status: 'live', root: src.root, head: src.head } : { status: 'unknown', error: src.error };
+    if (wantBase) out.base = baseVerdict(repo, v, part, deps, cache, src);
+    if (wantReviewed) out.reviewed = reviewedVerdict(repo, pr, deps, cache, src);
+    if (wantSelf) out.selfTest = selfTestVerdict(repo, pr, opts, deps, cache, src);
+  } catch (err) {
+    out.source = out.source || { status: 'unknown', error: firstErrorLine(err) };
+  }
+  return out;
+}
+
+/** What the ready line says about an advisory-red check: its policy reason, or why there is none. */
+function advisoryText(name, policies) {
+  const st = policies && policies.selfTest;
+  if (name === CHECK_SELF_TEST && st && st.reason) return `${name} ${st.reason}`;
+  if (name === CHECK_SELF_TEST && st && st.status === 'unknown') return `${name} (verdict unknown)`;
+  return `${name} (${NEEDS_BODY})`;
+}
+
+function baseLine(b) {
+  const br = clean(b.branch) || '-';
+  let head;
+  if (b.status === 'unknown') head = `${br} unknown (${clean(b.error) || 'unknown error'})`;
+  else {
+    const state = b.status === 'red' ? 'RED' : 'green now';
+    const run = b.run
+      ? ` (Tests run on ${clean(short(b.run.sha, 12))}, conclusion ${clean(b.run.conclusion || b.run.status || 'unknown')}, reason ${clean(b.reason)})${b.run.url ? ' ' + clean(b.run.url) : ''}`
+      : ` (no Tests push run found on ${br}, reason ${clean(b.reason)})`;
+    head = `${br} ${state}${run}`;
+  }
+  let note = null;
+  if (b.requiredRed && b.attributed) {
+    note = 'Required tests red is base health, not this PR';
+    if (b.status === 'green') note += ', but the live base is green now: re-run the check';
+  } else if (b.requiredRed && b.othersFailing.length) note = `Required tests red is not only base health: also failing ${b.othersFailing.map(clean).join(', ')}`;
+  else if (b.requiredRed) note = 'Required tests red is not attributed to base health (the Base branch health check is not failing)';
+  else if (b.baseHealthRed) note = 'Base branch health red is the base, not this PR';
+  return `  base: ${head}${note ? `; ${note}` : ''} (fix-next: ${clean(b.fixNext)})`;
+}
+
+const REVIEWED_WHY = Object.freeze({
+  fail_no_approval: 'no current-head approval from a write-access reviewer; author not in MAINTAINERS',
+  fail_stale_approval_only: 'a write-access approval exists but not on the current head; author not in MAINTAINERS',
+});
+
+function reviewedLine(r) {
+  if (r.status === 'unknown') return `  reviewed-or-maintainer: unknown (${clean(r.error) || 'unknown error'})`;
+  const ref = r.maintainersRef ? `; MAINTAINERS read at branch ${clean(r.maintainersRef)}, the view has no base sha` : '';
+  if (r.status === 'green') return `  reviewed-or-maintainer: green (${clean(r.reason)}${r.approver ? ' by ' + clean(r.approver) : ''})${ref}`;
+  const why = REVIEWED_WHY[r.reason] ? `: ${REVIEWED_WHY[r.reason]}` : '';
+  return `  reviewed-or-maintainer: red (${clean(r.reason)}${why}); reviewer-side, not author work${ref}`;
+}
+
+function selfTestLine(s) {
+  if (s.status === 'unknown') return `  self-test: unknown (${clean(s.error) || 'unknown error'})`;
+  if (s.needsBody) return `  self-test: red (${NEEDS_BODY})`;
+  if (s.status === 'green') return `  self-test: green (${clean(s.reason)})`;
+  if (s.reason === 'fail_suite_not_passed') return `  self-test: red (fail_suite_not_passed: ${SUITE_ADVISORY})`;
+  const problem = s.problem ? cut(clean(String(s.problem).replace(/\s+/g, ' ').trim()), MAX_MESSAGE) : '';
+  return `  self-test: red (${clean(s.reason)}${problem ? ': ' + problem : ''})`;
+}
+
+/** The policies / base / reviewed-or-maintainer / self-test lines of one PR block (empty when none was consulted). */
+function policyLines(p) {
+  const lines = [];
+  if (!p) return lines;
+  if (p.source) {
+    lines.push(
+      p.source.status === 'live'
+        ? `  policies: LIVE gsd-core scripts at ${clean(p.source.root)} HEAD ${p.source.head ? clean(short(p.source.head, 9)) : 'unknown'}`
+        : `  policies: unknown (${clean(p.source.error) || 'unknown error'})`
+    );
+  }
+  if (p.base) lines.push(baseLine(p.base));
+  if (p.reviewed) lines.push(reviewedLine(p.reviewed));
+  if (p.selfTest) lines.push(selfTestLine(p.selfTest));
+  return lines;
+}
+
 /** First non-empty line of a gh failure (its stderr, else the error message). */
 function firstErrorLine(err) {
   const text = String((err && err.stderr) || '').trim() || String((err && err.message) || err || 'unknown error');
@@ -1359,7 +1800,8 @@ function parseArgs(argv) {
  * CLI entry. Returns the exit code: 0 ok, 1 when any PR read failed, 2 usage.
  *
  * @param {string[]} argv
- * @param {{gh?: Function, sleep?: Function, stdout?: {write: Function}, stderr?: {write: Function}}} [deps]
+ * @param {{gh?: Function, sleep?: Function, stdout?: {write: Function}, stderr?: {write: Function}, policies?: object, policyRoot?: string}} [deps]
+ *   policies injects the three gsd-core policy modules (tests); policyRoot names the only gsd-core root to load them from
  * @returns {number}
  */
 function runCli(argv, deps = {}) {
@@ -1372,6 +1814,7 @@ function runCli(argv, deps = {}) {
   }
   let failed = false;
   const queues = new Map(); // base branch -> fetchQueue result, one set of queue reads per repo and base
+  const policyCache = newPolicyCache(); // policy modules, base runs, MAINTAINERS and permissions: once per run
   const results = args.numbers.map((n) => {
     try {
       const pr = fetchPr(n, args.repo, deps, { timeline: args.cr || args.body });
@@ -1379,8 +1822,10 @@ function runCli(argv, deps = {}) {
       if (!queues.has(base)) queues.set(base, fetchQueue(args.repo, base, deps));
       const overlap = args.overlap ? fetchOverlap(args.repo, pr.view, deps) : null;
       const cr = args.cr ? fetchCr(n, args.repo, pr, args.reviewer, deps) : null;
-      const body = args.body ? fetchBody(n, args.repo, pr, deps) : null;
-      return { repo: args.repo, ...derive({ ...pr, queue: queues.get(base), overlap, cr, body }) };
+      const bodySink = {};
+      const body = args.body ? fetchBody(n, args.repo, pr, deps, bodySink) : null;
+      const policies = fetchPolicies(args.repo, pr, { body: args.body, bodyView: bodySink.bodyView, bodyError: bodySink.bodyError }, deps, policyCache);
+      return { repo: args.repo, ...derive({ ...pr, queue: queues.get(base), overlap, cr, body, policies }) };
     } catch (err) {
       failed = true;
       return { repo: args.repo, number: Number(n), error: firstErrorLine(err) };
@@ -1392,7 +1837,8 @@ function runCli(argv, deps = {}) {
     out.write(ascii + '\n');
   } else {
     const blocks = results.map((d) => (d.error ? `${clean(d.repo)}#${clean(d.number)} ERROR: ${clean(d.error)}` : formatText(d)));
-    out.write(blocks.join('\n\n') + '\n\n' + FOOTER + '\n' + (args.cr || args.body ? CR_FOOTER + '\n' : ''));
+    const consulted = results.some((d) => d.policies && d.policies.source);
+    out.write(blocks.join('\n\n') + '\n\n' + FOOTER + '\n' + (args.cr || args.body ? CR_FOOTER + '\n' : '') + (consulted ? POLICY_FOOTER + '\n' : ''));
   }
   return failed ? 1 : 0;
 }
@@ -1415,14 +1861,18 @@ module.exports = {
   fetchBody,
   fetchCr,
   fetchOverlap,
+  fetchPolicies,
   fetchPr,
   fetchQueue,
   firstErrorLine,
   formatText,
   knownShas,
   parseChecklist,
+  partitionChecks,
+  policyLines,
   runCli,
   selfTestBinding,
+  selfTestBlock,
 };
 
 if (require.main === module) process.exitCode = runCli(process.argv.slice(2));
