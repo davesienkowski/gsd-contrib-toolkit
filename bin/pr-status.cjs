@@ -130,7 +130,7 @@ const CR_FOOTER =
   "With --cr or --body: the timeline, the chosen change request's inline comments and the body view are further separate reads, so the head can move between them; re-run before any write.";
 // 261028-owj: printed after FOOTER (which stays byte-identical) only when a block consulted the policy scripts.
 const POLICY_FOOTER =
-  'Policy lines (policies, base, reviewed-or-maintainer, self-test): the workflow-run, MAINTAINERS and collaborator-permission reads are further separate reads, ' +
+  'Policy lines (policies, base, reviewed-or-maintainer, self-test): the workflow-run, MAINTAINERS and collaborator-permission reads are further separate reads, so a push or a new review between them can make a verdict stale, ' +
   'and the verdicts are those of the LIVE gsd-core scripts at the checkout named on the policies line, which can differ from the CI that ran; re-run before any write.';
 const MAX_BUFFER = 64 * 1024 * 1024; // review listings carry full bodies; 1 MiB (the default) is not enough
 const UNKNOWN_RETRY_MS = 2000;
