@@ -1438,6 +1438,13 @@ test('owj base: Required tests red with another Tests job also red stays author-
   assert.match(r.stdout, /^ {2}ball: AUTHOR owes fixes /m);
 });
 
+test('owj base: Required tests and a shard red while Base branch health passes is not called base health at all (#5119 shape)', (t) => {
+  const r = runInProc(t, ['900071'], { queue: 'ci-base-green.json', policies: fakePolicies() });
+  assert.match(r.stdout, /^ {2}base: next green now .*; Required tests red is not base health \(the Base branch health check passed\): also failing test \(windows-latest, 24, shard 2\/3\) \(fix-next: absent\)$/m);
+  assert.doesNotMatch(r.stdout, /not only base health/);
+  assert.match(r.stdout, /^ {2}ball: AUTHOR owes fixes /m);
+});
+
 test('owj base: a green live base is said so; a captured fixture without labels reads fix-next unknown', (t) => {
   const green = runInProc(t, ['900061'], { queue: 'ci-base-green.json', policies: fakePolicies() });
   assert.match(green.stdout, /^ {2}base: next green now /m);

@@ -1708,7 +1708,12 @@ function baseLine(b) {
   if (b.requiredRed && b.attributed) {
     note = 'Required tests red is base health, not this PR';
     if (b.status === 'green') note += ', but the live base is green now: re-run the check';
-  } else if (b.requiredRed && b.othersFailing.length) note = `Required tests red is not only base health: also failing ${b.othersFailing.map(clean).join(', ')}`;
+  } else if (b.requiredRed && b.othersFailing.length) {
+    // Only "not only" when Base branch health is itself red; with it passing the base is no part of the red.
+    note = b.baseHealthRed
+      ? `Required tests red is not only base health: also failing ${b.othersFailing.map(clean).join(', ')}`
+      : `Required tests red is not base health (the Base branch health check passed): also failing ${b.othersFailing.map(clean).join(', ')}`;
+  }
   else if (b.requiredRed) note = 'Required tests red is not attributed to base health (the Base branch health check is not failing)';
   else if (b.baseHealthRed) note = 'Base branch health red is the base, not this PR';
   return `  base: ${head}${note ? `; ${note}` : ''} (fix-next: ${clean(b.fixNext)})`;
