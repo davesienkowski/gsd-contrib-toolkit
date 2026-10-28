@@ -70,7 +70,7 @@ function runThroughStub(t, args, opts = {}) {
     PR_STATUS_STUB_FIXTURES: opts.fixturesDir || FIXTURES_DIR,
     PR_STATUS_STUB_LOG: stub.logFile,
     // 261028-owj: no gsd-core checkout resolves unless a test names one (GSD_CORE_ROOT), so a run never
-    // reads the real ~/repos/gsd-core and prints the same policies line on every machine.
+    // reads the real ~/repos/gsd-core (the unknown message still names the cwd and this tmp HOME).
     HOME: stub.home,
   }, opts.env || {});
   if (!(opts.env && opts.env.GSD_CORE_ROOT)) delete env.GSD_CORE_ROOT;
