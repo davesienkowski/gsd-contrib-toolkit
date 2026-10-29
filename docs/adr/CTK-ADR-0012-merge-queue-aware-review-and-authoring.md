@@ -11,7 +11,7 @@
   round-2 gate on the corrected record returned MERGE-OK.
 - **Review:** Published for maintainer review and open to revision. A changed decision is recorded by a
   superseding or amending CTK-ADR, never a silent edit to this record.
-- **Amended by:** CTK-ADR-0014 (2026-10-28, Proposed): Decision 4's "checks green" becomes "no blocking
+- **Amended by:** CTK-ADR-0014 (2026-10-28, Accepted): Decision 4's "checks green" becomes "no blocking
   check red" (an advisory Self-test report red no longer blocks ready); a red base and a red Reviewed or
   maintainer are never author work.
 - **Date:** 2026-10-21 (milestone v2.8). Consequences gained three additions after acceptance, all dated

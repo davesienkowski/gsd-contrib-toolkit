@@ -1,7 +1,8 @@
 # CTK-ADR-0014: pr-status judges the gsd-core CI policies with the LIVE scripts; base and reviewer reds are never author work
 
-- **Status:** Proposed (2026-10-28). Implemented on the `davesienkowski/ctk-pr-status-ci-checks` branch
-  (quick 261028-owj); awaits Dave's sign-off.
+- **Status:** Accepted (2026-10-28, by Dave's explicit sign-off). Before that sign-off it was Proposed,
+  documenting a decision implemented on the `davesienkowski/ctk-pr-status-ci-checks` branch (quick
+  261028-owj) and merged into toolkit main at 55b8634.
 - **Review:** Published for maintainer review and open to revision. A changed decision will be recorded
   by a superseding or amending CTK-ADR, never by a silent edit to an accepted record.
 - **Date:** 2026-10-28 (milestone v2.8).
