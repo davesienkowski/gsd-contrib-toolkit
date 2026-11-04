@@ -61,8 +61,10 @@ contribution gets bounced (or merged red) for:
   whose `src/*.ts` changed but `build:lib` was never re-run;
 - **editing a generated artifact** directly (`bin/lib/*.cjs`) instead of its
   `src/*.ts` source;
-- **bypassing the seal** — `--no-verify`, a swapped `core.hooksPath`, or a
-  leak of private files up to upstream gsd-core;
+- **bypassing the seal**: `--no-verify`, a swapped `core.hooksPath` (the effective value must be
+  `.githooks`, or a session dispatcher that passes a delegation canary with the repo value `.githooks`,
+  [CTK-ADR-0015](docs/adr/CTK-ADR-0015-enf13-accepts-a-dispatcher-that-passes-a-delegation-canary.md)),
+  or a leak of private files up to upstream gsd-core;
 - **adjudicating without the re-review evidence** — approving or merging a PR
   without the two orthogonal review passes, a green CI re-fetch, the exogenous
   self-check, or on an unchanged head OID; or approving / requesting changes
@@ -81,7 +83,7 @@ wired set exactly.
 | `gh-issue-create.cjs` | Bash | issue with missing/invalid GSD Version | `scripts/issue-version-gate.cjs` |
 | `gh-pr-create.cjs` | Bash | PR with wrong target, bad template, missing `Fixes #N`/`Closes #N` linked issue, bad branch name (`^(fix\|docs\|feat)/\d+-`), un-green CI check-runs on the head SHA (ENF-18), or a Feature/Enhancement PR whose linked issue lacks an `approved-*` label (CF-02; the Fix and Internal buckets are exempt). A tests-only or docs-only PR may use the non-closing `Refs #N` form (BUG-4645) | `scripts/pr-target-policy.cjs`, `scripts/pr-template-policy.cjs`; the linked-issue, branch-name, check-runs and CF-02 checks are toolkit-owned |
 | `gh-edit.cjs` | Bash | a `gh issue/pr edit` that rewrites a body to fail policy | the same create-gate policies (via REST synonyms) |
-| `githooks-seal.cjs` | Bash | `--no-verify` and `core.hooksPath` swaps (arms on every push from a gsd-core checkout, fork and backup pushes included) | (flag/config seal — no LIVE script) |
+| `githooks-seal.cjs` | Bash | `--no-verify` and `core.hooksPath` swaps: the effective value must be `.githooks`, or a session dispatcher that passes a delegation canary with the repo value `.githooks` ([CTK-ADR-0015](docs/adr/CTK-ADR-0015-enf13-accepts-a-dispatcher-that-passes-a-delegation-canary.md)); an override typed in the command denies (arms on every push from a gsd-core checkout, fork and backup pushes included) | (flag/config seal, no LIVE script) |
 | `issue-dedupe.cjs` | Bash | filing a duplicate of an open issue | `scripts/issue-dedupe.cjs` (dedupe scorer) |
 | `freshness.cjs` | Bash | committing a stale generated `bin/lib/*.generated.cjs` | gsd-core `check:*-fresh` npm scripts |
 | `containment.cjs` | Bash | leaking private files into / up to upstream gsd-core (its GitHub rename aliases count as upstream) | (containment check — no LIVE script) |
