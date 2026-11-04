@@ -107,7 +107,7 @@ another repo, and its bytes change often.
    shell, stdio ignored, cwd the temp repo, git's location variables dropped from the env, the config keys kept),
    bound 5 s with SIGKILL, and removes the exact temp path in `finally`. It passes only when the marker exists and
    the exit status is exactly 37. For a push the file would not otherwise run; running `pre-commit` is still the
-   only behavior this check observes. Measured against the real dispatcher: about 20 ms for the canary, 73 to 79 ms
+   only behavior this check observes. Measured against the real dispatcher: 19 to 24 ms for the canary, 63 to 79 ms
    for the whole hook, against 31 to 44 ms for an ENF-12 deny that exits before any read.
 
 4. **The override valve's reach.** A failed effective read, a failed voided read and a canary setup failure
