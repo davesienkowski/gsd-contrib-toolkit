@@ -676,6 +676,8 @@ test('typed scan reads the newline split: a neighbor line never widens, and an o
 
 test('A-2: a continuation newline in a token does not hide a form from the scan', (t) => {
   const { fx, states } = typedStates(t);
+  // A continuation then a blank line: the newline split fails on it, so the scan cannot read it.
+  assertTypedDeny(['git log \\\n\ngit commit -m y', ADVICE_OWN_CALL], states, fx.repo);
   for (const command of [
     `git \\\n-c ${ENF13_K}=/dev/null commit -m x`,
     `git -c ${ENF13_K}=/dev/null \\\ncommit -m x`,
@@ -716,6 +718,8 @@ test('A-3: heredoc bodies never reach the scan, in any chain; real forms around 
     [`cat <<'EOF'\nbody\nEOF\nexport ${key}=0; git commit -m x`, ADVICE_OWN_CALL],
     [`git commit -F- <<EOF\nbody\nEOF\ngit --git-dir=/tmp/x commit -m y`, ADVICE_REMOVE],
     [`git config ${ENF13_K} /dev/null <<EOF && git commit -m x\nbody\nEOF`, ADVICE_OWN_CALL],
+    // A here-string has no body: the line after it is a command, and the scan reads it.
+    [`cat <<< x\ngit -c ${ENF13_K}=/dev/null commit -m y`, ADVICE_REMOVE],
   ]) {
     assertTypedDeny([command, advice], states, fx.repo);
   }
@@ -727,7 +731,6 @@ test('A-3: the mask leaves a command with no heredoc byte-identical and removes 
     'git commit -m x',
     'git commit -m "a << b"',
     "git commit -m 'a <<EOF'",
-    'cat a <<< b; git log\ngit status',
     'echo a\\<\\<EOF',
   ]) {
     assert.strictEqual(maskHeredocBodies(command), command);
@@ -735,6 +738,7 @@ test('A-3: the mask leaves a command with no heredoc byte-identical and removes 
   assert.strictEqual(maskHeredocBodies("cat <<'E' && x\nbody\nE\nnext"), 'cat  && x\nnext');
   assert.strictEqual(maskHeredocBodies('cat <<E\nno terminator\nnext'), 'cat \n');
   assert.strictEqual(maskHeredocBodies('cat <<E'), 'cat ');
+  assert.strictEqual(maskHeredocBodies('cat a <<< b; git log\ngit status'), 'cat a     b; git log\ngit status');
 });
 
 test('A-4: a comment token stops the scan, and a redirect is not a config value', (t) => {
@@ -820,6 +824,8 @@ const A1_COMMIT_HITS = [
   'git commit --allow-empty --no-verif -m x',
   'git commit --allow-empty -m x \\\n--no-verify',
   'git commit --allow-empty -m x \\\n-n',
+  'git commit --allow-empty -m "#1" --no-veri',
+  'git commit --allow-empty --message "#1" --no-veri',
 ];
 
 test('A-1: spellings ENF-12 misses deny behind the dispatcher with no canary run, and stay allowed plain', (t) => {
