@@ -29,7 +29,10 @@
  *            does and does not show). The check order in gate() is load-bearing: the canary
  *            executes a file named by a config value, so it runs last and only for a value
  *            that came from the hook's own env keys. The hook's reads run in the hook's env,
- *            so they do not see an override typed in the command itself.
+ *            so they do not see an override typed in the command itself. typedHooksPathOverride
+ *            reads the command text for that: it denies a typed override, a repo option, a form it
+ *            cannot read, an env config key name and a chained config write, before any read. It
+ *            fails closed on the forms in its rules; other forms exist that it does not catch.
  *
  * Scope: only `commit` / `push` actions are gated; every other command (git reads, non-git)
  * passes through as a no-op allow, so the seal never over-blocks. HARD-01/04: the whole
@@ -43,8 +46,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { parseCommandForGates } = require('./lib/argv.cjs');
-const { classifyAction, isNonGovernedCommand } = require('./lib/classify.cjs');
+const { parseCommand, parseCommandForGates, parseHeredocOperator, findHeredocBodyEnd } = require('./lib/argv.cjs');
+const { classifyAction, isNonGovernedCommand, resolveProgram } = require('./lib/classify.cjs');
 const { hasFlag } = require('./lib/flags.cjs');
 const { runGate, readHookInput, deny, allow, emit, FailClosed, safeCommand } = require('./lib/failclosed.cjs');
 const { resolveRootForCommand } = require('./lib/resolve.cjs');
@@ -123,6 +126,403 @@ function sealedSegments(parsed) {
   });
 }
 
+// --- The typed scan. Pure: no filesystem, no git, no env. ------------------------------------
+
+// What each kind of hit tells the reader to do. Text D covers the accepted false denies too, so each
+// of these has to be a way forward that works for them.
+const ADVICE_REMOVE = 'Remove it from the command.';
+const ADVICE_LITERAL = 'Write the value out literally.';
+const ADVICE_LITERAL_KEY =
+  ADVICE_LITERAL + ' A key that needs other characters goes through `git config`, in its own Bash call.';
+const ADVICE_OWN_CALL = 'Run that command in its own Bash call.';
+const ADVICE_LET_HOOKS_RUN = 'Remove it and let the local gates run.';
+
+const SEALING_WORDS = new Set(['commit', 'push']);
+const ENV_KEY_NAME = /\bGIT_CONFIG_(?:COUNT|PARAMETERS|(?:KEY|VALUE)_\d+)\b/;
+// A name built at run time: GIT_CONFIG_VALUE_$n is a real key to the shell and no literal name above.
+const ENV_KEY_BUILT = /\bGIT_CONFIG_[A-Z0-9_]*[$`{(]/;
+const REPO_ASSIGNMENT = /^(GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR)=/;
+const PLAIN_KEY = /^[A-Za-z0-9._:/*-]+$/;
+const SHELL_SYNTAX = /[$`{(]/;
+const INCLUDE_IF_PATH = /^includeif\..*\.path$/;
+// The price of `git -C "$WT" commit`: the parser drops quotes, so "$WT" and $WT are one token, and an
+// unquoted value here that word-splits into options is allowed.
+const SYNTAX_EXEMPT_VALUE = new Set(['-C', '--namespace', '--attr-source']);
+// Long options whose separate value is not a comment; the short ones come from readCommitCluster.
+const HASH_SAFE_VALUE = new Set(['--namespace', '--attr-source', '--config-env', '--message']);
+const CONFIG_READ_OPTIONS = new Set(['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--list', '-l']);
+const CONFIG_UNSET_WORDS = new Set(['--unset', '--unset-all', 'unset']);
+const REDIRECT = /^(?:\d*|&)(?:>>|>&|<&|>\||<>|>|<)/;
+// git 2.43, measured on both subcommands: --no-v, --no-ve and --no-ver are ambiguous with --no-verbose
+// and git exits 129 with nothing run; --no-veri is the shortest spelling that skips the hook.
+const NO_VERIFY_LONG = '--no-verify';
+const NO_VERIFY_SHORTEST = '--no-veri';
+// git commit's short options that take a value: required, then optional (attached only).
+const COMMIT_SHORT_VALUE = 'mFcCt';
+const COMMIT_SHORT_OPTIONAL_VALUE = 'uS';
+
+/**
+ * The raw command with each heredoc operator and its body removed, keeping the newline that ended the
+ * introducing line. The splitter hands a body to the LAST segment of a chained introducing line, so
+ * `git commit -F- <<'EOF' && git log` would scan the message as tokens of the log segment. The
+ * operator goes too: left in place, the parse would read the next command line as its body.
+ * Quote and escape state track splitSegmentsWithOps, the same check order as gsd-test-detect's mask.
+ * A here-string has no body. parseHeredocOperator refuses `<<<` at its first `<`, but the walk would
+ * then read `<< word` at the second one, so the parser hides the lines after a here-string; here its
+ * operator is blanked and its word stays an ordinary token, so the scan still reads those lines.
+ *
+ * @param {string} str a command that parsed
+ * @returns {string}
+ */
+function maskHeredocBodies(str) {
+  let out = '';
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+  const pending = [];
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (escaped) {
+      out += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\' && !inSingle) {
+      out += ch;
+      escaped = true;
+      continue;
+    }
+    if (inSingle) {
+      out += ch;
+      if (ch === "'") inSingle = false;
+      continue;
+    }
+    if (inDouble) {
+      out += ch;
+      if (ch === '"') inDouble = false;
+      continue;
+    }
+    if (str.startsWith('<<<', i)) {
+      out += '   ';
+      i += 2;
+      continue;
+    }
+    const hd = parseHeredocOperator(str, i);
+    if (hd) {
+      pending.push(hd);
+      i = hd.end - 1;
+      continue;
+    }
+    if (ch === '\n' && pending.length > 0) {
+      out += ch;
+      let bodyStart = i + 1;
+      for (const h of pending) bodyStart = findHeredocBodyEnd(str, bodyStart, h.delim, h.dash);
+      pending.length = 0;
+      i = bodyStart - 1;
+      continue;
+    }
+    if (ch === "'") inSingle = true;
+    else if (ch === '"') inDouble = true;
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * Read a token as a `git commit` short-option cluster, left to right. Everything from the first
+ * value-taking letter on is its value, so `-anm x` skips the hook and `-mn` is the message "n".
+ *
+ * @param {string} token
+ * @returns {{skipsHook:boolean, takesNext:boolean}} takesNext: the next token is the value
+ */
+function readCommitCluster(token) {
+  if (/^-[A-Za-z]+$/.test(token)) {
+    for (let i = 1; i < token.length; i++) {
+      const letter = token[i];
+      if (letter === 'n') return { skipsHook: true, takesNext: false };
+      if (COMMIT_SHORT_VALUE.includes(letter)) return { skipsHook: false, takesNext: i === token.length - 1 };
+      if (COMMIT_SHORT_OPTIONAL_VALUE.includes(letter)) break;
+    }
+  }
+  return { skipsHook: false, takesNext: false };
+}
+
+/**
+ * The tokens the scan reads: a continuation's newline stripped from each token's start (the parser
+ * keeps it, bash removes it), empties dropped, and nothing from the first comment token on. A value
+ * position is not a comment: the parser drops quotes, so `-C "#dir"` and `-m "#1 fix"` hold a token
+ * starting with #. A value after any other option still reads as a comment (reported, not closed).
+ */
+function scanTokens(tokens) {
+  const out = [];
+  let isValue = false;
+  for (const raw of tokens) {
+    const token = raw.replace(/^\n+/, '');
+    if (token.length === 0) continue;
+    if (!isValue && token.startsWith('#')) break;
+    out.push(token);
+    isValue = !isValue && (HASH_SAFE_VALUE.has(token) || readCommitCluster(token).takesNext);
+  }
+  return out;
+}
+
+/** One segment as the scan sees it. Sealed: its program is git and a bare commit or push token follows. */
+function scanView(rawTokens) {
+  const tokens = scanTokens(rawTokens);
+  const { prog, index } = resolveProgram({ tokens });
+  const isGit = prog === 'git';
+  let first = -1;
+  let last = -1;
+  if (isGit) {
+    for (let i = index + 1; i < tokens.length; i++) {
+      if (SEALING_WORDS.has(tokens[i])) {
+        if (first === -1) first = i;
+        last = i;
+      }
+    }
+  }
+  return { tokens, index, isGit, first, last, sealed: last !== -1 };
+}
+
+/** Does the key name something that moves core.hooksPath or brings config in. ASCII case-insensitive, as git's. */
+function namesHooksConfig(key) {
+  const lower = key.toLowerCase();
+  return lower === 'core.hookspath' || lower === 'include.path' || INCLUDE_IF_PATH.test(lower);
+}
+
+/** The value of -c or --config-env: its key, then for the separate-token forms its shell syntax. */
+function configOptionHit(option, value, isSeparateToken) {
+  const eq = value.indexOf('=');
+  const key = eq === -1 ? value : value.slice(0, eq);
+  if (!PLAIN_KEY.test(key)) {
+    return { form: option + ' with a key this gate cannot read (' + key + ')', advice: ADVICE_LITERAL_KEY };
+  }
+  if (namesHooksConfig(key)) {
+    const harmless = option === '-c' && key.toLowerCase() === 'core.hookspath' && eq !== -1 && value.slice(eq + 1) === REQUIRED_HOOKS_PATH;
+    if (!harmless) return { form: option + ' naming ' + key, advice: ADVICE_REMOVE };
+  }
+  // An unquoted value can word-split into options, and the parser drops quotes.
+  if (isSeparateToken && SHELL_SYNTAX.test(value)) {
+    return { form: option + ' with shell syntax in its value (' + value + ')', advice: ADVICE_LITERAL };
+  }
+  return null;
+}
+
+/** The tokens from after the program up to the last sealing word. What follows that word is never read. */
+function regionHit(view) {
+  const { tokens, index, last } = view;
+  for (let i = index + 1; i < last; i++) {
+    const token = tokens[i];
+    if (token === '-c' || token === '--config-env') {
+      if (i + 1 < tokens.length) {
+        const hit = configOptionHit(token, tokens[i + 1], true);
+        if (hit) return hit;
+        i += 1;
+      }
+      continue;
+    }
+    if (token.startsWith('--config-env=')) {
+      const hit = configOptionHit('--config-env', token.slice('--config-env='.length), false);
+      if (hit) return hit;
+      continue;
+    }
+    if (/^--(?:git-dir|work-tree)(?:=|$)/.test(token)) {
+      return { form: 'the repo option ' + token, advice: ADVICE_REMOVE };
+    }
+    if (SYNTAX_EXEMPT_VALUE.has(token)) {
+      i += 1;
+      continue;
+    }
+    const readable = token.startsWith('--') && token.includes('=') ? token.slice(0, token.indexOf('=')) : token;
+    if (SHELL_SYNTAX.test(readable)) {
+      return { form: 'shell syntax in the git options (' + token + ')', advice: ADVICE_LITERAL };
+    }
+  }
+  return null;
+}
+
+/** A token before the program of any segment, or any token of a non-git segment, naming an env key. */
+function envKeyHit(view) {
+  const scanned = view.isGit ? view.tokens.slice(0, view.index) : view.tokens;
+  for (const token of scanned) {
+    const match = ENV_KEY_NAME.exec(token) || ENV_KEY_BUILT.exec(token);
+    if (match) return { form: 'the env config key name ' + match[0], advice: ADVICE_OWN_CALL };
+  }
+  return null;
+}
+
+/** Drop redirects, and the separate target of a redirect operator standing alone. */
+function withoutRedirects(tokens) {
+  const out = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const match = REDIRECT.exec(tokens[i]);
+    if (!match) out.push(tokens[i]);
+    else if (match[0].length === tokens[i].length) i += 1;
+  }
+  return out;
+}
+
+/** A `git config` that writes the key beside a sealed segment: the read runs before the write. */
+function configWriteHit(view) {
+  if (!view.isGit) return null;
+  const at = view.tokens.indexOf('config', view.index + 1);
+  if (at === -1) return null;
+  const rest = withoutRedirects(view.tokens.slice(at + 1));
+  if (rest.some((token) => CONFIG_READ_OPTIONS.has(token.split('=')[0]))) return null;
+  const unsets = rest.some((token) => CONFIG_UNSET_WORDS.has(token));
+  for (let i = 0; i < rest.length; i++) {
+    if (!namesHooksConfig(rest[i])) continue;
+    const value = rest[i + 1];
+    // A named key with nothing after it prints the value and changes nothing.
+    if (!unsets && value === undefined) return null;
+    if (!unsets && rest[i].toLowerCase() === 'core.hookspath' && value === REQUIRED_HOOKS_PATH) return null;
+    return { form: 'a config write of ' + rest[i], advice: ADVICE_OWN_CALL };
+  }
+  return null;
+}
+
+/**
+ * A spelling that skips the hook and that ENF-12's exact flag lookup missed, after the first sealing
+ * word: an abbreviation of --no-verify, or a commit short cluster holding n before any value-taking
+ * letter. The full --no-verify and -n are read too: ENF-12 denies them first when it can see them, so
+ * they only reach this on a token it cannot, such as one a continuation newline mangled.
+ * The cluster rule waits for a bare commit word: on push, -n is a dry run.
+ */
+function noVerifySpellingHit(view) {
+  const { tokens, first } = view;
+  let afterCommit = false;
+  for (let i = first; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === '--') break;
+    if (token === 'commit') afterCommit = true;
+    if (token.startsWith(NO_VERIFY_SHORTEST) && NO_VERIFY_LONG.startsWith(token)) {
+      return { form: 'the hook-skipping spelling ' + token, advice: ADVICE_LET_HOOKS_RUN };
+    }
+    if (!afterCommit) continue;
+    const cluster = readCommitCluster(token);
+    if (cluster.skipsHook) return { form: 'the hook-skipping spelling ' + token, advice: ADVICE_LET_HOOKS_RUN };
+    if (cluster.takesNext) i += 1;
+  }
+  return null;
+}
+
+/**
+ * The one pure pass over a parsed command. It reads the newline split of the heredoc-masked text:
+ * the default parse keeps an unquoted newline inside one segment, so a neighbor line would widen a
+ * commit's region. ENF-12 keeps reading parsed.segments, unchanged. A masked text that does not parse
+ * (measured: a continuation then a blank line, whose trimmed segment ends in a dangling escape) is
+ * refused when the default parse holds a sealed segment; it never falls back to a body-bearing parse.
+ *
+ * @param {Object} parsed result of argv.parseCommandForGates
+ * @returns {{override:(Object|null), noVerifySpelling:(Object|null)}}
+ */
+function scanCommand(parsed) {
+  const nothing = { override: null, noVerifySpelling: null };
+  if (!parsed || !parsed.ok) return nothing;
+  const fine = parseCommand(maskHeredocBodies(parsed.raw), { cwdSeparators: true });
+  if (!fine.ok) {
+    if (!parsed.segments.some((seg) => scanView(seg.tokens).sealed)) return nothing;
+    return { override: { form: 'text this gate cannot read', advice: ADVICE_OWN_CALL }, noVerifySpelling: null };
+  }
+  const views = fine.segments.map((seg) => scanView(seg.tokens));
+  const sealedViews = views.filter((view) => view.sealed);
+  if (sealedViews.length === 0) return nothing;
+  let override = null;
+  for (const view of views) {
+    override = envKeyHit(view);
+    if (!override && view.sealed) {
+      const assignment = view.tokens.slice(0, view.index).find((token) => REPO_ASSIGNMENT.test(token));
+      if (assignment) override = { form: 'a leading ' + assignment.split('=')[0] + ' assignment', advice: ADVICE_REMOVE };
+    }
+    if (!override && view.sealed) override = regionHit(view);
+    if (!override) override = configWriteHit(view);
+    if (override) break;
+  }
+  let noVerifySpelling = null;
+  for (const view of sealedViews) {
+    noVerifySpelling = noVerifySpellingHit(view);
+    if (noVerifySpelling) break;
+  }
+  return { override, noVerifySpelling };
+}
+
+/**
+ * A form typed in the command that the hook's own config reads cannot see, or that the gate cannot
+ * read: a short string naming it, or null. A non-ok parse returns null (the fail-closed path owns it).
+ *
+ * @param {Object} parsed result of argv.parseCommandForGates
+ * @returns {string|null}
+ */
+function typedHooksPathOverride(parsed) {
+  const { override } = scanCommand(parsed);
+  return override ? override.form : null;
+}
+
+// --- The deny texts, one per branch. Only text A says INERT, in the state where it is true. ---
+
+function shownValue(value) {
+  return value ? '`' + value + '`' : 'UNSET';
+}
+
+/** Text A: the repo-scope state, the one where `git config` is the fix. */
+function repoValueDeny(hooksPath) {
+  return deny(
+    'This worktree\'s `core.hooksPath` is ' +
+      shownValue(hooksPath) +
+      ', so the repo\'s `.githooks` gates (pre-commit / pre-push) are silently INERT. ' +
+      'Set it before committing/pushing: `git config core.hooksPath .githooks`. (ENF-13)'
+  );
+}
+
+/** Text B: a dispatcher's shape with the wrong repo value. No canary ran, so it does not say this one delegates. */
+function repoValueBehindDispatcherDeny(hooksPath, repoHooksPath) {
+  return deny(
+    'A dispatcher-shaped value (' + shownValue(hooksPath) + ') is in force for `core.hooksPath`. ' +
+      'A delegating dispatcher runs the hooks the repo\'s own value names, and that value is ' +
+      shownValue(repoHooksPath) +
+      ', so the repo\'s `.githooks` gates do not run. ' +
+      '`git config core.hooksPath .githooks` in this worktree writes the value the delegate reads. ' +
+      'The effective value stays the dispatcher, and that is expected. ' +
+      'If a session gate stops an agent\'s write, a human runs it in their own terminal. (ENF-13)'
+  );
+}
+
+/** Text C: the effective value comes from where repo config cannot reach it. */
+function effectiveValueDeny(hooksPath, detail) {
+  return deny(
+    'The effective `core.hooksPath` is ' +
+      shownValue(hooksPath) +
+      ' and comes from env or command config, which outranks repo config, ' +
+      'so `git config core.hooksPath .githooks` cannot fix it. Remove the override. ' +
+      detail +
+      ' (ENF-13)'
+  );
+}
+
+/**
+ * Text D: a form typed in the command. No config value is at fault, so `git config` is not the fix.
+ * It covers the accepted false denies too, so it says the gate does not tell harmless uses apart.
+ */
+function typedFormDeny(hit) {
+  return deny(
+    'This command has ' + hit.form + ' beside a commit or push. This form can run them without the ' +
+      'repo\'s `.githooks` gates, and this gate does not tell harmless uses apart, so it denies. ' +
+      '`git config core.hooksPath .githooks` is not the fix. ' +
+      hit.advice +
+      ' (ENF-13)'
+  );
+}
+
+function canaryResultText(canary) {
+  if (!canary) return 'no canary ran';
+  const how = canary.signal
+    ? 'signal ' + canary.signal
+    : canary.status !== null && canary.status !== undefined
+      ? 'exit ' + canary.status
+      : 'error ' + canary.error;
+  return 'marker ' + (canary.marker ? 'yes' : 'no') + ', ' + how;
+}
+
 /**
  * The pure gate decision with the impure git-config read injected.
  *
@@ -133,6 +533,8 @@ function sealedSegments(parsed) {
  * @param {() => (string|null)} [deps.readRepoHooksPath] the same read with the env count key
  *   voided. MAY THROW -> fail closed. Absent: repo reads as equal to effective, so a caller
  *   injecting only readHooksPath can never reach the dispatcher allow.
+ * @param {() => (string|null)} [deps.readHooksPathScope] the scope of the effective value, read only
+ *   on the deny path of branch (c). A throw is a deny that names it. Absent: text A.
  * @param {(value:string) => {passed:boolean}} [deps.passesCanary] runs the delegation canary on
  *   the effective value. MAY THROW on a setup failure -> fail closed. Absent: deny.
  * @returns {{permissionDecision:string, permissionDecisionReason?:string}}
@@ -144,9 +546,12 @@ function gate(stdinString, deps) {
   const parsed = parseCommandForGates(command);
   if (!parsed.ok) throw new FailClosed('unparseable command: ' + parsed.reason);
 
+  const scan = scanCommand(parsed);
+
   const action = classifyAction(parsed);
-  // Only commit/push are sealed. Anything else (git reads, non-git) → no-op allow.
-  if (!action || !SEALED_ACTIONS.has(action.action)) return allow();
+  // Only commit/push are sealed. Anything else (git reads, non-git) -> no-op allow, unless the typed
+  // scan saw a sealed git segment that classifies other (space-form --config-env, say).
+  if (!action || !SEALED_ACTIONS.has(action.action)) return scan.override ? typedFormDeny(scan.override) : allow();
 
   // (1) ENF-12 — the REAL --no-verify / -n flag (structured argv, never -m message text)
   // and never a CHAINED NEIGHBOUR's flag: scoped to the sealed git segment(s) only.
@@ -162,8 +567,12 @@ function gate(stdinString, deps) {
     );
   }
 
-  // (2) ENF-13. This order is load-bearing: the canary executes a file named by a config value,
-  // so it stays last and never runs for a repo-scope value, a shape failure or a wrong repo value.
+  // (2) ENF-13. A form typed in the command denies before any read: the reads below run in the
+  // hook's env and cannot see it.
+  if (scan.override) return typedFormDeny(scan.override);
+
+  // (3) This order is load-bearing: the canary executes a file named by a config value, so it stays
+  // last and never runs for a repo-scope value, a shape failure or a wrong repo value.
 
   // (a) The effective value is .githooks: the repo's own gates run. Reads may throw -> fail closed
   // (HARD-01).
@@ -174,44 +583,44 @@ function gate(stdinString, deps) {
   const repoHooksPath = deps.readRepoHooksPath ? stripOneNewline(deps.readRepoHooksPath()) : hooksPath;
 
   // (c) Voiding the count key changed nothing, so the value did not come from the count keys.
+  // The scope read runs here only, so a clean run pays nothing, and its failure is already a deny.
   if (repoHooksPath === hooksPath) {
-    return deny(
-      'This worktree\'s `core.hooksPath` is ' +
-        (hooksPath ? '`' + hooksPath + '`' : 'UNSET') +
-        ', so the repo\'s `.githooks` gates (pre-commit / pre-push) are silently INERT. ' +
-        'Set it before committing/pushing: `git config core.hooksPath .githooks`. (ENF-13)'
+    if (!deps.readHooksPathScope) return repoValueDeny(hooksPath);
+    let scope;
+    try {
+      scope = deps.readHooksPathScope();
+    } catch (err) {
+      return effectiveValueDeny(
+        hooksPath,
+        'That reading is not confirmed: the scope read failed (' + (err && err.message) + ').'
+      );
+    }
+    if (scope !== 'command') return repoValueDeny(hooksPath);
+    return effectiveValueDeny(
+      hooksPath,
+      'Voiding the env count key does not change it' + (hooksPath ? '.' : ', and an empty env value reads as UNSET.')
     );
   }
 
   // (d) The value came from the hook's env keys and does not have a dispatcher's shape.
   const shape = dispatcherShape(hooksPath);
   if (!shape.genuine) {
-    return deny(
-      'The effective `core.hooksPath` is ' +
-        (hooksPath ? '`' + hooksPath + '`' : 'empty') +
-        ', which does not have a hooks dispatcher\'s shape (' + shape.why + '). (ENF-13)'
-    );
+    return effectiveValueDeny(hooksPath, 'It does not have a hooks dispatcher\'s shape (' + shape.why + ').');
   }
 
   // (e) A dispatcher runs the hooks the repo's own value names; that value must be .githooks.
-  if (repoHooksPath !== REQUIRED_HOOKS_PATH) {
-    return deny(
-      'A dispatcher-shaped `core.hooksPath` is in force and the repo value is ' +
-        (repoHooksPath ? '`' + repoHooksPath + '`' : 'UNSET') +
-        ', not `.githooks`. (ENF-13)'
-    );
-  }
+  if (repoHooksPath !== REQUIRED_HOOKS_PATH) return repoValueBehindDispatcherDeny(hooksPath, repoHooksPath);
+
+  // A spelling that skips the hook and that ENF-12 cannot see. Here only, on the dispatcher path, so a
+  // dispatcher allow is the only verdict it can change; with an effective .githooks these stay allowed.
+  if (scan.noVerifySpelling) return typedFormDeny(scan.noVerifySpelling);
 
   // (f) The value must pass the delegation canary. No canary wired means no allow.
   const canary = deps.passesCanary ? deps.passesCanary(hooksPath) : null;
   if (!canary || !canary.passed) {
-    return deny(
-      'The effective `core.hooksPath` `' + hooksPath + '` did not pass the delegation canary' +
-        (canary
-          ? ' (marker ' + (canary.marker ? 'yes' : 'no') + ', exit ' + canary.status +
-            ', signal ' + canary.signal + ')'
-          : '') +
-        '. (ENF-13)'
+    return effectiveValueDeny(
+      hooksPath,
+      'It did not pass the delegation canary (' + canaryResultText(canary) + '). A noexec TMPDIR makes the canary fail.'
     );
   }
 
@@ -227,6 +636,7 @@ function gate(stdinString, deps) {
  * @param {Object} [deps]
  * @param {() => (string|null)} [deps.readHooksPath]
  * @param {() => (string|null)} [deps.readRepoHooksPath]
+ * @param {() => (string|null)} [deps.readHooksPathScope]
  * @param {(value:string) => {passed:boolean}} [deps.passesCanary]
  * @param {Object} [deps.env] env for the live reads and the canary; defaults to process.env
  * @param {string} [deps.worktreeRoot]
@@ -249,8 +659,12 @@ function runGithooksGate(stdinString, deps = {}) {
     // resolveRootForCommand walks the tree — a non-commit/non-push command no longer pays a
     // filesystem walk. The governed set is SEALED_ACTIONS (commit/push); isNonGovernedCommand
     // narrows-not-weakens: unparseable/failClosed/commit/push fall through to the unchanged
-    // resolve→gate path below (a governed commit/push still runs the ENF-12/ENF-13 seal).
-    if (isNonGovernedCommand(parseCommandForGates(ctx.command), SEALED_ACTIONS)) return allow();
+    // resolve->gate path below (a governed commit/push still runs the ENF-12/ENF-13 seal). A typed
+    // hit on a sealed git segment that classifies other reaches root resolution; no root still allows.
+    const parsedForShortCircuit = parseCommandForGates(ctx.command);
+    if (isNonGovernedCommand(parsedForShortCircuit, SEALED_ACTIONS) && typedHooksPathOverride(parsedForShortCircuit) === null) {
+      return allow();
+    }
 
     const resolved = Object.assign({}, deps);
     if (!resolved.readHooksPath) {
@@ -260,6 +674,7 @@ function runGithooksGate(stdinString, deps = {}) {
       const env = resolved.env || process.env;
       resolved.readHooksPath = () => readHooksPathLive(root, env);
       resolved.readRepoHooksPath = resolved.readRepoHooksPath || (() => readRepoHooksPathLive(root, env));
+      resolved.readHooksPathScope = resolved.readHooksPathScope || (() => readHooksPathScopeLive(root, env));
       resolved.passesCanary = resolved.passesCanary || ((value) => runDispatcherCanary(value, { env }));
     }
     return gate(stdinString, resolved);
@@ -307,6 +722,30 @@ function readRepoHooksPathLive(root, env = process.env) {
   const voided = Object.assign({}, env);
   delete voided.GIT_CONFIG_COUNT;
   return readHooksPathLive(root, voided);
+}
+
+/**
+ * The scope git reports for the effective value: `command` for env or command config, `local`,
+ * `global` and so on. Null when the key is unset. Output is `scope<TAB>value`. THROWS on a spawn error
+ * or a status other than 0 or 1; gate() catches that in the branch, where it is already a deny.
+ *
+ * @param {string} root absolute gsd-core worktree root
+ * @param {Object} [env] the hook's environment; defaults to process.env
+ * @returns {string|null}
+ */
+function readHooksPathScopeLive(root, env = process.env) {
+  const res = spawnSync('git', ['-C', root, 'config', '--show-scope', '--get', 'core.hooksPath'], {
+    encoding: 'utf8',
+    env,
+  });
+  if (res.error) throw new FailClosed('could not read the core.hooksPath scope: ' + res.error.message);
+  if (res.status === 1) return null;
+  if (res.status !== 0) {
+    throw new FailClosed('git config --show-scope failed (exit ' + res.status + '): ' + (res.stderr || ''));
+  }
+  const out = String(res.stdout || '');
+  const tab = out.indexOf('\t');
+  return tab === -1 ? out.trim() : out.slice(0, tab);
 }
 
 /**
@@ -460,8 +899,11 @@ module.exports = {
   gate,
   readHooksPathLive,
   readRepoHooksPathLive,
+  readHooksPathScopeLive,
   dispatcherShape,
   runDispatcherCanary,
+  typedHooksPathOverride,
+  maskHeredocBodies,
   REQUIRED_HOOKS_PATH,
   NO_VERIFY_FLAGS,
 };
