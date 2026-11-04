@@ -21,6 +21,10 @@
 require('./lib/test-isolate.cjs').isolateToolLog(); // never the real ~/.gsd-contrib tool log (quick 261024-po0)
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 
 const { runGithooksGate } = require('./githooks-seal.cjs');
 
@@ -230,4 +234,173 @@ test('F10 guard: githooks-seal stays armed on a fork push (--no-verify and an un
   assert.strictEqual(b.permissionDecision, 'deny');
   assert.strictEqual(calls.dirs, 0);
   assert.strictEqual(calls.lookups, 0);
+});
+
+// --- ENF-13 behind a session hooks dispatcher (quick 261103-uqe) --------------------
+// Real git, real env keys, real directories, the hook as a spawned process. The private
+// dispatcher's bytes are not vendored: the fixture delegate keeps only the path the allow
+// depends on, and passing a delegation canary is all the gate asks of it.
+
+// path.join(__dirname, ...) so a mutation proof can run this test on a copy of hooks/.
+const SEAL_HOOK = path.join(__dirname, 'githooks-seal.cjs');
+const CANARY_PREFIX = 'githooks-seal-canary-';
+const REPO_HOOK_MARKER = 'repo-hook-ran';
+
+const DISPATCH_STUB = '#!/bin/sh\nexec sh "$(dirname "$0")/_delegate.sh" "$(basename "$0")" "$@"\n';
+const DISPATCH_DELEGATE = [
+  '#!/bin/sh',
+  'name=${1:-}',
+  '[ "$#" -gt 0 ] && shift',
+  'self=$(cd -P "$(dirname "$0")" 2>/dev/null && pwd -P) || exit 0',
+  'hooks=$( (unset GIT_CONFIG_COUNT; git rev-parse --path-format=absolute --git-path hooks) 2>/dev/null) || exit 0',
+  'real=$(cd -P "$hooks" 2>/dev/null && pwd -P) || exit 0',
+  '[ "$real" = "$self" ] && exit 0',
+  'target="$real/$name"',
+  'if [ -f "$target" ] && [ -x "$target" ]; then exec "$target" "$@"; fi',
+  'exit 0',
+  '',
+].join('\n');
+const FIXTURE_REPO_HOOK = `#!/bin/sh\n: > ${REPO_HOOK_MARKER}\nexit 1\n`;
+
+function scratchDir(t, prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+/** process.env with the host's git keys and the override valve gone, and no host git config. */
+function hostFreeEnv() {
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([k]) => !/^GIT_/.test(k) && k !== 'GSD_CONTRIB_OVERRIDE')
+  );
+  env.GIT_CONFIG_NOSYSTEM = '1';
+  env.GIT_CONFIG_GLOBAL = '/dev/null';
+  return env;
+}
+
+/** The env a hook or a real git sees: the dispatcher in force through the real keys, when asked. */
+function childEnv({ dispatcher, tmpdir } = {}) {
+  const env = hostFreeEnv();
+  if (dispatcher !== undefined) {
+    env.GIT_CONFIG_COUNT = '1';
+    env.GIT_CONFIG_KEY_0 = 'core.hooksPath';
+    env.GIT_CONFIG_VALUE_0 = dispatcher;
+  }
+  if (tmpdir !== undefined) env.TMPDIR = tmpdir;
+  return env;
+}
+
+/** The fixture's own git, never the code under test: hooks off, a fixed identity, no signing. */
+function fixtureGit(dir, ...args) {
+  const r = spawnSync(
+    'git',
+    ['-c', 'core.hooksPath=/dev/null', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false', '-C', dir, ...args],
+    { encoding: 'utf8', env: hostFreeEnv() }
+  );
+  if (r.status !== 0) throw new Error(`fixture git ${args.join(' ')}: ${r.stderr}`);
+  return r.stdout;
+}
+
+function writeExecutable(file, text) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, text);
+  fs.chmodSync(file, 0o755);
+}
+
+/** The sentinel layout resolve.cjs hasSentinel needs, and the repo hook that marks and fails. */
+function addCheckoutLayout(dir) {
+  fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'gsd-core', 'bin', 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'scripts', 'pr-target-policy.cjs'), '');
+  writeExecutable(path.join(dir, '.githooks', 'pre-commit'), FIXTURE_REPO_HOOK);
+}
+
+/** A checkout under a scratch root: setup commit first, the repo value appended with fs after it. */
+function buildFixtureRepo(t, repoValue = '.githooks') {
+  const root = scratchDir(t, 'githooks-seal-fixture-');
+  const repo = path.join(root, 'repo');
+  fs.mkdirSync(repo);
+  fixtureGit(repo, 'init', '-q');
+  fixtureGit(repo, 'commit', '-q', '--allow-empty', '-m', 'setup');
+  addCheckoutLayout(repo);
+  if (repoValue !== null) {
+    fs.appendFileSync(path.join(repo, '.git', 'config'), `[core]\n\thooksPath = ${repoValue}\n`);
+  }
+  return { root, repo };
+}
+
+/** A linked worktree beside the fixture repo. Untracked files do not propagate, so add them again. */
+function addLinkedWorktree({ root, repo }) {
+  const wt = path.join(root, 'linked');
+  fixtureGit(repo, 'worktree', 'add', '-q', '-b', 'linked-branch', wt);
+  addCheckoutLayout(wt);
+  return wt;
+}
+
+/** A dir named githooks-dispatch: the stub and the minimal faithful delegate, modes as in real use. */
+function buildDispatcher(parent) {
+  const dir = path.join(parent, 'githooks-dispatch');
+  fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, '_delegate.sh'), DISPATCH_DELEGATE);
+  fs.chmodSync(path.join(dir, '_delegate.sh'), 0o644);
+  writeExecutable(path.join(dir, 'pre-commit'), DISPATCH_STUB);
+  writeExecutable(path.join(dir, 'pre-push'), DISPATCH_STUB);
+  return dir;
+}
+
+/** Spawn the hook on PreToolUse JSON. A crash or a missing verdict never reads as an allow. */
+function runHook(cwd, env, command) {
+  const r = spawnSync(process.execPath, [SEAL_HOOK], { cwd, env, input: input(command), encoding: 'utf8' });
+  assert.strictEqual(r.status, 0, `hook exited ${r.status}: ${r.stderr}`);
+  const out = JSON.parse(r.stdout).hookSpecificOutput;
+  return { decision: out.permissionDecision, reason: out.permissionDecisionReason };
+}
+
+test('dispatcher in force, repo value .githooks: the hook allows a commit and a push', (t) => {
+  const fx = buildFixtureRepo(t);
+  const env = childEnv({ dispatcher: buildDispatcher(fx.root) });
+  for (const command of ['git commit -m x', 'git push origin x']) {
+    const d = runHook(fx.repo, env, command);
+    assert.strictEqual(d.decision, 'allow', `${command}: ${d.reason}`);
+  }
+});
+
+test('dispatcher in force, repo value .githooks, cwd in a linked worktree: the hook allows', (t) => {
+  const fx = buildFixtureRepo(t);
+  const wt = addLinkedWorktree(fx);
+  const env = childEnv({ dispatcher: buildDispatcher(fx.root) });
+  for (const command of ['git commit -m x', 'git push origin x']) {
+    const d = runHook(wt, env, command);
+    assert.strictEqual(d.decision, 'allow', `${command}: ${d.reason}`);
+  }
+});
+
+// A second signal on the fixture, not on the hook: this passes with or without the fix, and
+// says the state the allow tests stand in really runs the repo hook and its failure blocks.
+test('fixture validity: behind the fixture dispatcher a real git commit runs the repo hook and is blocked', (t) => {
+  const fx = buildFixtureRepo(t);
+  const env = childEnv({ dispatcher: buildDispatcher(fx.root) });
+  const r = spawnSync(
+    'git',
+    ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'x'],
+    { cwd: fx.repo, env, encoding: 'utf8' }
+  );
+  assert.notStrictEqual(r.status, 0, `commit should be blocked: ${r.stdout}${r.stderr}`);
+  assert.ok(fs.existsSync(path.join(fx.repo, REPO_HOOK_MARKER)), 'the repo hook should have run');
+});
+
+test('two allow runs on one state: same verdict, no canary dir left, repo config bytes unchanged, repo hook not run', (t) => {
+  const fx = buildFixtureRepo(t);
+  const tmpdir = scratchDir(t, 'githooks-seal-tmpdir-');
+  const env = childEnv({ dispatcher: buildDispatcher(fx.root), tmpdir });
+  const configFile = path.join(fx.repo, '.git', 'config');
+  const before = fs.readFileSync(configFile);
+  const leftovers = () => fs.readdirSync(tmpdir).filter((name) => name.startsWith(CANARY_PREFIX));
+  for (const run of ['first', 'second']) {
+    const d = runHook(fx.repo, env, 'git commit -m x');
+    assert.strictEqual(d.decision, 'allow', `${run} run: ${d.reason}`);
+    assert.deepStrictEqual(leftovers(), [], `${run} run left a canary dir`);
+    assert.ok(fs.readFileSync(configFile).equals(before), `${run} run changed the repo config`);
+    assert.ok(!fs.existsSync(path.join(fx.repo, REPO_HOOK_MARKER)), `${run} run ran the repo hook`);
+  }
 });
