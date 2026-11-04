@@ -1860,6 +1860,21 @@ test('git init in the canary runs nothing from the value: only pre-commit runs, 
   assert.match(lines[0], /^pre-commit .*githooks-seal-canary-/);
 });
 
+test('the canary drops what a git hook env would point elsewhere: its own repo is used, and another repo is untouched', (t) => {
+  const { runDispatcherCanary } = require('./githooks-seal.cjs');
+  const fx = buildBankFixture(t);
+  const env = childEnv();
+  env.GIT_DIR = path.join(fx.other, '.git');
+  env.GIT_WORK_TREE = fx.other;
+  env.GIT_COMMON_DIR = path.join(fx.other, '.git');
+  env.GIT_INDEX_FILE = path.join(fx.other, '.git', 'index');
+  const configFile = path.join(fx.other, '.git', 'config');
+  const before = fs.readFileSync(configFile);
+  const result = runDispatcherCanary(fx.dispatcher, { env });
+  assert.strictEqual(result.passed, true, JSON.stringify(result));
+  assert.ok(fs.readFileSync(configFile).equals(before), 'the canary wrote into the other repo');
+});
+
 test('ENF-12 text is byte-identical to the text this fix found', () => {
   const d = runGithooksGate(input('git commit --no-verify -m x'), deps());
   assert.strictEqual(
