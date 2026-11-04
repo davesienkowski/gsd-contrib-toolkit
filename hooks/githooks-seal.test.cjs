@@ -25,7 +25,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 
 const { runGithooksGate } = require('./githooks-seal.cjs');
 
@@ -409,7 +409,8 @@ test('two allow runs on one state: same verdict, no canary dir left, repo config
 // --- ENF-13 typed scan and deny texts (quick 261103-uqe, Task 2) --------------------
 // Each rule family below is proved both ways: rows that deny and false-deny controls that allow.
 // Every row runs through the spawned hook, in the plain state (effective .githooks) and behind the
-// fixture dispatcher. The per-form port of the whole families table is a later step of this task.
+// fixture dispatcher. The row-per-form port of the whole shape bank, with each row's real effect, is at
+// the end of this file.
 
 /** A dir named githooks-dispatch whose pre-commit is the given text; the rest has the right shape. */
 function buildLookAlike(parent, preCommit) {
@@ -1084,5 +1085,822 @@ test('every authored deny text is plain ASCII and names no override valve', (t) 
     'git commit --no-veri -m x',
   ]) {
     assertPlainDenyText(runHook(fx.repo, behind, command).reason, command);
+  }
+});
+
+// --- The shape bank, one row per form, with each row's real effect (quick 261103-uqe) -------------
+// Verdicts run in a small pool: the hook only reads the fixture, so it can run in parallel. Real
+// effects run one at a time, since they land commits and write config in the one fixture.
+
+/** runHook without blocking the pool. A crash or a missing verdict still never reads as an allow. */
+function runHookAsync(cwd, env, command) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [SEAL_HOOK], { cwd, env });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (chunk) => {
+      out += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      err += chunk;
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code !== 0) return reject(new Error(`hook exited ${code}: ${err}`));
+      try {
+        const verdict = JSON.parse(out).hookSpecificOutput;
+        return resolve({ decision: verdict.permissionDecision, reason: verdict.permissionDecisionReason });
+      } catch (parseError) {
+        return reject(parseError);
+      }
+    });
+    child.stdin.end(input(command));
+  });
+}
+
+async function inPool(items, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+  const runner = async () => {
+    while (next < items.length) {
+      const at = next;
+      next += 1;
+      results[at] = await worker(items[at]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(8, Math.max(2, os.availableParallelism())) }, runner));
+  return results;
+}
+
+/** Where HEAD points, read from disk: no spawn, so a row's effect costs only the row. */
+function headOf(repo) {
+  const git = path.join(repo, '.git');
+  const head = fs.readFileSync(path.join(git, 'HEAD'), 'utf8').trim();
+  return head.startsWith('ref: ') ? fs.readFileSync(path.join(git, head.slice(5)), 'utf8').trim() : head;
+}
+
+/** A fixture for the whole bank: a checkout, a second repo, an empty dir, an include file, a dispatcher. */
+function buildBankFixture(t) {
+  const fx = buildFixtureRepo(t);
+  const other = path.join(fx.root, 'other');
+  const emptyDir = path.join(fx.root, 'emptyw');
+  fs.mkdirSync(other);
+  fs.mkdirSync(emptyDir);
+  fixtureGit(other, 'init', '-q');
+  fixtureGit(other, 'commit', '-q', '--allow-empty', '-m', 'setup');
+  fs.appendFileSync(path.join(other, '.git', 'config'), '[core]\n\thooksPath = /dev/null\n');
+  const evil = path.join(fx.root, 'evil.cfg');
+  fs.writeFileSync(evil, '[core]\n\thooksPath = /dev/null\n');
+  const dispatcher = buildDispatcher(fx.root);
+  return {
+    ...fx,
+    other,
+    emptyDir,
+    evil,
+    dispatcher,
+    plain: childEnv(),
+    behind: childEnv({ dispatcher }),
+    config: fs.readFileSync(path.join(fx.repo, '.git', 'config')),
+  };
+}
+
+const EFFECT_BYPASS = 'committed, no hook';
+const EFFECT_HOOK = 'hook ran, no commit';
+const EFFECT_NONE = 'no commit, no hook';
+const EFFECT_OTHER = 'landed in the other repo, no hook';
+const ENF12_TEXT = /\(ENF-12\)$/;
+
+/** Run a row in real bash behind the dispatcher, then put the fixture's config back. */
+function bankEffect(fx, command) {
+  const marker = path.join(fx.repo, REPO_HOOK_MARKER);
+  fs.rmSync(marker, { force: true });
+  const repoBefore = headOf(fx.repo);
+  const otherBefore = headOf(fx.other);
+  spawnSync('bash', ['-c', command], { cwd: fx.repo, env: realGitEnv(fx.behind), encoding: 'utf8', timeout: 20000 });
+  const hookRan = fs.existsSync(marker);
+  const landed = headOf(fx.repo) !== repoBefore;
+  const landedOther = headOf(fx.other) !== otherBefore;
+  fs.writeFileSync(path.join(fx.repo, '.git', 'config'), fx.config);
+  if (hookRan) return landed ? 'hook ran AND a commit landed' : EFFECT_HOOK;
+  if (landed) return EFFECT_BYPASS;
+  return landedOther ? EFFECT_OTHER : EFFECT_NONE;
+}
+
+/**
+ * Every D and N row of the shape bank. An effect of null is not run or not asserted:
+ * sudo and gh reach outside the fixture; `git config set` is a real write only from git 2.46; env -i
+ * drops the fixture's identity and no-system keys, so the host decides. A commit row's measured
+ * effect is why its deny is not a guess, and an accepted false deny's effect is the hook running.
+ */
+function bankRows({ evil, other, emptyDir }) {
+  const K = ENF13_K;
+  const PK = 'GIT_CONFIG_PARAMETERS';
+  const CK = 'GIT_CONFIG_COUNT';
+  const VK = 'GIT_CONFIG_VALUE_0';
+  const C = 'commit --allow-empty -m x';
+  const D = (advice, name, command, effect) => ({ want: 'deny', advice, name, command, effect });
+  const N = (name, command, effect) => ({ want: 'allow', name, command, effect });
+  const R = ADVICE_REMOVE;
+  const L = ADVICE_LITERAL;
+  const O = ADVICE_OWN_CALL;
+  return [
+    D(R, 'control -c', `git -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
+    D(R, 'include -c', `git -c include.path=${evil} ${C}`, EFFECT_BYPASS),
+    D(R, 'include CASE', `git -c INCLUDE.PATH=${evil} ${C}`, EFFECT_BYPASS),
+    D(R, 'includeIf', `git -c 'includeIf.gitdir:/**.path=${evil}' ${C}`, EFFECT_BYPASS),
+    D(R, 'include config-env=', `EV=${evil} git --config-env=include.path=EV ${C}`, EFFECT_BYPASS),
+    D(R, 'include config-env sp', `EV=${evil} git --config-env include.path=EV ${C}`, EFFECT_BYPASS),
+    D(R, 'shallow-file hides', `git --shallow-file /dev/null -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
+    D(R, 'attr-source hides', `git --attr-source HEAD -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
+    D(L, 'var key', `K=${K}; git -c $K=/dev/null ${C}`, EFFECT_BYPASS),
+    D(L, 'opts var', `O="-c ${K}=/dev/null"; git $O ${C}`, EFFECT_BYPASS),
+    D(L, 'brace', `git {-c,${K}=/dev/null} ${C}`, EFFECT_BYPASS),
+    D(L, 'ansi-c', `git -c $'${K}=/dev/null' ${C}`, EFFECT_BYPASS),
+    D(L, 'ansi-c hex', `git -c $'core.hooks\\x50ath=/dev/null' ${C}`, EFFECT_BYPASS),
+    D(R, 'partial quote', `git -c "core.hooks"Path=/dev/null ${C}`, EFFECT_BYPASS),
+    D(L, 'partial subst', `git -c core.hooks$(echo Path)=/dev/null ${C}`, EFFECT_BYPASS),
+    D(R, 'backslash', `git -c core.hooks\\Path=/dev/null ${C}`, EFFECT_BYPASS),
+    D(O, 'printf -v', `printf -v ${PK} "'${K}=/dev/null'"; export ${PK}; git ${C}`, EFFECT_BYPASS),
+    D(O, 'read', `read ${PK} <<< "'${K}=/dev/null'"; export ${PK}; git ${C}`, EFFECT_BYPASS),
+    D(O, 'export +=', `export ${VK}+=-nope; git ${C}`, EFFECT_BYPASS),
+    D(O, 'for', `for ${VK} in /dev/null; do export ${VK}; git ${C}; done`, EFFECT_BYPASS),
+    D(O, 'bare export', `${VK}=/dev/null; export ${VK}; git ${C}`, EFFECT_BYPASS),
+    D(O, 'export --', `export -- ${VK}=/dev/null; git ${C}`, EFFECT_BYPASS),
+    D(O, 'declare -gx', `declare -gx ${VK}=/dev/null; git ${C}`, EFFECT_BYPASS),
+    D(O, 'env --chdir', `env --chdir=. ${VK}=/dev/null git ${C}`, EFFECT_BYPASS),
+    D(O, 'built key', `n=0; export GIT_CONFIG_VALUE_$n=/dev/null; git ${C}`, EFFECT_BYPASS),
+    D(O, 'built key brace', `n=VALUE_0; export GIT_CONFIG_\${n}=/dev/null; git ${C}`, EFFECT_BYPASS),
+    D(R, 'pipe', `true | git -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
+    D(R, 'exec', `exec git -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
+    D(R, 'stdbuf', `stdbuf -o0 git -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
+    D(R, 'timeout', `timeout 9 git -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
+    D(R, 'env -C', `env -C . git -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
+    D(R, 'git-dir other', `git --git-dir=${other}/.git --work-tree=. ${C}`, EFFECT_OTHER),
+    D(R, 'git-dir sp', `git --git-dir ${other}/.git --work-tree . ${C}`, EFFECT_OTHER),
+    D(R, 'GIT_DIR', `GIT_DIR=${other}/.git GIT_WORK_TREE=. git ${C}`, EFFECT_OTHER),
+    D(R, 'GIT_COMMON_DIR', `GIT_COMMON_DIR=${other}/.git git ${C}`, EFFECT_NONE),
+    D(R, 'work-tree empty', `git --work-tree=${emptyDir} ${C}`, EFFECT_BYPASS),
+    D(R, 'GIT_WORK_TREE empty', `GIT_WORK_TREE=${emptyDir} git ${C}`, EFFECT_BYPASS),
+    D(O, 'chain write restore', `git config ${K} /dev/null && git ${C}; git config ${K} .githooks`, EFFECT_BYPASS),
+    D(O, 'chain unset', `git config --unset ${K} && git ${C}; git config ${K} .githooks`, EFFECT_BYPASS),
+    D(O, 'chain -c x config', `git -c x.y=z config ${K} /dev/null && git ${C}; git config ${K} .githooks`, EFFECT_BYPASS),
+    D(O, 'chain include write', `git config include.path ${evil} && git ${C}; git config --unset include.path`, EFFECT_BYPASS),
+    D(O, 'env -u (accepted false deny)', `env -u ${CK} git ${C}`, EFFECT_HOOK),
+    D(O, 'unset (accepted false deny)', `unset ${CK}; git ${C}`, EFFECT_HOOK),
+    D(O, 'echo key (accepted false deny)', `echo ${VK}=v && git ${C}`, EFFECT_HOOK),
+    D(O, 'grep key (accepted false deny)', `grep ${VK} /dev/null; git ${C}`, EFFECT_HOOK),
+    D(L, '-c user.name=$N (accepted false deny)', `N=x; git -c user.name=$N ${C}`, EFFECT_HOOK),
+    D(R, 'after --no-pager', `git --no-pager -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
+    D(R, 'after -p', `git -p -c ${K}=/dev/null ${C} | cat`, EFFECT_BYPASS),
+    D(R, 'after -C', `git -C . -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
+    D(R, 'CASE key', `git -c CORE.HOOKSPATH=/dev/null ${C}`, EFFECT_BYPASS),
+    D(R, '-c k no value', `git -c ${K} ${C}`, EFFECT_NONE),
+    D(R, '-c k= empty', `git -c ${K}= ${C}`, EFFECT_BYPASS),
+    D(R, 'repeat good then bad', `git -c ${K}=.githooks -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
+    D(R, 'repeat bad then good', `git -c ${K}=/dev/null -c ${K}=.githooks ${C}`, EFFECT_HOOK),
+    D(R, '--config-env=', `git --config-env=${K}=HOME ${C}`, EFFECT_BYPASS),
+    D(R, '--config-env sp', `git --config-env ${K}=HOME ${C}`, EFFECT_BYPASS),
+    D(L, 'quoted var key', `K=${K}; git -c "$K=/dev/null" ${C}`, EFFECT_BYPASS),
+    D(R, 'command', `command git -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
+    D(R, 'env', `env git -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
+    // The wrapper's own -n reads as the flag to ENF-12, so these two get its text, not this rule's.
+    D(ENF12_TEXT, 'sudo -n', `sudo -n git -c ${K}=/dev/null ${C}`, null),
+    D(ENF12_TEXT, 'nice -n', `nice -n 5 git -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
+    D(R, 'sudo', `sudo git -c ${K}=/dev/null ${C}`, null),
+    D(R, 'nice', `nice git -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
+    D(R, 'abs path', `/usr/bin/git -c ${K}=/dev/null ${C}`, fs.existsSync('/usr/bin/git') ? EFFECT_BYPASS : null),
+    D(O, 'leading key', `${VK}=/dev/null git ${C}`, EFFECT_BYPASS),
+    D(O, 'env key', `env ${VK}=/dev/null git ${C}`, EFFECT_BYPASS),
+    D(O, 'env -i key', `env -i PATH="$PATH" ${CK}=1 GIT_CONFIG_KEY_0=${K} ${VK}=/dev/null git ${C}`, null),
+    D(O, 'export key', `export ${VK}=/dev/null; git ${C}`, EFFECT_BYPASS),
+    D(O, 'typeset -x', `typeset -x ${VK}=/dev/null; git ${C}`, EFFECT_BYPASS),
+    D(O, 'readonly', `export ${VK}; readonly ${VK}=/dev/null; git ${C}`, EFFECT_BYPASS),
+    D(R, 'env GIT_DIR', `env GIT_DIR=${other}/.git GIT_WORK_TREE=. git ${C}`, EFFECT_OTHER),
+    D(O, 'config set', `git config set ${K} /dev/null && git ${C}`, null),
+    D(O, 'config --show-scope write', `git config --show-scope ${K} /dev/null && git ${C}; git config ${K} .githooks`, EFFECT_BYPASS),
+    D(L, 'config-env value expansion (accepted false deny)', `V=HOME; git --config-env user.name=$V ${C}`, EFFECT_HOOK),
+    D(L, 'url at (accepted false deny)', `git -c 'url.git@x:.insteadOf=y' push origin x`, EFFECT_NONE),
+    D(L, 'http header (accepted false deny)', `T=x; git -c "http.extraHeader=A: $T" push origin x`, EFFECT_NONE),
+    D(L, 'msg then push (accepted false deny)', `M=x; git commit --allow-empty -m "$M" -m push`, EFFECT_HOOK),
+    D(L, 'push commit (accepted false deny)', `R=origin; git push "$R" commit`, EFFECT_NONE),
+    D(L, 'add commit (accepted false deny)', `f=x; git add "$f" commit`, EFFECT_NONE),
+    D(L, 'diff commit (accepted false deny)', `A=HEAD; git diff "$A" -- commit`, EFFECT_NONE),
+    D(L, 'log push (accepted false deny)', `R=HEAD; git log "$R" -- push`, EFFECT_NONE),
+    D(R, '-c log grep (accepted false deny)', `git -c ${K}=/dev/null log --grep commit`, EFFECT_NONE),
+    D(O, 'gh body (accepted false deny)', `gh pr comment 1 --body "${CK} x" && git push origin x`, null),
+    D(O, 'newline key line', `${VK}=/dev/null\nexport ${VK}\ngit ${C}`, EFFECT_BYPASS),
+    D(R, 'newline override', `cd .\ngit -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
+    // AMENDMENT-1 A-7: the bank wanted this reported. The split tokens reach the region, so it denies.
+    D(R, 'subst -C word split', `git -C $(echo . -c ${K}=/dev/null) ${C}`, EFFECT_BYPASS),
+
+    N('-C dir push', 'git -C . push origin x', EFFECT_NONE),
+    N('trailing push -c', `git push -c ${K}=/dev/null`, EFFECT_NONE),
+    N('config get', `git config get ${K}; git ${C}`, EFFECT_HOOK),
+    N('SYSTEM', `GIT_CONFIG_SYSTEM=${evil} git ${C}`, EFFECT_HOOK),
+    N('MY_ prefix', `MY_${CK}=1 git ${C}`, EFFECT_HOOK),
+    N('COUNTER', `${CK}ER=1 git ${C}`, EFFECT_HOOK),
+    N('show HEAD:commit', `git -c ${K}=/dev/null show HEAD:commit >/dev/null 2>&1; git ${C}`, EFFECT_HOOK),
+    N('plain', `git ${C}`, EFFECT_HOOK),
+    N('attached -c', `git -c${K}=/dev/null ${C}`, EFFECT_NONE),
+    N('sub -c', `git commit -c HEAD --allow-empty -m x`, EFFECT_NONE),
+    N('k=.githooks', `git -c ${K}=.githooks ${C}`, EFFECT_HOOK),
+    N('user.name', `git -c user.name=x ${C}`, EFFECT_HOOK),
+    N('gpgsign', `git -c commit.gpgsign=false ${C}`, EFFECT_HOOK),
+    N('-C $WT', `WT=.; git -C "$WT" ${C}`, EFFECT_HOOK),
+    N('-C subst', `git -C "$(pwd)" ${C}`, EFFECT_HOOK),
+    N('-C dir', `git -C . ${C}`, EFFECT_HOOK),
+    N('namespace=$N', `N=x; git --namespace=$N ${C}`, EFFECT_HOOK),
+    N('GLOBAL', `GIT_CONFIG_GLOBAL=${evil} git ${C}`, EFFECT_HOOK),
+    N('message text -c', `git commit --allow-empty -m "-c ${K}=/dev/null"`, EFFECT_HOOK),
+    N('message key', `git commit --allow-empty -m "${VK}=v"`, EFFECT_HOOK),
+    N('message expansion', `M=x; git commit --allow-empty -m "$M"`, EFFECT_HOOK),
+    N('heredoc message', `git commit --allow-empty -m "$(cat <<'EOF'\nfix commit push $X -c ${K}=y ${VK}=z\n\nmore commit\nEOF\n)"`, EFFECT_HOOK),
+    N('heredoc -F', `git commit --allow-empty -F - <<'EOF'\n-c ${K}=x commit\n${VK}=z\nEOF`, EFFECT_HOOK),
+    N('heredoc cat before', `cat > /dev/null <<'EOF'\n${VK}=1\nEOF\ngit ${C}`, EFFECT_HOOK),
+    N('newline message key', `cd .\ngit commit --allow-empty -m "${VK}=v"`, EFFECT_HOOK),
+    N('multiline message key', `git commit --allow-empty -m "line1\n${VK}=v"`, EFFECT_HOOK),
+    N('multiline message git -c', `git commit --allow-empty -m "line1\ngit -c ${K}=/dev/null commit"`, EFFECT_HOOK),
+    N('newline add then commit', `f=x\ngit add "$f" 2>/dev/null\ngit ${C}`, EFFECT_HOOK),
+    N('newline expansion neighbor', `git log -1 "$X" >/dev/null 2>&1\ngit ${C}`, EFFECT_HOOK),
+    N('newline -c neighbor', `git -c ${K}=/dev/null status >/dev/null\ngit ${C}`, EFFECT_HOOK),
+    N('newline cd "$WT"', `WT=.\ncd "$WT"\ngit ${C}`, EFFECT_HOOK),
+    // AMENDMENT-1 A-4: the scan stops at a comment token. The bank's older want was a false deny.
+    N('comment naming key (A-4)', `# ${VK}\ngit ${C}`, EFFECT_HOOK),
+    N('config read --get', `git config --get ${K} && git ${C}`, EFFECT_HOOK),
+    N('config read --list', `git config --list --show-scope >/dev/null && git ${C}`, EFFECT_HOOK),
+    N('config bare key read', `git config ${K} && git ${C}`, EFFECT_HOOK),
+    N('config advised fix', `git config ${K} .githooks && git ${C}`, EFFECT_HOOK),
+    N('neighbor -c status', `git -c ${K}=/dev/null status >/dev/null; git ${C}`, EFFECT_HOOK),
+    N('neighbor --git-dir', `git --git-dir=.git status >/dev/null; git ${C}`, EFFECT_HOOK),
+    N('neighbor expansion', `git log -1 "$X" >/dev/null 2>&1; git ${C}`, EFFECT_HOOK),
+    N('trailing -c on commit', 'git commit --allow-empty -m x -c', EFFECT_NONE),
+  ];
+}
+
+/** Each row's verdict in both states and, one at a time, its real effect. Returns what differs. */
+async function bankMismatches(fx, rows) {
+  const plain = await inPool(rows, (row) => runHookAsync(fx.repo, fx.plain, row.command));
+  const behind = await inPool(rows, (row) => runHookAsync(fx.repo, fx.behind, row.command));
+  const wrong = [];
+  rows.forEach((row, at) => {
+    for (const [state, verdict] of [['plain', plain[at]], ['dispatcher', behind[at]]]) {
+      if (verdict.decision !== row.want) {
+        wrong.push(`${row.name}, ${state}: ${verdict.decision}, want ${row.want}: ${verdict.reason || ''}`);
+      } else if (row.want === 'deny' && row.advice === ENF12_TEXT) {
+        if (!ENF12_TEXT.test(verdict.reason)) wrong.push(`${row.name}, ${state} text: ${verdict.reason}`);
+      } else if (row.want === 'deny') {
+        const texts = [/\(ENF-13\)$/, /`git config core\.hooksPath \.githooks` is not the fix/, row.advice];
+        if (!texts.every((text) => text.test(verdict.reason))) wrong.push(`${row.name}, ${state} text: ${verdict.reason}`);
+        if (/INERT/.test(verdict.reason) || VALVE_NAME.test(verdict.reason)) wrong.push(`${row.name}, ${state} text: ${verdict.reason}`);
+      }
+    }
+    if (row.effect !== null) {
+      const effect = bankEffect(fx, row.command);
+      if (effect !== row.effect) wrong.push(`${row.name}, real effect: ${effect}, want ${row.effect}`);
+    }
+  });
+  return wrong;
+}
+
+test('shape bank, deny rows: each denies in both states, with its advice, and its real effect is as measured', async (t) => {
+  const fx = buildBankFixture(t);
+  assert.deepStrictEqual(await bankMismatches(fx, bankRows(fx).filter((row) => row.want === 'deny')), []);
+});
+
+test('shape bank, not-a-deny rows: each allows in both states, and its real effect is as measured', async (t) => {
+  const fx = buildBankFixture(t);
+  assert.deepStrictEqual(await bankMismatches(fx, bankRows(fx).filter((row) => row.want === 'allow')), []);
+});
+
+/**
+ * Reported, not closed: each row runs through the spawned hook and real bash, and the output is the
+ * measured list. Nothing is asserted about these rows: this records what the gate does not catch, and
+ * passing here says nothing about any of them. State the verdict and effect from this output, not from
+ * this source.
+ */
+function reportedRows(fx, second, plantedExecPath) {
+  const K = ENF13_K;
+  const VK = 'GIT_CONFIG_VALUE_0';
+  const C = 'commit --allow-empty -m x';
+  const O = `-c ${K}=/dev/null`;
+  const row = (name, command, extra = {}) => ({ name, command, ...extra });
+  return [
+    // The shape bank's R rows.
+    row('--shallow-file then --no-verify (ENF-12 other gap)', `git --shallow-file /dev/null commit --no-verify --allow-empty -m x`),
+    row('--config-env other then --no-verify (ENF-12 other gap)', `git --config-env user.name=HOME commit --no-verify --allow-empty -m x`),
+    row('unquoted -C word split', `WT=". ${O}"; git -C $WT ${C}`),
+    row('--namespace word split', `N="x ${O}"; git --namespace $N ${C}`),
+    row('export GIT_DIR', `export GIT_DIR=${fx.other}/.git; git ${C}`),
+    row('leading K+=v', `${VK}+=-nope git ${C}`),
+    row('! git', `! git ${O} ${C}`),
+    row('if git', `if git ${O} ${C}; then :; fi`),
+    row('brace group', `{ git ${O} ${C}; }`),
+    row('subshell', `(git ${O} ${C})`),
+    row('$(git)', `echo $(git ${O} ${C})`),
+    row('eval', `eval 'git ${O} ${C}'`),
+    row('sh -c', `sh -c 'git ${O} ${C}'`),
+    row('env -S', `env -S 'git ${O} ${C}'`),
+    row('xargs', `true | xargs git ${O} ${C}`),
+    row('nohup', `nohup git ${O} ${C} >/dev/null 2>&1`),
+    row('time', `time git ${O} ${C}`),
+    row('git alias', `git -c alias.z='!git ${O} ${C}' z`),
+    row('script file', `printf '#!/bin/sh\\ngit ${O} ${C}\\n' > ${fx.root}/s.sh; sh ${fx.root}/s.sh`),
+    // AMENDMENT-1 A-5, a second gsd-core checkout reached through a variable: the gate reads the cwd's tree.
+    row('second checkout, git -C "$Q" commit', `Q=${second.repo}; git -C "$Q" ${C}`),
+    row('second checkout, cd "$Q" && git commit', `Q=${second.repo}; cd "$Q" && git ${C}`),
+    // A-5, env set by shell constructs the scan cannot read.
+    row('export GIT_WORK_TREE=x', `export GIT_WORK_TREE=${fx.emptyDir}; git ${C}`),
+    row('GIT_WORK_TREE=x; export', `GIT_WORK_TREE=${fx.emptyDir}; export GIT_WORK_TREE; git ${C}`),
+    row('GIT_WORK_TREE=x, newline export', `GIT_WORK_TREE=${fx.emptyDir}\nexport GIT_WORK_TREE\ngit ${C}`),
+    row('split-prefix built name, ${a}_VALUE_0', `a=GIT_CONFIG; export \${a}_VALUE_0=/dev/null; git ${C}`),
+    row('split-prefix built name, ${a}_CONFIG_VALUE_0', `a=GIT; export \${a}_CONFIG_VALUE_0=/dev/null; git ${C}`),
+    row('split-prefix built name, $(printf)', `export $(printf 'GIT_%s' CONFIG_VALUE_0)=/dev/null; git ${C}`),
+    row('--namespace=$N word split', `N="x ${O}"; git --namespace=$N ${C}`),
+    row('--exec-path=$X word split', `X="$(git --exec-path) ${O}"; git --exec-path=$X ${C}`),
+    // A-5, repo config changed by anything other than a git config write the scan reads.
+    row('git config $K write', `K=${K}; git config $K /dev/null && git ${C}; git config ${K} .githooks`),
+    row('git config --remove-section core', `git config --remove-section core && git ${C}; git config ${K} .githooks`),
+    row('git config --rename-section core', `git config --rename-section core x && git ${C}`),
+    row('append to .git/config', `printf '[core]\\n\\thooksPath=/dev/null\\n' >> .git/config; git ${C}`),
+    row('sed -i on .git/config', `sed -i 's/hooksPath = .githooks/hooksPath = \\/dev\\/null/' .git/config; git ${C}`),
+    // A-5, hooks removed from disk.
+    row('chmod -x the repo hook', `chmod -x .githooks/pre-commit; git ${C}`),
+    row('mv .githooks away', `mv .githooks moved-hooks; git ${C}`),
+    // A-5, W4's shapes.
+    row('variable subcommand', `S=commit; git ${O} $S --allow-empty -m x`),
+    row("ANSI-C subcommand", `git ${O} $'commit' --allow-empty -m x`),
+    row('newline in an unquoted $(', `git ${O} $(\n) ${C}`),
+    row('leading redirect 2>', `2>/dev/null git ${O} ${C}`),
+    row('leading redirect <', `</dev/null git ${O} ${C}`),
+    row('git 2>/dev/null commit --no-verify', `git 2>/dev/null commit --no-verify --allow-empty -m x`),
+    row('for loop', `for i in 1; do git ${O} ${C}; done`),
+    row('while loop', `n=0; while [ $n -lt 1 ]; do git ${O} ${C}; n=1; done`),
+    row('if then', `if true; then git ${O} ${C}; fi`),
+    row('case', `case x in x) git ${O} ${C};; esac`),
+    row('function body', `f() { git ${O} ${C}; }; f`),
+    row('setsid -w', `setsid -w git ${O} ${C}`),
+    row('builtin command', `builtin command git ${O} ${C}`),
+    row('G=git; $G', `G=git; $G ${O} ${C}`),
+    row('$(command -v git)', `$(command -v git) ${O} ${C}`),
+    row('help.autocorrect', `git ${O} -c help.autocorrect=immediate comit --allow-empty -m x`),
+    row('commit-tree plus update-ref', `T=$(git rev-parse 'HEAD^{tree}'); N=$(git commit-tree -m x -p HEAD $T); git update-ref HEAD $N`),
+    row('quote mask, comment', `# it's\ngit ${O} ${C}\n# it's`),
+    row('quote mask, ANSI-C', `echo $'a\\'b'; git ${O} ${C}; echo \\'`),
+    row('heredoc mask, arithmetic', `echo $((1<<X))\ngit ${O} ${C}\nX`),
+    // A value starting with a hash, after an option outside the value positions the scan knows.
+    row('--shallow-file "#x" value hides what follows', `git --shallow-file "#x" ${O} ${C}`),
+    // A-5 W2: an accepted dispatcher's own fail-open is inherited. Measured against the fixture delegate here.
+    row('planted git on GIT_EXEC_PATH, behind the fixture dispatcher', `GIT_EXEC_PATH=${plantedExecPath} git ${C}`),
+    row('planted git on GIT_EXEC_PATH, no dispatcher', `GIT_EXEC_PATH=${plantedExecPath} git ${C}`, { state: 'plain' }),
+    row('--exec-path planted git, behind the fixture dispatcher', `git --exec-path=${plantedExecPath} ${C}`),
+    // AMENDMENT-1 A-2 and the parser gaps: a continuation before a segment, a here-string before a line.
+    row('true && continuation, -c override (closed)', `true && \\\n git ${O} ${C}`),
+    row('true ; continuation, -c override (closed)', `true ; \\\ngit ${O} ${C}`),
+    row('true && continuation, --no-verify (parser gap)', `true && \\\n git commit --no-verify --allow-empty -m x`),
+    row('here-string, newline, -c override (closed)', `cat <<< x\ngit ${O} ${C}`),
+    row('here-string, newline, --no-verify (parser gap)', `cat <<< x\ngit commit --no-verify --allow-empty -m x`),
+    row('continuation then blank line, -c override', `echo x \\\n\ngit ${O} ${C}`),
+    // A-1 narrow: the plain state keeps today's allow; deny everywhere is the wide-rule follow-up.
+    row('A-1 narrow, plain: continuation --no-verify', `git commit --allow-empty -m x \\\n--no-verify`, { state: 'plain' }),
+    row('A-1 narrow, plain: -qnm cluster', 'git commit --allow-empty -qnm x', { state: 'plain' }),
+    row('A-1 narrow, plain: --no-veri', 'git commit --allow-empty --no-veri -m x', { state: 'plain' }),
+    // ENF-12 reads a wrapper's own -n as the flag: a false deny it already had, unchanged here.
+    row('nice -n 5 git commit (ENF-12 false deny)', `nice -n 5 git ${C}`),
+    // Runs nothing: gh would reach outside the fixture.
+    row('gh pr create x && git commit --no-verify', 'gh pr create x && git commit --no-verify -m x', { noExec: true }),
+    // From outside any gsd-core checkout: no root resolves, so the literal -C target is not read.
+    row('--attr-source hides -C from outside a checkout', `git --attr-source HEAD -C ${fx.repo} ${O} ${C}`, { cwd: fx.emptyDir }),
+  ];
+}
+
+test('reported rows, not closed: the measured list, asserting nothing about any row', async (t) => {
+  const fx = buildBankFixture(t);
+  const second = buildFixtureRepo(t, null);
+  const planted = path.join(fx.root, 'planted-exec-path');
+  writeExecutable(path.join(planted, 'git'), '#!/bin/sh\nexit 1\n');
+  const rows = reportedRows(fx, second, planted);
+  const stateEnv = (row) => (row.state === 'plain' ? fx.plain : fx.behind);
+  const verdicts = await inPool(rows, (row) => runHookAsync(row.cwd || fx.repo, stateEnv(row), row.command));
+  const marker = path.join(fx.repo, REPO_HOOK_MARKER);
+  const secondMarker = path.join(second.repo, REPO_HOOK_MARKER);
+  const configFile = path.join(fx.repo, '.git', 'config');
+  rows.forEach((row, at) => {
+    let effect = 'not run';
+    if (!row.noExec) {
+      const before = [fx.repo, fx.other, second.repo].map(headOf);
+      spawnSync('bash', ['-c', row.command], {
+        cwd: row.cwd || fx.repo,
+        env: realGitEnv(stateEnv(row)),
+        encoding: 'utf8',
+        timeout: 20000,
+      });
+      const after = [fx.repo, fx.other, second.repo].map(headOf);
+      if (fs.existsSync(marker) || fs.existsSync(secondMarker)) effect = 'hook ran';
+      else if (after[0] !== before[0]) effect = 'COMMITTED-NO-HOOK';
+      else if (after[1] !== before[1]) effect = 'COMMITTED-NO-HOOK in the other repo';
+      else if (after[2] !== before[2]) effect = 'COMMITTED-NO-HOOK in the second checkout';
+      else effect = 'no commit';
+      // These rows write config and move hooks, so each one starts from the same fixture.
+      fs.rmSync(marker, { force: true });
+      fs.rmSync(secondMarker, { force: true });
+      fs.rmSync(path.join(fx.repo, '.githooks'), { recursive: true, force: true });
+      fs.rmSync(path.join(fx.repo, 'moved-hooks'), { recursive: true, force: true });
+      addCheckoutLayout(fx.repo);
+      fs.writeFileSync(configFile, fx.config);
+    }
+    t.diagnostic(`reported | ${row.name} | ${row.state === 'plain' ? 'plain' : 'dispatcher'} | hook=${verdicts[at].decision} | ${effect}`);
+  });
+});
+
+test('second checkout named literally: the gate reads the target, so an unset repo value there denies', (t) => {
+  const fx = buildBankFixture(t);
+  const second = buildFixtureRepo(t, null);
+  const d = runHook(fx.repo, fx.behind, `git -C ${second.repo} commit --allow-empty -m x`);
+  assert.strictEqual(d.decision, 'deny');
+  assert.ok(d.reason.includes('that value is UNSET'), d.reason);
+});
+
+// --- Row 3: a dir named githooks-dispatch that is not one -----------------------------------------
+
+/** The stub that would mark a canary run: exit 37 with a marker file, if anything ever executes it. */
+function sentinelStub(sentinel) {
+  return `#!/bin/sh\n: > '${sentinel}'\n: > canary-ran\nexit 37\n`;
+}
+
+/** A look-alike with one thing wrong, each on its own. `why` is what the shape check must name. */
+function brokenLookAlikes(parent, sentinel) {
+  const each = (label, breakIt) => {
+    const dir = buildLookAlike(fs.mkdtempSync(path.join(parent, `${label}-`)), sentinelStub(sentinel));
+    breakIt(dir);
+    return dir;
+  };
+  const inDir = (dir, name) => path.join(dir, name);
+  return [
+    ['empty dir', /ENOENT/, each('empty', (dir) => {
+      for (const name of fs.readdirSync(dir)) fs.rmSync(inDir(dir, name));
+    })],
+    ['pre-push missing', /ENOENT/, each('nopush', (dir) => fs.rmSync(inDir(dir, 'pre-push')))],
+    ['pre-commit missing', /ENOENT/, each('nocommit', (dir) => fs.rmSync(inDir(dir, 'pre-commit')))],
+    ['_delegate.sh missing', /ENOENT/, each('nodelegate', (dir) => fs.rmSync(inDir(dir, '_delegate.sh')))],
+    ['pre-commit not executable', /pre-commit is not executable/, each('commit644', (dir) => fs.chmodSync(inDir(dir, 'pre-commit'), 0o644))],
+    ['pre-push not executable', /pre-push is not executable/, each('push644', (dir) => fs.chmodSync(inDir(dir, 'pre-push'), 0o644))],
+    ['_delegate.sh a directory', /_delegate\.sh is not a regular file/, each('delegatedir', (dir) => {
+      fs.rmSync(inDir(dir, '_delegate.sh'));
+      fs.mkdirSync(inDir(dir, '_delegate.sh'));
+    })],
+    ['pre-push a directory', /pre-push is not a regular file/, each('pushdir', (dir) => {
+      fs.rmSync(inDir(dir, 'pre-push'));
+      fs.mkdirSync(inDir(dir, 'pre-push'));
+    })],
+    ['_delegate.sh a symlink loop', /ELOOP/, each('loop', (dir) => {
+      fs.rmSync(inDir(dir, '_delegate.sh'));
+      fs.symlinkSync('_delegate.sh', inDir(dir, '_delegate.sh'));
+    })],
+  ];
+}
+
+test('dispatcherShape: why names the failing sub-check, each on its own, and a sound dir passes', (t) => {
+  const { dispatcherShape } = require('./githooks-seal.cjs');
+  const root = scratchDir(t, 'githooks-seal-shape-');
+  const sentinel = path.join(root, 'sentinel');
+  assert.deepStrictEqual(dispatcherShape(buildDispatcher(root)), { genuine: true, why: 'shape matches' });
+  for (const [label, why, dir] of brokenLookAlikes(root, sentinel)) {
+    const shape = dispatcherShape(dir);
+    assert.strictEqual(shape.genuine, false, label);
+    assert.match(shape.why, why, label);
+  }
+  const asFile = path.join(fs.mkdtempSync(path.join(root, 'file-')), 'githooks-dispatch');
+  fs.writeFileSync(asFile, '');
+  for (const [value, why] of [
+    [null, 'no value'],
+    ['', 'no value'],
+    [undefined, 'no value'],
+    ['githooks-dispatch', 'not an absolute path'],
+    ['relative/githooks-dispatch', 'not an absolute path'],
+    ['/dev/null', 'basename is not githooks-dispatch'],
+    [path.join(root, 'githooks-dispatchx'), 'basename is not githooks-dispatch'],
+    [asFile, 'not a directory'],
+  ]) {
+    assert.deepStrictEqual(dispatcherShape(value), { genuine: false, why }, String(value));
+  }
+  assert.strictEqual(fs.existsSync(sentinel), false, 'a shape check executes nothing');
+});
+
+test('row 3: a mode 000 dir named githooks-dispatch is EACCES, a deny, and nothing runs', { skip: process.getuid && process.getuid() === 0 ? 'root ignores file modes' : false }, (t) => {
+  const { dispatcherShape } = require('./githooks-seal.cjs');
+  const fx = buildFixtureRepo(t);
+  const sentinel = path.join(fx.root, 'sentinel');
+  const dir = buildLookAlike(fx.root, sentinelStub(sentinel));
+  fs.chmodSync(dir, 0o000);
+  try {
+    assert.deepStrictEqual(dispatcherShape(dir), { genuine: false, why: 'EACCES' });
+    const d = runHook(fx.repo, childEnv({ dispatcher: dir }), 'git commit -m x');
+    assert.strictEqual(d.decision, 'deny');
+    assert.match(d.reason, /EACCES/);
+    assert.doesNotMatch(d.reason, /canary/);
+    assert.strictEqual(fs.existsSync(sentinel), false);
+  } finally {
+    fs.chmodSync(dir, 0o755);
+  }
+});
+
+test('row 3: each broken look-alike denies with text C through the hook, no canary, the file never runs', async (t) => {
+  const fx = buildFixtureRepo(t);
+  const sentinel = path.join(fx.root, 'sentinel');
+  const rows = brokenLookAlikes(fx.root, sentinel);
+  const verdicts = await inPool(rows, ([, , dir]) => runHookAsync(fx.repo, childEnv({ dispatcher: dir }), 'git commit -m x'));
+  rows.forEach(([label, why], at) => {
+    const d = verdicts[at];
+    assert.strictEqual(d.decision, 'deny', label);
+    assert.match(d.reason, why, label);
+    assert.ok(d.reason.includes('so `git config core.hooksPath .githooks` cannot fix it'), d.reason);
+    assert.doesNotMatch(d.reason, /canary/, `${label}: a shape failure ran no canary`);
+    assert.doesNotMatch(d.reason, /INERT/, label);
+    assertPlainDenyText(d.reason, label);
+  });
+  assert.strictEqual(fs.existsSync(sentinel), false);
+});
+
+/** The override stub that would lift a thrown fault, and the count of what it lifted. */
+function overrideStub() {
+  const seen = { receipts: 0 };
+  return {
+    seen,
+    overrideImpl: {
+      checkOverride: () => ({ override: true, reason: 'pin' }),
+      writeReceipt: () => {
+        seen.receipts += 1;
+      },
+    },
+  };
+}
+
+test('every returned deny stays a deny with an override stub set, zero receipts', (t) => {
+  const fx = buildFixtureRepo(t);
+  const sentinel = path.join(fx.root, 'sentinel');
+  const value = buildDispatcher(fx.root);
+  const failed = () => ({ passed: false, marker: false, status: 0, signal: null, error: null });
+  const injected = (over) => ({ worktreeRoot: fx.repo, readRepoHooksPath: () => '.githooks', passesCanary: failed, ...over });
+  const rows = [
+    ['ENF-12', 'git commit --no-verify -m x', injected({ readHooksPath: () => '.githooks' }), /\(ENF-12\)$/],
+    ['text A', 'git commit -m x', { worktreeRoot: fx.repo, readHooksPath: () => '.husky' }, /INERT/],
+    ['text A, unset', 'git commit -m x', { worktreeRoot: fx.repo, readHooksPath: () => null }, /UNSET/],
+    ['text B', 'git commit -m x', injected({ readHooksPath: () => value, readRepoHooksPath: () => '.husky' }), /that value is `\.husky`/],
+    ['text C, canary', 'git commit -m x', injected({ readHooksPath: () => value }), /did not pass the delegation canary/],
+    ['text C, no canary wired', 'git commit -m x', { worktreeRoot: fx.repo, readHooksPath: () => value, readRepoHooksPath: () => '.githooks' }, /no canary ran/],
+    ['text C, a true that is not the result', 'git commit -m x', injected({ readHooksPath: () => value, passesCanary: () => true }), /did not pass/],
+    ['text C, scope', 'git commit -m x', { worktreeRoot: fx.repo, readHooksPath: () => '/v', readRepoHooksPath: () => '/v', readHooksPathScope: () => 'command' }, /Voiding the env count key/],
+    ['text D, override', `git -c ${ENF13_K}=/dev/null commit -m x`, injected({ readHooksPath: () => '.githooks' }), /Remove it from the command/],
+    ['text D, A-1', 'git commit --no-veri -m x', injected({ readHooksPath: () => value }), /hook-skipping spelling/],
+  ];
+  for (const [badValue, why] of [
+    ['/dev/null', /basename/],
+    ['relative/githooks-dispatch', /not an absolute path/],
+    [path.join(fx.root, 'none', 'githooks-dispatch'), /ENOENT/],
+    ...brokenLookAlikes(fx.root, sentinel).map(([, shapeWhy, dir]) => [dir, shapeWhy]),
+  ]) {
+    rows.push([`text C, shape ${badValue}`, 'git commit -m x', injected({ readHooksPath: () => badValue }), why]);
+  }
+  for (const [label, command, base, text] of rows) {
+    const { seen, overrideImpl } = overrideStub();
+    const d = runGithooksGate(input(command), { ...base, overrideImpl });
+    assert.strictEqual(d.permissionDecision, 'deny', label);
+    assert.match(d.permissionDecisionReason, text, label);
+    assert.strictEqual(seen.receipts, 0, label);
+  }
+  assert.strictEqual(fs.existsSync(sentinel), false);
+});
+
+test('row 3: a real canary that ran and failed is a deny the override stub cannot lift', (t) => {
+  const { runDispatcherCanary } = require('./githooks-seal.cjs');
+  const fx = buildFixtureRepo(t);
+  const env = childEnv();
+  for (const body of ['#!/bin/sh\nexit 0\n', '#!/bin/sh\n.githooks/pre-commit\nexit 0\n', '#!/bin/sh\nexit 37\n']) {
+    const dir = buildLookAlike(fs.mkdtempSync(path.join(fx.root, 'stub-')), body);
+    const { seen, overrideImpl } = overrideStub();
+    const d = runGithooksGate(input('git commit -m x'), {
+      worktreeRoot: fx.repo,
+      readHooksPath: () => dir,
+      readRepoHooksPath: () => '.githooks',
+      passesCanary: (value) => runDispatcherCanary(value, { env }),
+      overrideImpl,
+    });
+    assert.strictEqual(d.permissionDecision, 'deny', body);
+    assert.match(d.permissionDecisionReason, /did not pass the delegation canary/, body);
+    assert.strictEqual(seen.receipts, 0, body);
+  }
+});
+
+test('row 3: a hanging stub and a TERM-trapping stub are killed at the bound, and the deny reports the signal', (t) => {
+  const { runDispatcherCanary } = require('./githooks-seal.cjs');
+  const fx = buildFixtureRepo(t);
+  const env = childEnv();
+  const timeoutMs = 400;
+  // `sleep` outlasts the assert on purpose: only a SIGKILL returns before it ends. Plain sleep dies to
+  // TERM as well, so only the trapping stub can tell the kill signal apart.
+  for (const [label, body] of [
+    ['hanging', '#!/bin/sh\nexec sleep 4\n'],
+    ['traps TERM', "#!/bin/sh\ntrap '' TERM\nsleep 4\n"],
+  ]) {
+    const dir = buildLookAlike(fs.mkdtempSync(path.join(fx.root, 'stub-')), body);
+    const started = Date.now();
+    const result = runDispatcherCanary(dir, { env, timeoutMs });
+    const elapsed = Date.now() - started;
+    assert.strictEqual(result.passed, false, label);
+    assert.strictEqual(result.marker, false, label);
+    assert.strictEqual(result.signal, 'SIGKILL', label);
+    assert.ok(elapsed < timeoutMs + 2000, `${label}: returned in ${elapsed} ms`);
+    const { seen, overrideImpl } = overrideStub();
+    const d = runGithooksGate(input('git commit -m x'), {
+      worktreeRoot: fx.repo,
+      readHooksPath: () => dir,
+      readRepoHooksPath: () => '.githooks',
+      passesCanary: () => result,
+      overrideImpl,
+    });
+    assert.match(d.permissionDecisionReason, /marker no, signal SIGKILL/, label);
+    assert.strictEqual(seen.receipts, 0, label);
+  }
+  // A spawn that never started reports its error code, not a status.
+  const noStart = runGithooksGate(input('git commit -m x'), {
+    worktreeRoot: fx.repo,
+    readHooksPath: () => buildDispatcher(fs.mkdtempSync(path.join(fx.root, 'ok-'))),
+    readRepoHooksPath: () => '.githooks',
+    passesCanary: () => ({ passed: false, marker: false, status: null, signal: null, error: 'EACCES' }),
+  });
+  assert.match(noStart.permissionDecisionReason, /marker no, error EACCES/);
+});
+
+// --- A-1 placement: the deny comes after the shape and repo-value checks, and before the canary ------
+
+test('A-1 placement: a shape failure and a wrong repo value keep their own text for a spelling ENF-12 misses', (t) => {
+  const command = 'git commit --no-veri -m x';
+  const fx = buildFixtureRepo(t);
+  const atNull = runHook(fx.repo, childEnv({ dispatcher: '/dev/null' }), command);
+  assert.strictEqual(atNull.decision, 'deny');
+  assert.match(atNull.reason, /does not have a hooks dispatcher's shape/);
+  assert.doesNotMatch(atNull.reason, /hook-skipping/);
+  const husky = buildFixtureRepo(t, '.husky');
+  const behindHusky = runHook(husky.repo, childEnv({ dispatcher: buildDispatcher(husky.root) }), command);
+  assert.strictEqual(behindHusky.decision, 'deny');
+  assert.match(behindHusky.reason, /that value is `\.husky`/);
+  assert.doesNotMatch(behindHusky.reason, /hook-skipping/);
+});
+
+// --- Row 4: a read or a setup that cannot run denies, and only a logged override rescues that ---------
+
+test('row 4: a bad count key, a missing TMPDIR and an empty PATH each deny through the spawned hook', async (t) => {
+  const fx = buildFixtureRepo(t);
+  const dispatcher = buildDispatcher(fx.root);
+  const badCount = childEnv({ dispatcher });
+  badCount.GIT_CONFIG_COUNT = 'nope';
+  const noTmp = childEnv({ dispatcher, tmpdir: path.join(fx.root, 'no-such-dir') });
+  const noPath = childEnv({ dispatcher });
+  noPath.PATH = '';
+  const rows = [
+    ['invalid count key', badCount, /exit 128/],
+    ['TMPDIR missing', noTmp, /could not set up the delegation canary/],
+    ['PATH empty', noPath, /could not read core\.hooksPath/],
+  ];
+  const verdicts = await inPool(rows, ([, env]) => runHookAsync(fx.repo, env, 'git commit -m x'));
+  rows.forEach(([label, , why], at) => {
+    assert.strictEqual(verdicts[at].decision, 'deny', label);
+    assert.match(verdicts[at].reason, why, label);
+  });
+});
+
+test('row 4: a thrown read denies, and a logged override lifts only that, with a receipt', (t) => {
+  const fx = buildFixtureRepo(t);
+  const value = buildDispatcher(fx.root);
+  const boom = () => {
+    throw new Error('read boom');
+  };
+  const throwers = [
+    ['effective read', { readHooksPath: boom }],
+    ['voided read', { readHooksPath: () => value, readRepoHooksPath: boom }],
+    ['canary setup', { readHooksPath: () => value, readRepoHooksPath: () => '.githooks', passesCanary: boom }],
+  ];
+  for (const [label, throwing] of throwers) {
+    const closed = runGithooksGate(input('git commit -m x'), {
+      worktreeRoot: fx.repo,
+      ...throwing,
+      overrideImpl: { checkOverride: () => ({ override: false }), writeReceipt: () => {} },
+    });
+    assert.strictEqual(closed.permissionDecision, 'deny', label);
+    assert.match(closed.permissionDecisionReason, /read boom/, label);
+    const { seen, overrideImpl } = overrideStub();
+    const lifted = runGithooksGate(input('git commit -m x'), { worktreeRoot: fx.repo, ...throwing, overrideImpl });
+    assert.strictEqual(lifted.permissionDecision, 'allow', label);
+    assert.strictEqual(seen.receipts, 1, label);
+  }
+});
+
+// --- The scope rows and the chain's regressions ---------------------------------------------------
+
+test('scope: global-scope and direct repo-scope values naming a look-alike deny with text A and never run it', (t) => {
+  const fx = buildFixtureRepo(t, null);
+  const sentinel = path.join(fx.root, 'sentinel');
+  const lookAlike = buildLookAlike(fx.root, sentinelStub(sentinel));
+  const globalConfig = path.join(fx.root, 'global.cfg');
+  fs.writeFileSync(globalConfig, `[core]\n\thooksPath = ${lookAlike}\n`);
+  const globalEnv = childEnv();
+  globalEnv.GIT_CONFIG_GLOBAL = globalConfig;
+  const fromGlobal = runHook(fx.repo, globalEnv, 'git commit -m x');
+  assert.strictEqual(fromGlobal.decision, 'deny');
+  assert.ok(fromGlobal.reason.includes(lookAlike), fromGlobal.reason);
+  assert.match(fromGlobal.reason, /INERT/);
+
+  fs.appendFileSync(path.join(fx.repo, '.git', 'config'), `[core]\n\thooksPath = ${lookAlike}\n`);
+  const fromRepo = runHook(fx.repo, childEnv(), 'git commit -m x');
+  assert.strictEqual(fromRepo.decision, 'deny');
+  assert.ok(fromRepo.reason.includes(lookAlike), fromRepo.reason);
+  assert.match(fromRepo.reason, /INERT/);
+  assert.strictEqual(fs.existsSync(sentinel), false);
+});
+
+test('scope: a worktree-scope value over repo .githooks denies, plain and behind the dispatcher', (t) => {
+  const fx = buildFixtureRepo(t);
+  const dispatcher = buildDispatcher(fx.root);
+  fs.appendFileSync(path.join(fx.repo, '.git', 'config'), '[extensions]\n\tworktreeConfig = true\n');
+  fs.writeFileSync(path.join(fx.repo, '.git', 'config.worktree'), '[core]\n\thooksPath = .husky\n');
+  const plain = runHook(fx.repo, childEnv(), 'git commit -m x');
+  assert.strictEqual(plain.decision, 'deny');
+  assert.match(plain.reason, /`\.husky`, so the repo's `\.githooks` gates .* INERT/);
+  const behind = runHook(fx.repo, childEnv({ dispatcher }), 'git commit -m x');
+  assert.strictEqual(behind.decision, 'deny');
+  assert.match(behind.reason, /that value is `\.husky`/);
+  // Text A's advice does not move a worktree-scope value. Measured here, and it still denies.
+  const git = (...args) => spawnSync('git', args, { cwd: fx.repo, env: hostFreeEnv(), encoding: 'utf8' });
+  assert.strictEqual(git('config', ENF13_K, '.githooks').status, 0);
+  t.diagnostic(`reported | worktree-scope value after the advised write | plain | ${git('config', '--show-scope', '--get', ENF13_K).stdout.trim()}`);
+  assert.strictEqual(runHook(fx.repo, childEnv(), 'git commit -m x').decision, 'deny');
+});
+
+test('scope: the voided read is compared exactly, so `.githooks ` behind the dispatcher denies with text B', (t) => {
+  const fx = buildFixtureRepo(t, '".githooks "');
+  const d = runHook(fx.repo, childEnv({ dispatcher: buildDispatcher(fx.root) }), 'git commit -m x');
+  assert.strictEqual(d.decision, 'deny');
+  assert.ok(d.reason.includes('that value is `.githooks `'), d.reason);
+});
+
+test('git init in the canary runs nothing from the value: only pre-commit runs, once, in the canary repo', (t) => {
+  const { runDispatcherCanary } = require('./githooks-seal.cjs');
+  const root = scratchDir(t, 'githooks-seal-init-');
+  const sentinel = path.join(root, 'ran');
+  const record = (next) => `#!/bin/sh\necho "$(basename "$0") $PWD" >> '${sentinel}'\n${next}\n`;
+  const dir = buildLookAlike(root, record('.githooks/pre-commit'));
+  // Under the value git itself would look for these. The fixture's git init must not reach them.
+  for (const name of ['post-checkout', 'post-commit', 'post-index-change', 'reference-transaction', 'post-rewrite', 'pre-auto-gc']) {
+    writeExecutable(path.join(dir, name), record('exit 0'));
+  }
+  const result = runDispatcherCanary(dir, { env: childEnv({ dispatcher: dir }) });
+  assert.strictEqual(result.passed, true, JSON.stringify(result));
+  const lines = fs.readFileSync(sentinel, 'utf8').trim().split('\n');
+  assert.strictEqual(lines.length, 1, lines.join('\n'));
+  assert.match(lines[0], /^pre-commit .*githooks-seal-canary-/);
+});
+
+test('ENF-12 text is byte-identical to the text this fix found', () => {
+  const d = runGithooksGate(input('git commit --no-verify -m x'), deps());
+  assert.strictEqual(
+    d.permissionDecisionReason,
+    '`--no-verify` / `-n` bypasses the repo\'s `.githooks` gates (pre-commit / pre-push). ' +
+      'Remove it and let the local gates run. ' +
+      '`GSD_CONTRIB_OVERRIDE` does not lift this deny: this gate honors it only for a thrown gate ' +
+      'error. Turning the toolkit off is a human operator\'s decision, not a way past this deny: ' +
+      '`node bin/contrib-capability.cjs off --reason "<why>"`, run from the toolkit checkout, strips ' +
+      'the toolkit\'s gates from that gsd-core checkout and writes a receipt. (ENF-12)'
+  );
+});
+
+test('RES-01: a non-sealed command with no typed hit pays no filesystem walk before its allow', (t) => {
+  // The verdict log's own file checks come after the decision and are not a walk.
+  const logDir = process.env.GSD_CONTRIB_LOG_DIR;
+  const seen = [];
+  for (const name of ['statSync', 'lstatSync', 'existsSync', 'realpathSync', 'readdirSync']) {
+    const real = fs[name];
+    fs[name] = function spied(target, ...rest) {
+      if (!String(target).startsWith(logDir)) seen.push(`${name} ${target}`);
+      return real.call(this, target, ...rest);
+    };
+    t.after(() => {
+      fs[name] = real;
+    });
+  }
+  const noOverride = { checkOverride: () => ({ override: false }), writeReceipt: () => {} };
+  for (const command of ['git status', 'ls -la', 'git log --oneline -3 && git diff', `git -c ${ENF13_K}=/dev/null status`]) {
+    const d = runGithooksGate(input(command), { overrideImpl: noOverride });
+    assert.strictEqual(d.permissionDecision, 'allow', command);
+  }
+  assert.deepStrictEqual(seen, []);
+  // The spy does see a walk: a sealed command resolves its root.
+  runGithooksGate(input('git commit -m x'), { overrideImpl: noOverride });
+  assert.ok(seen.length > 0, 'a sealed command should walk');
+});
+
+test('A-2, the refusal is scoped: a text that does not parse with no sealed segment in it stays allowed', (t) => {
+  const { fx, states } = typedStates(t);
+  for (const command of ['git log \\\n\ngit status', 'echo x \\\n\necho y']) {
+    assertTypedAllow(command, states, fx.repo);
   }
 });
