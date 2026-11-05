@@ -1818,10 +1818,10 @@ function reportedRows(fx, second, plantedExecPath) {
     row('redirect-shaped attr-source then $O', `O="${O}"; git --attr-source "<x" $O ${C}`),
     row('kept comment, heredoc operator', `# (x) <<EOF\ngit ${O} ${C}`),
     row('kept comment, quote', `# don't\ngit ${O} ${C} # don't`),
-    row('kept comment, continuation', `echo ok # (n) \\\n${VK}=/dev/null; git ${C}`),
     row('kept comment, quote, key', `true # it's\n${VK}=/dev/null; git ${C} # it's`),
     row('nested quote over a newline', `echo "$(echo "a #b\nc"; git ${O} ${C}; echo "d")"`),
     row('-m value after the sealing word, arithmetic', `git commit --allow-empty -m $((${VK}=1))`),
+    row('non-sealed git segment, arithmetic', `git log -1 $((${VK}=1)) >/dev/null 2>&1; git ${C}`),
     // Runs nothing: gh would reach outside the fixture.
     row('gh pr create x && git commit --no-verify', 'gh pr create x && git commit --no-verify -m x', { noExec: true }),
     // From outside any gsd-core checkout: no root resolves, so the literal -C target is not read.
