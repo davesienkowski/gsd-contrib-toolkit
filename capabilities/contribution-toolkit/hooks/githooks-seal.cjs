@@ -178,7 +178,7 @@ const SHELL_METACHAR = /[ \t\n;&|()<>]/;
 const COMMENT_KEEP = /['"`;&|(){}]/;
 const GIT_WORD = /^(?:.*\/)?git$/;
 const SHELL_WORD = /^(?:.*\/)?(?:ba|da|k|z)?sh$/;
-const SHELL_LEADER = new Set(['(', '{', '!', 'time', 'if', 'then', 'elif', 'else', 'do', 'while', 'until']);
+const OPTIONS_END = new Set(['--', '-']);
 const SHELL_COMMAND_OPTION = /^-[A-Za-z]*c[A-Za-z]*$/;
 const PAYLOAD_MAX_DEPTH = 3;
 const UNREADABLE_VIEW = { unreadable: true, tokens: [], sealed: true };
@@ -351,8 +351,8 @@ function payloadOf(view) {
   const option = words.findIndex((word, i) => i > at && SHELL_COMMAND_OPTION.test(word));
   if (option === -1) return null;
   let word = option + 1;
-  while (word < view.tokens.length && view.tokens[word].startsWith('-') && view.tokens[word] !== '--') word += 1;
-  return view.tokens[view.tokens[word] === '--' ? word + 1 : word] || null;
+  while (word < view.tokens.length && view.tokens[word].startsWith('-') && !OPTIONS_END.has(view.tokens[word])) word += 1;
+  return view.tokens[OPTIONS_END.has(view.tokens[word]) ? word + 1 : word] || null;
 }
 
 function holdsGitAndSealing(text) {
@@ -504,10 +504,7 @@ function envKeyHit(view) {
     if (region.some((token) => SHELL_SYNTAX.test(token))) scanned = scanned.concat(region);
   } else {
     const onlyReads = READ_ONLY_PROGRAM.has(prog) && !tokens.some((token) => SHELL_SYNTAX.test(token) || REDIRECT_CHAR.test(token));
-    // A sealed git behind shell grammar is the real command, so its message follows its last sealing word,
-    // as on a plain git. Behind any other word (`export git commit K=x`) every token is still read.
-    const messageFollows = last !== -1 && tokens.slice(0, index).every((token) => SHELL_LEADER.has(token));
-    scanned = onlyReads ? tokens.slice(0, programAt) : messageFollows ? tokens.slice(0, last + 1) : tokens;
+    scanned = onlyReads ? tokens.slice(0, programAt) : tokens;
   }
   for (const token of scanned) {
     const hit = keyNameHit(token);

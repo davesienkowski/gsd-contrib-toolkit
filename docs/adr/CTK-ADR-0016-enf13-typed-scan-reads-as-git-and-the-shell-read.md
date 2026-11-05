@@ -62,7 +62,7 @@ Terms as in CTK-ADR-0015: `k` is `core.hooksPath`, `K` is an env config key name
    family CTK-ADR-0015 already reports for `git -C $WT`. One exception: a `-c` or `--config-env` value holding more `(` than `)`
    (`git -c user.name=$(echo a) commit`) is shell syntax in the option list and denies, because the walk would stop at the
    second word of the split and `classifyAction` reads the rest as other, which skips ENF-12 and the config reads. Quoting a
-   balanced substitution allows. `-C` stays out of this rule: `git -C $(git rev-parse --show-toplevel) commit` is everyday.
+   balanced substitution with no inner quoted space allows. `-C` stays out of this rule: `git -C $(git rev-parse --show-toplevel) commit` is everyday.
 
 6. **The key rule fails closed on programs.** In a non-git segment any token naming `K` hits, as before, unless the
    program is one that only reads (`echo`, `grep`, `rg`, `head`, `tail`, `cat`, `wc`, `ls`, `gh`, `unset`) and no token of
@@ -73,9 +73,8 @@ Terms as in CTK-ADR-0015: `k` is `core.hooksPath`, `K` is an env config key name
    `--unset=K`. In a sealed git's region (to the last sealing word), `K` hits when any region token holds shell syntax:
    arithmetic there assigns in the current shell before git starts (`git -c user.name=$((K=1)) commit`). The implemented
    rule reads the region and not one token, because `git -c user.name=$(( K = 1 )) commit` spaces the two apart and denied
-   at the previous tip. A heredoc message after the sealing word stays untouched. On a git behind shell grammar only (`(`, `{`, `!`, `time`, `if`,
-   `then`, `elif`, `else`, `do`, `while`, `until`) the same holds: `( git commit -m "... K ..." )` allows. Behind any other word
-   every token is read, so `export git commit K=x; git commit` denies. `env -uK git commit` denies: the name is
+   at the previous tip. A heredoc message after the sealing word of a resolved git stays untouched. A git found behind another word has every token
+   read, message included, so `( git commit -m "... K ..." )` denies. Skipping them was tried and removed: see Alternatives. `env -uK git commit` denies: the name is
    not on its own, and the hook does run there, so this is a false deny.
 
 7. **A config write's glob key denies only where git reads it as a key.** `git config core.hooks* /dev/null && git commit`
@@ -111,10 +110,14 @@ newline, `git commit`; `export FOO=1 # K (note)`; `cd . # K is (not) set`; `git 
 git in text: `echo git -c k=v commit; git commit`. A listed reader beside syntax or a redirect keeps its deny as before:
 `grep K "$D"; git commit`, `grep K f > out; git commit`. Text D gives a way forward for each, and none of these shapes is
 in the corpus below. A quoted lone paren in a config value reads as a split value, since the parser drops quotes:
-`git -c x.y="a(b" commit` denies, and `git -c x.y="$V" commit` is the way forward.
+`git -c x.y="a(b" commit` denies, and `git -c x.y="$V" commit` is the way forward. So does a value
+with an inner quoted space, `git -c user.name="$(git log -1 --format="%an %ae")" commit`. A message naming `K` in a compound form:
+`( git commit -m "... K ..." )`, `time git commit -m "... K ..."`, which allowed at the previous tip. All have the hook able to run.
 
 **What stays open.** Each row commits with no repo hook behind the fixture dispatcher unless it says otherwise. The test
-file's reported rows print this list when it runs; verdict and effect come from that output.
+file's reported rows print most of this list when it runs; the rows it does not hold (a listed reader on a pipe, the quoted
+substitution values, the interpreters, a program word that is an expansion, the `--file` glob, the `-C` row) were measured by the
+independent review of this change, and each committed with no hook.
 
 Denied at the previous tip, allowed now:
 - Word splitting in an unquoted value: `N='x -c k=v'; git -c user.name=$N commit`, `git --shallow-file $X commit`.
@@ -126,7 +129,6 @@ Denied at the previous tip, allowed now:
 - A quoted substitution in an option value holding the command: `git --config-env user.name="$(git -c k=v commit)" commit`,
   `git --super-prefix "$(...)" commit`, and in `-c user.name="$(...)"` and `--shallow-file "$(...)"` the inner commit. Denying
   these needs a value read, and `-c user.name="$(git config user.name)"` is ordinary.
-- Arithmetic in the message of a git behind shell grammar: `( git commit -m $((K=1)) )`, the compound sibling of the row below.
 
 Allowed at the previous tip too:
 - `echo "$(git -c k=v commit)"`, a quoted substitution: one token, the same shape as a `-m "$(cat <<EOF ...)"` message.
@@ -148,6 +150,8 @@ Allowed at the previous tip too:
   `bash <<< '...'`, `echo '...' | bash`, `source <(...)`, `bash <(...)`, `python3 -c`, `node -e`, `perl -e`, `script -qc`, `trap '...' EXIT`.
 - A program word that is an expansion: `$'git' -c k=v commit`, `${G:-git} -c k=v commit`.
 - A config glob behind `--file`: `git config --file .git/config core.hooks* /dev/null && git commit`.
+- `x=$( git status commit ) K=/dev/null; git commit`, spaced so that git resolves as the program. `git --namespace=$(echo a) commit --no-verify`,
+  the sibling of the next row. A shell's other option forms: `bash -c -o pipefail '...'`, `bash -c +x '...'`.
 - `git -C $(git rev-parse --show-toplevel) commit --no-verify`: the split value makes `classifyAction` read other, so ENF-12 does
   not fire. The everyday `-C` form above is why the walk does not deny it.
 - Everything else CTK-ADR-0015 reports under its variable subcommand, repo config and hooks on disk rows.
@@ -159,7 +163,7 @@ Allowed at the previous tip too:
   for a shape nobody typed: the plan review's bypass rows had 0 corpus hits, so the test bank carries that direction.
 - Tests: a shape bank through the spawned hook in both states, with the real effect in bash behind a fixture dispatcher,
   including every BLOCKER and MAJOR row of both plan reviews, except the rows named in "What stays open".
-- `hooks/githooks-seal.cjs` went from 909 to 1076 lines (343 to 401 comment and blank lines, 566 to 675 other lines), so
+- `hooks/githooks-seal.cjs` went from 909 to 1073 lines (343 to 399 comment and blank lines, 566 to 674 other lines), so
   this did not shrink it. Removed: the comment-token logic, the value check and its exempt list. Added: the payload reader,
   the located git, the option walk and the key rule's branches. Minor 5 asked for less; the false denies it names are gone,
   and the size is not. The independent review measured cuts: none over 12 code lines keeps today's verdicts, by what it tried,
@@ -168,7 +172,7 @@ Allowed at the previous tip too:
 - Timing is indicative only and no decision depends on it. CTK-ADR-0015 recorded 16 to 24 ms for the canary and 63 to 79 ms for
   the whole hook. The review measured under load: canary 26 to 108 ms (median 43, n=20), whole gate 39 to 92 ms (median 53,
   n=20), a spawned hook 129 ms. This tip: canary 16.7 to 27.5 ms (median 20.7, n=20), a spawned bundle hook on an ordinary
-  commit 60.6 to 84.4 ms (median 66.8, n=20), slowest scan pair in the corpus 2 ms. One machine, one session each.
+  commit 60.6 to 84.4 ms (median 66.8, n=20), slowest scan pair in the corpus 2 to 6 ms across runs. One machine, one session each.
 
 ## Alternatives considered
 
@@ -179,5 +183,6 @@ Allowed at the previous tip too:
 - **Balancing parens and backticks in the option walk.** Prototyped first. A value could still shift it, and it needed `${` too.
   Keeping the named rules off any walk removed that code and that failure.
 - **Keep a comment only by text, with no `${` depth.** Refuted by a closing `}` on the next line, measured as a bypass.
+- **Skip a message on a git found behind another word.** Tried in the fix rounds to remove the compound-message false deny, first for any such git and then only behind shell grammar. Each form was refuted by the next review: `export git commit K=x; git commit`, then `x=$(git status commit) K=x; git commit`, both commits with no hook. A third round would have moved the same band, so the skip is gone and the false deny is accepted.
 - **Drop a kept comment up to the first delimiter.** Clears three false denies and opens `git -C ${x:- #b -c k=v} commit` where a
   directory named `#b` exists. Not taken.

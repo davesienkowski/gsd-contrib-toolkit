@@ -1648,12 +1648,15 @@ test('ov8 fix round: a split value is no walk stop, a compound message is no key
     N(`git -c user.name="$(echo a)" ${C}`, EFFECT_HOOK),
     N(`git -c user.name=$(echo a) status`, null),
     N(`git -C $(git rev-parse --show-toplevel) ${C}`, EFFECT_HOOK),
-    // A message is read after the last sealing word, in a compound form too.
-    N(`( git commit --allow-empty -m "doc: ${VK} named" )`, EFFECT_HOOK),
-    N(`{ git commit --allow-empty -m "doc: ${VK} named"; }`, EFFECT_HOOK),
-    N(`if true; then git commit --allow-empty -m "doc: ${VK} named"; fi`, EFFECT_HOOK),
-    N(`time git commit --allow-empty -m "doc: ${VK} named"`, EFFECT_HOOK),
-    N(`( ${message(`body names ${VK} and ${K}`)} )`, EFFECT_HOOK),
+    // A message in a compound form reads as tokens: every word of a segment whose program is not git is read.
+    // Skipping them opened `x=$(git status commit) K=/dev/null` (fix round 3), so this false deny is accepted.
+    D(ADVICE_REMOVE, `( git commit --allow-empty -m "doc: ${VK} named" )`, EFFECT_HOOK),
+    D(ADVICE_REMOVE, `{ git commit --allow-empty -m "doc: ${VK} named"; }`, EFFECT_HOOK),
+    D(ADVICE_REMOVE, `if true; then git commit --allow-empty -m "doc: ${VK} named"; fi`, EFFECT_HOOK),
+    D(ADVICE_REMOVE, `time git commit --allow-empty -m "doc: ${VK} named"`, EFFECT_HOOK),
+    D(ADVICE_REMOVE, `( ${message(`body names ${VK} and ${K}`)} )`, EFFECT_HOOK),
+    D(ADVICE_REMOVE, `x=$(git status commit) ${VK}=/dev/null; ${G}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `export git status commit ${VK}=/dev/null; ${G}`, EFFECT_BYPASS),
     D(ADVICE_REMOVE, `( ${VK}=/dev/null ${G} )`, EFFECT_BYPASS),
     // A shell's options after -c are not its text.
     D(ADVICE_REMOVE, `bash -c -e 'git ${O} ${C}'`, EFFECT_BYPASS),
@@ -1663,6 +1666,7 @@ test('ov8 fix round: a split value is no walk stop, a compound message is no key
     // Behind a word that is not shell grammar, every token is read; a -- ends the shell's options.
     D(ADVICE_REMOVE, `export git commit ${VK}=/dev/null; ${G}`, EFFECT_BYPASS),
     D(ADVICE_REMOVE, `bash -c -- '-x; git ${O} ${C}'`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `bash -c - '-x; git ${O} ${C}'`, EFFECT_BYPASS),
     // A quoted lone paren reads as a split value: the parser drops quotes. Accepted, CTK-ADR-0016.
     D(ADVICE_LITERAL, `git -c x.y="a(b" ${C}`, EFFECT_HOOK),
     N(`V='a(b'; git -c x.y="$V" ${C}`, EFFECT_HOOK),
