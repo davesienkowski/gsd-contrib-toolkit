@@ -1,7 +1,8 @@
 # CTK-ADR-0015: ENF-13 accepts a dispatcher that passes a delegation canary
 
-- **Status:** Proposed (2026-11-03), implemented on the `fix-enf13-dispatcher` branch (quick
-  261103-uqe), awaits Dave's sign-off.
+- **Status:** Accepted (2026-11-04, by Dave's explicit sign-off). Before that sign-off it was Proposed,
+  documenting a decision implemented on the `fix-enf13-dispatcher` branch (quick 261103-uqe) and merged into
+  toolkit main at 3377491.
 - **Review:** Published for maintainer review and open to revision. A changed decision will be recorded by a
   superseding or amending CTK-ADR, never by a silent edit to an accepted record.
 - **Date:** 2026-11-03 (milestone v2.8).
