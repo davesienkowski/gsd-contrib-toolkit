@@ -1423,8 +1423,6 @@ test('ov8 mask: a comment goes only when its line holds no delimiter and no ${ i
     D(R, `echo $'a\\' #b'; echo \\'; git ${O} ${C}`, EFFECT_BYPASS),
     D(R, `(( 1 #2 )); git ${O} ${C}`, EFFECT_BYPASS),
     // The closing } is on the next line, so the text rule alone would hide the override.
-    D(R, `git \${y:- --namespace #x ${O} ${C}\n}`, EFFECT_BYPASS),
-    D(R, `git \${y:- --attr-source #x ${O} ${C}\n}`, EFFECT_BYPASS),
     D(R, `git -C \${y:-. --namespace #x ${O} ${C}\n}`, EFFECT_BYPASS),
     D(R, `mkdir -p "#b"\ngit -C \${y:- #b ${O} ${C}\n}\nrmdir "#b"`, EFFECT_BYPASS),
     D(R, `echo \${x:- #y}; git ${O} ${C}`, EFFECT_BYPASS),
@@ -1448,7 +1446,6 @@ test('ov8 mask: a comment goes only when its line holds no delimiter and no ${ i
     D(R, `git -c user.name=a\\ #b ${O} ${C}`, EFFECT_BYPASS),
     D(R, `git -c user.name="a"#b ${O} ${C}`, EFFECT_BYPASS),
     // A quoted hash is a value, wherever it sits.
-    D(R, `env "#a=b" git ${O} ${C}`, EFFECT_BYPASS),
     D(R, `git > "#x" ${O} ${C}; rm -f "#x"`, EFFECT_BYPASS),
     D(OWN, `git config > "#x" ${K} /dev/null && ${G}; rm -f "#x"`, EFFECT_BYPASS),
     D(R, `git --shallow-file "#x" ${O} ${C}`, EFFECT_BYPASS),
@@ -1507,6 +1504,7 @@ test('ov8 views: an override in a compound form or a literal payload denies; the
     D(R, `</dev/null git ${O} ${C}`, EFFECT_BYPASS),
     D(R, `git ${O} commit>/dev/null --allow-empty -m x`, EFFECT_BYPASS),
     D(R, `( X=; git $X ${O} ${C} )`, EFFECT_BYPASS),
+    D(R, `env "#a=b" git ${O} ${C}`, EFFECT_BYPASS),
     D(R, `git submodule foreach git ${O} commit`, EFFECT_NONE),
     // A located git carries the repo assignment and the config write rules too.
     D(R, `( GIT_DIR=/nonexistent git ${C} )`, EFFECT_NONE),
@@ -1575,6 +1573,9 @@ test('ov8 region: the named rules read the whole region, the generic rule stops 
     D(R, `git --namespace "(" --config-env=${K}=HOME ${C}`, EFFECT_BYPASS),
     D(R, `git --namespace "(" --git-dir=.git ${C}`, EFFECT_HOOK),
     D(R, `git "" ${O} ${C}`, EFFECT_NONE),
+    // The comment stays while the ${ is open, and the named rule reads past the option that shifted the walk.
+    D(R, `git \${y:- --namespace #x ${O} ${C}\n}`, EFFECT_BYPASS),
+    D(R, `git \${y:- --attr-source #x ${O} ${C}\n}`, EFFECT_BYPASS),
     // The named rules keep the sealing word wide.
     D(R, `git ${O} stash push`, EFFECT_NONE),
     D(R, `git ${O} subtree push`, null),

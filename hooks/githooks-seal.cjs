@@ -148,8 +148,6 @@ const INCLUDE_IF_PATH = /^includeif\..*\.path$/;
 // The price of `git -C "$WT" commit`: the parser drops quotes, so "$WT" and $WT are one token, and an
 // unquoted value here that word-splits into options is allowed.
 const SYNTAX_EXEMPT_VALUE = new Set(['-C', '--namespace', '--attr-source']);
-// Long options whose separate value is not a comment; the short ones come from readCommitCluster.
-const HASH_SAFE_VALUE = new Set(['--namespace', '--attr-source', '--config-env', '--message']);
 const CONFIG_READ_OPTIONS = new Set(['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--list', '-l']);
 const CONFIG_UNSET_WORDS = new Set(['--unset', '--unset-all', 'unset']);
 const REDIRECT = /^(?:\d*|&)(?:>>|>&|<&|>\||<>|>|<)/;
@@ -160,12 +158,29 @@ const NO_VERIFY_SHORTEST = '--no-veri';
 // git commit's short options that take a value: required, then optional (attached only).
 const COMMIT_SHORT_VALUE = 'mFcCt';
 const COMMIT_SHORT_OPTIONAL_VALUE = 'uS';
+// A hash that starts a word follows one of these, unescaped and unquoted.
+const SHELL_METACHAR = /[ \t\n;&|()<>]/;
+// A comment line holding one of these stays as tokens: see maskShellText.
+const COMMENT_KEEP = /['"`;&|(){}]/;
 
 /**
- * The raw command with each heredoc operator and its body removed, keeping the newline that ended the
- * introducing line. The splitter hands a body to the LAST segment of a chained introducing line, so
- * `git commit -F- <<'EOF' && git log` would scan the message as tokens of the log segment. The
- * operator goes too: left in place, the parse would read the next command line as its body.
+ * The raw command as the scan reads it, in three steps that track bash:
+ *
+ *   A heredoc operator and its body go, keeping the newline that ended the introducing line. The splitter
+ *   hands a body to the LAST segment of a chained introducing line, so `git commit -F- <<'EOF' && git log`
+ *   would scan the message as tokens of the log segment. The operator goes too: left in place, the parse
+ *   would read the next command line as its body.
+ *   A backslash-newline leaves no characters, outside single quotes, as bash removes it.
+ *   A comment goes through its newline (the newline stays), checked before the heredoc operator, so
+ *   `# <<EOF` does not hide the next line.
+ *
+ * A comment goes only when its text on that line holds none of COMMENT_KEEP and no unquoted `${` is open.
+ * This walker's quote state is flat, so it can call a hash a comment where bash is inside a nested quote,
+ * a substitution or an expansion. Then a hidden command needs a closing delimiter or a separator, on that
+ * line (COMMENT_KEEP) or, for `${`, on a later one (the depth). Removed text therefore moves no quote
+ * state and hides no separator. A kept comment reads as ordinary tokens, which can false deny; CTK-ADR-0016
+ * names that and the forms this reading leaves open.
+ *
  * Quote and escape state track splitSegmentsWithOps, the same check order as gsd-test-detect's mask.
  * A here-string has no body. parseHeredocOperator refuses `<<<` at its first `<`, but the walk would
  * then read `<< word` at the second one, so the parser hides the lines after a here-string; here its
@@ -174,11 +189,13 @@ const COMMIT_SHORT_OPTIONAL_VALUE = 'uS';
  * @param {string} str a command that parsed
  * @returns {string}
  */
-function maskHeredocBodies(str) {
+function maskShellText(str) {
   let out = '';
   let inSingle = false;
   let inDouble = false;
   let escaped = false;
+  let wordStart = true;
+  let braceDepth = 0;
   const pending = [];
   for (let i = 0; i < str.length; i++) {
     const ch = str[i];
@@ -188,8 +205,13 @@ function maskHeredocBodies(str) {
       continue;
     }
     if (ch === '\\' && !inSingle) {
+      if (str[i + 1] === '\n') {
+        i += 1;
+        continue;
+      }
       out += ch;
       escaped = true;
+      wordStart = false;
       continue;
     }
     if (inSingle) {
@@ -202,6 +224,17 @@ function maskHeredocBodies(str) {
       if (ch === '"') inDouble = false;
       continue;
     }
+    if (ch === '#' && wordStart && braceDepth === 0) {
+      const newline = str.indexOf('\n', i);
+      const end = newline === -1 ? str.length : newline;
+      if (!COMMENT_KEEP.test(str.slice(i, end))) {
+        i = end - 1;
+        continue;
+      }
+    }
+    wordStart = SHELL_METACHAR.test(ch);
+    if (ch === '$' && str[i + 1] === '{') braceDepth += 1;
+    else if (ch === '}' && braceDepth > 0) braceDepth -= 1;
     if (str.startsWith('<<<', i)) {
       out += '   ';
       i += 2;
@@ -247,28 +280,8 @@ function readCommitCluster(token) {
   return { skipsHook: false, takesNext: false };
 }
 
-/**
- * The tokens the scan reads: a continuation's newline stripped from each token's start (the parser
- * keeps it, bash removes it), empties dropped, and nothing from the first comment token on. A value
- * position is not a comment: the parser drops quotes, so `-C "#dir"` and `-m "#1 fix"` hold a token
- * starting with #. A value after any other option still reads as a comment (reported, not closed).
- */
-function scanTokens(tokens) {
-  const out = [];
-  let isValue = false;
-  for (const raw of tokens) {
-    const token = raw.replace(/^\n+/, '');
-    if (token.length === 0) continue;
-    if (!isValue && token.startsWith('#')) break;
-    out.push(token);
-    isValue = !isValue && (HASH_SAFE_VALUE.has(token) || readCommitCluster(token).takesNext);
-  }
-  return out;
-}
-
 /** One segment as the scan sees it. Sealed: its program is git and a bare commit or push token follows. */
-function scanView(rawTokens) {
-  const tokens = scanTokens(rawTokens);
+function scanView(tokens) {
   const { prog, index } = resolveProgram({ tokens });
   const isGit = prog === 'git';
   let first = -1;
@@ -419,7 +432,9 @@ function noVerifySpellingHit(view) {
 function scanCommand(parsed) {
   const nothing = { override: null, noVerifySpelling: null };
   if (!parsed || !parsed.ok) return nothing;
-  const fine = parseCommand(maskHeredocBodies(parsed.raw), { cwdSeparators: true });
+  const masked = maskShellText(parsed.raw);
+  if (masked.trim() === '') return nothing;
+  const fine = parseCommand(masked, { cwdSeparators: true });
   if (!fine.ok) {
     if (!parsed.segments.some((seg) => scanView(seg.tokens).sealed)) return nothing;
     return { override: { form: 'text this gate cannot read', advice: ADVICE_OWN_CALL }, noVerifySpelling: null };
@@ -903,7 +918,7 @@ module.exports = {
   dispatcherShape,
   runDispatcherCanary,
   typedHooksPathOverride,
-  maskHeredocBodies,
+  maskShellText,
   REQUIRED_HOOKS_PATH,
   NO_VERIFY_FLAGS,
 };
