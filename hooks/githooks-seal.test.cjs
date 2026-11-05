@@ -1693,6 +1693,8 @@ test('ov8 keys: an env key name denies unless a listed reader or an unset holds 
     D(OWN, `env -S "a=1 ${VK}=/dev/null" ${G}`, EFFECT_BYPASS),
     D(OWN, `env -S"${VK}=/dev/null" ${G}`, EFFECT_BYPASS),
     D(OWN, `env -u \${a[${VK}=1]}x ${G}`, EFFECT_BYPASS),
+    // An attached short option holds the name too. The ruling names only the separate unset forms as inert, so this one denies, and the hook runs.
+    D(OWN, `env -u${CK} ${G}`, EFFECT_HOOK),
     // A config write's key position: a glob that matches a file names the key.
     D(OWN, `touch ./${K}; git config core.hooks* /dev/null && ${G}; rm -f ./${K}`, EFFECT_BYPASS),
     D(OWN, `touch ./${K}; git config core.hooks?ath /dev/null && ${G}; rm -f ./${K}`, EFFECT_BYPASS),
@@ -1716,6 +1718,7 @@ test('ov8 keys: an env key name denies unless a listed reader or an unset holds 
     N(`unset ${VK}; ${G}`, EFFECT_NONE),
     N(`env -u ${CK} ${G}`, EFFECT_HOOK),
     N(`env --unset=${CK} ${G}`, EFFECT_HOOK),
+    N(`env --unset ${CK} ${G}`, EFFECT_HOOK),
     N(`gh pr comment 1 --body "${CK} x" && git push origin x`, null),
     N(`git commit --allow-empty -m "note ${CK}"`, EFFECT_HOOK),
     N(`git commit --allow-empty -m "$(cat <<'EOF'\nnote ${VK} $X\nEOF\n)"`, EFFECT_HOOK),

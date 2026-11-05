@@ -32,7 +32,7 @@
  *            so they do not see an override typed in the command itself. typedHooksPathOverride
  *            reads the command text for that: it denies a typed override, a repo option, a form it
  *            cannot read, an env config key name and a chained config write, before any read. It
- *            fails closed on the forms in its rules; other forms exist that it does not catch.
+ *            stops typed forms and is no seal against a workaround: CTK-ADR-0016 lists what stays open.
  *
  * Scope: only `commit` / `push` actions are gated; every other command (git reads, non-git)
  * passes through as a no-op allow, so the seal never over-blocks. HARD-01/04: the whole
@@ -181,6 +181,11 @@ const SHELL_WORD = /^(?:.*\/)?(?:ba|da|k|z)?sh$/;
 const SHELL_COMMAND_OPTION = /^-[A-Za-z]*c[A-Za-z]*$/;
 const PAYLOAD_MAX_DEPTH = 3;
 const UNREADABLE_VIEW = { unreadable: true, tokens: [], sealed: true };
+// Programs that only read their words. Their segment skips the key rule only when no token holds shell
+// syntax or a redirect, since either can assign in the current shell or write what a later line sources.
+const READ_ONLY_PROGRAM = new Set(['echo', 'grep', 'rg', 'head', 'tail', 'cat', 'wc', 'ls', 'gh', 'unset']);
+const REDIRECT_CHAR = /[<>]/;
+const CONFIG_KEY_GLOB = /[*?[]/;
 
 /**
  * The raw command as the scan reads it, in three steps that track bash:
@@ -331,7 +336,7 @@ function scanView(tokens) {
       }
     }
   }
-  return { tokens, index, isGit, resolvedGit, prog, first, last, sealed: last !== -1 };
+  return { tokens, index, isGit, resolvedGit, prog, programAt, first, last, sealed: last !== -1 };
 }
 
 /** The literal text a segment hands a shell: `eval`'s words, or the value of a shell's -c. Null when it has none. */
@@ -456,12 +461,43 @@ function regionHit(view) {
   return shown ? { form: 'shell syntax in the git options (' + shown + ')', advice: ADVICE_LITERAL } : null;
 }
 
-/** A token before the program of any segment, or any token of a non-git segment, naming an env key. */
+function keyNameHit(token) {
+  const match = ENV_KEY_NAME.exec(token) || ENV_KEY_BUILT.exec(token);
+  return match ? { form: 'the env config key name ' + match[0], advice: ADVICE_OWN_CALL } : null;
+}
+
+function isKeyName(token) {
+  const match = ENV_KEY_NAME.exec(token);
+  return match !== null && match[0] === token;
+}
+
+/**
+ * The first token of a segment that names an env key where that can take effect.
+ *
+ * On a resolved git: a token before the program, unless it is the plain value of an unset; and a key name
+ * in the region when the region holds shell syntax, since arithmetic or an expansion there assigns before
+ * git starts. A message after the last sealing word is never read, so a heredoc message stays untouched.
+ * On anything else, every token, unless the program only reads and the segment holds no syntax or redirect.
+ * This fails closed on a program the list does not name, which a list of setters would not.
+ */
 function envKeyHit(view) {
-  const scanned = view.resolvedGit ? view.tokens.slice(0, view.index) : view.tokens;
+  const { tokens, resolvedGit, index, last, prog, programAt } = view;
+  let scanned;
+  if (resolvedGit) {
+    scanned = tokens.slice(0, index).filter((token, i) => {
+      const before = tokens[i - 1];
+      const unsets = isKeyName(token) && (before === '-u' || before === '--unset');
+      return !unsets && !(token.startsWith('--unset=') && isKeyName(token.slice('--unset='.length)));
+    }).map((token) => token.replace(/^-[A-Za-z]/, '')); // An attached short option leaves no word boundary: -SNAME.
+    const region = last === -1 ? [] : tokens.slice(index + 1, last + 1);
+    if (region.some((token) => SHELL_SYNTAX.test(token))) scanned = scanned.concat(region);
+  } else {
+    const onlyReads = READ_ONLY_PROGRAM.has(prog) && !tokens.some((token) => SHELL_SYNTAX.test(token) || REDIRECT_CHAR.test(token));
+    scanned = onlyReads ? tokens.slice(0, programAt) : tokens;
+  }
   for (const token of scanned) {
-    const match = ENV_KEY_NAME.exec(token) || ENV_KEY_BUILT.exec(token);
-    if (match) return { form: 'the env config key name ' + match[0], advice: ADVICE_OWN_CALL };
+    const hit = keyNameHit(token);
+    if (hit) return hit;
   }
   return null;
 }
@@ -484,6 +520,10 @@ function configWriteHit(view) {
   if (at === -1) return null;
   const rest = withoutRedirects(view.tokens.slice(at + 1));
   if (rest.some((token) => CONFIG_READ_OPTIONS.has(token.split('=')[0]))) return null;
+  // A glob in the key position can name the key, and only git's own subcommand reads it as one.
+  const own = view.resolvedGit ? readOptionList(view) : {};
+  const globbed = own.word === 'config' && own.rest.find((token) => !token.startsWith('-'));
+  if (globbed && CONFIG_KEY_GLOB.test(globbed)) return { form: 'a config write of ' + globbed, advice: ADVICE_OWN_CALL };
   const unsets = rest.some((token) => CONFIG_UNSET_WORDS.has(token));
   for (let i = 0; i < rest.length; i++) {
     if (!namesHooksConfig(rest[i])) continue;
