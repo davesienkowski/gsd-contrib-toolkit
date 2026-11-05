@@ -87,7 +87,7 @@ Each gate DENIES at the `PreToolUse` boundary; most call a LIVE gsd-core script.
 | `git push` with a secret / injection / base64 hit in the diff | `scan-gate` | Remove the flagged content. |
 | Commit a stale generated `bin/lib/*.generated.cjs` | `freshness` | Re-run `build:lib` after changing its `src`. |
 | Edit a generated `bin/lib/*.cjs` directly | `binlib-edit` (Write/Edit) | Edit the `src/*.ts` source, then `build:lib`. |
-| `--no-verify` / swap `core.hooksPath` / leak private files upstream | `githooks-seal`, `containment` | Don't bypass the seal: the effective `core.hooksPath` must be `.githooks`, or a session dispatcher that passes a delegation canary with the repo value `.githooks` ([CTK-ADR-0015](../adr/CTK-ADR-0015-enf13-accepts-a-dispatcher-that-passes-a-delegation-canary.md)). Keep private files out of the gsd-core tree. |
+| `--no-verify` / swap `core.hooksPath` / leak private files upstream | `githooks-seal`, `containment` | Don't bypass the seal: the effective `core.hooksPath` must be `.githooks`, or a session dispatcher that passes a delegation canary with the repo value `.githooks` ([CTK-ADR-0015](../adr/CTK-ADR-0015-enf13-accepts-a-dispatcher-that-passes-a-delegation-canary.md)); the override forms [CTK-ADR-0016](../adr/CTK-ADR-0016-enf13-typed-scan-reads-as-git-and-the-shell-read.md) lists deny when typed in the command, and it stops typed forms, nothing more. Keep private files out of the gsd-core tree. |
 | A commit with a wrong conventional-commit prefix | `git-commit-convention` | Use `<type>(scope): …`. |
 
 ### Getting to green: the stamp → marker → gate → scan loop
