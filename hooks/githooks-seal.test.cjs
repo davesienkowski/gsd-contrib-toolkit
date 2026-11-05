@@ -444,7 +444,7 @@ function realEffect(repo, env, command) {
 
 const ENF13_K = 'core.hooksPath';
 const ADVICE_REMOVE = /Remove it from the command\./;
-const ADVICE_LITERAL = /Write the value out literally\./;
+const ADVICE_LITERAL = /Spell the option out in the command\./;
 const ADVICE_OWN_CALL = /Run that command in its own Bash call\./;
 const VALVE_NAME = /GSD_CONTRIB_OVERRIDE/;
 const TEXT_A_UNSET =
@@ -549,11 +549,8 @@ test('typed family a key or token the gate cannot read: deny; the exempt value p
     'git -c $K=/dev/null commit -m x',
     'git -c "$K=/dev/null" commit -m x',
     'git -c core.hooks$(echo Path)=/dev/null commit -m x',
-    "git -c 'url.git@x:.insteadOf=y' push origin x",
     'git $O commit -m x',
     `git {-c,${ENF13_K}=/dev/null} commit -m x`,
-    'N=x; git -c user.name=$N commit -m x',
-    'V=HOME; git --config-env user.name=$V commit -m x',
   ]) {
     assertTypedDeny([command, ADVICE_LITERAL], states, fx.repo);
   }
@@ -565,6 +562,9 @@ test('typed family a key or token the gate cannot read: deny; the exempt value p
     'N=x; git --namespace=$N commit -m x',
     'git commit -m "$M"',
     'git log "$X"; git commit -m x',
+    "git -c 'url.git@x:.insteadOf=y' push origin x",
+    'N=x; git -c user.name=$N commit -m x',
+    'V=HOME; git --config-env user.name=$V commit -m x',
   ]) {
     assertTypedAllow(command, states, fx.repo);
   }
@@ -604,12 +604,10 @@ test('typed family env key names: deny beside a sealed segment; text and other n
     'printf -v GIT_CONFIG_KEY_0 x; git commit -m x',
     'n=0; export GIT_CONFIG_VALUE_$n=/dev/null; git commit -m x',
     'n=VALUE_0; export GIT_CONFIG_${n}=/dev/null; git commit -m x',
-    'unset GIT_CONFIG_COUNT; git commit -m x',
-    'env -u GIT_CONFIG_COUNT git commit -m x',
-    'echo GIT_CONFIG_VALUE_0=v && git commit -m x',
     'GIT_CONFIG_VALUE_0=/dev/null\nexport GIT_CONFIG_VALUE_0\ngit commit -m x',
   ]) {
-    assertTypedDeny([command, ADVICE_OWN_CALL], states, fx.repo);
+    // On git's own segment an own call denies the same, so the advice is to remove it.
+    assertTypedDeny([command, /^[^;\n]* git commit/.test(command) ? ADVICE_REMOVE : ADVICE_OWN_CALL], states, fx.repo);
   }
   for (const command of [
     'git commit -m "GIT_CONFIG_VALUE_0=v"',
@@ -619,6 +617,9 @@ test('typed family env key names: deny beside a sealed segment; text and other n
     'GIT_CONFIG_COUNTER=1 git commit -m x',
     'echo GIT_CONFIG_VALUE_0=v',
     'export GIT_CONFIG_COUNT=0',
+    'unset GIT_CONFIG_COUNT; git commit -m x',
+    'env -u GIT_CONFIG_COUNT git commit -m x',
+    'echo GIT_CONFIG_VALUE_0=v && git commit -m x',
   ]) {
     assertTypedAllow(command, states, fx.repo);
   }
@@ -677,8 +678,6 @@ test('typed scan reads the newline split: a neighbor line never widens, and an o
 
 test('A-2: a continuation newline in a token does not hide a form from the scan', (t) => {
   const { fx, states } = typedStates(t);
-  // A continuation then a blank line: the newline split fails on it, so the scan cannot read it.
-  assertTypedDeny(['git log \\\n\ngit commit -m y', ADVICE_OWN_CALL], states, fx.repo);
   for (const command of [
     `git \\\n-c ${ENF13_K}=/dev/null commit -m x`,
     `git -c ${ENF13_K}=/dev/null \\\ncommit -m x`,
@@ -686,7 +685,7 @@ test('A-2: a continuation newline in a token does not hide a form from the scan'
   ]) {
     assertTypedDeny([command, ADVICE_REMOVE], states, fx.repo);
   }
-  for (const command of ['git \\\n  commit -m x', 'git commit \\\n  --allow-empty \\\n  -m x']) {
+  for (const command of ['git \\\n  commit -m x', 'git commit \\\n  --allow-empty \\\n  -m x', 'git log \\\n\ngit commit -m y']) {
     assertTypedAllow(command, states, fx.repo);
   }
 });
@@ -727,7 +726,7 @@ test('A-3: heredoc bodies never reach the scan, in any chain; real forms around 
 });
 
 test('A-3: the mask leaves a command with no heredoc byte-identical and removes operator and body', () => {
-  const { maskHeredocBodies } = require('./githooks-seal.cjs');
+  const { maskShellText: maskHeredocBodies } = require('./githooks-seal.cjs');
   for (const command of [
     'git commit -m x',
     'git commit -m "a << b"',
@@ -1227,7 +1226,7 @@ function bankRows({ evil, other, emptyDir }) {
     D(O, 'bare export', `${VK}=/dev/null; export ${VK}; git ${C}`, EFFECT_BYPASS),
     D(O, 'export --', `export -- ${VK}=/dev/null; git ${C}`, EFFECT_BYPASS),
     D(O, 'declare -gx', `declare -gx ${VK}=/dev/null; git ${C}`, EFFECT_BYPASS),
-    D(O, 'env --chdir', `env --chdir=. ${VK}=/dev/null git ${C}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, 'env --chdir', `env --chdir=. ${VK}=/dev/null git ${C}`, EFFECT_BYPASS),
     D(O, 'built key', `n=0; export GIT_CONFIG_VALUE_$n=/dev/null; git ${C}`, EFFECT_BYPASS),
     D(O, 'built key brace', `n=VALUE_0; export GIT_CONFIG_\${n}=/dev/null; git ${C}`, EFFECT_BYPASS),
     D(R, 'pipe', `true | git -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
@@ -1245,11 +1244,6 @@ function bankRows({ evil, other, emptyDir }) {
     D(O, 'chain unset', `git config --unset ${K} && git ${C}; git config ${K} .githooks`, EFFECT_BYPASS),
     D(O, 'chain -c x config', `git -c x.y=z config ${K} /dev/null && git ${C}; git config ${K} .githooks`, EFFECT_BYPASS),
     D(O, 'chain include write', `git config include.path ${evil} && git ${C}; git config --unset include.path`, EFFECT_BYPASS),
-    D(O, 'env -u (accepted false deny)', `env -u ${CK} git ${C}`, EFFECT_HOOK),
-    D(O, 'unset (accepted false deny)', `unset ${CK}; git ${C}`, EFFECT_HOOK),
-    D(O, 'echo key (accepted false deny)', `echo ${VK}=v && git ${C}`, EFFECT_HOOK),
-    D(O, 'grep key (accepted false deny)', `grep ${VK} /dev/null; git ${C}`, EFFECT_HOOK),
-    D(L, '-c user.name=$N (accepted false deny)', `N=x; git -c user.name=$N ${C}`, EFFECT_HOOK),
     D(R, 'after --no-pager', `git --no-pager -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
     D(R, 'after -p', `git -p -c ${K}=/dev/null ${C} | cat`, EFFECT_BYPASS),
     D(R, 'after -C', `git -C . -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
@@ -1269,25 +1263,16 @@ function bankRows({ evil, other, emptyDir }) {
     D(R, 'sudo', `sudo git -c ${K}=/dev/null ${C}`, null),
     D(R, 'nice', `nice git -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
     D(R, 'abs path', `/usr/bin/git -c ${K}=/dev/null ${C}`, fs.existsSync('/usr/bin/git') ? EFFECT_BYPASS : null),
-    D(O, 'leading key', `${VK}=/dev/null git ${C}`, EFFECT_BYPASS),
-    D(O, 'env key', `env ${VK}=/dev/null git ${C}`, EFFECT_BYPASS),
-    D(O, 'env -i key', `env -i PATH="$PATH" ${CK}=1 GIT_CONFIG_KEY_0=${K} ${VK}=/dev/null git ${C}`, null),
+    D(ADVICE_REMOVE, 'leading key', `${VK}=/dev/null git ${C}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, 'env key', `env ${VK}=/dev/null git ${C}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, 'env -i key', `env -i PATH="$PATH" ${CK}=1 GIT_CONFIG_KEY_0=${K} ${VK}=/dev/null git ${C}`, null),
     D(O, 'export key', `export ${VK}=/dev/null; git ${C}`, EFFECT_BYPASS),
     D(O, 'typeset -x', `typeset -x ${VK}=/dev/null; git ${C}`, EFFECT_BYPASS),
     D(O, 'readonly', `export ${VK}; readonly ${VK}=/dev/null; git ${C}`, EFFECT_BYPASS),
     D(R, 'env GIT_DIR', `env GIT_DIR=${other}/.git GIT_WORK_TREE=. git ${C}`, EFFECT_OTHER),
     D(O, 'config set', `git config set ${K} /dev/null && git ${C}`, null),
     D(O, 'config --show-scope write', `git config --show-scope ${K} /dev/null && git ${C}; git config ${K} .githooks`, EFFECT_BYPASS),
-    D(L, 'config-env value expansion (accepted false deny)', `V=HOME; git --config-env user.name=$V ${C}`, EFFECT_HOOK),
-    D(L, 'url at (accepted false deny)', `git -c 'url.git@x:.insteadOf=y' push origin x`, EFFECT_NONE),
-    D(L, 'http header (accepted false deny)', `T=x; git -c "http.extraHeader=A: $T" push origin x`, EFFECT_NONE),
-    D(L, 'msg then push (accepted false deny)', `M=x; git commit --allow-empty -m "$M" -m push`, EFFECT_HOOK),
-    D(L, 'push commit (accepted false deny)', `R=origin; git push "$R" commit`, EFFECT_NONE),
-    D(L, 'add commit (accepted false deny)', `f=x; git add "$f" commit`, EFFECT_NONE),
-    D(L, 'diff commit (accepted false deny)', `A=HEAD; git diff "$A" -- commit`, EFFECT_NONE),
-    D(L, 'log push (accepted false deny)', `R=HEAD; git log "$R" -- push`, EFFECT_NONE),
     D(R, '-c log grep (accepted false deny)', `git -c ${K}=/dev/null log --grep commit`, EFFECT_NONE),
-    D(O, 'gh body (accepted false deny)', `gh pr comment 1 --body "${CK} x" && git push origin x`, null),
     D(O, 'newline key line', `${VK}=/dev/null\nexport ${VK}\ngit ${C}`, EFFECT_BYPASS),
     D(R, 'newline override', `cd .\ngit -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
     // AMENDMENT-1 A-7: the bank wanted this reported. The split tokens reach the region, so it denies.
@@ -1334,6 +1319,21 @@ function bankRows({ evil, other, emptyDir }) {
     N('neighbor --git-dir', `git --git-dir=.git status >/dev/null; git ${C}`, EFFECT_HOOK),
     N('neighbor expansion', `git log -1 "$X" >/dev/null 2>&1; git ${C}`, EFFECT_HOOK),
     N('trailing -c on commit', 'git commit --allow-empty -m x -c', EFFECT_NONE),
+    // Quick 261104-ov8: these denied as accepted false denies under CTK-ADR-0015; CTK-ADR-0016 allows them.
+    N('env -u', `env -u ${CK} git ${C}`, EFFECT_HOOK),
+    N('unset', `unset ${CK}; git ${C}`, EFFECT_HOOK),
+    N('echo key', `echo ${VK}=v && git ${C}`, EFFECT_HOOK),
+    N('grep key', `grep ${VK} /dev/null; git ${C}`, EFFECT_HOOK),
+    N('-c user.name=$N', `N=x; git -c user.name=$N ${C}`, EFFECT_HOOK),
+    N('config-env value expansion', `V=HOME; git --config-env user.name=$V ${C}`, EFFECT_HOOK),
+    N('url at', `git -c 'url.git@x:.insteadOf=y' push origin x`, EFFECT_NONE),
+    N('http header', `T=x; git -c "http.extraHeader=A: $T" push origin x`, EFFECT_NONE),
+    N('msg then push', `M=x; git commit --allow-empty -m "$M" -m push`, EFFECT_HOOK),
+    N('push commit', `R=origin; git push "$R" commit`, EFFECT_NONE),
+    N('add commit', `f=x; git add "$f" commit`, EFFECT_NONE),
+    N('diff commit', `A=HEAD; git diff "$A" -- commit`, EFFECT_NONE),
+    N('log push', `R=HEAD; git log "$R" -- push`, EFFECT_NONE),
+    N('gh body', `gh pr comment 1 --body "${CK} x" && git push origin x`, null),
   ];
 }
 
@@ -1372,6 +1372,417 @@ test('shape bank, not-a-deny rows: each allows in both states, and its real effe
   assert.deepStrictEqual(await bankMismatches(fx, bankRows(fx).filter((row) => row.want === 'allow')), []);
 });
 
+// --- Quick 261104-ov8: rows for the mask, the views, the region and the key rule. ---------------
+
+/** The row helpers of the ov8 groups: K, VK, CK, C and O as the review files write them, G a whole commit. */
+function ov8Words() {
+  const K = ENF13_K;
+  const C = 'commit --allow-empty -m x';
+  const D = (advice, command, effect) => ({ want: 'deny', advice, name: command, command, effect });
+  const N = (command, effect) => ({ want: 'allow', name: command, command, effect });
+  return {
+    K,
+    C,
+    D,
+    N,
+    VK: 'GIT_CONFIG_VALUE_0',
+    CK: 'GIT_CONFIG_COUNT',
+    O: `-c ${K}=/dev/null`,
+    G: `git ${C}`,
+    message: (line) => `git commit --allow-empty -m "$(cat <<'EOF'\n${line}\nEOF\n)"`,
+  };
+}
+
+test('ov8 enf12: the real flag keeps its text on commit and push, chained and wrapped; a neighbor and a message do not read as it', async (t) => {
+  const fx = buildBankFixture(t);
+  const { D, N, G } = ov8Words();
+  assert.deepStrictEqual(await bankMismatches(fx, [
+    D(ENF12_TEXT, 'git commit --no-verify --allow-empty -m x', EFFECT_BYPASS),
+    D(ENF12_TEXT, 'git commit -n --allow-empty -m x', EFFECT_BYPASS),
+    D(ENF12_TEXT, 'git push --no-verify origin x', null),
+    D(ENF12_TEXT, 'git push -n origin x', null),
+    D(ENF12_TEXT, 'git status && git commit --no-verify --allow-empty -m x', EFFECT_BYPASS),
+    D(ENF12_TEXT, 'git status; git commit -n --allow-empty -m x', EFFECT_BYPASS),
+    D(ENF12_TEXT, `${G} && git push --no-verify origin x`, null),
+    D(ENF12_TEXT, `nice -n 5 ${G}`, EFFECT_HOOK),
+    N(`grep -n x /dev/null; ${G}`, EFFECT_HOOK),
+    N(`tail -n 1 /dev/null; ${G}`, EFFECT_HOOK),
+    N('git commit --allow-empty -m "never --no-verify"', EFFECT_HOOK),
+  ]), []);
+});
+
+test('ov8 mask: a comment goes only when its line holds no delimiter and no ${ is open; continuations leave nothing', async (t) => {
+  const fx = buildBankFixture(t);
+  const { K, C, D, N, VK, CK, O, G, message } = ov8Words();
+  const R = ADVICE_REMOVE;
+  const OWN = ADVICE_OWN_CALL;
+  assert.deepStrictEqual(await bankMismatches(fx, [
+    // The mask's flat quote state differs from bash here: a hash it would call a comment is text to bash.
+    D(R, `echo "$(echo "a #b")"; git ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `echo "\${x:-"a #b"}"; git ${O} ${C}`, EFFECT_BYPASS),
+    D(OWN, `x="$(printf "%s" "a #b")"; ${VK}=/dev/null; ${G}`, EFFECT_BYPASS),
+    D(R, `echo $'a\\' #b'; echo \\'; git ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `(( 1 #2 )); git ${O} ${C}`, EFFECT_BYPASS),
+    // The closing } is on the next line, so the text rule alone would hide the override.
+    D(R, `git -C \${y:-. --namespace #x ${O} ${C}\n}`, EFFECT_BYPASS),
+    D(R, `mkdir -p "#b"\ngit -C \${y:- #b ${O} ${C}\n}\nrmdir "#b"`, EFFECT_BYPASS),
+    D(R, `echo \${x:- #y}; git ${O} ${C}`, EFFECT_BYPASS),
+    // A heredoc message holding a quote and a hash: no refusal, the hook runs.
+    N(message('fix "issue #12 ok" again'), EFFECT_HOOK),
+    N(message('see "a" and "b #2"'), EFFECT_HOOK),
+    N(message('- rename "foo #1" to "bar"'), EFFECT_HOOK),
+    N(message('closes #12'), EFFECT_HOOK),
+    // A text that masks to nothing is no hit and no refusal.
+    N('# git commit -m x', EFFECT_NONE),
+    N('# then git push origin x', EFFECT_NONE),
+    N('# just a note', EFFECT_NONE),
+    // A comment operator is no operator, so the next line is read.
+    D(R, `# <<EOF\ngit ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `# x \\\ngit ${O} ${C}`, EFFECT_BYPASS),
+    // The top-level refusal keeps one real input; bash exits 2 on it.
+    D(OWN, "# <<EOF\nit's\nEOF\ngit commit -m x", EFFECT_NONE),
+    N("# <<EOF\nit's\nEOF\ngit status", EFFECT_NONE),
+    N("# it's\necho 'y\ngit commit -m x", EFFECT_NONE),
+    // A hash touching a word is not a comment.
+    D(R, `git -c user.name=a\\ #b ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `git -c user.name="a"#b ${O} ${C}`, EFFECT_BYPASS),
+    // A quoted hash is a value, wherever it sits.
+    D(R, `git > "#x" ${O} ${C}; rm -f "#x"`, EFFECT_BYPASS),
+    D(OWN, `git config > "#x" ${K} /dev/null && ${G}; rm -f "#x"`, EFFECT_BYPASS),
+    D(R, `git --shallow-file "#x" ${O} ${C}`, EFFECT_BYPASS),
+    N('git commit --allow-empty -m "#1 fix"', EFFECT_HOOK),
+    N('git -C "#dir" commit --allow-empty -m x', EFFECT_NONE),
+    // A comment that goes with its text, and PA-1's rows, which D5 would have denied.
+    N(`${G} # then push`, EFFECT_HOOK),
+    N(`# ${VK}\n${G}`, EFFECT_HOOK),
+    N(`git status # ${CK}\n${G}`, EFFECT_HOOK),
+    N(`echo ok # note; ${G}`, EFFECT_NONE),
+    N('git status # note; git push origin x', EFFECT_NONE),
+    N('git\ncommit --allow-empty -m x', EFFECT_NONE),
+    // Between a read and a commit: a blank line, a comment line, a continuation then a blank line.
+    N(`git status\n\n${G}`, EFFECT_HOOK),
+    N(`git status\n# note\n${G}`, EFFECT_HOOK),
+    N(`git status \\\n\n${G}`, EFFECT_HOOK),
+    N(`git add a \\\n\n${G}`, EFFECT_HOOK),
+    N(`git log \\\n\n${G}`, EFFECT_HOOK),
+    // A non-ASCII character moves no state.
+    N('git commit --allow-empty -m "café #1" # café note', EFFECT_HOOK),
+    D(R, `echo "café" # café note\ngit ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `git -c user.name=café ${O} ${C}`, EFFECT_BYPASS),
+    // Accepted false denies, CTK-ADR-0016: a kept comment reads as tokens. The hook runs on each.
+    D(OWN, `# ${VK} (see notes)\n${G}`, EFFECT_HOOK),
+    D(OWN, `export FOO=1 # ${VK} (note)\n${G}`, EFFECT_HOOK),
+    D(OWN, `cd . # ${CK} is (not) set\n${G}`, EFFECT_HOOK),
+    // Denies as at base, and bash runs nothing past the hash: a kept comment, not a removed false deny.
+    D(R, `echo ok # note; git ${O} ${C}`, EFFECT_NONE),
+  ]), []);
+});
+
+test('ov8 views: an override in a compound form or a literal payload denies; the same forms with none allow', async (t) => {
+  const fx = buildBankFixture(t);
+  const { K, C, D, N, O, G } = ov8Words();
+  const R = ADVICE_REMOVE;
+  const OWN = ADVICE_OWN_CALL;
+  assert.deepStrictEqual(await bankMismatches(fx, [
+    D(R, `( git ${O} ${C} )`, EFFECT_BYPASS),
+    D(R, `(git ${O} ${C})`, EFFECT_BYPASS),
+    D(R, `{ git ${O} ${C}; }`, EFFECT_BYPASS),
+    D(R, `if true; then git ${O} ${C}; fi`, EFFECT_BYPASS),
+    D(R, `if git ${O} ${C}; then :; fi`, EFFECT_BYPASS),
+    D(R, `for i in 1; do git ${O} ${C}; done`, EFFECT_BYPASS),
+    D(R, `n=0; while [ $n -lt 1 ]; do git ${O} ${C}; n=1; done`, EFFECT_BYPASS),
+    D(R, `time git ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `! git ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `echo $(git ${O} ${C})`, EFFECT_BYPASS),
+    D(R, `x=$(git ${O} ${C})`, EFFECT_BYPASS),
+    D(R, `echo \`git ${O} ${C}\``, EFFECT_BYPASS),
+    D(R, `nohup git ${O} ${C} >/dev/null 2>&1`, EFFECT_BYPASS),
+    D(R, `true | xargs git ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `setsid -w git ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `case x in x) git ${O} ${C};; esac`, EFFECT_BYPASS),
+    D(R, `f() { git ${O} ${C}; }; f`, EFFECT_BYPASS),
+    D(R, `2>/dev/null git ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `</dev/null git ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `git ${O} commit>/dev/null --allow-empty -m x`, EFFECT_BYPASS),
+    D(R, `( git $X ${O} ${C} )`, EFFECT_BYPASS),
+    D(R, `env "#a=b" git ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `git submodule foreach git ${O} commit`, EFFECT_NONE),
+    // A located git carries the repo assignment and the config write rules too.
+    D(R, `( GIT_DIR=/nonexistent git ${C} )`, EFFECT_NONE),
+    D(R, `(GIT_DIR=/nonexistent git ${C})`, EFFECT_NONE),
+    D(R, `builtin command git ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `(bash -c 'git ${O} ${C}')`, EFFECT_BYPASS),
+    D(OWN, `( git config ${K} /dev/null; ${G} )`, EFFECT_BYPASS),
+    // Payloads, read to depth 3.
+    D(R, `bash -c 'git ${O} ${C}'`, EFFECT_BYPASS),
+    D(R, `sh -c 'git ${O} ${C}'`, EFFECT_BYPASS),
+    D(R, `/bin/sh -c 'git ${O} ${C}'`, EFFECT_BYPASS),
+    D(R, `bash -lc 'git ${O} ${C}'`, EFFECT_BYPASS),
+    D(R, `bash -ce 'git ${O} ${C}'`, EFFECT_BYPASS),
+    D(R, `bash -c -- 'git ${O} ${C}'`, EFFECT_BYPASS),
+    D(R, `bash --norc -c 'git ${O} ${C}'`, EFFECT_BYPASS),
+    D(R, `eval 'git ${O} ${C}'`, EFFECT_BYPASS),
+    D(R, `eval git ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `eval eval eval git ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `eval eval eval eval eval git ${O} ${C}`, EFFECT_BYPASS),
+    // Past the bound, with no typed form to see: refused, no throw.
+    D(OWN, `eval eval eval eval eval ${G}`, EFFECT_HOOK),
+    N(`bash -c '# git commit'`, EFFECT_NONE),
+    N('eval "# git push"', EFFECT_NONE),
+    N(`bash -c '${G}'`, EFFECT_HOOK),
+    N(`bash -c 'cd . && git status'`, EFFECT_NONE),
+    N(`eval "$(ssh-agent)"; ${G}`, null),
+    // Compound forms with no override.
+    N(`time ${G}`, EFFECT_HOOK),
+    N(`( cd . && ${G} )`, EFFECT_HOOK),
+    N(`{ ${G}; }`, EFFECT_HOOK),
+    N(`if ${G}; then :; fi`, EFFECT_HOOK),
+    N(`cd . && ${G}`, EFFECT_HOOK),
+    N(`git status; git diff --stat; git log -n 1 | head -1; ${G}`, EFFECT_HOOK),
+    N(`git -C "$(git rev-parse --show-toplevel)" ${C}`, EFFECT_HOOK),
+    N(`git commit --allow-empty -F - <<'EOF'\nfix: one commit\nEOF`, EFFECT_HOOK),
+    N(`for f in git commit; do :; done; ${G}`, EFFECT_HOOK),
+    N('grep -c git commit', EFFECT_NONE),
+    N('command -v git', EFFECT_NONE),
+    N('gh pr comment 1 --body "run git commit -c x"', null),
+    // The spelling rule reads a resolved git only.
+    N(`echo git commit -n; ${G}`, EFFECT_HOOK),
+    // Accepted false denies, CTK-ADR-0016: text only, a located git beside a sealed segment. The hook runs.
+    D(R, `echo git ${O} commit; ${G}`, EFFECT_HOOK),
+    // The verdict does not depend on the order of forms in a chain.
+    D(R, `git ${O} ${C}; git status`, EFFECT_BYPASS),
+    D(R, `git status; git ${O} ${C}`, EFFECT_BYPASS),
+  ]), []);
+});
+
+test('ov8 region: the named rules read the whole region, the generic rule stops at the subcommand, and no value is read for syntax', async (t) => {
+  const fx = buildBankFixture(t);
+  const { K, C, D, N, CK, O, G } = ov8Words();
+  const R = ADVICE_REMOVE;
+  const L = ADVICE_LITERAL;
+  const rows = [
+    // A shifted walk or an unbalanced value cannot open a named form.
+    D(R, `git --namespace ">x" ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `git --namespace ">" ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `git --namespace <(true) ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `git --namespace <(echo a b) ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `git > /dev/null ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `git 2>/dev/null ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `git <<< x ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `X=.; git -C \${X:-. foo} ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `N=x; git -c user.name=\${N:-a b} ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `N=x; git --namespace=\${N:-a b} ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `git -C \`echo . ${O}\` ${C}`, EFFECT_BYPASS),
+    D(R, `git -C $(echo . ${O}) ${C}`, EFFECT_BYPASS),
+    D(R, `git -c user.name=$(echo x ${O}) ${C}`, EFFECT_BYPASS),
+    D(R, `git --namespace "(" --config-env=${K}=HOME ${C}`, EFFECT_BYPASS),
+    D(R, `git --namespace "(" --git-dir=.git ${C}`, EFFECT_HOOK),
+    D(R, `git "" ${O} ${C}`, EFFECT_NONE),
+    // An accepted false deny, CTK-ADR-0016: a kept comment reads as tokens, to the last sealing word. The hook runs.
+    D(R, `${G} # see (git ${O} commit)`, EFFECT_HOOK),
+    // The comment stays while the ${ is open, and the named rule reads past the option that shifted the walk.
+    D(R, `git \${y:- --namespace #x ${O} ${C}\n}`, EFFECT_BYPASS),
+    D(R, `git \${y:- --attr-source #x ${O} ${C}\n}`, EFFECT_BYPASS),
+    // The named rules keep the sealing word wide.
+    D(R, `git ${O} stash push`, EFFECT_NONE),
+    D(R, `git ${O} subtree push`, null),
+    D(R, `git ${O} log --grep commit`, EFFECT_NONE),
+    D(R, `V=/dev/null; git -c ${K}="$V" ${C}`, EFFECT_BYPASS),
+    // A key the gate cannot read: a glob, a non-ASCII byte. A glob matching a file names the key.
+    D(L, `touch ./${K}=; git -c core.hooks* ${C}; rm -f ./${K}=`, EFFECT_BYPASS),
+    D(L, 'git -c café.x=y commit --allow-empty -m x', EFFECT_NONE),
+    // The generic rule still reads git's own option list, up to and including the subcommand word.
+    D(L, `O="${O}"; git $O ${C}`, EFFECT_BYPASS),
+    D(L, `git {-c,${K}=/dev/null} ${C}`, EFFECT_BYPASS),
+    // Reads after the subcommand: Minor 5.
+    N('B=HEAD; git log "$B"..HEAD --grep commit', EFFECT_NONE),
+    N('B=HEAD; git log "$B"..HEAD -- commit', EFFECT_NONE),
+    N('S=HEAD; git show "$S" -- commit', EFFECT_NONE),
+    N('A=HEAD; git diff "$A" "$A" -- commit', EFFECT_NONE),
+    N('X=HEAD; git rev-parse "$X" commit', EFFECT_NONE),
+    N('X=nobranch; git branch -D "$X" commit', EFFECT_NONE),
+    N('X=HEAD; git checkout "$X" -- commit', EFFECT_NONE),
+    N('f=x; git add "$f" commit', EFFECT_NONE),
+    N('git tag -a v1 -m "$(echo x)" commit; git tag -d v1', EFFECT_NONE),
+    N('R=origin; git push "$R" commit', EFFECT_NONE),
+    N('M=x; git commit --allow-empty -m "$M" -m commit', EFFECT_HOOK),
+    N('M=x; git commit --allow-empty -m "$M" -m push', EFFECT_HOOK),
+    // Values: Minor 5 and Minor 4. The two forms the deny text names allow and work.
+    N(`N=x; git -c user.name="$N" ${C}`, EFFECT_HOOK),
+    N(`N=x; git -c user.name=$N ${C}`, EFFECT_HOOK),
+    N(`V=HOME; git --config-env user.name=$V ${C}`, EFFECT_HOOK),
+    N(`HDR=x git --config-env=http.extraHeader=HDR ${C}`, EFFECT_HOOK),
+    N(`I=x; git -c core.sshCommand="ssh -i $I" ${C}`, EFFECT_HOOK),
+    N('T=x; git -c "http.extraHeader=Authorization: Bearer $T" push origin x', EFFECT_NONE),
+    N(`git -c "http.extraHeader=Authorization: Bearer abc" ${C}`, EFFECT_HOOK),
+    N('git -c url.git@github.com:.insteadOf=https://github.com/ push origin x', EFFECT_NONE),
+    N(`git -C $(git rev-parse --show-toplevel) ${C}`, EFFECT_HOOK),
+    N(`git -C \`git rev-parse --show-toplevel\` ${C}`, EFFECT_HOOK),
+    N(`git -c user.name=x -C "$PWD" ${C}`, EFFECT_HOOK),
+    N(`git -c user.name=${CK} ${C}`, EFFECT_HOOK),
+    N(`git status --short; ${G}`, EFFECT_HOOK),
+  ];
+  assert.deepStrictEqual(await bankMismatches(fx, rows), []);
+  // No deny text tells a reader to write a value out, and the advice names both forms with the right use.
+  for (const row of rows.filter((r) => r.want === 'deny')) {
+    const { reason } = await runHookAsync(fx.repo, fx.behind, row.command);
+    assert.doesNotMatch(reason, /literally/, row.command);
+  }
+  const { reason } = await runHookAsync(fx.repo, fx.behind, 'git $O commit -m x');
+  assert.match(reason, /secret config value goes through `--config-env=<key>=<ENVVAR>`/);
+  assert.match(reason, /`-c <key>="\$VALUE"` is for a value that is not secret/);
+  assert.match(reason, /^[\x20-\x7e]*$/);
+});
+
+test('ov8 fix round: a split value is no walk stop, a compound message is no key name, payload options are skipped', async (t) => {
+  const fx = buildBankFixture(t);
+  const { K, C, D, N, VK, O, G, message } = ov8Words();
+  assert.deepStrictEqual(await bankMismatches(fx, [
+    // A value the parser split must not end git's option list early: classifyAction reads this as other.
+    D(ADVICE_LITERAL, 'git -c user.name=$(echo a) commit --no-verify --allow-empty -m x', EFFECT_BYPASS),
+    D(ADVICE_LITERAL, 'git -c user.name=$(echo a) commit -n --allow-empty -m x', EFFECT_BYPASS),
+    D(ADVICE_LITERAL, `git -c user.name=$(echo a) ${C}`, EFFECT_HOOK),
+    D(ADVICE_LITERAL, `git --config-env user.name=$(echo a) ${C}`, null),
+    D(ADVICE_LITERAL, `git --config-env=user.name=$(echo a) ${C}`, null),
+    D(ADVICE_LITERAL, `O='${O}'; git -c user.name=$(echo a) $O ${C}`, EFFECT_BYPASS),
+    N(`git -c user.name="$(echo a)" ${C}`, EFFECT_HOOK),
+    N(`git -c user.name=$(echo a) status`, null),
+    N(`git -C $(git rev-parse --show-toplevel) ${C}`, EFFECT_HOOK),
+    // A message in a compound form reads as tokens: every word of a segment whose program is not git is read.
+    // Skipping them opened `x=$(git status commit) K=/dev/null` (fix round 3), so this false deny is accepted.
+    D(ADVICE_REMOVE, `( git commit --allow-empty -m "doc: ${VK} named" )`, EFFECT_HOOK),
+    D(ADVICE_REMOVE, `{ git commit --allow-empty -m "doc: ${VK} named"; }`, EFFECT_HOOK),
+    D(ADVICE_REMOVE, `if true; then git commit --allow-empty -m "doc: ${VK} named"; fi`, EFFECT_HOOK),
+    D(ADVICE_REMOVE, `time git commit --allow-empty -m "doc: ${VK} named"`, EFFECT_HOOK),
+    D(ADVICE_REMOVE, `( ${message(`body names ${VK} and ${K}`)} )`, EFFECT_HOOK),
+    D(ADVICE_REMOVE, `x=$(git status commit) ${VK}=/dev/null; ${G}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `export git status commit ${VK}=/dev/null; ${G}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `( ${VK}=/dev/null ${G} )`, EFFECT_BYPASS),
+    // A shell's options after -c are not its text.
+    D(ADVICE_REMOVE, `bash -c -e 'git ${O} ${C}'`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `bash -c -x 'git ${O} ${C}'`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `bash -c -- 'git ${O} ${C}'`, EFFECT_BYPASS),
+    N(`bash -c -e '${G}'`, EFFECT_HOOK),
+    // Behind a word that is not shell grammar, every token is read; a -- ends the shell's options.
+    D(ADVICE_REMOVE, `export git commit ${VK}=/dev/null; ${G}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `bash -c -- '-x; git ${O} ${C}'`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `bash -c - '-x; git ${O} ${C}'`, EFFECT_BYPASS),
+    // A quoted lone paren reads as a split value: the parser drops quotes. Accepted, CTK-ADR-0016.
+    D(ADVICE_LITERAL, `git -c x.y="a(b" ${C}`, EFFECT_HOOK),
+    N(`V='a(b'; git -c x.y="$V" ${C}`, EFFECT_HOOK),
+    // An unsealed git beside a commit: its own call allows, so the advice is its own call.
+    D(ADVICE_OWN_CALL, `${VK}=v git log -1; ${G}`, EFFECT_HOOK),
+    // A key name on the git segment itself still denies alone in a call, so the advice is to remove it.
+    D(ADVICE_REMOVE, `${VK}=/dev/null ${G}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, 'git -c user.name=$((GIT_CONFIG_VALUE_0=1)) commit --allow-empty -m x', EFFECT_BYPASS),
+  ]), []);
+});
+
+test('ov8 fix round: a long paren run in a token stays a linear read of the sealing word', () => {
+  const started = Date.now();
+  const parens = ')'.repeat(50000);
+  const parsed = require('./lib/argv.cjs').parseCommandForGates(`git status "${parens}\n"`);
+  const hit = require('./githooks-seal.cjs').typedHooksPathOverride(parsed);
+  assert.strictEqual(hit, null);
+  assert.ok(Date.now() - started < 400, 'the scan of one token took ' + (Date.now() - started) + ' ms');
+});
+
+test('ov8 keys: an env key name denies unless a listed reader or an unset holds it plainly', async (t) => {
+  const fx = buildBankFixture(t);
+  const { K, C, D, N, VK, CK, G } = ov8Words();
+  const OWN = ADVICE_OWN_CALL;
+  assert.deepStrictEqual(await bankMismatches(fx, [
+    // Setters no list names, and assignments run from text.
+    D(OWN, `let ${VK}=1; ${G}`, EFFECT_BYPASS),
+    D(OWN, `(( ${VK} = 1 )); ${G}`, EFFECT_BYPASS),
+    D(OWN, `getopts a ${VK}; ${G}`, EFFECT_BYPASS),
+    D(OWN, `exec {${VK}}>/dev/null; ${G}`, EFFECT_BYPASS),
+    D(OWN, `source <(echo ${VK}=/dev/null); ${G}`, EFFECT_BYPASS),
+    D(OWN, `. /dev/stdin <<< ${VK}=/dev/null; ${G}`, EFFECT_BYPASS),
+    D(OWN, `eval "$(echo ${VK}=/dev/null)"; ${G}`, EFFECT_BYPASS),
+    D(OWN, `eval $(echo ${VK}=/dev/null); ${G}`, EFFECT_BYPASS),
+    D(OWN, `>/dev/null ${VK}=/dev/null; ${G}`, EFFECT_BYPASS),
+    D(OWN, `2>/dev/null ${VK}=/dev/null; ${G}`, EFFECT_BYPASS),
+    D(OWN, `a=(1 2) ${VK}=/dev/null; ${G}`, EFFECT_BYPASS),
+    D(OWN, `x=$(echo a) ${VK}=/dev/null; ${G}`, EFFECT_BYPASS),
+    D(OWN, `x=$(echo a b) ${VK}=/dev/null; ${G}`, EFFECT_BYPASS),
+    D(OWN, `function f { ${VK}=/dev/null; }; f; ${G}`, EFFECT_BYPASS),
+    D(OWN, `f () { ${VK}=/dev/null; }; f; ${G}`, EFFECT_BYPASS),
+    // The word git in a non-git segment does not turn the names around it inert.
+    D(OWN, `printf -v ${VK} git; ${G}`, EFFECT_BYPASS),
+    D(OWN, `for ${VK} in git; do :; done; ${G}`, EFFECT_BYPASS),
+    D(OWN, `read ${VK} <<< git; ${G}`, EFFECT_BYPASS),
+    D(OWN, `export git ${VK}=/dev/null; ${G}`, EFFECT_BYPASS),
+    D(OWN, `declare git ${VK}=/dev/null; ${G}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `( ${VK}=/dev/null ${G} )`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `${VK}+=-nope ${G}`, EFFECT_BYPASS),
+    // A listed program whose segment holds shell syntax or a redirect keeps denying.
+    D(OWN, `echo $((${VK}=1)); ${G}`, EFFECT_BYPASS),
+    D(OWN, `echo "$((${VK}=1))"; ${G}`, EFFECT_BYPASS),
+    D(OWN, `cat $((${VK}=1)) 2>/dev/null; ${G}`, EFFECT_BYPASS),
+    D(OWN, `ls $((${VK}=1)) 2>/dev/null; ${G}`, EFFECT_BYPASS),
+    D(OWN, `echo \${a[${VK}=1]}; ${G}`, EFFECT_BYPASS),
+    D(OWN, `echo $(( ${VK} = 1 )); ${G}`, EFFECT_BYPASS),
+    D(OWN, `echo $(( ${VK}=1 )); ${G}`, EFFECT_BYPASS),
+    D(OWN, `cat $(( ${VK} = 1 )) 2>/dev/null; ${G}`, EFFECT_BYPASS),
+    D(OWN, `echo \${a[ ${VK} = 1 ]}; ${G}`, EFFECT_BYPASS),
+    D(OWN, `echo $[ ${VK} = 1 ]; ${G}`, EFFECT_BYPASS),
+    D(OWN, `echo () { ${VK}=/dev/null; }; echo; ${G}`, EFFECT_BYPASS),
+    D(OWN, `grep () { ${VK}=/dev/null; }; grep; ${G}`, EFFECT_BYPASS),
+    D(OWN, `cat () { ${VK}=/dev/null; }\ncat\n${G}`, EFFECT_BYPASS),
+    D(OWN, `echo ${VK}=/dev/null > ./f; . ./f; rm -f ./f; ${G}`, EFFECT_BYPASS),
+    D(OWN, `echo ${VK}=/dev/null>./f; . ./f; rm -f ./f; ${G}`, EFFECT_BYPASS),
+    // Before a listed program the token is an assignment, and is not the listed program's word.
+    D(OWN, `${VK}=/dev/null echo x; ${G}`, EFFECT_HOOK),
+    // Accepted false denies, CTK-ADR-0016: a listed reader beside syntax or a redirect. The hook runs.
+    D(OWN, `D=/dev/null; grep ${VK} "$D"; ${G}`, EFFECT_HOOK),
+    D(OWN, `grep ${VK} /dev/null > /dev/null; ${G}`, EFFECT_HOOK),
+    // A key name beside shell syntax in a sealed git's region: the arithmetic runs before git starts.
+    D(ADVICE_REMOVE, `git -c user.name=$((${VK}=1)) ${C}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `git -c user.name="$((${VK}=1))" ${C}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `git -c user.name=\${a[${VK}=1]} ${C}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `git --config-env user.name=$((${VK}=1)) ${C}`, EFFECT_NONE),
+    D(ADVICE_REMOVE, `git --namespace=$((${VK}=1)) ${C}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `git -C \${a[${VK}=1]}. ${C}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `git -c user.name=$(( ${VK} = 1 )) ${C}`, EFFECT_BYPASS),
+    // Before a resolved git, a name holds only as the plain value of an unset.
+    D(ADVICE_REMOVE, `env --split-string="${VK}=/dev/null" ${G}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `env -S "a=1 ${VK}=/dev/null" ${G}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `env -S"${VK}=/dev/null" ${G}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `env -u \${a[${VK}=1]}x ${G}`, EFFECT_BYPASS),
+    // An attached short option holds the name too. The ruling names only the separate unset forms as inert, so this one denies, and the hook runs.
+    D(ADVICE_REMOVE, `env -u${CK} ${G}`, EFFECT_HOOK),
+    // A config write's key position: a glob that matches a file names the key.
+    D(OWN, `touch ./${K}; git config core.hooks* /dev/null && ${G}; rm -f ./${K}`, EFFECT_BYPASS),
+    D(OWN, `touch ./${K}; git config core.hooks?ath /dev/null && ${G}; rm -f ./${K}`, EFFECT_BYPASS),
+    D(OWN, `touch ./${K}; git config core.hooks[P]ath /dev/null && ${G}; rm -f ./${K}`, EFFECT_BYPASS),
+    // That rule reads git's subcommand, not the word config anywhere.
+    N(`git add config *.md && ${G}`, EFFECT_NONE),
+    N('git commit --allow-empty config -m "fix: why?"', EFFECT_NONE),
+    N('git commit --allow-empty config -m "[chore] bump"', EFFECT_NONE),
+    N('git commit --allow-empty -m config -m "what changed?"', EFFECT_HOOK),
+    N(`git log --oneline -- config '*.md'; ${G}`, EFFECT_HOOK),
+    N(`git diff config '*.md'; ${G}`, EFFECT_HOOK),
+    N(`ls git config x*; ${G}`, EFFECT_HOOK),
+    N(`git config --get-regexp 'core.*'; ${G}`, EFFECT_HOOK),
+    // Reads, unsets and text: Minor 5.
+    N(`grep -rn ${CK} . | head -3; ${G}`, EFFECT_HOOK),
+    N(`echo ${CK} x; ${G}`, EFFECT_HOOK),
+    N(`echo ${VK}=v; ${G}`, EFFECT_HOOK),
+    N(`grep ${VK} /dev/null; ${G}`, EFFECT_HOOK),
+    N(`unset ${CK}; ${G}`, EFFECT_HOOK),
+    N(`unset ${VK} ${CK}; ${G}`, EFFECT_HOOK),
+    N(`unset ${VK}; ${G}`, EFFECT_NONE),
+    N(`env -u ${CK} ${G}`, EFFECT_HOOK),
+    N(`env --unset=${CK} ${G}`, EFFECT_HOOK),
+    N(`env --unset ${CK} ${G}`, EFFECT_HOOK),
+    N(`gh pr comment 1 --body "${CK} x" && git push origin x`, null),
+    N(`git commit --allow-empty -m "note ${CK}"`, EFFECT_HOOK),
+    N(`git commit --allow-empty -m "$(cat <<'EOF'\nnote ${VK} $X\nEOF\n)"`, EFFECT_HOOK),
+    N(`M=x; git commit --allow-empty -m "$M" -m "${VK}"`, EFFECT_HOOK),
+  ]), []);
+});
+
 /**
  * Reported, not closed: each row runs through the spawned hook and real bash, and the output is the
  * measured list. Nothing is asserted about these rows: this records what the gate does not catch, and
@@ -1392,17 +1803,7 @@ function reportedRows(fx, second, plantedExecPath) {
     row('--namespace word split', `N="x ${O}"; git --namespace $N ${C}`),
     row('export GIT_DIR', `export GIT_DIR=${fx.other}/.git; git ${C}`),
     row('leading K+=v', `${VK}+=-nope git ${C}`),
-    row('! git', `! git ${O} ${C}`),
-    row('if git', `if git ${O} ${C}; then :; fi`),
-    row('brace group', `{ git ${O} ${C}; }`),
-    row('subshell', `(git ${O} ${C})`),
-    row('$(git)', `echo $(git ${O} ${C})`),
-    row('eval', `eval 'git ${O} ${C}'`),
-    row('sh -c', `sh -c 'git ${O} ${C}'`),
     row('env -S', `env -S 'git ${O} ${C}'`),
-    row('xargs', `true | xargs git ${O} ${C}`),
-    row('nohup', `nohup git ${O} ${C} >/dev/null 2>&1`),
-    row('time', `time git ${O} ${C}`),
     row('git alias', `git -c alias.z='!git ${O} ${C}' z`),
     row('script file', `printf '#!/bin/sh\\ngit ${O} ${C}\\n' > ${fx.root}/s.sh; sh ${fx.root}/s.sh`),
     // AMENDMENT-1 A-5, a second gsd-core checkout reached through a variable: the gate reads the cwd's tree.
@@ -1430,25 +1831,13 @@ function reportedRows(fx, second, plantedExecPath) {
     row('variable subcommand', `S=commit; git ${O} $S --allow-empty -m x`),
     row("ANSI-C subcommand", `git ${O} $'commit' --allow-empty -m x`),
     row('newline in an unquoted $(', `git ${O} $(\n) ${C}`),
-    row('leading redirect 2>', `2>/dev/null git ${O} ${C}`),
-    row('leading redirect <', `</dev/null git ${O} ${C}`),
     row('git 2>/dev/null commit --no-verify', `git 2>/dev/null commit --no-verify --allow-empty -m x`),
-    row('for loop', `for i in 1; do git ${O} ${C}; done`),
-    row('while loop', `n=0; while [ $n -lt 1 ]; do git ${O} ${C}; n=1; done`),
-    row('if then', `if true; then git ${O} ${C}; fi`),
-    row('case', `case x in x) git ${O} ${C};; esac`),
-    row('function body', `f() { git ${O} ${C}; }; f`),
-    row('setsid -w', `setsid -w git ${O} ${C}`),
-    row('builtin command', `builtin command git ${O} ${C}`),
     row('G=git; $G', `G=git; $G ${O} ${C}`),
     row('$(command -v git)', `$(command -v git) ${O} ${C}`),
     row('help.autocorrect', `git ${O} -c help.autocorrect=immediate comit --allow-empty -m x`),
     row('commit-tree plus update-ref', `T=$(git rev-parse 'HEAD^{tree}'); N=$(git commit-tree -m x -p HEAD $T); git update-ref HEAD $N`),
-    row('quote mask, comment', `# it's\ngit ${O} ${C}\n# it's`),
     row('quote mask, ANSI-C', `echo $'a\\'b'; git ${O} ${C}; echo \\'`),
     row('heredoc mask, arithmetic', `echo $((1<<X))\ngit ${O} ${C}\nX`),
-    // A value starting with a hash, after an option outside the value positions the scan knows.
-    row('--shallow-file "#x" value hides what follows', `git --shallow-file "#x" ${O} ${C}`),
     // A-5 W2: an accepted dispatcher's own fail-open is inherited. Measured against the fixture delegate here.
     row('planted git on GIT_EXEC_PATH, behind the fixture dispatcher', `GIT_EXEC_PATH=${plantedExecPath} git ${C}`),
     row('planted git on GIT_EXEC_PATH, no dispatcher', `GIT_EXEC_PATH=${plantedExecPath} git ${C}`, { state: 'plain' }),
@@ -1466,6 +1855,30 @@ function reportedRows(fx, second, plantedExecPath) {
     row('A-1 narrow, plain: --no-veri', 'git commit --allow-empty --no-veri -m x', { state: 'plain' }),
     // ENF-12 reads a wrapper's own -n as the flag: a false deny it already had, unchanged here.
     row('nice -n 5 git commit (ENF-12 false deny)', `nice -n 5 git ${C}`),
+    // Quick 261104-ov8, CTK-ADR-0016's open rows.
+    row('quoted substitution', `echo "$(git ${O} ${C})"`),
+    row('alias holding the option', `git -c alias.ci='${O} commit' ci --allow-empty -m x`),
+    row('variable payload, eval', `P='git ${O} ${C}'; eval "$P"`),
+    row('variable payload, bash -c', `P='git ${O} ${C}'; bash -c "$P"`),
+    row('( git $OPTS commit )', `OPTS="${O}"; ( git $OPTS ${C} )`),
+    row('glob as a whole option', `git * ${C}`),
+    row('compound, no typed form, --no-verify', '( git commit --no-verify --allow-empty -m x )'),
+    row('compound, no typed form, -n', 'time git commit -n --allow-empty -m x'),
+    row('compound config glob write', `touch ./${K}; ( git config core.hooks* /dev/null; git ${C} ); rm -f ./${K}`),
+    row('-c value word split', `N="x ${O}"; git -c user.name=$N ${C}`),
+    row('--shallow-file $X word split', `X="/nonexistent ${O}"; git --shallow-file $X ${C}`),
+    row('here-string then $O', `O="${O}"; git <<< x $O ${C}`),
+    row('here-string then brace', `git <<< x {-c,${K}=/dev/null} ${C}`),
+    row('redirect-shaped value then brace', `git --namespace ">x" {-c,${K}=/dev/null} ${C}`),
+    row('redirect-shaped value then $O', `O="${O}"; git --namespace ">x" $O ${C}`),
+    row('process substitution value then $O', `O="${O}"; git --namespace <(echo a b) $O ${C}`),
+    row('redirect-shaped attr-source then $O', `O="${O}"; git --attr-source "<x" $O ${C}`),
+    row('kept comment, heredoc operator', `# (x) <<EOF\ngit ${O} ${C}`),
+    row('kept comment, quote', `# don't\ngit ${O} ${C} # don't`),
+    row('kept comment, quote, key', `true # it's\n${VK}=/dev/null; git ${C} # it's`),
+    row('nested quote over a newline', `echo "$(echo "a #b\nc"; git ${O} ${C}; echo "d")"`),
+    row('-m value after the sealing word, arithmetic', `git commit --allow-empty -m $((${VK}=1))`),
+    row('non-sealed git segment, arithmetic', `git log -1 $((${VK}=1)) >/dev/null 2>&1; git ${C}`),
     // Runs nothing: gh would reach outside the fixture.
     row('gh pr create x && git commit --no-verify', 'gh pr create x && git commit --no-verify -m x', { noExec: true }),
     // From outside any gsd-core checkout: no root resolves, so the literal -C target is not read.
@@ -1915,7 +2328,7 @@ test('RES-01: a non-sealed command with no typed hit pays no filesystem walk bef
 
 test('A-2, the refusal is scoped: a text that does not parse with no sealed segment in it stays allowed', (t) => {
   const { fx, states } = typedStates(t);
-  for (const command of ['git log \\\n\ngit status', 'echo x \\\n\necho y']) {
+  for (const command of ["# <<EOF\nit's\nEOF\ngit status", 'git log \\\n\ngit status', 'echo x \\\n\necho y']) {
     assertTypedAllow(command, states, fx.repo);
   }
 });

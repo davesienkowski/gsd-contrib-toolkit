@@ -32,7 +32,7 @@
  *            so they do not see an override typed in the command itself. typedHooksPathOverride
  *            reads the command text for that: it denies a typed override, a repo option, a form it
  *            cannot read, an env config key name and a chained config write, before any read. It
- *            fails closed on the forms in its rules; other forms exist that it does not catch.
+ *            stops typed forms and is no seal against a workaround: CTK-ADR-0016 lists what stays open.
  *
  * Scope: only `commit` / `push` actions are gated; every other command (git reads, non-git)
  * passes through as a no-op allow, so the seal never over-blocks. HARD-01/04: the whole
@@ -131,7 +131,10 @@ function sealedSegments(parsed) {
 // What each kind of hit tells the reader to do. Text D covers the accepted false denies too, so each
 // of these has to be a way forward that works for them.
 const ADVICE_REMOVE = 'Remove it from the command.';
-const ADVICE_LITERAL = 'Write the value out literally.';
+const ADVICE_LITERAL =
+  'Spell the option out in the command. A secret config value goes through `--config-env=<key>=<ENVVAR>`, ' +
+  'since command lines can be read by other processes; `-c <key>="$VALUE"` is for a value that is not secret. ' +
+  'This gate allows both for a key that does not name hooks config.';
 const ADVICE_LITERAL_KEY =
   ADVICE_LITERAL + ' A key that needs other characters goes through `git config`, in its own Bash call.';
 const ADVICE_OWN_CALL = 'Run that command in its own Bash call.';
@@ -142,14 +145,23 @@ const ENV_KEY_NAME = /\bGIT_CONFIG_(?:COUNT|PARAMETERS|(?:KEY|VALUE)_\d+)\b/;
 // A name built at run time: GIT_CONFIG_VALUE_$n is a real key to the shell and no literal name above.
 const ENV_KEY_BUILT = /\bGIT_CONFIG_[A-Z0-9_]*[$`{(]/;
 const REPO_ASSIGNMENT = /^(GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR)=/;
-const PLAIN_KEY = /^[A-Za-z0-9._:/*-]+$/;
+const PLAIN_KEY = /^[A-Za-z0-9._:/@+%,-]+$/;
 const SHELL_SYNTAX = /[$`{(]/;
 const INCLUDE_IF_PATH = /^includeif\..*\.path$/;
-// The price of `git -C "$WT" commit`: the parser drops quotes, so "$WT" and $WT are one token, and an
-// unquoted value here that word-splits into options is allowed.
-const SYNTAX_EXEMPT_VALUE = new Set(['-C', '--namespace', '--attr-source']);
-// Long options whose separate value is not a comment; the short ones come from readCommitCluster.
-const HASH_SAFE_VALUE = new Set(['--namespace', '--attr-source', '--config-env', '--message']);
+// git's own options that consume the next word, read on git 2.43.0 (--super-prefix for older git). A value
+// is never read for syntax: the parser drops quotes, so "$WT" and $WT are one token, and an unquoted value
+// that word-splits into options is allowed (CTK-ADR-0016 names that family).
+const OPTION_WITH_VALUE = new Set([
+  '-C',
+  '-c',
+  '--config-env',
+  '--namespace',
+  '--attr-source',
+  '--shallow-file',
+  '--git-dir',
+  '--work-tree',
+  '--super-prefix',
+]);
 const CONFIG_READ_OPTIONS = new Set(['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--list', '-l']);
 const CONFIG_UNSET_WORDS = new Set(['--unset', '--unset-all', 'unset']);
 const REDIRECT = /^(?:\d*|&)(?:>>|>&|<&|>\||<>|>|<)/;
@@ -160,12 +172,40 @@ const NO_VERIFY_SHORTEST = '--no-veri';
 // git commit's short options that take a value: required, then optional (attached only).
 const COMMIT_SHORT_VALUE = 'mFcCt';
 const COMMIT_SHORT_OPTIONAL_VALUE = 'uS';
+// A hash that starts a word follows one of these, unescaped and unquoted.
+const SHELL_METACHAR = /[ \t\n;&|()<>]/;
+// A comment line holding one of these stays as tokens: see maskShellText.
+const COMMENT_KEEP = /['"`;&|(){}]/;
+const GIT_WORD = /^(?:.*\/)?git$/;
+const SHELL_WORD = /^(?:.*\/)?(?:ba|da|k|z)?sh$/;
+const OPTIONS_END = new Set(['--', '-']);
+const SHELL_COMMAND_OPTION = /^-[A-Za-z]*c[A-Za-z]*$/;
+const PAYLOAD_MAX_DEPTH = 3;
+const UNREADABLE_VIEW = { unreadable: true, tokens: [], sealed: true };
+// Programs that only read their words. Their segment skips the key rule only when no token holds shell
+// syntax or a redirect, since either can assign in the current shell or write what a later line sources.
+const READ_ONLY_PROGRAM = new Set(['echo', 'grep', 'rg', 'head', 'tail', 'cat', 'wc', 'ls', 'gh', 'unset']);
+const REDIRECT_CHAR = /[<>]/;
+const CONFIG_KEY_GLOB = /[*?[]/;
 
 /**
- * The raw command with each heredoc operator and its body removed, keeping the newline that ended the
- * introducing line. The splitter hands a body to the LAST segment of a chained introducing line, so
- * `git commit -F- <<'EOF' && git log` would scan the message as tokens of the log segment. The
- * operator goes too: left in place, the parse would read the next command line as its body.
+ * The raw command as the scan reads it, in three steps that track bash:
+ *
+ *   A heredoc operator and its body go, keeping the newline that ended the introducing line. The splitter
+ *   hands a body to the LAST segment of a chained introducing line, so `git commit -F- <<'EOF' && git log`
+ *   would scan the message as tokens of the log segment. The operator goes too: left in place, the parse
+ *   would read the next command line as its body.
+ *   A backslash-newline leaves no characters, outside single quotes, as bash removes it.
+ *   A comment goes through its newline (the newline stays), checked before the heredoc operator, so
+ *   `# <<EOF` does not hide the next line.
+ *
+ * A comment goes only when its text on that line holds none of COMMENT_KEEP and no unquoted `${` is open.
+ * This walker's quote state is flat, so it can call a hash a comment where bash is inside a nested quote,
+ * a substitution or an expansion. Then a hidden command needs a closing delimiter or a separator, on that
+ * line (COMMENT_KEEP) or, for `${`, on a later one (the depth). Removed text therefore moves no quote
+ * state and hides no separator. A kept comment reads as ordinary tokens, which can false deny; CTK-ADR-0016
+ * names that and the forms this reading leaves open.
+ *
  * Quote and escape state track splitSegmentsWithOps, the same check order as gsd-test-detect's mask.
  * A here-string has no body. parseHeredocOperator refuses `<<<` at its first `<`, but the walk would
  * then read `<< word` at the second one, so the parser hides the lines after a here-string; here its
@@ -174,11 +214,13 @@ const COMMIT_SHORT_OPTIONAL_VALUE = 'uS';
  * @param {string} str a command that parsed
  * @returns {string}
  */
-function maskHeredocBodies(str) {
+function maskShellText(str) {
   let out = '';
   let inSingle = false;
   let inDouble = false;
   let escaped = false;
+  let wordStart = true;
+  let braceDepth = 0;
   const pending = [];
   for (let i = 0; i < str.length; i++) {
     const ch = str[i];
@@ -188,8 +230,13 @@ function maskHeredocBodies(str) {
       continue;
     }
     if (ch === '\\' && !inSingle) {
+      if (str[i + 1] === '\n') {
+        i += 1;
+        continue;
+      }
       out += ch;
       escaped = true;
+      wordStart = false;
       continue;
     }
     if (inSingle) {
@@ -202,6 +249,17 @@ function maskHeredocBodies(str) {
       if (ch === '"') inDouble = false;
       continue;
     }
+    if (ch === '#' && wordStart && braceDepth === 0) {
+      const newline = str.indexOf('\n', i);
+      const end = newline === -1 ? str.length : newline;
+      if (!COMMENT_KEEP.test(str.slice(i, end))) {
+        i = end - 1;
+        continue;
+      }
+    }
+    wordStart = SHELL_METACHAR.test(ch);
+    if (ch === '$' && str[i + 1] === '{') braceDepth += 1;
+    else if (ch === '}' && braceDepth > 0) braceDepth -= 1;
     if (str.startsWith('<<<', i)) {
       out += '   ';
       i += 2;
@@ -247,41 +305,83 @@ function readCommitCluster(token) {
   return { skipsHook: false, takesNext: false };
 }
 
-/**
- * The tokens the scan reads: a continuation's newline stripped from each token's start (the parser
- * keeps it, bash removes it), empties dropped, and nothing from the first comment token on. A value
- * position is not a comment: the parser drops quotes, so `-C "#dir"` and `-m "#1 fix"` hold a token
- * starting with #. A value after any other option still reads as a comment (reported, not closed).
- */
-function scanTokens(tokens) {
-  const out = [];
-  let isValue = false;
-  for (const raw of tokens) {
-    const token = raw.replace(/^\n+/, '');
-    if (token.length === 0) continue;
-    if (!isValue && token.startsWith('#')) break;
-    out.push(token);
-    isValue = !isValue && (HASH_SAFE_VALUE.has(token) || readCommitCluster(token).takesNext);
-  }
-  return out;
+/** A prefix fused onto a word by the parser, gone: `(git`, `$(git`, `x=$(git`. A token with whitespace is a quoted value. */
+function dropFused(token) {
+  return /\s/.test(token) ? token : token.replace(/^.*[(`]/, '');
 }
 
-/** One segment as the scan sees it. Sealed: its program is git and a bare commit or push token follows. */
-function scanView(rawTokens) {
-  const tokens = scanTokens(rawTokens);
-  const { prog, index } = resolveProgram({ tokens });
-  const isGit = prog === 'git';
+/** The sealing word in a token, with what bash would split off it gone: `commit)`, `commit>/dev/null`. */
+function sealingWord(token) {
+  const at = token.search(/[)`<>]/);
+  const word = at === -1 ? token : token.slice(0, at);
+  return SEALING_WORDS.has(word) ? word : null;
+}
+
+/**
+ * One segment as the scan sees it. Its git: the resolved program, else the first token that is the word
+ * git, which is what closes a compound form without a list of them. Sealed: a sealing word follows that git.
+ * resolvedGit says whether the words after it are git's own: only then do the rules that read git's
+ * option list apply, since a located git may be another program's argument (`grep -c git $f push`).
+ */
+function scanView(tokens) {
+  const { prog, index: programAt } = resolveProgram({ tokens });
+  const resolvedGit = prog === 'git';
+  const index = resolvedGit ? programAt : tokens.findIndex((token) => GIT_WORD.test(dropFused(token)));
+  const isGit = index !== -1;
   let first = -1;
   let last = -1;
   if (isGit) {
     for (let i = index + 1; i < tokens.length; i++) {
-      if (SEALING_WORDS.has(tokens[i])) {
+      if (sealingWord(tokens[i])) {
         if (first === -1) first = i;
         last = i;
       }
     }
   }
-  return { tokens, index, isGit, first, last, sealed: last !== -1 };
+  return { tokens, index, isGit, resolvedGit, prog, programAt, first, last, sealed: last !== -1 };
+}
+
+/** The literal text a segment hands a shell: `eval`'s words, or the value of a shell's -c. Null when it has none. */
+function payloadOf(view) {
+  if (view.resolvedGit) return null;
+  const words = view.tokens.map(dropFused);
+  const at = words.findIndex((word) => word === 'eval' || SHELL_WORD.test(word));
+  if (at === -1) return null;
+  if (words[at] === 'eval') return view.tokens.slice(at + 1).join(' ');
+  const option = words.findIndex((word, i) => i > at && SHELL_COMMAND_OPTION.test(word));
+  if (option === -1) return null;
+  let word = option + 1;
+  while (word < view.tokens.length && view.tokens[word].startsWith('-') && !OPTIONS_END.has(view.tokens[word])) word += 1;
+  return view.tokens[OPTIONS_END.has(view.tokens[word]) ? word + 1 : word] || null;
+}
+
+function holdsGitAndSealing(text) {
+  return /(^|[\s(`/])git(\s|$)/.test(text) && /(^|\s)(commit|push)([\s)`<>]|$)/.test(text);
+}
+
+/**
+ * The views of a text and of each literal payload in it, read to a bound of PAYLOAD_MAX_DEPTH. A payload
+ * built from a variable reads as that variable: denying it would deny an ordinary `eval "$(ssh-agent)"`.
+ * A payload that does not parse, or is past the bound, counts only if it holds git and a sealing word.
+ *
+ * @returns {Object[]|null} null: the text itself does not parse. Text that masks to nothing has no views.
+ */
+function viewsOf(text, depth) {
+  const masked = maskShellText(text);
+  if (masked.trim() === '') return [];
+  const fine = parseCommand(masked, { cwdSeparators: true });
+  if (!fine.ok) return null;
+  const views = [];
+  for (const seg of fine.segments) {
+    const view = scanView(seg.tokens);
+    views.push(view);
+    const payload = payloadOf(view);
+    if (payload === null) continue;
+    const inner = depth < PAYLOAD_MAX_DEPTH ? viewsOf(payload, depth + 1) : null;
+    if (inner) views.push(...inner);
+    else if (holdsGitAndSealing(payload)) views.push(UNREADABLE_VIEW);
+  }
+  return views;
 }
 
 /** Does the key name something that moves core.hooksPath or brings config in. ASCII case-insensitive, as git's. */
@@ -290,63 +390,126 @@ function namesHooksConfig(key) {
   return lower === 'core.hookspath' || lower === 'include.path' || INCLUDE_IF_PATH.test(lower);
 }
 
-/** The value of -c or --config-env: its key, then for the separate-token forms its shell syntax. */
-function configOptionHit(option, value, isSeparateToken) {
+/** The key of -c or --config-env. Its value is left alone: it cannot change the key before the first `=`. */
+function configOptionHit(option, value) {
   const eq = value.indexOf('=');
   const key = eq === -1 ? value : value.slice(0, eq);
-  if (!PLAIN_KEY.test(key)) {
-    return { form: option + ' with a key this gate cannot read (' + key + ')', advice: ADVICE_LITERAL_KEY };
-  }
   if (namesHooksConfig(key)) {
     const harmless = option === '-c' && key.toLowerCase() === 'core.hookspath' && eq !== -1 && value.slice(eq + 1) === REQUIRED_HOOKS_PATH;
-    if (!harmless) return { form: option + ' naming ' + key, advice: ADVICE_REMOVE };
+    if (harmless) return null;
+    return { form: option + ' naming ' + key, advice: ADVICE_REMOVE };
   }
-  // An unquoted value can word-split into options, and the parser drops quotes.
-  if (isSeparateToken && SHELL_SYNTAX.test(value)) {
-    return { form: option + ' with shell syntax in its value (' + value + ')', advice: ADVICE_LITERAL };
+  if (!PLAIN_KEY.test(key)) {
+    return { form: option + ' with a key this gate cannot read (' + key + ')', advice: ADVICE_LITERAL_KEY };
   }
   return null;
 }
 
-/** The tokens from after the program up to the last sealing word. What follows that word is never read. */
-function regionHit(view) {
+/**
+ * The named rules read every token from after the program up to the last sealing word, with no walk, so
+ * a value that shifts or breaks a walk cannot open one of these forms. What follows that word is never read.
+ */
+function namedOptionHit(view) {
   const { tokens, index, last } = view;
   for (let i = index + 1; i < last; i++) {
     const token = tokens[i];
     if (token === '-c' || token === '--config-env') {
       if (i + 1 < tokens.length) {
-        const hit = configOptionHit(token, tokens[i + 1], true);
+        const hit = configOptionHit(token, tokens[i + 1]);
         if (hit) return hit;
         i += 1;
       }
       continue;
     }
     if (token.startsWith('--config-env=')) {
-      const hit = configOptionHit('--config-env', token.slice('--config-env='.length), false);
+      const hit = configOptionHit('--config-env', token.slice('--config-env='.length));
       if (hit) return hit;
       continue;
     }
     if (/^--(?:git-dir|work-tree)(?:=|$)/.test(token)) {
       return { form: 'the repo option ' + token, advice: ADVICE_REMOVE };
     }
-    if (SYNTAX_EXEMPT_VALUE.has(token)) {
-      i += 1;
-      continue;
-    }
-    const readable = token.startsWith('--') && token.includes('=') ? token.slice(0, token.indexOf('=')) : token;
-    if (SHELL_SYNTAX.test(readable)) {
-      return { form: 'shell syntax in the git options (' + token + ')', advice: ADVICE_LITERAL };
-    }
   }
   return null;
 }
 
-/** A token before the program of any segment, or any token of a non-git segment, naming an env key. */
+function unclosedParen(text) {
+  return text.split('(').length > text.split(')').length;
+}
+
+/**
+ * git's option list as git reads it, on the redirect-free tokens: an option holding shell syntax up to its
+ * `=`, else the first bare word that is no option's value, the subcommand. Anything past that word is
+ * never read here, so `git log "$B"..HEAD -- commit` allows. A wrong stop opens no named form; it opens a
+ * shape that needs an expansion or a brace after it, which CTK-ADR-0016 names.
+ *
+ * @returns {{syntaxOption:(string|undefined), word:(string|undefined), rest:(string[]|undefined)}}
+ */
+function readOptionList(view) {
+  const tokens = withoutRedirects(view.tokens.slice(view.index + 1));
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    // A config value the parser split would end this walk at its second word. -C stays out: $(git rev-parse ...) is everyday.
+    const configValue = token === '-c' || token === '--config-env' ? tokens[i + 1] : token.startsWith('--config-env=') ? token : null;
+    if (configValue && unclosedParen(configValue)) return { syntaxOption: configValue };
+    if (OPTION_WITH_VALUE.has(token)) {
+      i += 1;
+      continue;
+    }
+    if (!token.startsWith('-')) return { word: token, rest: tokens.slice(i + 1) };
+    const name = token.startsWith('--') && token.includes('=') ? token.slice(0, token.indexOf('=')) : token;
+    if (SHELL_SYNTAX.test(name)) return { syntaxOption: token };
+  }
+  return {};
+}
+
+/** A named form first, then, only on a resolved git, shell syntax in git's own option list or its subcommand word. */
+function regionHit(view) {
+  const named = namedOptionHit(view);
+  if (named || !view.resolvedGit) return named;
+  const { syntaxOption, word } = readOptionList(view);
+  const shown = syntaxOption || (word && SHELL_SYNTAX.test(word) ? word : null);
+  return shown ? { form: 'shell syntax in the git options (' + shown + ')', advice: ADVICE_LITERAL } : null;
+}
+
+function keyNameHit(token) {
+  const match = ENV_KEY_NAME.exec(token) || ENV_KEY_BUILT.exec(token);
+  return match ? { form: 'the env config key name ' + match[0], advice: ADVICE_OWN_CALL } : null;
+}
+
+function isKeyName(token) {
+  const match = ENV_KEY_NAME.exec(token);
+  return match !== null && match[0] === token;
+}
+
+/**
+ * The first token of a segment that names an env key where that can take effect.
+ *
+ * On a resolved git: a token before the program, unless it is the plain value of an unset; and a key name
+ * in the region when the region holds shell syntax, since arithmetic or an expansion there assigns before
+ * git starts. A message after the last sealing word is never read, so a heredoc message stays untouched.
+ * On anything else, every token, unless the program only reads and the segment holds no syntax or redirect.
+ * This fails closed on a program the list does not name, which a list of setters would not.
+ */
 function envKeyHit(view) {
-  const scanned = view.isGit ? view.tokens.slice(0, view.index) : view.tokens;
+  const { tokens, resolvedGit, index, last, prog, programAt } = view;
+  let scanned;
+  if (resolvedGit) {
+    scanned = tokens.slice(0, index).filter((token, i) => {
+      const before = tokens[i - 1];
+      const unsets = isKeyName(token) && (before === '-u' || before === '--unset');
+      return !unsets && !(token.startsWith('--unset=') && isKeyName(token.slice('--unset='.length)));
+    }).map((token) => token.replace(/^-[A-Za-z]/, '')); // An attached short option leaves no word boundary: -SNAME.
+    const region = last === -1 ? [] : tokens.slice(index + 1, last + 1);
+    if (region.some((token) => SHELL_SYNTAX.test(token))) scanned = scanned.concat(region);
+  } else {
+    const onlyReads = READ_ONLY_PROGRAM.has(prog) && !tokens.some((token) => SHELL_SYNTAX.test(token) || REDIRECT_CHAR.test(token));
+    scanned = onlyReads ? tokens.slice(0, programAt) : tokens;
+  }
   for (const token of scanned) {
-    const match = ENV_KEY_NAME.exec(token) || ENV_KEY_BUILT.exec(token);
-    if (match) return { form: 'the env config key name ' + match[0], advice: ADVICE_OWN_CALL };
+    const hit = keyNameHit(token);
+    // On a sealed git's own segment an own call denies the same, so the way forward is to remove it.
+    if (hit) return last !== -1 ? { form: hit.form, advice: ADVICE_REMOVE } : hit;
   }
   return null;
 }
@@ -369,6 +532,10 @@ function configWriteHit(view) {
   if (at === -1) return null;
   const rest = withoutRedirects(view.tokens.slice(at + 1));
   if (rest.some((token) => CONFIG_READ_OPTIONS.has(token.split('=')[0]))) return null;
+  // A glob in the key position can name the key, and only git's own subcommand reads it as one.
+  const own = view.resolvedGit ? readOptionList(view) : {};
+  const globbed = own.word === 'config' && own.rest.find((token) => !token.startsWith('-'));
+  if (globbed && CONFIG_KEY_GLOB.test(globbed)) return { form: 'a config write of ' + globbed, advice: ADVICE_OWN_CALL };
   const unsets = rest.some((token) => CONFIG_UNSET_WORDS.has(token));
   for (let i = 0; i < rest.length; i++) {
     if (!namesHooksConfig(rest[i])) continue;
@@ -394,7 +561,7 @@ function noVerifySpellingHit(view) {
   for (let i = first; i < tokens.length; i++) {
     const token = tokens[i];
     if (token === '--') break;
-    if (token === 'commit') afterCommit = true;
+    if (sealingWord(token) === 'commit') afterCommit = true;
     if (token.startsWith(NO_VERIFY_SHORTEST) && NO_VERIFY_LONG.startsWith(token)) {
       return { form: 'the hook-skipping spelling ' + token, advice: ADVICE_LET_HOOKS_RUN };
     }
@@ -407,11 +574,10 @@ function noVerifySpellingHit(view) {
 }
 
 /**
- * The one pure pass over a parsed command. It reads the newline split of the heredoc-masked text:
- * the default parse keeps an unquoted newline inside one segment, so a neighbor line would widen a
- * commit's region. ENF-12 keeps reading parsed.segments, unchanged. A masked text that does not parse
- * (measured: a continuation then a blank line, whose trimmed segment ends in a dangling escape) is
- * refused when the default parse holds a sealed segment; it never falls back to a body-bearing parse.
+ * The one pure pass over a parsed command. It reads the newline split of the masked text: the default
+ * parse keeps an unquoted newline inside one segment, so a neighbor line would widen a commit's region.
+ * ENF-12 keeps reading parsed.segments, unchanged. A masked text that does not parse is refused when it
+ * holds git and a sealing word; it never falls back to a body-bearing parse.
  *
  * @param {Object} parsed result of argv.parseCommandForGates
  * @returns {{override:(Object|null), noVerifySpelling:(Object|null)}}
@@ -419,19 +585,17 @@ function noVerifySpellingHit(view) {
 function scanCommand(parsed) {
   const nothing = { override: null, noVerifySpelling: null };
   if (!parsed || !parsed.ok) return nothing;
-  const fine = parseCommand(maskHeredocBodies(parsed.raw), { cwdSeparators: true });
-  if (!fine.ok) {
-    if (!parsed.segments.some((seg) => scanView(seg.tokens).sealed)) return nothing;
-    return { override: { form: 'text this gate cannot read', advice: ADVICE_OWN_CALL }, noVerifySpelling: null };
-  }
-  const views = fine.segments.map((seg) => scanView(seg.tokens));
+  const cannotRead = { form: 'text this gate cannot read', advice: ADVICE_OWN_CALL };
+  const views = viewsOf(parsed.raw, 0);
+  if (!views) return holdsGitAndSealing(parsed.raw) ? { override: cannotRead, noVerifySpelling: null } : nothing;
   const sealedViews = views.filter((view) => view.sealed);
   if (sealedViews.length === 0) return nothing;
   let override = null;
   for (const view of views) {
-    override = envKeyHit(view);
+    if (view.unreadable) override = cannotRead;
+    if (!override) override = envKeyHit(view);
     if (!override && view.sealed) {
-      const assignment = view.tokens.slice(0, view.index).find((token) => REPO_ASSIGNMENT.test(token));
+      const assignment = view.tokens.slice(0, view.index).map(dropFused).find((token) => REPO_ASSIGNMENT.test(token));
       if (assignment) override = { form: 'a leading ' + assignment.split('=')[0] + ' assignment', advice: ADVICE_REMOVE };
     }
     if (!override && view.sealed) override = regionHit(view);
@@ -439,7 +603,7 @@ function scanCommand(parsed) {
     if (override) break;
   }
   let noVerifySpelling = null;
-  for (const view of sealedViews) {
+  for (const view of sealedViews.filter((sealed) => sealed.resolvedGit)) {
     noVerifySpelling = noVerifySpellingHit(view);
     if (noVerifySpelling) break;
   }
@@ -903,7 +1067,7 @@ module.exports = {
   dispatcherShape,
   runDispatcherCanary,
   typedHooksPathOverride,
-  maskHeredocBodies,
+  maskShellText,
   REQUIRED_HOOKS_PATH,
   NO_VERIFY_FLAGS,
 };
