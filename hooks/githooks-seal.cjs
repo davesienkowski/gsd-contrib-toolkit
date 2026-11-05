@@ -131,7 +131,10 @@ function sealedSegments(parsed) {
 // What each kind of hit tells the reader to do. Text D covers the accepted false denies too, so each
 // of these has to be a way forward that works for them.
 const ADVICE_REMOVE = 'Remove it from the command.';
-const ADVICE_LITERAL = 'Write the value out literally.';
+const ADVICE_LITERAL =
+  'Spell the option out in the command. A secret config value goes through `--config-env=<key>=<ENVVAR>`, ' +
+  'since command lines can be read by other processes; `-c <key>="$VALUE"` is for a value that is not secret. ' +
+  'This gate allows both for a key that does not name hooks config.';
 const ADVICE_LITERAL_KEY =
   ADVICE_LITERAL + ' A key that needs other characters goes through `git config`, in its own Bash call.';
 const ADVICE_OWN_CALL = 'Run that command in its own Bash call.';
@@ -142,12 +145,23 @@ const ENV_KEY_NAME = /\bGIT_CONFIG_(?:COUNT|PARAMETERS|(?:KEY|VALUE)_\d+)\b/;
 // A name built at run time: GIT_CONFIG_VALUE_$n is a real key to the shell and no literal name above.
 const ENV_KEY_BUILT = /\bGIT_CONFIG_[A-Z0-9_]*[$`{(]/;
 const REPO_ASSIGNMENT = /^(GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR)=/;
-const PLAIN_KEY = /^[A-Za-z0-9._:/*-]+$/;
+const PLAIN_KEY = /^[A-Za-z0-9._:/@+%,-]+$/;
 const SHELL_SYNTAX = /[$`{(]/;
 const INCLUDE_IF_PATH = /^includeif\..*\.path$/;
-// The price of `git -C "$WT" commit`: the parser drops quotes, so "$WT" and $WT are one token, and an
-// unquoted value here that word-splits into options is allowed.
-const SYNTAX_EXEMPT_VALUE = new Set(['-C', '--namespace', '--attr-source']);
+// git's own options that consume the next word, read on git 2.43.0 (--super-prefix for older git). A value
+// is never read for syntax: the parser drops quotes, so "$WT" and $WT are one token, and an unquoted value
+// that word-splits into options is allowed (CTK-ADR-0016 names that family).
+const OPTION_WITH_VALUE = new Set([
+  '-C',
+  '-c',
+  '--config-env',
+  '--namespace',
+  '--attr-source',
+  '--shallow-file',
+  '--git-dir',
+  '--work-tree',
+  '--super-prefix',
+]);
 const CONFIG_READ_OPTIONS = new Set(['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--list', '-l']);
 const CONFIG_UNSET_WORDS = new Set(['--unset', '--unset-all', 'unset']);
 const REDIRECT = /^(?:\d*|&)(?:>>|>&|<&|>\||<>|>|<)/;
@@ -367,55 +381,79 @@ function namesHooksConfig(key) {
   return lower === 'core.hookspath' || lower === 'include.path' || INCLUDE_IF_PATH.test(lower);
 }
 
-/** The value of -c or --config-env: its key, then for the separate-token forms its shell syntax. */
-function configOptionHit(option, value, isSeparateToken) {
+/** The key of -c or --config-env. Its value is left alone: it cannot change the key before the first `=`. */
+function configOptionHit(option, value) {
   const eq = value.indexOf('=');
   const key = eq === -1 ? value : value.slice(0, eq);
-  if (!PLAIN_KEY.test(key)) {
-    return { form: option + ' with a key this gate cannot read (' + key + ')', advice: ADVICE_LITERAL_KEY };
-  }
   if (namesHooksConfig(key)) {
     const harmless = option === '-c' && key.toLowerCase() === 'core.hookspath' && eq !== -1 && value.slice(eq + 1) === REQUIRED_HOOKS_PATH;
-    if (!harmless) return { form: option + ' naming ' + key, advice: ADVICE_REMOVE };
+    if (harmless) return null;
+    return { form: option + ' naming ' + key, advice: ADVICE_REMOVE };
   }
-  // An unquoted value can word-split into options, and the parser drops quotes.
-  if (isSeparateToken && SHELL_SYNTAX.test(value)) {
-    return { form: option + ' with shell syntax in its value (' + value + ')', advice: ADVICE_LITERAL };
+  if (!PLAIN_KEY.test(key)) {
+    return { form: option + ' with a key this gate cannot read (' + key + ')', advice: ADVICE_LITERAL_KEY };
   }
   return null;
 }
 
-/** The tokens from after the program up to the last sealing word. What follows that word is never read. */
-function regionHit(view) {
+/**
+ * The named rules read every token from after the program up to the last sealing word, with no walk, so
+ * a value that shifts or breaks a walk cannot open one of these forms. What follows that word is never read.
+ */
+function namedOptionHit(view) {
   const { tokens, index, last } = view;
   for (let i = index + 1; i < last; i++) {
     const token = tokens[i];
     if (token === '-c' || token === '--config-env') {
       if (i + 1 < tokens.length) {
-        const hit = configOptionHit(token, tokens[i + 1], true);
+        const hit = configOptionHit(token, tokens[i + 1]);
         if (hit) return hit;
         i += 1;
       }
       continue;
     }
     if (token.startsWith('--config-env=')) {
-      const hit = configOptionHit('--config-env', token.slice('--config-env='.length), false);
+      const hit = configOptionHit('--config-env', token.slice('--config-env='.length));
       if (hit) return hit;
       continue;
     }
     if (/^--(?:git-dir|work-tree)(?:=|$)/.test(token)) {
       return { form: 'the repo option ' + token, advice: ADVICE_REMOVE };
     }
-    if (SYNTAX_EXEMPT_VALUE.has(token)) {
+  }
+  return null;
+}
+
+/**
+ * git's option list as git reads it, on the redirect-free tokens: an option holding shell syntax up to its
+ * `=`, else the first bare word that is no option's value, the subcommand. Anything past that word is
+ * never read here, so `git log "$B"..HEAD -- commit` allows. A wrong stop opens no named form; it opens a
+ * shape that needs an expansion or a brace after it, which CTK-ADR-0016 names.
+ *
+ * @returns {{syntaxOption:(string|undefined), word:(string|undefined), rest:(string[]|undefined)}}
+ */
+function readOptionList(view) {
+  const tokens = withoutRedirects(view.tokens.slice(view.index + 1));
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (OPTION_WITH_VALUE.has(token)) {
       i += 1;
       continue;
     }
-    const readable = token.startsWith('--') && token.includes('=') ? token.slice(0, token.indexOf('=')) : token;
-    if (view.resolvedGit && SHELL_SYNTAX.test(readable)) {
-      return { form: 'shell syntax in the git options (' + token + ')', advice: ADVICE_LITERAL };
-    }
+    if (!token.startsWith('-')) return { word: token, rest: tokens.slice(i + 1) };
+    const name = token.startsWith('--') && token.includes('=') ? token.slice(0, token.indexOf('=')) : token;
+    if (SHELL_SYNTAX.test(name)) return { syntaxOption: token };
   }
-  return null;
+  return {};
+}
+
+/** A named form first, then, only on a resolved git, shell syntax in git's own option list or its subcommand word. */
+function regionHit(view) {
+  const named = namedOptionHit(view);
+  if (named || !view.resolvedGit) return named;
+  const { syntaxOption, word } = readOptionList(view);
+  const shown = syntaxOption || (word && SHELL_SYNTAX.test(word) ? word : null);
+  return shown ? { form: 'shell syntax in the git options (' + shown + ')', advice: ADVICE_LITERAL } : null;
 }
 
 /** A token before the program of any segment, or any token of a non-git segment, naming an env key. */
