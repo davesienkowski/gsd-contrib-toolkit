@@ -311,7 +311,8 @@ function dropFused(token) {
 
 /** The sealing word in a token, with what bash would split off it gone: `commit)`, `commit>/dev/null`. */
 function sealingWord(token) {
-  const word = token.replace(/[)`<>].*$/, '');
+  const at = token.search(/[)`<>]/);
+  const word = at === -1 ? token : token.slice(0, at);
   return SEALING_WORDS.has(word) ? word : null;
 }
 
@@ -348,7 +349,7 @@ function payloadOf(view) {
   if (words[at] === 'eval') return view.tokens.slice(at + 1).join(' ');
   const option = words.findIndex((word, i) => i > at && SHELL_COMMAND_OPTION.test(word));
   if (option === -1) return null;
-  return view.tokens[view.tokens[option + 1] === '--' ? option + 2 : option + 1] || null;
+  return view.tokens.slice(option + 1).find((token) => !token.startsWith('-')) || null;
 }
 
 function holdsGitAndSealing(text) {
@@ -429,6 +430,10 @@ function namedOptionHit(view) {
   return null;
 }
 
+function unclosedParen(text) {
+  return text.split('(').length > text.split(')').length;
+}
+
 /**
  * git's option list as git reads it, on the redirect-free tokens: an option holding shell syntax up to its
  * `=`, else the first bare word that is no option's value, the subcommand. Anything past that word is
@@ -441,6 +446,9 @@ function readOptionList(view) {
   const tokens = withoutRedirects(view.tokens.slice(view.index + 1));
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
+    // A config value the parser split would end this walk at its second word. -C stays out: $(git rev-parse ...) is everyday.
+    const configValue = token === '-c' || token === '--config-env' ? tokens[i + 1] : token.startsWith('--config-env=') ? token : null;
+    if (configValue && unclosedParen(configValue)) return { syntaxOption: configValue };
     if (OPTION_WITH_VALUE.has(token)) {
       i += 1;
       continue;
@@ -493,11 +501,13 @@ function envKeyHit(view) {
     if (region.some((token) => SHELL_SYNTAX.test(token))) scanned = scanned.concat(region);
   } else {
     const onlyReads = READ_ONLY_PROGRAM.has(prog) && !tokens.some((token) => SHELL_SYNTAX.test(token) || REDIRECT_CHAR.test(token));
-    scanned = onlyReads ? tokens.slice(0, programAt) : tokens;
+    // A sealed git's message follows its last sealing word, in a compound form as on a plain git.
+    scanned = onlyReads ? tokens.slice(0, programAt) : last === -1 ? tokens : tokens.slice(0, last + 1);
   }
   for (const token of scanned) {
     const hit = keyNameHit(token);
-    if (hit) return hit;
+    // On a sealed git's own segment an own call denies the same, so the way forward is to remove it.
+    if (hit) return resolvedGit || last !== -1 ? { form: hit.form, advice: ADVICE_REMOVE } : hit;
   }
   return null;
 }

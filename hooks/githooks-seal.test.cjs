@@ -606,7 +606,8 @@ test('typed family env key names: deny beside a sealed segment; text and other n
     'n=VALUE_0; export GIT_CONFIG_${n}=/dev/null; git commit -m x',
     'GIT_CONFIG_VALUE_0=/dev/null\nexport GIT_CONFIG_VALUE_0\ngit commit -m x',
   ]) {
-    assertTypedDeny([command, ADVICE_OWN_CALL], states, fx.repo);
+    // On git's own segment an own call denies the same, so the advice is to remove it.
+    assertTypedDeny([command, /^[^;\n]* git commit/.test(command) ? ADVICE_REMOVE : ADVICE_OWN_CALL], states, fx.repo);
   }
   for (const command of [
     'git commit -m "GIT_CONFIG_VALUE_0=v"',
@@ -1225,7 +1226,7 @@ function bankRows({ evil, other, emptyDir }) {
     D(O, 'bare export', `${VK}=/dev/null; export ${VK}; git ${C}`, EFFECT_BYPASS),
     D(O, 'export --', `export -- ${VK}=/dev/null; git ${C}`, EFFECT_BYPASS),
     D(O, 'declare -gx', `declare -gx ${VK}=/dev/null; git ${C}`, EFFECT_BYPASS),
-    D(O, 'env --chdir', `env --chdir=. ${VK}=/dev/null git ${C}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, 'env --chdir', `env --chdir=. ${VK}=/dev/null git ${C}`, EFFECT_BYPASS),
     D(O, 'built key', `n=0; export GIT_CONFIG_VALUE_$n=/dev/null; git ${C}`, EFFECT_BYPASS),
     D(O, 'built key brace', `n=VALUE_0; export GIT_CONFIG_\${n}=/dev/null; git ${C}`, EFFECT_BYPASS),
     D(R, 'pipe', `true | git -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
@@ -1262,9 +1263,9 @@ function bankRows({ evil, other, emptyDir }) {
     D(R, 'sudo', `sudo git -c ${K}=/dev/null ${C}`, null),
     D(R, 'nice', `nice git -c ${K}=/dev/null ${C}`, EFFECT_BYPASS),
     D(R, 'abs path', `/usr/bin/git -c ${K}=/dev/null ${C}`, fs.existsSync('/usr/bin/git') ? EFFECT_BYPASS : null),
-    D(O, 'leading key', `${VK}=/dev/null git ${C}`, EFFECT_BYPASS),
-    D(O, 'env key', `env ${VK}=/dev/null git ${C}`, EFFECT_BYPASS),
-    D(O, 'env -i key', `env -i PATH="$PATH" ${CK}=1 GIT_CONFIG_KEY_0=${K} ${VK}=/dev/null git ${C}`, null),
+    D(ADVICE_REMOVE, 'leading key', `${VK}=/dev/null git ${C}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, 'env key', `env ${VK}=/dev/null git ${C}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, 'env -i key', `env -i PATH="$PATH" ${CK}=1 GIT_CONFIG_KEY_0=${K} ${VK}=/dev/null git ${C}`, null),
     D(O, 'export key', `export ${VK}=/dev/null; git ${C}`, EFFECT_BYPASS),
     D(O, 'typeset -x', `typeset -x ${VK}=/dev/null; git ${C}`, EFFECT_BYPASS),
     D(O, 'readonly', `export ${VK}; readonly ${VK}=/dev/null; git ${C}`, EFFECT_BYPASS),
@@ -1701,8 +1702,8 @@ test('ov8 keys: an env key name denies unless a listed reader or an unset holds 
     D(OWN, `read ${VK} <<< git; ${G}`, EFFECT_BYPASS),
     D(OWN, `export git ${VK}=/dev/null; ${G}`, EFFECT_BYPASS),
     D(OWN, `declare git ${VK}=/dev/null; ${G}`, EFFECT_BYPASS),
-    D(OWN, `( ${VK}=/dev/null ${G} )`, EFFECT_BYPASS),
-    D(OWN, `${VK}+=-nope ${G}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `( ${VK}=/dev/null ${G} )`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `${VK}+=-nope ${G}`, EFFECT_BYPASS),
     // A listed program whose segment holds shell syntax or a redirect keeps denying.
     D(OWN, `echo $((${VK}=1)); ${G}`, EFFECT_BYPASS),
     D(OWN, `echo "$((${VK}=1))"; ${G}`, EFFECT_BYPASS),
@@ -1725,20 +1726,20 @@ test('ov8 keys: an env key name denies unless a listed reader or an unset holds 
     D(OWN, `D=/dev/null; grep ${VK} "$D"; ${G}`, EFFECT_HOOK),
     D(OWN, `grep ${VK} /dev/null > /dev/null; ${G}`, EFFECT_HOOK),
     // A key name beside shell syntax in a sealed git's region: the arithmetic runs before git starts.
-    D(OWN, `git -c user.name=$((${VK}=1)) ${C}`, EFFECT_BYPASS),
-    D(OWN, `git -c user.name="$((${VK}=1))" ${C}`, EFFECT_BYPASS),
-    D(OWN, `git -c user.name=\${a[${VK}=1]} ${C}`, EFFECT_BYPASS),
-    D(OWN, `git --config-env user.name=$((${VK}=1)) ${C}`, EFFECT_NONE),
-    D(OWN, `git --namespace=$((${VK}=1)) ${C}`, EFFECT_BYPASS),
-    D(OWN, `git -C \${a[${VK}=1]}. ${C}`, EFFECT_BYPASS),
-    D(OWN, `git -c user.name=$(( ${VK} = 1 )) ${C}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `git -c user.name=$((${VK}=1)) ${C}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `git -c user.name="$((${VK}=1))" ${C}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `git -c user.name=\${a[${VK}=1]} ${C}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `git --config-env user.name=$((${VK}=1)) ${C}`, EFFECT_NONE),
+    D(ADVICE_REMOVE, `git --namespace=$((${VK}=1)) ${C}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `git -C \${a[${VK}=1]}. ${C}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `git -c user.name=$(( ${VK} = 1 )) ${C}`, EFFECT_BYPASS),
     // Before a resolved git, a name holds only as the plain value of an unset.
-    D(OWN, `env --split-string="${VK}=/dev/null" ${G}`, EFFECT_BYPASS),
-    D(OWN, `env -S "a=1 ${VK}=/dev/null" ${G}`, EFFECT_BYPASS),
-    D(OWN, `env -S"${VK}=/dev/null" ${G}`, EFFECT_BYPASS),
-    D(OWN, `env -u \${a[${VK}=1]}x ${G}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `env --split-string="${VK}=/dev/null" ${G}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `env -S "a=1 ${VK}=/dev/null" ${G}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `env -S"${VK}=/dev/null" ${G}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `env -u \${a[${VK}=1]}x ${G}`, EFFECT_BYPASS),
     // An attached short option holds the name too. The ruling names only the separate unset forms as inert, so this one denies, and the hook runs.
-    D(OWN, `env -u${CK} ${G}`, EFFECT_HOOK),
+    D(ADVICE_REMOVE, `env -u${CK} ${G}`, EFFECT_HOOK),
     // A config write's key position: a glob that matches a file names the key.
     D(OWN, `touch ./${K}; git config core.hooks* /dev/null && ${G}; rm -f ./${K}`, EFFECT_BYPASS),
     D(OWN, `touch ./${K}; git config core.hooks?ath /dev/null && ${G}; rm -f ./${K}`, EFFECT_BYPASS),
