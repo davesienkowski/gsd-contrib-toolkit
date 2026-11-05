@@ -1508,6 +1508,9 @@ test('ov8 views: an override in a compound form or a literal payload denies; the
     D(R, `git submodule foreach git ${O} commit`, EFFECT_NONE),
     // A located git carries the repo assignment and the config write rules too.
     D(R, `( GIT_DIR=/nonexistent git ${C} )`, EFFECT_NONE),
+    D(R, `(GIT_DIR=/nonexistent git ${C})`, EFFECT_NONE),
+    D(R, `builtin command git ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `(bash -c 'git ${O} ${C}')`, EFFECT_BYPASS),
     D(OWN, `( git config ${K} /dev/null; ${G} )`, EFFECT_BYPASS),
     // Payloads, read to depth 3.
     D(R, `bash -c 'git ${O} ${C}'`, EFFECT_BYPASS),
