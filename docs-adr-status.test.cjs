@@ -46,6 +46,10 @@
  *   (m) Quick 261104-ov8: CTK-ADR-0015 (ENF-13 accepts a dispatcher that passes a delegation canary) is
  *       Accepted (2026-11-04, by Dave's explicit sign-off), its header holds no pending wording, its row in
  *       docs/adr/README.md says Accepted, and the record is plain ASCII.
+ *   (n) Quick 261104-ov8: CTK-ADR-0015 has exactly one Amended by bullet, and it names CTK-ADR-0016.
+ *   (o) Quick 261104-ov8: CTK-ADR-0016 exists once, is Proposed (2026-11-04), amends CTK-ADR-0015, is plain ASCII
+ *       with no account login and no local path, has a Proposed row in docs/adr/README.md, says the scan is no
+ *       seal against a workaround, and names each stays-open row and the three timing ranges.
  *
  * Dave accepted CTK-ADR-0008, CTK-ADR-0009 and CTK-ADR-0010 on 2026-10-06 by explicit sign-off (quick
  * 261006-p4t); (a), (b), (e) and (f) pin that acceptance. A later change of decision is a superseding or
@@ -977,4 +981,63 @@ test('(m) ov8: docs/adr/README.md row for CTK-ADR-0015 says Accepted, and the re
   assert.ok(cells.includes('Accepted'), JSON.stringify(cells));
   assert.ok(!cells.includes('Proposed'), JSON.stringify(cells));
   assert.match(fs.readFileSync(adrFile(15), 'utf8'), /^[\x00-\x7f]*$/);
+});
+
+// -- quick 261104-ov8: CTK-ADR-0016 amends CTK-ADR-0015 --
+
+test('(n) ov8: CTK-ADR-0015 has exactly one Amended by bullet, and it names CTK-ADR-0016', () => {
+  const hits = headerBullet(adrFile(15), 'Amended by');
+  assert.strictEqual(hits.length, 1, JSON.stringify(hits));
+  assert.ok(hits[0].includes('CTK-ADR-0016'), hits[0]);
+  assert.ok(hits[0].includes('2026-11-04'), hits[0]);
+});
+
+test('(o) ov8: CTK-ADR-0016 is Proposed, amends CTK-ADR-0015 and has a Proposed README row', () => {
+  assert.match(statusLine(adrFile(16)), /^- \*\*Status:\*\* Proposed \(2026-11-04\)/);
+  const amends = headerBullet(adrFile(16), 'Amends');
+  assert.strictEqual(amends.length, 1, JSON.stringify(amends));
+  assert.ok(amends[0].includes('CTK-ADR-0015'), amends[0]);
+  const cells = readmeRow('CTK-ADR-0016').split('|').map((c) => c.trim());
+  assert.ok(cells.includes('Proposed'), JSON.stringify(cells));
+});
+
+test('(o) ov8: CTK-ADR-0016 is plain ASCII, with no em dash, no account login and no local path', () => {
+  const text = fs.readFileSync(adrFile(16), 'utf8');
+  assert.match(text, /^[\x00-\x7f]*$/);
+  assert.doesNotMatch(text, /dave[a-z]+/i);
+  assert.doesNotMatch(text, LOCAL_PATH_RE);
+});
+
+test('(o) ov8: CTK-ADR-0016 says what the scan is not, names each stays-open row and the three timing ranges', () => {
+  const text = fs.readFileSync(adrFile(16), 'utf8').replace(/\s+/g, ' ');
+  assert.match(text, /stops typed forms/);
+  assert.match(text, /not a seal against an agent working around it/);
+  for (const row of [
+    'echo "$(git -c k=v commit)"',
+    "git -c alias.ci='-c k=v commit' ci",
+    'eval "$CMD"',
+    'bash -c "$C"',
+    'echo $((1<<2))',
+    '( git $OPTS commit )',
+    'git * commit',
+    '( git commit --no-verify )',
+    'time git commit -n',
+    '( git commit )',
+    "echo $'a\\'b #'",
+    '-c user.name=$N',
+    '--shallow-file $X',
+    'git <<< x $O commit',
+    'git <<< x {-c,k=v} commit',
+    '--namespace ">x" {-c,k=v}',
+    '# (x) <<EOF',
+    "# don't",
+    'git commit -m $((K=1))',
+    'env -S',
+  ]) {
+    assert.ok(text.includes(row), 'CTK-ADR-0016 names ' + row);
+  }
+  for (const range of ['16 to 24 ms', '26 to 108 ms', '39 to 92 ms', '129 ms', '16.7 to 27.5 ms', '60.6 to 84.4 ms']) {
+    assert.ok(text.includes(range), 'CTK-ADR-0016 states ' + range);
+  }
+  assert.match(text, /indicative/);
 });

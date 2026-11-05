@@ -11,6 +11,8 @@
 - **Relates to:** CTK-ADR-0001 Decision 1 (enforce at the harness boundary) and Decision 2 (gates fail closed);
   CTK-ADR-0009 (a gate may take a bounded action). No record defines ENF-13 (the rule lived in the hook's
   docstring and in `README.md`), so this record amends none.
+- **Amended by:** CTK-ADR-0016 (2026-11-04, Proposed): the typed scan reads a located git, literal payloads and
+  git's own option list, and allows the ordinary reads this record listed as accepted false denies.
 - **Trigger:** a session-wide hooks dispatcher set through env config makes `git config --get core.hooksPath`
   print the dispatcher's path with scope `command`, in every checkout. ENF-13 then denied every commit and push
   from any session that loads the toolkit gates, with an INERT claim that was false (the dispatcher runs the
