@@ -1503,7 +1503,7 @@ test('ov8 views: an override in a compound form or a literal payload denies; the
     D(R, `2>/dev/null git ${O} ${C}`, EFFECT_BYPASS),
     D(R, `</dev/null git ${O} ${C}`, EFFECT_BYPASS),
     D(R, `git ${O} commit>/dev/null --allow-empty -m x`, EFFECT_BYPASS),
-    D(R, `( X=; git $X ${O} ${C} )`, EFFECT_BYPASS),
+    D(R, `( git $X ${O} ${C} )`, EFFECT_BYPASS),
     D(R, `env "#a=b" git ${O} ${C}`, EFFECT_BYPASS),
     D(R, `git submodule foreach git ${O} commit`, EFFECT_NONE),
     // A located git carries the repo assignment and the config write rules too.
@@ -1520,7 +1520,9 @@ test('ov8 views: an override in a compound form or a literal payload denies; the
     D(R, `eval 'git ${O} ${C}'`, EFFECT_BYPASS),
     D(R, `eval git ${O} ${C}`, EFFECT_BYPASS),
     D(R, `eval eval eval git ${O} ${C}`, EFFECT_BYPASS),
-    D(OWN, `eval eval eval eval eval git ${O} ${C}`, EFFECT_BYPASS),
+    D(R, `eval eval eval eval eval git ${O} ${C}`, EFFECT_BYPASS),
+    // Past the bound, with no typed form to see: refused, no throw.
+    D(OWN, `eval eval eval eval eval ${G}`, EFFECT_HOOK),
     N(`bash -c '# git commit'`, EFFECT_NONE),
     N('eval "# git push"', EFFECT_NONE),
     N(`bash -c '${G}'`, EFFECT_HOOK),
@@ -1542,7 +1544,6 @@ test('ov8 views: an override in a compound form or a literal payload denies; the
     // The spelling rule reads a resolved git only.
     N(`echo git commit -n; ${G}`, EFFECT_HOOK),
     // Accepted false denies, CTK-ADR-0016: text only, a located git beside a sealed segment. The hook runs.
-    D(R, `${G} # see (git ${O} commit)`, EFFECT_HOOK),
     D(R, `echo git ${O} commit; ${G}`, EFFECT_HOOK),
     // The verdict does not depend on the order of forms in a chain.
     D(R, `git ${O} ${C}; git status`, EFFECT_BYPASS),
@@ -1573,6 +1574,8 @@ test('ov8 region: the named rules read the whole region, the generic rule stops 
     D(R, `git --namespace "(" --config-env=${K}=HOME ${C}`, EFFECT_BYPASS),
     D(R, `git --namespace "(" --git-dir=.git ${C}`, EFFECT_HOOK),
     D(R, `git "" ${O} ${C}`, EFFECT_NONE),
+    // An accepted false deny, CTK-ADR-0016: a kept comment reads as tokens, to the last sealing word. The hook runs.
+    D(R, `${G} # see (git ${O} commit)`, EFFECT_HOOK),
     // The comment stays while the ${ is open, and the named rule reads past the option that shifted the walk.
     D(R, `git \${y:- --namespace #x ${O} ${C}\n}`, EFFECT_BYPASS),
     D(R, `git \${y:- --attr-source #x ${O} ${C}\n}`, EFFECT_BYPASS),

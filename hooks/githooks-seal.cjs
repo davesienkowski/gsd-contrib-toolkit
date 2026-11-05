@@ -162,6 +162,11 @@ const COMMIT_SHORT_OPTIONAL_VALUE = 'uS';
 const SHELL_METACHAR = /[ \t\n;&|()<>]/;
 // A comment line holding one of these stays as tokens: see maskShellText.
 const COMMENT_KEEP = /['"`;&|(){}]/;
+const GIT_WORD = /^(?:.*\/)?git$/;
+const SHELL_WORD = /^(?:.*\/)?(?:ba|da|k|z)?sh$/;
+const SHELL_COMMAND_OPTION = /^-[A-Za-z]*c[A-Za-z]*$/;
+const PAYLOAD_MAX_DEPTH = 3;
+const UNREADABLE_VIEW = { unreadable: true, tokens: [], sealed: true };
 
 /**
  * The raw command as the scan reads it, in three steps that track bash:
@@ -280,21 +285,80 @@ function readCommitCluster(token) {
   return { skipsHook: false, takesNext: false };
 }
 
-/** One segment as the scan sees it. Sealed: its program is git and a bare commit or push token follows. */
+/** A prefix fused onto a word by the parser, gone: `(git`, `$(git`, `x=$(git`. A token with whitespace is a quoted value. */
+function dropFused(token) {
+  return /\s/.test(token) ? token : token.replace(/^.*[(`]/, '');
+}
+
+/** The sealing word in a token, with what bash would split off it gone: `commit)`, `commit>/dev/null`. */
+function sealingWord(token) {
+  const word = token.replace(/[)`<>].*$/, '');
+  return SEALING_WORDS.has(word) ? word : null;
+}
+
+/**
+ * One segment as the scan sees it. Its git: the resolved program, else the first token that is the word
+ * git, which is what closes a compound form without a list of them. Sealed: a sealing word follows that git.
+ * resolvedGit says whether the words after it are git's own: only then do the rules that read git's
+ * option list apply, since a located git may be another program's argument (`grep -c git $f push`).
+ */
 function scanView(tokens) {
-  const { prog, index } = resolveProgram({ tokens });
-  const isGit = prog === 'git';
+  const { prog, index: programAt } = resolveProgram({ tokens });
+  const resolvedGit = prog === 'git';
+  const index = resolvedGit ? programAt : tokens.findIndex((token) => GIT_WORD.test(dropFused(token)));
+  const isGit = index !== -1;
   let first = -1;
   let last = -1;
   if (isGit) {
     for (let i = index + 1; i < tokens.length; i++) {
-      if (SEALING_WORDS.has(tokens[i])) {
+      if (sealingWord(tokens[i])) {
         if (first === -1) first = i;
         last = i;
       }
     }
   }
-  return { tokens, index, isGit, first, last, sealed: last !== -1 };
+  return { tokens, index, isGit, resolvedGit, prog, first, last, sealed: last !== -1 };
+}
+
+/** The literal text a segment hands a shell: `eval`'s words, or the value of a shell's -c. Null when it has none. */
+function payloadOf(view) {
+  if (view.resolvedGit) return null;
+  const words = view.tokens.map(dropFused);
+  const at = words.findIndex((word) => word === 'eval' || SHELL_WORD.test(word));
+  if (at === -1) return null;
+  if (words[at] === 'eval') return view.tokens.slice(at + 1).join(' ');
+  const option = words.findIndex((word, i) => i > at && SHELL_COMMAND_OPTION.test(word));
+  if (option === -1) return null;
+  return view.tokens[view.tokens[option + 1] === '--' ? option + 2 : option + 1] || null;
+}
+
+function holdsGitAndSealing(text) {
+  return /(^|[\s(`/])git(\s|$)/.test(text) && /(^|\s)(commit|push)([\s)`<>]|$)/.test(text);
+}
+
+/**
+ * The views of a text and of each literal payload in it, read to a bound of PAYLOAD_MAX_DEPTH. A payload
+ * built from a variable reads as that variable: denying it would deny an ordinary `eval "$(ssh-agent)"`.
+ * A payload that does not parse, or is past the bound, counts only if it holds git and a sealing word.
+ *
+ * @returns {Object[]|null} null: the text itself does not parse. Text that masks to nothing has no views.
+ */
+function viewsOf(text, depth) {
+  const masked = maskShellText(text);
+  if (masked.trim() === '') return [];
+  const fine = parseCommand(masked, { cwdSeparators: true });
+  if (!fine.ok) return null;
+  const views = [];
+  for (const seg of fine.segments) {
+    const view = scanView(seg.tokens);
+    views.push(view);
+    const payload = payloadOf(view);
+    if (payload === null) continue;
+    const inner = depth < PAYLOAD_MAX_DEPTH ? viewsOf(payload, depth + 1) : null;
+    if (inner) views.push(...inner);
+    else if (holdsGitAndSealing(payload)) views.push(UNREADABLE_VIEW);
+  }
+  return views;
 }
 
 /** Does the key name something that moves core.hooksPath or brings config in. ASCII case-insensitive, as git's. */
@@ -347,7 +411,7 @@ function regionHit(view) {
       continue;
     }
     const readable = token.startsWith('--') && token.includes('=') ? token.slice(0, token.indexOf('=')) : token;
-    if (SHELL_SYNTAX.test(readable)) {
+    if (view.resolvedGit && SHELL_SYNTAX.test(readable)) {
       return { form: 'shell syntax in the git options (' + token + ')', advice: ADVICE_LITERAL };
     }
   }
@@ -356,7 +420,7 @@ function regionHit(view) {
 
 /** A token before the program of any segment, or any token of a non-git segment, naming an env key. */
 function envKeyHit(view) {
-  const scanned = view.isGit ? view.tokens.slice(0, view.index) : view.tokens;
+  const scanned = view.resolvedGit ? view.tokens.slice(0, view.index) : view.tokens;
   for (const token of scanned) {
     const match = ENV_KEY_NAME.exec(token) || ENV_KEY_BUILT.exec(token);
     if (match) return { form: 'the env config key name ' + match[0], advice: ADVICE_OWN_CALL };
@@ -407,7 +471,7 @@ function noVerifySpellingHit(view) {
   for (let i = first; i < tokens.length; i++) {
     const token = tokens[i];
     if (token === '--') break;
-    if (token === 'commit') afterCommit = true;
+    if (sealingWord(token) === 'commit') afterCommit = true;
     if (token.startsWith(NO_VERIFY_SHORTEST) && NO_VERIFY_LONG.startsWith(token)) {
       return { form: 'the hook-skipping spelling ' + token, advice: ADVICE_LET_HOOKS_RUN };
     }
@@ -420,11 +484,10 @@ function noVerifySpellingHit(view) {
 }
 
 /**
- * The one pure pass over a parsed command. It reads the newline split of the heredoc-masked text:
- * the default parse keeps an unquoted newline inside one segment, so a neighbor line would widen a
- * commit's region. ENF-12 keeps reading parsed.segments, unchanged. A masked text that does not parse
- * (measured: a continuation then a blank line, whose trimmed segment ends in a dangling escape) is
- * refused when the default parse holds a sealed segment; it never falls back to a body-bearing parse.
+ * The one pure pass over a parsed command. It reads the newline split of the masked text: the default
+ * parse keeps an unquoted newline inside one segment, so a neighbor line would widen a commit's region.
+ * ENF-12 keeps reading parsed.segments, unchanged. A masked text that does not parse is refused when it
+ * holds git and a sealing word; it never falls back to a body-bearing parse.
  *
  * @param {Object} parsed result of argv.parseCommandForGates
  * @returns {{override:(Object|null), noVerifySpelling:(Object|null)}}
@@ -432,21 +495,17 @@ function noVerifySpellingHit(view) {
 function scanCommand(parsed) {
   const nothing = { override: null, noVerifySpelling: null };
   if (!parsed || !parsed.ok) return nothing;
-  const masked = maskShellText(parsed.raw);
-  if (masked.trim() === '') return nothing;
-  const fine = parseCommand(masked, { cwdSeparators: true });
-  if (!fine.ok) {
-    if (!parsed.segments.some((seg) => scanView(seg.tokens).sealed)) return nothing;
-    return { override: { form: 'text this gate cannot read', advice: ADVICE_OWN_CALL }, noVerifySpelling: null };
-  }
-  const views = fine.segments.map((seg) => scanView(seg.tokens));
+  const cannotRead = { form: 'text this gate cannot read', advice: ADVICE_OWN_CALL };
+  const views = viewsOf(parsed.raw, 0);
+  if (!views) return holdsGitAndSealing(parsed.raw) ? { override: cannotRead, noVerifySpelling: null } : nothing;
   const sealedViews = views.filter((view) => view.sealed);
   if (sealedViews.length === 0) return nothing;
   let override = null;
   for (const view of views) {
-    override = envKeyHit(view);
+    if (view.unreadable) override = cannotRead;
+    if (!override) override = envKeyHit(view);
     if (!override && view.sealed) {
-      const assignment = view.tokens.slice(0, view.index).find((token) => REPO_ASSIGNMENT.test(token));
+      const assignment = view.tokens.slice(0, view.index).map(dropFused).find((token) => REPO_ASSIGNMENT.test(token));
       if (assignment) override = { form: 'a leading ' + assignment.split('=')[0] + ' assignment', advice: ADVICE_REMOVE };
     }
     if (!override && view.sealed) override = regionHit(view);
@@ -454,7 +513,7 @@ function scanCommand(parsed) {
     if (override) break;
   }
   let noVerifySpelling = null;
-  for (const view of sealedViews) {
+  for (const view of sealedViews.filter((sealed) => sealed.resolvedGit)) {
     noVerifySpelling = noVerifySpellingHit(view);
     if (noVerifySpelling) break;
   }
