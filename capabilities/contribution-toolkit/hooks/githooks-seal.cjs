@@ -178,6 +178,7 @@ const SHELL_METACHAR = /[ \t\n;&|()<>]/;
 const COMMENT_KEEP = /['"`;&|(){}]/;
 const GIT_WORD = /^(?:.*\/)?git$/;
 const SHELL_WORD = /^(?:.*\/)?(?:ba|da|k|z)?sh$/;
+const SHELL_LEADER = new Set(['(', '{', '!', 'time', 'if', 'then', 'elif', 'else', 'do', 'while', 'until']);
 const SHELL_COMMAND_OPTION = /^-[A-Za-z]*c[A-Za-z]*$/;
 const PAYLOAD_MAX_DEPTH = 3;
 const UNREADABLE_VIEW = { unreadable: true, tokens: [], sealed: true };
@@ -349,7 +350,9 @@ function payloadOf(view) {
   if (words[at] === 'eval') return view.tokens.slice(at + 1).join(' ');
   const option = words.findIndex((word, i) => i > at && SHELL_COMMAND_OPTION.test(word));
   if (option === -1) return null;
-  return view.tokens.slice(option + 1).find((token) => !token.startsWith('-')) || null;
+  let word = option + 1;
+  while (word < view.tokens.length && view.tokens[word].startsWith('-') && view.tokens[word] !== '--') word += 1;
+  return view.tokens[view.tokens[word] === '--' ? word + 1 : word] || null;
 }
 
 function holdsGitAndSealing(text) {
@@ -501,13 +504,15 @@ function envKeyHit(view) {
     if (region.some((token) => SHELL_SYNTAX.test(token))) scanned = scanned.concat(region);
   } else {
     const onlyReads = READ_ONLY_PROGRAM.has(prog) && !tokens.some((token) => SHELL_SYNTAX.test(token) || REDIRECT_CHAR.test(token));
-    // A sealed git's message follows its last sealing word, in a compound form as on a plain git.
-    scanned = onlyReads ? tokens.slice(0, programAt) : last === -1 ? tokens : tokens.slice(0, last + 1);
+    // A sealed git behind shell grammar is the real command, so its message follows its last sealing word,
+    // as on a plain git. Behind any other word (`export git commit K=x`) every token is still read.
+    const messageFollows = last !== -1 && tokens.slice(0, index).every((token) => SHELL_LEADER.has(token));
+    scanned = onlyReads ? tokens.slice(0, programAt) : messageFollows ? tokens.slice(0, last + 1) : tokens;
   }
   for (const token of scanned) {
     const hit = keyNameHit(token);
     // On a sealed git's own segment an own call denies the same, so the way forward is to remove it.
-    if (hit) return resolvedGit || last !== -1 ? { form: hit.form, advice: ADVICE_REMOVE } : hit;
+    if (hit) return last !== -1 ? { form: hit.form, advice: ADVICE_REMOVE } : hit;
   }
   return null;
 }

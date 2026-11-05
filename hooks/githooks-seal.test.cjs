@@ -1660,6 +1660,14 @@ test('ov8 fix round: a split value is no walk stop, a compound message is no key
     D(ADVICE_REMOVE, `bash -c -x 'git ${O} ${C}'`, EFFECT_BYPASS),
     D(ADVICE_REMOVE, `bash -c -- 'git ${O} ${C}'`, EFFECT_BYPASS),
     N(`bash -c -e '${G}'`, EFFECT_HOOK),
+    // Behind a word that is not shell grammar, every token is read; a -- ends the shell's options.
+    D(ADVICE_REMOVE, `export git commit ${VK}=/dev/null; ${G}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `bash -c -- '-x; git ${O} ${C}'`, EFFECT_BYPASS),
+    // A quoted lone paren reads as a split value: the parser drops quotes. Accepted, CTK-ADR-0016.
+    D(ADVICE_LITERAL, `git -c x.y="a(b" ${C}`, EFFECT_HOOK),
+    N(`V='a(b'; git -c x.y="$V" ${C}`, EFFECT_HOOK),
+    // An unsealed git beside a commit: its own call allows, so the advice is its own call.
+    D(ADVICE_OWN_CALL, `${VK}=v git log -1; ${G}`, EFFECT_HOOK),
     // A key name on the git segment itself still denies alone in a call, so the advice is to remove it.
     D(ADVICE_REMOVE, `${VK}=/dev/null ${G}`, EFFECT_BYPASS),
     D(ADVICE_REMOVE, 'git -c user.name=$((GIT_CONFIG_VALUE_0=1)) commit --allow-empty -m x', EFFECT_BYPASS),
