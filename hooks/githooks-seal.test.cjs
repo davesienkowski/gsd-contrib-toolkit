@@ -1633,6 +1633,47 @@ test('ov8 region: the named rules read the whole region, the generic rule stops 
   assert.match(reason, /^[\x20-\x7e]*$/);
 });
 
+test('ov8 fix round: a split value is no walk stop, a compound message is no key name, payload options are skipped', async (t) => {
+  const fx = buildBankFixture(t);
+  const { K, C, D, N, VK, O, G, message } = ov8Words();
+  assert.deepStrictEqual(await bankMismatches(fx, [
+    // A value the parser split must not end git's option list early: classifyAction reads this as other.
+    D(ADVICE_LITERAL, 'git -c user.name=$(echo a) commit --no-verify --allow-empty -m x', EFFECT_BYPASS),
+    D(ADVICE_LITERAL, 'git -c user.name=$(echo a) commit -n --allow-empty -m x', EFFECT_BYPASS),
+    D(ADVICE_LITERAL, `git -c user.name=$(echo a) ${C}`, EFFECT_HOOK),
+    D(ADVICE_LITERAL, `git --config-env user.name=$(echo a) ${C}`, null),
+    D(ADVICE_LITERAL, `git --config-env=user.name=$(echo a) ${C}`, null),
+    D(ADVICE_LITERAL, `O='${O}'; git -c user.name=$(echo a) $O ${C}`, EFFECT_BYPASS),
+    N(`git -c user.name="$(echo a)" ${C}`, EFFECT_HOOK),
+    N(`git -c user.name=$(echo a) status`, null),
+    N(`git -C $(git rev-parse --show-toplevel) ${C}`, EFFECT_HOOK),
+    // A message is read after the last sealing word, in a compound form too.
+    N(`( git commit --allow-empty -m "doc: ${VK} named" )`, EFFECT_HOOK),
+    N(`{ git commit --allow-empty -m "doc: ${VK} named"; }`, EFFECT_HOOK),
+    N(`if true; then git commit --allow-empty -m "doc: ${VK} named"; fi`, EFFECT_HOOK),
+    N(`time git commit --allow-empty -m "doc: ${VK} named"`, EFFECT_HOOK),
+    N(`( ${message(`body names ${VK} and ${K}`)} )`, EFFECT_HOOK),
+    D(ADVICE_REMOVE, `( ${VK}=/dev/null ${G} )`, EFFECT_BYPASS),
+    // A shell's options after -c are not its text.
+    D(ADVICE_REMOVE, `bash -c -e 'git ${O} ${C}'`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `bash -c -x 'git ${O} ${C}'`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, `bash -c -- 'git ${O} ${C}'`, EFFECT_BYPASS),
+    N(`bash -c -e '${G}'`, EFFECT_HOOK),
+    // A key name on the git segment itself still denies alone in a call, so the advice is to remove it.
+    D(ADVICE_REMOVE, `${VK}=/dev/null ${G}`, EFFECT_BYPASS),
+    D(ADVICE_REMOVE, 'git -c user.name=$((GIT_CONFIG_VALUE_0=1)) commit --allow-empty -m x', EFFECT_BYPASS),
+  ]), []);
+});
+
+test('ov8 fix round: a long paren run in a token stays a linear read of the sealing word', () => {
+  const started = Date.now();
+  const parens = ')'.repeat(50000);
+  const parsed = require('./lib/argv.cjs').parseCommandForGates(`git status "${parens}\n"`);
+  const hit = require('./githooks-seal.cjs').typedHooksPathOverride(parsed);
+  assert.strictEqual(hit, null);
+  assert.ok(Date.now() - started < 400, 'the scan of one token took ' + (Date.now() - started) + ' ms');
+});
+
 test('ov8 keys: an env key name denies unless a listed reader or an unset holds it plainly', async (t) => {
   const fx = buildBankFixture(t);
   const { K, C, D, N, VK, CK, G } = ov8Words();
