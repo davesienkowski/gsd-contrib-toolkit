@@ -185,7 +185,7 @@ source rather than rediscovered.
 ## 9. See also
 
 - [adr/](adr/) — the load-bearing decisions as Architecture Decision Records (`CTK-ADR-*`).
-- [README](../README.md) — what it is, what's included, capabilities by role, install.
+- [README](../README.md): short front page; [enforcement-reference](enforcement-reference.md) and [install-and-layout](install-and-layout.md) hold the detail.
 - [cross-runtime-delivery-model.md](cross-runtime-delivery-model.md) — per-runtime behavior and the
   enforcement model.
 - [reuse-and-methodology.md](REUSE-AND-METHODOLOGY.md) — the full reuse map + methodology alignment.

@@ -92,14 +92,14 @@ test('docs-honesty: contributor guide section 6 scopes the override to thrown ga
   assert.ok(s.includes('dodge a real failure'), 'section 6 keeps the never-dodge warning:\n' + s);
 });
 
-test('docs-honesty: README override valve paragraph scopes the override to thrown gate errors', () => {
-  const s = between(read('README.md'), '**The override valve.**', '\n\n', 'README valve');
+test('docs-honesty: enforcement-reference override valve paragraph scopes the override to thrown gate errors', () => {
+  const s = between(read('docs/enforcement-reference.md'), '**The override valve.**', '\n\n', 'README valve');
   assertDocTruthful('README valve paragraph', s);
   assert.ok(s.includes('never a silent default'), 'the valve paragraph keeps "never a silent default":\n' + s);
 });
 
 test('docs-honesty: README honesty bullet scopes the override to thrown gate errors', () => {
-  const s = untilLinePrefix(read('README.md'), '- **The override is deliberate, not silent.**', '- **', 'README bullet');
+  const s = untilLinePrefix(read('docs/enforcement-reference.md'), '- **The override is deliberate, not silent.**', '- **', 'README bullet');
   assertDocTruthful('README honesty bullet', s);
 });
 

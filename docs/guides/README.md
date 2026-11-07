@@ -1,7 +1,7 @@
 # GSD-Contrib Toolkit — Guides
 
 Task-oriented walkthroughs. Start here if you want to *use* the toolkit; for the architecture reference
-see the top-level [README](../../README.md).
+see the [Enforcement reference](../enforcement-reference.md) (and the top-level [README](../../README.md) for the short version).
 
 | Guide | For | What it covers |
 |---|---|---|
