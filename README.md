@@ -24,13 +24,17 @@ contribution and help maintainers triage and review.
 
 These are enforced by the hooks, not left to the model's good intentions:
 
-- Pushing, or opening a PR, when `lint:ci` has not passed on the exact files you are pushing, or when
+- Pushing, or opening a PR, when `lint:ci` (gsd-core's lint-and-checks command) has not passed on the exact files you are pushing, or when
   gsd-core's secret, prompt-injection or base64 scans find something.
-- Filing an issue or PR that breaks gsd-core's intake rules: missing GSD version, wrong target branch,
+- Filing an issue or PR that breaks gsd-core's intake rules (what an issue or PR must contain): missing GSD version, wrong target branch,
   a body that fails the template, no linked issue, or a duplicate of an open issue.
-- Committing stale generated files, or editing a generated `bin/lib/*.cjs` instead of its source.
+- Committing stale generated files, or editing a generated `bin/lib/*.cjs` (built from source files; edit the source) instead of its source.
 - Skipping the checks (`--no-verify`, swapping `core.hooksPath`) or sending private files upstream.
 - Approving or merging a PR without the review evidence the maintainer process asks for.
+
+Two limits: the `lint:ci` and protocol-artifact checks do not arm for pushes that go only to a
+fork or backup remote (see [the table](docs/enforcement-reference.md)), and the review-evidence check
+looks at the shape of the review artifact, not whether the review itself is honest.
 
 18 of the 20 hook scripts block; the other two only remind or record. The full table, with what each
 one calls, is in [docs/enforcement-reference.md](docs/enforcement-reference.md).
@@ -42,8 +46,9 @@ one calls, is in [docs/enforcement-reference.md](docs/enforcement-reference.md).
   can turn the toolkit off, and that is by design (see [Turning it off](#turning-it-off)).
 - **It checks outcomes, not how you work.** It can stop a broken PR; it cannot make you plan first.
   Habits such as writing a todo list first are guidance, not enforcement.
-- **The installable capability is advice only.** The blocking comes from the hooks it installs into
-  gsd-core's project settings. On runtimes other than Claude Code there are no hooks, so the skills
+- **The installable capability's own gate list is empty.** It carries skills and commands only. The
+  blocking comes from the hooks, which the install route wires into gsd-core's project settings. On
+  runtimes (the AI coding tools GSD supports) other than Claude Code there are no hooks, so the skills
   run as advice only.
 
 More detail: [docs/enforcement-reference.md](docs/enforcement-reference.md#what-it-does-not-do).
@@ -68,7 +73,7 @@ node bin/contrib-capability.cjs status    # show what is installed
 
 Re-run `install` after a GSD update or any runtime change that disturbs `~/.claude`.
 
-**From the published package** (copies instead of links), through gsd-core's capability installer:
+**From the published package** (copies instead of links), through gsd-core's capability installer (its add-on command):
 
 ```bash
 node <gsd-core>/bin/gsd-tools.cjs capability install \
@@ -76,7 +81,7 @@ node <gsd-core>/bin/gsd-tools.cjs capability install \
   --scope project --yes --shared-file .claude/settings.json
 ```
 
-`--scope project` keeps the hooks inside the gsd-core checkout, never in your global
+`--shared-file` names the project settings file that receives the hooks. `--scope project` keeps the hooks inside the gsd-core checkout, never in your global
 `~/.claude/settings.json`. An npm route that verifies a checksum before installing is described in
 [docs/install-and-layout.md](docs/install-and-layout.md).
 
@@ -100,8 +105,8 @@ real deny (one narrow, logged exception is named in the reference). Both are exp
 | `/gsd-submit <finding>` | File a verified finding as an issue plus fix PR, through the gates |
 | `/gsd-review-sweep` | Maintainer triage and re-review of open issues and PRs |
 | `/gsd-triage-assist #N` | First-pass triage suggestion for one incoming issue |
-| `/gsd-release-preflight` | Run gsd-core's release checks without changing anything |
-| `/gsd-ruleset-drift` | Compare declared branch rules with the live ones (read-only by default) |
+| `/gsd-release-preflight` | Run gsd-core's pre-release checks (preflight) without changing anything |
+| `/gsd-ruleset-drift` | Compare declared branch rules with the live ones, i.e. ruleset drift (read-only by default) |
 
 New here? Read the [Overview](docs/guides/overview.md), then the
 [Contributor Guide](docs/guides/contributor-guide.md) (file a change) or the

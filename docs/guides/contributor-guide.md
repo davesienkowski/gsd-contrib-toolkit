@@ -22,8 +22,8 @@ node bin/contrib-capability.cjs status      # confirm ledger + consent + live ga
 
 `install` is the **single, re-runnable** entrypoint: it relinks the `~/.claude` command/skill symlinks
 back into this repo (with a never-clobber fail-safe) and wires the gates into gsd-core's project
-`.claude/settings.json`. Re-run it after any GSD update or runtime change — it repairs without losing
-work. (Not the owner? Install the published capability instead — see [Install From the Published Capability](../install-and-layout.md#2-install-from-the-published-capability-remote-git).)
+`.claude/settings.json`. Re-run it after any GSD update or runtime change; it repairs without losing
+work. (Not the owner? Install the published capability instead; see [Install From the Published Capability](../install-and-layout.md#2-install-from-the-published-capability-remote-git).)
 
 ## 1. The one command: `/gsd-submit`
 
