@@ -176,7 +176,7 @@ for (let n = 1; n <= 7; n++) {
 }
 
 test('36-05b: README.md ENF-24 gsd-test-viability row describes the docker timeout as `ask`, never deny', () => {
-  const row = fs.readFileSync(path.join(REPO, 'README.md'), 'utf8').split('\n').find((l) => l.includes('`gsd-test-viability.cjs`'));
+  const row = fs.readFileSync(path.join(REPO, 'docs', 'enforcement-reference.md'), 'utf8').split('\n').find((l) => l.includes('`gsd-test-viability.cjs`'));
   assert.ok(row, 'README.md has a gsd-test-viability.cjs row');
   assert.match(row, /ENF-24/);
   assert.match(row, /`ask`, never deny, when `docker info` overruns its 8 s bound/);
@@ -185,7 +185,7 @@ test('36-05b: README.md ENF-24 gsd-test-viability row describes the docker timeo
 });
 
 test('38-04: README.md review-artifact.cjs row names step 8a, memtrace and `ask`, not "four mechanizable"', () => {
-  const row = fs.readFileSync(path.join(REPO, 'README.md'), 'utf8').split('\n').find((l) => l.includes('`review-artifact.cjs`'));
+  const row = fs.readFileSync(path.join(REPO, 'docs', 'enforcement-reference.md'), 'utf8').split('\n').find((l) => l.includes('`review-artifact.cjs`'));
   assert.ok(row, 'README.md has a review-artifact.cjs row');
   assert.match(row, /step 8a/);
   assert.match(row, /memtrace/);
@@ -337,7 +337,7 @@ function assertNamesEveryUnmeasuredForm(s, what) {
 
 /** README.md's ENF-20 step 8a paragraph (raw). */
 function readme8aParagraph() {
-  const lines = fs.readFileSync(path.join(REPO, 'README.md'), 'utf8').split('\n');
+  const lines = fs.readFileSync(path.join(REPO, 'docs', 'enforcement-reference.md'), 'utf8').split('\n');
   const start = lines.findIndex((l) => l.startsWith('**ENF-20 step 8a (memtrace evidence).**'));
   assert.ok(start !== -1, 'README.md has the ENF-20 step 8a paragraph');
   const out = [];
@@ -914,13 +914,14 @@ test('po0: CTK-ADR-0013 Consequences names the adopter cost and every pinned res
   assert.match(c, /before (any|the) (default )?write/i, 'the residual says the resolved path is asserted before any write');
 });
 
-test('po0: README.md runtime-drift row and bin/ row name the session config dir, where and CTK-ADR-0013', () => {
-  const lines = fs.readFileSync(path.join(REPO, 'README.md'), 'utf8').split('\n');
+test('po0: runtime-drift row (enforcement-reference)  and bin/ row name the session config dir, where and CTK-ADR-0013', () => {
+  const lines = fs.readFileSync(path.join(REPO, 'docs', 'enforcement-reference.md'), 'utf8').split('\n');
+  const installLines = fs.readFileSync(path.join(REPO, 'docs', 'install-and-layout.md'), 'utf8').split('\n');
   const drift = lines.find((l) => l.startsWith('| `runtime-drift.cjs` |'));
-  assert.ok(drift, 'README.md has the runtime-drift.cjs row');
+  assert.ok(drift, 'enforcement-reference.md has the runtime-drift.cjs row');
   for (const s of ['$CLAUDE_CONFIG_DIR/gsd-core', 'CTK-ADR-0013']) assert.ok(drift.includes(s), 'runtime-drift row names ' + s);
-  const bin = lines.find((l) => l.startsWith('| `bin/`'));
-  assert.ok(bin, 'README.md has the bin/ row');
+  const bin = installLines.find((l) => l.startsWith('| `bin/`'));
+  assert.ok(bin, 'install-and-layout.md has the bin/ row');
   assert.ok(bin.includes('runtime-sync where'), 'bin/ row names runtime-sync where');
   assert.match(bin, /refuses the daily/, 'bin/ row says sync refuses the daily install');
 });

@@ -1,7 +1,7 @@
 # GSD-Contrib Toolkit — Overview
 
 *A tour of what the toolkit does, what's inside it, and the model that ties it together.
-For the deep architecture reference see the top-level [README](../../README.md); for a step-by-step
+For the deep architecture reference see the [Enforcement reference](../enforcement-reference.md); for a step-by-step
 walkthrough see the [Contributor Guide](contributor-guide.md) and [Maintainer Guide](maintainer-guide.md).*
 
 ---
@@ -132,6 +132,6 @@ repository (see the scope note in the [README](../../README.md)).
   issue + fix PR through the gates.
 - **[Maintainer Guide](maintainer-guide.md)** — run the triage sweep, re-review a stalled PR, and use
   the release/ruleset assists.
-- **Reference:** [README](../../README.md) (architecture + gate table), [commands-reference](../commands-reference.md),
+- **Reference:** [enforcement-reference](../enforcement-reference.md) (architecture + gate table), [commands-reference](../commands-reference.md),
   [skills-reference](../skills-reference.md), [REUSE-AND-METHODOLOGY](../REUSE-AND-METHODOLOGY.md),
   [cross-runtime-delivery-model](../cross-runtime-delivery-model.md).

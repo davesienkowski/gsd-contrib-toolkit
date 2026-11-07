@@ -24,7 +24,7 @@
  *       disk, are absent from the wired set, and are absent from README's gate-reference table.
  *   (3) README.md — every primary count claim, as a whitespace-normalized literal built from the
  *       derived numbers.
- *   (4) README.md gate-reference table — its rows enumerate EXACTLY the wired script set (set
+ *   (4) docs/enforcement-reference.md gate-reference table — its rows enumerate EXACTLY the wired script set (set
  *       equality, both directions). This is the check that catches "new hook, undocumented".
  *   (5) docs/guides/overview.md + docs/guides/contributor-guide.md — their primary count claims.
  *   (6) capabilities/contribution-toolkit/README.md (the published-capability README) — its
@@ -63,6 +63,9 @@ const HOOKS_DIR = path.join(REPO, 'hooks');
 const CAP_MANIFEST = path.join(REPO, 'capabilities', 'contribution-toolkit', 'capability.json');
 
 const README = 'README.md';
+// The detail the README used to carry now lives in these pages; the claims are checked where they live.
+const GATES = path.join('docs', 'enforcement-reference.md');
+const INSTALL = path.join('docs', 'install-and-layout.md');
 const OVERVIEW = path.join('docs', 'guides', 'overview.md');
 const CONTRIB_GUIDE = path.join('docs', 'guides', 'contributor-guide.md');
 const CAP_README = path.join('capabilities', 'contribution-toolkit', 'README.md');
@@ -286,16 +289,16 @@ test('doctor.cjs and preflight-shipped-paths.cjs exist but are NOT wired (and no
     );
     assert.ok(
       !readmeTableScripts.has(f),
-      `hooks/${f} is deliberately unwired — it must NOT be listed in README.md's gate-reference table`
+      `hooks/${f} is deliberately unwired — it must NOT be listed in the gate-reference table in docs/enforcement-reference.md`
     );
   }
 });
 
 // ───────────────────────────── (4) README gate table == wired set ─────────────────────────────
 
-/** Parse the `| `<name>.cjs` | <event> | ...` rows out of README.md's gate-reference table. */
+/** Parse the `| `<name>.cjs` | <event> | ...` rows out of the gate-reference table in docs/enforcement-reference.md. */
 function gateTableScripts() {
-  const lines = fs.readFileSync(path.join(REPO, README), 'utf8').split('\n');
+  const lines = fs.readFileSync(path.join(REPO, GATES), 'utf8').split('\n');
   const found = new Set();
   for (const line of lines) {
     const m = line.match(/^\|\s*`([A-Za-z0-9._-]+\.cjs)`\s*\|/);
@@ -304,14 +307,14 @@ function gateTableScripts() {
   return found;
 }
 
-test('README.md gate-reference table enumerates EXACTLY the wired script set', () => {
+test('docs/enforcement-reference.md gate-reference table enumerates EXACTLY the wired script set', () => {
   const documented = gateTableScripts();
   const undocumented = [...C.scripts].filter((f) => !documented.has(f)).sort();
   const phantom = [...documented].filter((f) => !C.scripts.has(f)).sort();
   assert.deepEqual(
     { undocumented, phantom },
     { undocumented: [], phantom: [] },
-    `README.md gate-reference table is out of sync with settings.snippet.json.\n` +
+    `docs/enforcement-reference.md gate-reference table is out of sync with settings.snippet.json.\n` +
       `  • WIRED BUT UNDOCUMENTED (add a table row): ${JSON.stringify(undocumented)}\n` +
       `  • DOCUMENTED BUT NOT WIRED (remove the row): ${JSON.stringify(phantom)}\n` +
       `The table must list all ${C.scriptCount} wired scripts — the blocking gates plus the ` +
@@ -322,8 +325,8 @@ test('README.md gate-reference table enumerates EXACTLY the wired script set', (
 
 // ───────────────────────────── (3) README.md primary claims ─────────────────────────────
 
-test('README.md primary hook-count claims match the derived wired set', () => {
-  assertClaims(README, [
+test('docs/enforcement-reference.md primary hook-count claims match the derived wired set', () => {
+  assertClaims(GATES, [
     [
       'headline registrations/scripts',
       `**${C.registrations} hook registrations across ${C.scriptCount} hook scripts**`,
@@ -337,6 +340,11 @@ test('README.md primary hook-count claims match the derived wired set', () => {
     ['contributor-workflow wired-set size', `the wired set of ${C.registrations} registrations`],
     ['share-form bundle script count', `**${C.scriptCount} hook scripts** (the ${C.preGates} fail-closed \`PreToolUse\` gates`],
     ['share-form bundle registration total', `= **${C.registrations} wired registrations**`],
+  ]);
+});
+
+test('docs/install-and-layout.md primary hook-count claims match the derived wired set', () => {
+  assertClaims(INSTALL, [
     [
       'directory-layout capabilities row',
       `the bundled \`hooks/\` (${C.scriptCount} scripts / ${C.registrations} wired registrations)`,
@@ -459,7 +467,7 @@ test('capability.json hooks[] matches the snippet registrations + per-(event, ma
 
 // ───────────────────────────── (8) generic stale-number scan ─────────────────────────────
 
-const SCANNED_DOCS = [README, OVERVIEW, CONTRIB_GUIDE, CAP_README];
+const SCANNED_DOCS = [README, GATES, INSTALL, OVERVIEW, CONTRIB_GUIDE, CAP_README];
 
 /**
  * Strip the constructs that look like "<number> <hook-noun>" but are not counts:

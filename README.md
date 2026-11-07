@@ -1,424 +1,74 @@
 # GSD-Contrib Toolkit
 
-A self-contained, GSD-update-proof toolkit that makes a *broken*
-`open-gsd/gsd-core` contribution physically impossible to submit. It bundles the
-contribution knowledge (two skills), the human triggers (five `gsd-*` commands),
-the runnable tools (`bin/`), and — the load-bearing layer — the Claude Code
-`PreToolUse` hooks the *harness* runs (not the model) to **deny** filing or pushing
-a broken issue/PR or editing a generated `bin/lib/*.cjs` artifact.
+Guard rails for contributing to [`open-gsd/gsd-core`](https://github.com/open-gsd/gsd-core) with
+Claude Code. It stops a broken issue or pull request from being filed, and stops code that is not
+green from being pushed.
 
-> **Scope, honestly.** This is one contributor's working toolkit, built around
-> `open-gsd/gsd-core`'s specific intake gates and one maintainer's review
-> conventions. It is published for reference and reuse — read it as a worked
-> example of harness-boundary enforcement, not as a supported product. There is no
-> release cadence and no support commitment. The parts most likely to transfer
-> elsewhere are the *pattern* (`PreToolUse` hooks that gate outcomes, plus
-> LIVE-script reuse instead of reimplemented policy) and the honesty discipline in
-> *What It Does NOT Do* — the specific gates are tuned to one repo.
+It does this with **hooks**: small checks that Claude Code itself runs just before a command such as
+`git push` or `gh pr create`. If a check says no, the command does not run. The toolkit also ships
+five slash commands and two skills (written instructions Claude follows) that walk you through a
+contribution and help maintainers triage and review.
+
+**Who it is for:** people who contribute to or maintain gsd-core using Claude Code.
+
+> **Read this first.** This is one contributor's working toolkit, built around gsd-core's specific
+> intake rules and one maintainer's review habits. It is published (MIT) for reference and reuse, not
+> as a supported product: there is no release schedule and no support promise. The most reusable part
+> is the pattern (hooks that check outcomes, reusing gsd-core's own scripts instead of copying its
+> rules); the specific checks are tuned to one repository.
 >
-> The `.planning/` GSD corpus is intentionally not published; the decision record
-> that belongs to the toolkit lives in [`docs/adr/`](docs/adr/).
+> Be skeptical of any claim here that sounds too strong. The aim is to say exactly what is enforced
+> and what is only advice, and an overselling claim is a real defect: please report one.
 
-This repository is the **owned source of truth**. Every at-risk asset lives here
-and is symlinked back into `~/.claude`, and `node bin/contrib-capability.cjs install`
-is the **sole** entrypoint that restores the full surface — hooks + commands + skills —
-idempotently: re-run it after any GSD update or `gsd-ver` toggle to repair the toolkit
-without losing work, so a reinstall can never lose the toolkit.
+## What it blocks
 
-> **New here?** Start with the task-oriented **[Guides](docs/guides/)** — an
-> [Overview](docs/guides/overview.md), a [Contributor Guide](docs/guides/contributor-guide.md)
-> (file a change through the gates), and a [Maintainer Guide](docs/guides/maintainer-guide.md)
-> (triage + re-review). This README is the architecture reference.
+These are enforced by the hooks, not left to the model's good intentions:
 
-## What It Does
+- Pushing, or opening a PR, when `lint:ci` has not passed on the exact files you are pushing, or when
+  gsd-core's secret, prompt-injection or base64 scans find something.
+- Filing an issue or PR that breaks gsd-core's intake rules: missing GSD version, wrong target branch,
+  a body that fails the template, no linked issue, or a duplicate of an open issue.
+- Committing stale generated files, or editing a generated `bin/lib/*.cjs` instead of its source.
+- Skipping the checks (`--no-verify`, swapping `core.hooksPath`) or sending private files upstream.
+- Approving or merging a PR without the review evidence the maintainer process asks for.
 
-It enforces the **outcomes** that matter at the harness boundary — no broken
-issue/PR/push, no generated-file edit — using Claude Code `PreToolUse` hooks that
-the harness runs on every matching tool call (not the model). Because they fire
-before the permission check, they cannot be talked around by a deadline-pressured
-or rationalizing model.
+18 of the 20 hook scripts block; the other two only remind or record. The full table, with what each
+one calls, is in [docs/enforcement-reference.md](docs/enforcement-reference.md).
 
-Installed into gsd-core's project-scoped `.claude/settings.json` by the capability
-CLI (`node bin/contrib-capability.cjs install` — see *Install / restore*) are
-**22 hook registrations across 20 hook scripts**: **18 fail-closed `PreToolUse`
-gates** (17 on `Bash`, 1 on `Write`/`Edit`; 1 of the `Bash` gates also on
-`EnterWorktree`), **1 advisory `UserPromptSubmit` reminder**, and **1
-observability recorder** wired on *both* `PostToolUse` and `PostToolUseFailure`.
-Two scripts are registered twice: the recorder (on two events) and
-`worktree-fresh-base.cjs` (ENF-25, one gate under two `PreToolUse` matchers,
-`Bash` and `EnterWorktree`) — which is why 20 files produce 22 registrations.
-Only the 18 `PreToolUse` gates block; the reminder and the recorder never deny. The wired
-set is derived from the canonical `settings.snippet.json` (the source
-`build-capability.cjs` reads).
-The gates close concrete failure classes a gsd-core
-contribution gets bounced (or merged red) for:
+## What it does not do
 
-- shipping **red** — a `git push`/PR with un-green `lint:ci`, a failing
-  affected-test set, or a secret/injection/base64 hit in the diff;
-- filing a **broken issue/PR** — missing/invalid GSD Version, wrong PR target,
-  a policy-violating template body, or a duplicate of an open issue;
-- a **hidden generated-file failure** — committing a stale `bin/lib/*.generated.cjs`
-  whose `src/*.ts` changed but `build:lib` was never re-run;
-- **editing a generated artifact** directly (`bin/lib/*.cjs`) instead of its
-  `src/*.ts` source;
-- **bypassing the seal**: `--no-verify`, a swapped `core.hooksPath` (the effective value must be
-  `.githooks`, or a session dispatcher that passes a delegation canary with the repo value `.githooks`,
-  [CTK-ADR-0015](docs/adr/CTK-ADR-0015-enf13-accepts-a-dispatcher-that-passes-a-delegation-canary.md)),
-  a typed override in the forms
-  [CTK-ADR-0016](docs/adr/CTK-ADR-0016-enf13-typed-scan-reads-as-git-and-the-shell-read.md) lists (it stops typed
-  forms, nothing more),
-  or a leak of private files up to upstream gsd-core;
-- **adjudicating without the re-review evidence** — approving or merging a PR
-  without the two orthogonal review passes, a green CI re-fetch, the exogenous
-  self-check, or on an unchanged head OID; or approving / requesting changes
-  without the memtrace graph pass (step 8a) recorded in this session.
+- **It is not a security control.** The hooks stop the AI model from talking its way past a check,
+  even with `--dangerously-skip-permissions`. They do not stop you: anyone with access to the files
+  can turn the toolkit off, and that is by design (see [Turning it off](#turning-it-off)).
+- **It checks outcomes, not how you work.** It can stop a broken PR; it cannot make you plan first.
+  Habits such as writing a todo list first are guidance, not enforcement.
+- **The installable capability is advice only.** The blocking comes from the hooks it installs into
+  gsd-core's project settings. On runtimes other than Claude Code there are no hooks, so the skills
+  run as advice only.
 
-### Gate Reference
+More detail: [docs/enforcement-reference.md](docs/enforcement-reference.md#what-it-does-not-do).
 
-Every wired `PreToolUse` gate DENIES at the harness boundary; most resolve and call
-a **LIVE gsd-core script** rather than reimplementing its policy (see *What it
-uses*). The last two rows are the wired **non-blocking** hooks — the advisory
-reminder and the observability recorder — listed here so this table enumerates the
-wired set exactly.
+## Requirements
 
-| Gate hook | Event | Blocks | LIVE script / check it calls |
-| --------- | ----- | ------ | ---------------------------- |
-| `gh-issue-create.cjs` | Bash | issue with missing/invalid GSD Version | `scripts/issue-version-gate.cjs` |
-| `gh-pr-create.cjs` | Bash | PR with wrong target, bad template, missing `Fixes #N`/`Closes #N` linked issue, bad branch name (`^(fix\|docs\|feat)/\d+-`), un-green CI check-runs on the head SHA (ENF-18), or a Feature/Enhancement PR whose linked issue lacks an `approved-*` label (CF-02; the Fix and Internal buckets are exempt). A tests-only or docs-only PR may use the non-closing `Refs #N` form (BUG-4645) | `scripts/pr-target-policy.cjs`, `scripts/pr-template-policy.cjs`; the linked-issue, branch-name, check-runs and CF-02 checks are toolkit-owned |
-| `gh-edit.cjs` | Bash | a `gh issue/pr edit` that rewrites a body to fail policy | the same create-gate policies (via REST synonyms) |
-| `githooks-seal.cjs` | Bash | `--no-verify` and `core.hooksPath` swaps: the effective value must be `.githooks`, or a session dispatcher that passes a delegation canary with the repo value `.githooks` ([CTK-ADR-0015](docs/adr/CTK-ADR-0015-enf13-accepts-a-dispatcher-that-passes-a-delegation-canary.md)); the override forms [CTK-ADR-0016](docs/adr/CTK-ADR-0016-enf13-typed-scan-reads-as-git-and-the-shell-read.md) lists deny when typed in the command, and it stops typed forms, nothing more (arms on every push from a gsd-core checkout, fork and backup pushes included) | (flag/config seal, no LIVE script) |
-| `issue-dedupe.cjs` | Bash | filing a duplicate of an open issue | `scripts/issue-dedupe.cjs` (dedupe scorer) |
-| `freshness.cjs` | Bash | committing a stale generated `bin/lib/*.generated.cjs` | gsd-core `check:*-fresh` npm scripts |
-| `containment.cjs` | Bash | leaking private files into / up to upstream gsd-core (its GitHub rename aliases count as upstream) | (containment check — no LIVE script) |
-| `policy-invariants.cjs` | Bash | a commit/PR that fails a mechanizable ADR/policy invariant | gsd-core's own `check:*` npm scripts |
-| `lint-ci-marker.cjs` | Bash | a push/PR without a fresh `lint:ci`-green marker for a clean tree (a push whose every target resolves to another owner/repo, such as a fork or backup remote, does not arm it; a push to upstream, an unresolvable target or a push with no explicit remote keeps the rule) | reads the tree-SHA marker (`npm run lint:ci`) |
-| `git-commit-convention.cjs` | Bash | a commit with a missing/wrong conventional-commit prefix | (prefix check — no LIVE script) |
-| `scan-gate.cjs` | Bash | a push with a secret/injection/base64 hit (arms on every push from a gsd-core checkout, fork and backup pushes included) | gsd-core's three LIVE scan scripts |
-| `protocol-artifact.cjs` | Bash | filing/pushing on a contribution branch without the P1-P3 protocol artifacts (a push whose every target resolves to another owner/repo, such as a fork or backup remote, does not arm it; a push to upstream, an unresolvable target or a push with no explicit remote keeps the rule) | reads the branch diff + the LIVE `gsd-test` run |
-| `review-artifact.cjs` | Bash | re-reviewing/approving/merging a PR (including the `gh api graphql` review-mutation route and a GraphQL query read from a file or stdin) without the mechanizable re-review evidence, keyed to PR + HEAD OID: the step 8 two orthogonal passes, step 13 merge gate, step 1 treadmill guard and step 10 exogenous check artifacts, and, for an approve or request-changes, step 8a memtrace evidence (`get_impact`, `get_symbol_context`, one recorded-decision verb) in tool-recorder's log for the session (`ask` when the log cannot answer, or when a filled `R8a-memtrace.json` attests memtrace was unavailable) | reads the review artifacts + the LIVE `gh` CI conclusions + tool-recorder's `tool-log.jsonl` for the session |
-| `runtime-drift.cjs` | Bash | filing/pushing to `open-gsd/gsd-core` while the installed runtime of the session's Claude config dir (`$CLAUDE_CONFIG_DIR/gsd-core`, else `~/.claude/gsd-core`) is unstamped, digest-mismatched, or behind `origin/next`, or while the managed gsd-core hooks under that dir's `hooks/` are digest-mismatched or the stamp predates hook coverage (ENF-21, CTK-ADR-0011, CTK-ADR-0013; an invalid `CLAUDE_CONFIG_DIR` denies, and in the daily `~/.claude` a deny also says to start a contribution session; `ask`, never deny, when the upstream tip is unobtainable). A push arms on its target remote or URL: a plain push to a fork or backup remote passes, an upstream URL arms from anywhere, and a push with no explicit or no resolvable remote, or inside a command that is not an allowlisted plain form (a subshell, `bash -c`, an env assignment, a redirection, a config write, a `cd` to a bare relative directory that CDPATH could redirect), keeps the cwd rule; a literal URL that git maps to a configured remote is judged by that remote's URLs | (toolkit-owned stamp + `git ls-remote`; no LIVE script) |
-| `gsd-test-clean-tree.cjs` | Bash | a `gsd-test` dispatch from a gsd-core checkout whose tracked tree is dirty while the run tests the working HEAD, or whose output is piped without `pipefail` (ENF-23) | (toolkit-owned `git status` + `git rev-parse` — no LIVE script) |
-| `gsd-test-viability.cjs` | Bash | a `gsd-test` dispatch whose `config.toml` is missing, whose named `--bench` is absent from it, or whose local Docker daemon is missing/down (ENF-24; `ask`, never deny, when `docker info` overruns its 8 s bound) | (toolkit-owned config read + `docker info` — no LIVE script) |
-| `worktree-fresh-base.cjs` | Bash + EnterWorktree | cutting a gsd-core worktree from a stale trunk: on a trunk cut it fetches `origin/next` and fast-forwards an unheld stale local `next` (compare-and-swap, never a reset), and denies with the fix when `next` is held by a worktree or has diverged (ENF-25; `ask`, never deny, when origin is unobtainable) | (toolkit-owned bounded `git fetch` + `update-ref` — no LIVE script; see [CTK-ADR-0009](docs/adr/CTK-ADR-0009-gate-bounded-monotonic-ref-refresh.md)) |
-| `binlib-edit.cjs` | Write/Edit | editing a generated `bin/lib/**/*.cjs` instead of its `src/*.cts` source | (generated-path candidate + repository pinning + read-only `git check-ignore` discriminator: ignored → deny, tracked or not ignored → allow, undecidable or redirected repository → deny — no LIVE script) |
-| `protocol-reminder.cjs` | UserPromptSubmit | *(advisory only — reminds, never denies)* | — |
-| `tool-recorder.cjs` | PostToolUse + PostToolUseFailure | *(observability only — records, never denies; the one hook wired on two events)* | — |
+- Node.js 22 or newer (CI runs 22 and 24).
+- Claude Code (the hooks need it).
+- A local checkout of `open-gsd/gsd-core`. The installer looks in `$GSD_CORE_ROOT`, then
+  `~/repos/gsd-core`, then `~/gsd-core`.
+- `gh`, signed in. The issue and PR checks call it, and they deny when it is not authenticated.
 
-**ENF-20 step 8a (memtrace evidence).** The evidence for an approve or request-changes is tool-recorder's own log
-for the session (`tool-log.jsonl` and the rotated `tool-log.1.jsonl`): it proves `get_impact`, `get_symbol_context` and
-a recorded-decision verb ran in this session, not which symbols they targeted, and a review-body section never counts.
-Subagent tool calls are logged under the parent `session_id` (measured 2026-10-06 on Claude Code 2.1.291, one level
-deep, foreground and background, print mode), including an MCP tool call made inside a subagent (a context7 call; a
-memtrace verb is an MCP tool call on the same hook path), so a granted subagent's memtrace calls count; tool-recorder
-drops `agent_id`, so the log does not say which agent ran them. The forms not measured are listed in CTK-ADR-0010. When memtrace genuinely cannot run, or its calls are not
-visible to the recorder, the sanctioned escape is filling the scaffolded `.gsd/contrib/pr-<n>-<oid12>/R8a-memtrace.json`
-with `status: "unavailable"`: the gate then asks a human and never allows by itself. See
-[CTK-ADR-0010](docs/adr/CTK-ADR-0010-memtrace-review-evidence.md) (Accepted).
+## Install
 
-### Worktree cuts `worktree-fresh-base` cannot see
-
-The fresh-base check (ENF-25) runs only when Claude Code itself is about to cut the worktree: a
-`git worktree add` typed through the Bash tool, or the harness `EnterWorktree` tool. A worktree
-created any other way is never seen, so its trunk is not refreshed and a stale `next` is not denied:
-
-- **Orca.** `orca-ide` creates worktrees out of band under `~/orca/workspaces/<repo>/<name>`. Neither
-  a Bash `git worktree add` nor `EnterWorktree` passes through Claude Code, so no hook fires.
-- **GSD's own worktree engine.** It runs `git worktree add` from a node child process (the installed
-  runtime's worktree-safety module calls `execGit(['worktree', 'add', ...])`, a `spawnSync('git', ...)`
-  wrapper), not through the Bash tool, so no Claude Code hook is in that path.
-- **Any other creator outside the Bash tool and `EnterWorktree`**: an IDE, a terminal outside Claude
-  Code, a script or Makefile the agent runs, or a newline-joined multi-line command (the shared
-  command parser reads an unquoted newline as whitespace, so a cut on a later line is missed).
-
-Before cutting a gsd-core worktree any of those ways, refresh the trunk by hand:
+**From a clone of this repository** (the commands and skills are linked into `~/.claude`, so edits here
+take effect):
 
 ```bash
-git -C <gsd-core checkout> fetch origin next
-# then fast-forward the tree that has next checked out:
-git -C <tree holding next> merge --ff-only origin/next
-# or skip local next entirely and base the worktree on origin/next
+node bin/contrib-capability.cjs install   # wire the hooks, commands and skills; safe to re-run
+node bin/contrib-capability.cjs status    # show what is installed
 ```
 
-Whether the harness itself fetches before an `EnterWorktree` cut under `worktree.baseRef=fresh` is
-**UNVERIFIED**. When this gate fires, it runs its own bounded fetch regardless.
+Re-run `install` after a GSD update or any runtime change that disturbs `~/.claude`.
 
-**When the refresh happens, and where.** The gate acts only in a clone whose `origin` is
-`open-gsd/gsd-core` (a fork-only clone, a vendored copy inside another repository, or a clone with
-no `origin` is left alone). Its fetch and fast-forward run in the `PreToolUse` hook, which fires
-when the agent PROPOSES the cut, before the permission prompt. They are not undone if you then
-decline the command, if another gate denies it, or if this gate denies a later cut in the same
-command. Local `next` only ever moves forward, and each move is recorded in `next`'s reflog
-(`git reflog show next`). `origin/next` is updated the way any `git fetch` updates it, so it follows
-an upstream force-push. The gate refuses to move a `next` that is checked out, or being rebased or
-bisected in any worktree. Before any fetch it also refuses when `next` or `origin/next` is a
-symbolic ref or a filesystem symlink, because the write would land on another branch. See [CTK-ADR-0009](docs/adr/CTK-ADR-0009-gate-bounded-monotonic-ref-refresh.md)
-for the full list of shapes it cannot see (shell functions, command substitutions, `xargs` and
-similar wrappers, git aliases).
-
-## How It Works
-
-**Harness-boundary enforcement.** A `PreToolUse` hook is run by the Claude Code
-harness *before* the tool call's permission check. That makes the **personal
-PreToolUse hooks** unbypassable — they fire on every matching tool call even under
-`--dangerously-skip-permissions`. This property belongs to these hooks specifically
-(not to the share-form capability — see *What it does NOT do*).
-
-**The stamp → marker → gate → scan loop** is the push-readiness path:
-
-1. **Stamp** — `bin/lint-ci-stamp.cjs` runs `npm run lint:ci`; on green it stamps a
-   tree-SHA marker recording that this exact tree passed.
-2. **Marker** — before a `git push` (or `gh pr create`), `hooks/lint-ci-marker.cjs`
-   READS that marker and DENIES if it is absent, stale (tree SHA mismatch), or the
-   working tree is dirty.
-3. **Scan** — `hooks/scan-gate.cjs` runs gsd-core's secret/injection/base64 scans
-   over the `<base>...HEAD` range (the commits this push carries) and DENIES on any hit.
-
-So the model is given a guided path to GREEN, and the harness-run hooks lock the
-outcome.
-
-**Gate → LIVE-script reuse.** A gate does not reimplement gsd-core policy; it
-resolves the gsd-core worktree and `require()`s the LIVE script via
-`hooks/lib/resolve.cjs`. There is deliberately **no vendored fallback** — a missing
-or broken LIVE script throws a typed error, and the `runGate` harness in
-`hooks/lib/failclosed.cjs` turns any such throw into a **fail-closed DENY** rather
-than a silent allow.
-
-**The override valve.** `hooks/lib/override.cjs` reads `GSD_CONTRIB_OVERRIDE`, a
-non-empty **reason string** (never a boolean flag, and distinct from the denied
-`--no-verify`). Every gate honors it for a **thrown gate error**: a gate that
-could not run (a LIVE script that will not load, an unparseable command, a failed
-`gh` or file read). When it flips such an error to allow, it writes a timestamped,
-append-only, **per-worktree** receipt under `.gsd-contrib/override-receipts.log`.
-It does **not** lift a returned policy deny (a missing artifact, a duplicate issue,
-`--no-verify`), with one exception that says so in its own deny text: ENF-07
-containment honors it for a deliberate maintainer push to `origin`, with a receipt.
-Turning the gates off is a human operator's decision, not a way past a deny:
-`node bin/contrib-capability.cjs off --reason "<why>"` strips the toolkit's gates
-from that gsd-core checkout and writes a receipt. It is a deliberate, logged
-escape, never a silent default.
-
-## What It Uses
-
-The reuse model is the point: **policy logic lives in gsd-core; this toolkit
-resolves and invokes it**, so it stays aligned as gsd-core evolves. The gates and
-tools call these LIVE gsd-core scripts (resolved by `hooks/lib/resolve.cjs`) and
-never reimplement them:
-
-- **Issue / PR policy** — `scripts/issue-version-gate.cjs`,
-  `scripts/issue-dedupe.cjs` (dedupe scorer), `scripts/pr-target-policy.cjs`,
-  `scripts/pr-template-policy.cjs`.
-- **Green-before-push** — `npm run lint:ci` (stamped) and the affected-test set;
-  the three LIVE scan scripts for the secret/injection/base64 gate.
-- **Generated-file freshness** — gsd-core's `check:*-fresh` npm scripts
-  (e.g. `check:configuration-fresh`, `check:decisions-fresh`,
-  `check:state-document-fresh`).
-- **Mechanizable invariants** — gsd-core's own `check:*` npm scripts driven by
-  `hooks/policy-invariants.cjs`.
-- **Release scripts** — `scripts/sync-next-version.cjs`,
-  `scripts/sync-manifest-versions.cjs`, `scripts/release-tarball-smoke.cjs`,
-  `scripts/check-npm-integrity.cjs` (run non-mutatingly by `release-preflight`).
-- **Capability validation** — `scripts/gen-capability-registry.cjs`'s validators
-  (reused by `bin/verify-capability.cjs`).
-
-A self-test (`hooks/lib/doctor.cjs`) asserts the LIVE scripts still export the
-shapes the gates expect, so a gsd-core refactor that changes a script's shape
-surfaces as a fail-closed DENY plus a diagnosable report — not a silent miss.
-
-## What You Can Do
-
-### Contributor Workflow
-
-- **Install / restore** the toolkit (idempotent):
-  `node bin/contrib-capability.cjs install` — see *Install / restore* below.
-- The **18 fail-closed `PreToolUse` gates** — the blocking part of the wired set of
-  22 registrations; the other entries are the 1 advisory reminder and the 1
-  observability recorder — fire automatically inside the gsd-core repo once the
-  contribution-toolkit capability is installed (`node bin/contrib-capability.cjs install`).
-- Drive a contribution with the **`gsd-submit`** command (file → push → PR through
-  the gates) and the **`core-contribution`** skill (the contribution knowledge,
-  including the stamp → marker → gate → scan loop).
-- Run a maintainer-style sweep with **`gsd-review-sweep`**.
-
-**Recovery offramp (FLOW-01).** When a contribution gate **denies** an action — or
-the `core-contribution` skill surfaces a real blocking issue mid-run — you are
-offered a GSD-native recovery choice rather than a dead-stop: **fix inline with
-`/gsd-quick`** for a trivial correction, or **route the issue through the GSD
-pipeline** (`/gsd-debug`, or `/gsd-discuss-phase`→`/gsd-plan-phase`→`/gsd-execute-phase`)
-as a tracked, resumable work item — then return to the submission once it is green.
-This offramp is **advisory only**: the deny stays **fail-closed and unbypassable**,
-it NEVER suggests bypassing the gate or abusing `GSD_CONTRIB_OVERRIDE` to dodge a
-real failure, and no gate is weakened. (Surfaced from the contribution skill +
-`gsd-submit`/`gsd-review-sweep` commands.)
-
-### Owner / Maintainer Pillar
-
-These are **advisory** assists (read-only by default — NOT deny-gates), each
-reusing LIVE gsd-core scripts and surfaced through a `/gsd-*` command:
-
-- **`gsd-triage-assist`** → `bin/triage-assist.cjs` — LIVE dedupe + version-gate +
-  canonical-role suggestion; mutations (e.g. `needs-triage` strip) only behind
-  `--apply`.
-- **`gsd-release-preflight`** → `bin/release-preflight.cjs` — runs all four LIVE
-  release scripts non-mutatingly, aggregates failures, exits nonzero on any.
-- **`gsd-ruleset-drift`** → `bin/ruleset-drift.cjs` — diffs declared
-  `.github/rulesets/` against live `gh api` state, read-only; LIVE sync behind
-  `--apply`.
-
-The **`maintainer-review-sweep`** skill backs these assists. It mirrors the
-review/triage side of the lead maintainer's own now-published process
-([`review-open-prs.md`, `triage-review.md`, `bug-fixer.md`, `feature-builder.md`](https://github.com/The-Artificer-of-Ciphers-LLC/skills-from-the-artificer/tree/main/commands)):
-the two-orthogonal-passes gate, multi-tier severity, Generative-Fix-Divergence,
-the memtrace graph passes + co-change completeness gate, the external-tool gate,
-and the test-quality ruleset. It **deliberately diverges** on autonomy — trek-e's
-directives can merge unattended (`bug-fixer` always, `feature-builder`/`review`
-behind an `AUTONOMOUS` flag), whereas this toolkit keeps all authoring behind the
-human-gated `core-contribution` pipeline and its fail-closed push gate
-(CTK-ADR-0001) and never self-merges — and inverts his memtrace-first stance where
-this environment's `get_impact` floor makes grep the authority for callers.
-
-### Share-Form Capability
-
-`capabilities/contribution-toolkit/capability.json` packages the contribution +
-maintainer-review knowledge as an installable, **opt-in** GSD capability (ADR-1244
-`role:feature` manifest). The bundle is **self-contained**: it ships the
-**20 hook scripts** (the 18 fail-closed `PreToolUse` gates on 19 registrations,
-ENF-25 being registered under both `Bash` and `EnterWorktree` + 1 advisory
-`UserPromptSubmit` reminder + 1 `PostToolUse`/`PostToolUseFailure` observability
-recorder on 2 registrations = **22 wired registrations**), **both skills**
-(`core-contribution`, `maintainer-review-sweep`), and
-**all five commands** (`gsd-submit`, `gsd-review-sweep`, `gsd-triage-assist`,
-`gsd-release-preflight`, `gsd-ruleset-drift`) under
-`capabilities/contribution-toolkit/{hooks,skills,commands,fragments}/` — it is **not**
-a hooks-only or prose-only-commands artifact. It also carries one advisory `plan:pre`
-contribution and a default-off `workflow.gsd_contrib_enforcement` consent flag. Its
-`gates[]` is **empty** and the capability is **advisory-only** (see
-*What it does NOT do*) — the hooks it bundles fire as the **personal PreToolUse
-hooks** layer once installed, a property of those hooks and not of the capability.
-
-### Verify / Prove
-
-- `node bin/verify-hooks.cjs` — captures byte-stable deny/allow proof artifacts for
-  the gates.
-- `node bin/self-test.cjs` — dog-foods the toolkit against a disposable sandbox.
-  **Run it with your cwd inside a gsd-core checkout** (`cd ~/repos/gsd-core && node
-  /path/to/gsd-contrib-toolkit/bin/self-test.cjs`), the same requirement `hooks/doctor.cjs`
-  has. The HARD-01/HARD-02 fault-injection proofs build their sandbox from a real checkout
-  and SKIP without one — and since 2026-07-30 a skipped load-bearing proof is a **failure**,
-  not a silent pass (EXEC-01). Run from the toolkit root it exits 1 and names the reason.
-- `node bin/verify-capability.cjs` — validates the share-form manifest by reusing
-  the LIVE capability-registry validators (no schema reimplementation).
-
-## What It Does NOT Do
-
-This section is load-bearing — the project's core value is honesty, not overselling.
-
-- **This is not a security control, and "unbypassable" is scoped.** The gates bind **the model inside
-  a session**, not a human at a keyboard. The word "unbypassable" throughout this README means *the
-  model cannot talk its way past a `PreToolUse` deny* — including under
-  `--dangerously-skip-permissions`. It does **not** mean tamper-proof: anyone with filesystem access
-  can run `contrib-capability off --reason …`, edit gsd-core's `.claude/settings.json`, or delete the
-  hooks outright, and every one of those is documented here on purpose. The design assumes the
-  operator knows every bypass, because the operator *is* the person being bound — this is a
-  self-binding commitment device (Ulysses and the mast), not a perimeter. Do not deploy it as a
-  control against an untrusted party; it was never designed to survive one, and publishing it costs
-  nothing precisely because its value never depended on the design being secret.
-- **Hooks lock outcomes, not steps — narrowed, not withdrawn.** The gates enforce
-  *what must not ship*. They do **not** directly enforce *how* you work — e.g.
-  todo-first discipline stays model-driven (the skill plus the advisory
-  `UserPromptSubmit` reminder). The narrowing: where a step deposits an
-  **artifact**, the next outcome can be gated on that artifact, which makes the
-  step enforceable *transitively* (ENF-05's `lint:ci` marker was the first
-  instance; ENF-19's protocol artifacts generalise it — see
-  [CTK-ADR-0004](docs/adr/CTK-ADR-0004-artifact-gated-step-discipline.md)). A step
-  that deposits **nothing** is still unenforceable, and the gate asserts an
-  artifact's *shape*, not its honesty.
-- **The share-form capability is advisory-only.** Its `gates[]` is empty; a
-  capability gate would block only at the closed set of GSD-loop extension points
-  reached *inside* a GSD command. It does **not** reach the harness tool-call
-  boundary — a direct issue/PR/push typed outside a GSD command never crosses a
-  loop point, so the capability never sees it. The capability must **not** be read
-  as unbypassable; only the **personal PreToolUse hooks** are the harness-wide
-  enforcement layer.
-- **The override is deliberate, not silent.** `GSD_CONTRIB_OVERRIDE` is a logged,
-  per-worktree, reason-carrying valve for a thrown gate error, never a default.
-  It does not lift a returned policy deny; the one exception is ENF-07's
-  deliberate maintainer push to `origin`, which its deny names. Turning the gates
-  off is a human operator's decision: `node bin/contrib-capability.cjs off --reason "<why>"`,
-  which is logged too.
-- **Live-proven once; broader battle-testing continues.** The first toolkit-shepherded
-  contribution landed upstream (issue #1154 → PR #1738, merged 2026-06-29), so the pipeline has
-  cleared a real gsd-core contribution end-to-end. Proving it across the *full* contribution
-  surface (enhancements, epics, fork PRs) is the remaining work.
-
-## Directory Layout
-
-| Path                    | Purpose                                                                                  |
-| ----------------------- | ---------------------------------------------------------------------------------------- |
-| `hooks/`                | Harness-run `PreToolUse` gate scripts + the `UserPromptSubmit` advisory + the `PostToolUse`/`PostToolUseFailure` recorder, plus the shared anti-bypass `hooks/lib/` (argv tokenizer, classifier, LIVE-script resolver, fail-closed harness, tree-SHA marker, override receipt, doctor, tool-log reader, verdict log, worktree-add detection, runtime stamp, sandbox/scaffold helpers). `doctor.cjs` and `preflight-shipped-paths.cjs` live here but are deliberately **not wired** — they are CLIs, not hooks. `gsd-planning-track.sh` (PostToolUse) and `gsd-planning-push.sh` (SessionEnd) are opt-in hooks that back up a private `.planning/` repo; they are not part of the capability's wired set. |
-| `bin/`                  | Runnable tools: `contrib-capability` (install/toggle), `build-capability` (bundle rebuild/check), `runtime-sync` (ENF-21 runtime; `runtime-sync where` prints the measured Claude config dir, and `sync` refuses the daily `~/.claude` install, CTK-ADR-0013), `verify-hooks`, `self-test`, `lint-ci-stamp`, `triage-assist`, `release-preflight`, `ruleset-drift`, `verify-capability`, `convention-drift`, `verdict-stats` (advisory), `prove-integrity-provenance`, `pr-status` (read-only PR snapshot and ball-in-court; `--cr` for the latest change request's checklist, activity and re-request trace, `--body` for the body's shas and the Self-test report binding), `base-conflicts` (read-only conflicts vs the base, merge objects in a temp object dir), `issue-status` (read-only issue ball-in-court and linked PRs), `push-target` (the PR's head remote and push command, printed only), plus the `gsd-plan-track`/`gsd-refresh` shell helpers. |
-| `commands/`             | Vendored slash commands: `gsd-submit`, `gsd-review-sweep`, `gsd-triage-assist`, `gsd-release-preflight`, `gsd-ruleset-drift`; symlinked into `~/.claude`. |
-| `skills/`               | Vendored Claude skills: `core-contribution`, `maintainer-review-sweep`; symlinked into `~/.claude`. |
-| `capabilities/`         | The share-form GSD capability: the **self-contained** `contribution-toolkit/` bundle — `capability.json` + `fragments/` + the bundled `hooks/` (20 scripts / 22 wired registrations), `skills/` (2), and `commands/` (5) a remote install delivers (NOT hooks-only). |
-| `settings.snippet.json` | The canonical hooks settings block — the wired-set source `build-capability.cjs` reads to generate the capability bundle.         |
-
-## Source of Truth and Symlinks
-
-The vendored assets under `skills/` and `commands/` are the **source of truth**.
-The copies under `~/.claude` are *symlinks* back into this repository — so editing
-the file in `~/.claude` edits the tracked file here, and a GSD reinstall that
-clobbers `~/.claude` is repaired by re-running the installer rather than by
-recovering lost work.
-
-## Install / Restore
-
-There is **one local entrypoint** — the capability driver
-`node bin/contrib-capability.cjs install` — which restores the `~/.claude` symlinks
-AND installs/toggles the enforcement; plus a separate published-capability remote
-route for anyone other than the owner (see step 2 below).
-
-### 1. Install / Restore the Full Surface (the Capability CLI)
-
-`node bin/contrib-capability.cjs install` is the **single, idempotent, re-runnable**
-entrypoint. It delivers the vendored commands + skills (as `~/.claude` symlinks back
-into this repo, with a never-clobber fail-safe that refuses to overwrite a real,
-non-symlink file) and stages + marker-tags the enforcement gates — so re-running it
-after a GSD update or `gsd-ver` toggle that clobbers `~/.claude` restores the full
-surface without losing work.
-
-The driver drives the LIVE gsd-core capability engine **project-scoped** (into the
-local gsd-core checkout's `.claude/settings.json`, never `~/.claude`) and is
-**ledger + consent tracked**:
-
-```bash
-node bin/contrib-capability.cjs install            # stage + consent + ledger + marker-tag every wired hook
-node bin/contrib-capability.cjs on                 # (re)apply the tagged gates + enforcement flag on
-node bin/contrib-capability.cjs off  --reason <w>  # strip the tagged gates + flag off + logged receipt
-node bin/contrib-capability.cjs status             # report ledger + consent + live gate set
-node bin/contrib-capability.cjs remove --reason <w> # remove from ledger + consent + logged receipt
-```
-
-- **`install`** — stages + records consent (a real `bundleContentHash` over the
-  bundle), ledger-records, and marker-tags the gates into gsd-core's project
-  `.claude/settings.json`, reconciling any legacy duplicate entries into one
-  idempotent, byte-stable tagged set.
-- **`on`** — re-applies EXACTLY the marker-tagged contrib gates and flips
-  `workflow.gsd_contrib_enforcement` **on** (the flag lives in
-  `<gsd-core>/.planning/config.json`).
-- **`off`** — strips EXACTLY the marker-tagged gates from `settings.json`
-  (untagged + other-capability hooks survive), flips the flag **off**, and writes
-  an accountability receipt.
-- **`status`** — reports the ledger entry, the consent record, and the live gate
-  set.
-- **`remove`** — strips the gates, deletes the ledger-owned files + drops the
-  ledger entry, revokes project consent, and writes a receipt.
-
-### 2. Install From the Published Capability (Remote Git)
-
-The toolkit is also published as a **public, git-installable GSD capability** at
-`github.com/davesienkowski/gsd-contribution-toolkit` (tagged `#v2.1.3`). This is the
-distribution path for anyone other than the owner restoring local symlinks — it
-delivers the **self-contained bundle** (the 20 hook scripts + 2 skills + 5 commands), **not**
-a hooks-only artifact. Install it through gsd-core's git capability adapter:
+**From the published package** (copies instead of links), through gsd-core's capability installer:
 
 ```bash
 node <gsd-core>/bin/gsd-tools.cjs capability install \
@@ -426,114 +76,56 @@ node <gsd-core>/bin/gsd-tools.cjs capability install \
   --scope project --yes --shared-file .claude/settings.json
 ```
 
-- `--scope project` keeps the enforcement project-scoped to the gsd-core checkout
-  (never `~/.claude`), the same blast radius as the local install.
-- `--shared-file .claude/settings.json` is **required**: it is where the adapter
-  wires the bundled hooks so the gates fire inside the project.
-- The toolkit install engine lays the command `.md`s into the runtime commands
-  directory (the honest delivery mechanism — mirroring the driver's symlink-delivery
-  semantics, just copied from the published tree rather than symlinked from this repo).
-- The public repo was renamed to `gsd-contribution-toolkit` from its earlier
-  `…-gate` name; GitHub redirects the old URL, so an existing `#v1.0.0` install
-  does not hard-break.
+`--scope project` keeps the hooks inside the gsd-core checkout, never in your global
+`~/.claude/settings.json`. An npm route that verifies a checksum before installing is described in
+[docs/install-and-layout.md](docs/install-and-layout.md).
 
-**Integrity-pinned npm install.** The bundle is also published to npm as
-`@davesienkowski/gsd-contribution-toolkit` (`#v2.1.3`). Unlike the git adapter — which
-records a **null** integrity digest — the `npm:` source kind verifies the downloaded
-tarball against a real `sha512-` digest **before** staging, so a tampered artifact is
-refused fail-closed. This is the only channel that turns the ADR-1244 integrity guarantee
-**on** for an installer:
+### Turning it off
 
 ```bash
-DIGEST=$(npm view @davesienkowski/gsd-contribution-toolkit@2.1.3 dist.integrity)
-node <gsd-core>/bin/gsd-tools.cjs capability install \
-  npm:@davesienkowski/gsd-contribution-toolkit@2.1.3 \
-  --integrity "$DIGEST" \
-  --scope project --yes --shared-file .claude/settings.json
+node bin/contrib-capability.cjs off --reason "why"      # remove the hooks (and the commands and skills)
+node bin/contrib-capability.cjs on                      # put them back
+node bin/contrib-capability.cjs remove --reason "why"   # full teardown
 ```
 
-- Published digest for `2.1.3`: `sha512-5H+u7QH2bSrrc4tmFiUy1JTnMXq0SqLabFX6lOrNFhDCXHIeJ4648Ix2PTk/Y6zpuRh2NRN/TdJFAyIrn2CQ0Q==`
-  (authoritative source is `npm view … dist.integrity`).
-- `capability.json` now carries an ADR-1244 D1 `provenance: { sourceRepo, commit }` block —
-  advisory metadata that surfaces in the install ledger and does **not** gate the install.
-- Proven end-to-end (positive install + tamper-refused + fail-closed) via
-  `bin/prove-integrity-provenance.cjs`; see `proofs/integrity-provenance-proof.md`.
+Turning it off really removes the checks. It needs a non-empty reason and writes a log entry, so it is
+a deliberate, recorded act rather than a quiet workaround. For a check that crashes rather than says
+no, a `GSD_CONTRIB_OVERRIDE` reason string lets the command through and is logged; it does not lift a
+real deny (one narrow, logged exception is named in the reference). Both are explained in [docs/enforcement-reference.md](docs/enforcement-reference.md#how-it-works).
 
-### Toggle-Off Genuinely Removes the Enforcement
+## Using it
 
-This is honest by design: **toggling `off` (or `remove`) GENUINELY removes the
-enforcement** — the gates leave gsd-core's `settings.json` (the gates *are* the
-enforcement). It is never silent: `off` and `remove` both require a **non-empty
-`--reason "<why>"`** and append a logged, per-project-root accountability receipt
-at `<realpath(gsd-core)>/.gsd-contrib/override-receipts.log` — append-only JSONL of
-`{ ts, action, projectRoot, reason }`, the same log the `GSD_CONTRIB_OVERRIDE`
-escape valve uses. An empty reason is rejected before any mutation, and an
-un-writable receipt fails the operation (no un-logged disable).
+| Command | What it does |
+| --- | --- |
+| `/gsd-submit <finding>` | File a verified finding as an issue plus fix PR, through the gates |
+| `/gsd-review-sweep` | Maintainer triage and re-review of open issues and PRs |
+| `/gsd-triage-assist #N` | First-pass triage suggestion for one incoming issue |
+| `/gsd-release-preflight` | Run gsd-core's release checks without changing anything |
+| `/gsd-ruleset-drift` | Compare declared branch rules with the live ones (read-only by default) |
 
-The enforcement is **not** "unbypassable" *as a capability* — only the installed
-**personal PreToolUse hooks** are harness-wide and unbypassable **while installed**
-(see *What it does NOT do*). The capability is a deliberate, consent + ledger
-tracked, reversible install.
+New here? Read the [Overview](docs/guides/overview.md), then the
+[Contributor Guide](docs/guides/contributor-guide.md) (file a change) or the
+[Maintainer Guide](docs/guides/maintainer-guide.md) (triage and review).
 
-## Settings Scope
+## Where to go next
 
-The capability install/toggle target is gsd-core's **project**
-`.claude/settings.json` — **never** the global `~/.claude/settings.json`. The
-project scope keeps the enforcement hooks firing only inside the gsd-core
-repository, which is the cleanest blast radius.
-
-## Requirements
-
-- **Node.js 22+** (the test suite runs on `node --test`; CI covers 22 and 24).
-- **Claude Code** for the enforcement layer. `PreToolUse` hooks are a Claude Code
-  harness feature — on other runtimes (Codex, OpenCode, …) both skills run
-  **advisory-only** and the gates do not block. This is stated in each skill and is
-  not a degradation to work around.
-- A local **`open-gsd/gsd-core`** checkout. The gates resolve and invoke that
-  repo's LIVE scripts rather than vendoring copies of its policy, so they need it
-  present (see *What It Uses*).
-- **`gh`** authenticated, for the issue/PR gates and the maintainer assists.
-
-**Optional.** **MemPalace** — a separate third-party cross-session memory tool, providing the
-`mempalace` CLI (verified against 3.6.0) — powers the advisory recall/capture steps (contribution
-P0c/P7, sweep 1b/10). It is **not required** — those
-steps are advisory, nothing downstream depends on them, and if the `mempalace` CLI is absent the
-correct behaviour is to skip the step and carry on, exactly as when a concurrent `mine` holds the
-palace lock. No gate consults it and no test requires it.
-
-## Stability
-
-The repo is public for reference and reuse, so it is worth saying plainly what you may build on:
-
-| Surface | Stability |
-|---|---|
-| The **capability install contract** — `capability install <git-or-npm-source> --scope project --shared-file …` | Stable. Versioned and tagged; the npm channel is integrity-pinned. |
-| **`bin/contrib-capability.cjs`** verbs (`install`/`on`/`off`/`status`/`remove`) and the `--reason` requirement | Stable. |
-| The **override receipt contract** — `GSD_CONTRIB_OVERRIDE` as a reason string, append-only JSONL | Stable. |
-| **Internal step IDs** (`P0`…`P7`, sweep phase numbers), **hook counts**, and **`bin/` script names** | **Not stable — treat as internal.** They renumber whenever a step is added; `P0–P6` became `P0–P7` on 2026-07-31. Don't script against them. |
-| **`hooks/lib/*`** internals | Not stable. |
-
-Nothing here carries a deprecation window — see the scope note at the top.
+- [Guides](docs/guides/): overview, contributor and maintainer walkthroughs.
+- [Enforcement reference](docs/enforcement-reference.md): the gate table, how the checks work, the
+  limits in full.
+- [Install and layout](docs/install-and-layout.md): directory layout, both install routes, settings scope.
+- [Requirements and stability](docs/requirements-and-stability.md): what you can build on and what may change.
+- [Commands](docs/commands-reference.md) and [skills](docs/skills-reference.md) reference.
+- [Decision records](docs/adr/) and [design foundations](docs/foundations.md).
 
 ## Contributing
 
-This is a personal toolkit with no support commitment, but issues and PRs are
-welcome — especially corrections. If you spot a claim in this README or in
-[`docs/`](docs/) that the code does not actually do, that is the most valuable
-thing you can report: the project's stated core value is honesty about what is
-enforced versus what is advisory, so an overselling claim is a real defect.
-
-Note that several doc claims are **test-gated**. `docs-hook-counts.test.cjs`
-derives the wired hook set from `settings.snippet.json` and asserts the counts
-appearing in this README, `docs/guides/overview.md`, and the published-capability
-README — so a hook added without a doc update fails CI by design. Run the suite
-with `node --test` before opening a PR.
+Issues and PRs are welcome, especially corrections. If this README or anything in [docs/](docs/)
+claims something the code does not do, that is the most useful thing you can report. Several doc
+claims are checked by tests (see [requirements-and-stability](docs/requirements-and-stability.md#docs-that-tests-check)),
+so run `node --test` before opening a PR.
 
 ## License
 
-[MIT](LICENSE) — the same license as `open-gsd/gsd-core`, so anything here can
-graduate upstream without a compatibility question.
-
-This project is not affiliated with or endorsed by the `open-gsd/gsd-core`
-maintainers; it is an independent contributor-side toolkit built against that
-repository's public conventions.
+[MIT](LICENSE), the same license as `open-gsd/gsd-core`. This project is not affiliated with or
+endorsed by the `open-gsd/gsd-core` maintainers; it is an independent contributor-side toolkit built
+against that repository's public conventions.
