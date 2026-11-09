@@ -310,6 +310,10 @@ What "tested" *means* depends on the kind of change. Match the row for your cont
 
 All three sit **on top of** the RED-before-GREEN gate and `npm run lint:ci` — the per-type bar says *what to test*, the gate says *prove it ran red first / prove lint is green*.
 
+**Two more test-authoring rules from upstream `CONTRIBUTING.md`** (added 2026-11-08/09; read the live text before relying on this summary):
+- **Timeout constants state their evidence (#4689).** Every new or changed timeout constant states the worst observed duration, the platform it came from, and a margin of at least 2x over it. A constant exported from `tests/helpers/timeouts.cjs` also needs a matching `TIMEOUT_EVIDENCE` entry, checked by `tests/timeout-evidence.test.cjs`. `TESTING-STANDARDS.md` has the shape and the exempt kinds.
+- **A spawned child's env comes from the isolation helper (#4635, #6033).** Build it with `isolatedEnv({ home })` from `tests/helpers/isolated-env.cjs`, never a hand-written `{ ...process.env, HOME: x }` or a filtered `process.env.PATH`. Pass `override` to keep a variable the helper strips.
+
 ## Worktree setup (per fix; fresh worktrees have no deps, and bin/lib is gitignored)
 
 ```bash
@@ -440,6 +444,8 @@ printf '%s\n' '<the exact PR title>' > "$B/title.txt"
 ```
 
 **PR title convention (ENFORCED at open time — `pr-title-validator.yml`, `WARN_ONLY:false`):** the title MUST be `<type>(#<issue#>): <imperative>` — the linked issue ref lives **inside the scope**, not the subject. The live matcher is `scripts/release-notes/conventional-title.cjs` (`evaluatePrTitle`): a leading tag (`[security] …`) fails `bad-prefix`; a scope without `#<n>` (e.g. `fix(core): …`) fails `missing-issue-ref`. Valid: `fix(#1542): roadmap rollback`, `feat(#39)!: drop legacy flag`, `enhance(#1549): add PR-title validator`. You MAY add an area after the ref: `fix(#1542, core): …`. (Issue titles are NOT title-gated — the `<type>(<area>)` form above is fine for `gh issue create`; only PR titles are checked, because the changelog is built from them.)
+
+**Commit subjects on a PR branch, merge commits included (ENF-16):** the subject needs a recognized type, so `merge: next into ...` is denied. Name a merge of `next` `chore(#<issue#>): merge next ...`.
 
 ```bash
 gh pr create --repo open-gsd/gsd-core --base next --head fix/<issue#>-<slug> \

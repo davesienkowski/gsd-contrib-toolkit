@@ -1743,6 +1743,55 @@ test('owj C4: a reviews reply that is not an array of pages makes reviewed-or-ma
   assert.match(out.reviewed.error, /reviews reply was not an array of pages/);
 });
 
+const redRequired = { name: 'Required tests', bucket: 'fail', workflow: 'Tests', link: 'https://github.com/o/r/actions/runs/1/job/77' };
+const preflightAnnotation = (result) => `PR mergeability preflight did not pass (${result}) — resolve the merge conflict and push again; no test lane runs until then`;
+const annotationsGh = (messages) => (args) => {
+  assert.match(args[args.length - 1], /check-runs\/77\/annotations/);
+  return [messages.map((message) => ({ message }))];
+};
+
+for (const result of ['abandoned', 'cancelled']) {
+  test(`preflight: a Required tests red from a ${result} preflight is CI infrastructure, not a conflict`, () => {
+    const verdict = prStatus.preflightVerdict('o/r', [redRequired], { gh: annotationsGh(['unrelated', preflightAnnotation(result)]) });
+    assert.deepEqual(verdict, { status: 'infrastructure', result });
+    const [line] = prStatus.policyLines({ preflight: verdict });
+    assert.match(line, new RegExp(`^ {2}preflight: ${result}: .*CI infrastructure, not a merge conflict`));
+  });
+}
+
+test('preflight: a preflight that reports failure is the real conflict', () => {
+  const verdict = prStatus.preflightVerdict('o/r', [redRequired], { gh: annotationsGh([preflightAnnotation('failure')]) });
+  assert.deepEqual(verdict, { status: 'conflict', result: 'failure' });
+  assert.match(prStatus.policyLines({ preflight: verdict })[0], /^ {2}preflight: failure: .*conflicts with its base/);
+});
+
+test('preflight: a Required tests red with no preflight annotation says nothing', () => {
+  assert.equal(prStatus.preflightVerdict('o/r', [redRequired], { gh: annotationsGh(['test lane failed']) }), null);
+});
+
+test('preflight: nothing is read when Required tests is not red', () => {
+  const gh = () => { throw new Error('must not read'); };
+  assert.equal(prStatus.preflightVerdict('o/r', [{ ...redRequired, bucket: 'pass' }], { gh }), null);
+});
+
+test('preflight: a failed annotations read or a missing job link is unknown, never a guess', () => {
+  const gh = () => { throw new Error('HTTP 502'); };
+  assert.deepEqual(prStatus.preflightVerdict('o/r', [redRequired], { gh }), { status: 'unknown', error: 'HTTP 502' });
+  const noLink = prStatus.preflightVerdict('o/r', [{ ...redRequired, link: '' }], { gh });
+  assert.equal(noLink.status, 'unknown');
+  assert.match(prStatus.policyLines({ preflight: noLink })[0], /^ {2}preflight: unknown \(/);
+});
+
+test('preflight: fetchPolicies carries the verdict for a red Required tests', () => {
+  const pr = { checks: [redRequired], view: { number: 1, baseRefName: 'next', labels: [] } };
+  const gh = (args) => {
+    if (/check-runs\/77\/annotations/.test(args[args.length - 1])) return [[{ message: preflightAnnotation('abandoned') }]];
+    throw new Error('unexpected read');
+  };
+  const out = prStatus.fetchPolicies('o/r', pr, { body: false }, { gh, policies: fakePolicies() });
+  assert.deepEqual(out.preflight, { status: 'infrastructure', result: 'abandoned' });
+});
+
 test('owj C3: a relative GSD_CORE_ROOT is ignored (it would resolve against the cwd)', (t) => {
   const prev = process.env.GSD_CORE_ROOT;
   const r = (() => {
