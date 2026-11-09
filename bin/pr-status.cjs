@@ -1703,9 +1703,10 @@ function fetchPolicies(repo, pr, opts, deps = {}, cache = newPolicyCache()) {
   const selfRed = part.groups.advisory.length > 0;
   const wantSelf = present(CHECK_SELF_TEST) && Boolean(opts && opts.body);
   if (!wantBase && !wantReviewed && !wantSelf && !selfRed) return null;
-  const out = { source: null, base: null, reviewed: null, selfTest: null };
+  const out = { source: null, base: null, reviewed: null, selfTest: null, preflight: null };
   if (selfRed && !wantSelf) out.selfTest = { status: 'red', reason: null, needsBody: true };
   if (!wantBase && !wantReviewed && !wantSelf) return out;
+  if (part.requiredRed) out.preflight = preflightVerdict(repo, checks, deps);
   try {
     const src = loadPolicySources(deps, cache);
     out.source = src.ok ? { status: 'live', root: src.root, head: src.head } : { status: 'unknown', error: src.error };
@@ -1716,6 +1717,35 @@ function fetchPolicies(repo, pr, opts, deps = {}, cache = newPolicyCache()) {
     out.source = out.source || { status: 'unknown', error: firstErrorLine(err) };
   }
   return out;
+}
+
+/**
+ * Why a red Required tests ran no test lane, read from its check-run annotations. gsd-core's test.yml prints "resolve the
+ * merge conflict" for every preflight result but success, while the preflight itself fails open on everything except
+ * `mergeable: false`, so a conflict can only read `failure`, but so can the job's checkout step, so `failure` is never
+ * reported as a conflict by itself; a job GitHub abandoned in an outage reads `abandoned`. The sentence
+ * matched here mirrors test.yml, a drift risk of the kind CTK-ADR-0014 names: if it changes, this returns null (no line).
+ *
+ * @returns {{status: 'infrastructure'|'failed', result: string}|{status: 'unknown', error: string}|null} null when
+ *   Required tests is not red or the red did not come from the preflight.
+ */
+function preflightVerdict(repo, checks, deps = {}) {
+  const gh = deps.gh || defaultGh;
+  const required = (Array.isArray(checks) ? checks : []).find((c) => c && c.name === CHECK_REQUIRED && c.bucket === 'fail');
+  if (!required) return null;
+  const job = /\/job\/(\d+)/.exec(String(required.link || ''));
+  if (!job) return { status: 'unknown', error: 'Required tests has no job link' };
+  let annotations;
+  try {
+    annotations = pagesToArray(gh(['api', '--paginate', '--slurp', `repos/${repo}/check-runs/${job[1]}/annotations?per_page=100`]), 'check-run annotations');
+  } catch (err) {
+    return { status: 'unknown', error: firstErrorLine(err) };
+  }
+  for (const a of annotations) {
+    const m = /PR mergeability preflight did not pass \(([a-z_]+)\)/.exec(String((a && a.message) || ''));
+    if (m) return { status: m[1] === 'failure' ? 'failed' : 'infrastructure', result: m[1] };
+  }
+  return null;
 }
 
 /** What the ready line says about an advisory-red check: its policy reason, or why there is none. */
@@ -1785,6 +1815,12 @@ function tildeHome(p) {
   return home && (s === home || s.startsWith(home + path.sep)) ? '~' + s.slice(home.length) : s;
 }
 
+function preflightLine(f) {
+  if (f.status === 'unknown') return `  preflight: unknown (${clean(f.error) || 'unknown error'})`;
+  if (f.status === 'failed') return `  preflight: ${clean(f.result)}: the mergeability preflight job failed, so no test lane ran; a merge conflict if the merge line above says so, otherwise its checkout or script failed`;
+  return `  preflight: ${clean(f.result)}: the mergeability preflight gave no verdict, so no test lane ran; CI infrastructure, not a merge conflict or this PR's code; re-run the workflow runs once Actions is healthy`;
+}
+
 function policyLines(p) {
   const lines = [];
   if (!p) return lines;
@@ -1795,6 +1831,7 @@ function policyLines(p) {
         : `  policies: unknown (${clean(p.source.error) || 'unknown error'})`
     );
   }
+  if (p.preflight) lines.push(preflightLine(p.preflight));
   if (p.base) lines.push(baseLine(p.base));
   if (p.reviewed) lines.push(reviewedLine(p.reviewed));
   if (p.selfTest) lines.push(selfTestLine(p.selfTest));
@@ -1918,6 +1955,7 @@ module.exports = {
   parseChecklist,
   partitionChecks,
   policyLines,
+  preflightVerdict,
   runCli,
   selfTestBinding,
   selfTestBlock,
