@@ -1759,10 +1759,13 @@ for (const result of ['abandoned', 'cancelled']) {
   });
 }
 
-test('preflight: a preflight that reports failure is the real conflict', () => {
+test('preflight: a failure result is a failed job, never stated as a conflict by itself', () => {
   const verdict = prStatus.preflightVerdict('o/r', [redRequired], { gh: annotationsGh([preflightAnnotation('failure')]) });
-  assert.deepEqual(verdict, { status: 'conflict', result: 'failure' });
-  assert.match(prStatus.policyLines({ preflight: verdict })[0], /^ {2}preflight: failure: .*conflicts with its base/);
+  assert.deepEqual(verdict, { status: 'failed', result: 'failure' });
+  const [line] = prStatus.policyLines({ preflight: verdict });
+  assert.match(line, /^ {2}preflight: failure: the mergeability preflight job failed/);
+  assert.doesNotMatch(line, /CI infrastructure/);
+  assert.doesNotMatch(line, /the PR conflicts/);
 });
 
 test('preflight: a Required tests red with no preflight annotation says nothing', () => {

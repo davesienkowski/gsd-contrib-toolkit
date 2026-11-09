@@ -1722,10 +1722,11 @@ function fetchPolicies(repo, pr, opts, deps = {}, cache = newPolicyCache()) {
 /**
  * Why a red Required tests ran no test lane, read from its check-run annotations. gsd-core's test.yml prints "resolve the
  * merge conflict" for every preflight result but success, while the preflight itself fails open on everything except
- * `mergeable: false`, so only `failure` is a conflict; a job GitHub abandoned in an outage reads `abandoned`. The sentence
+ * `mergeable: false`, so a conflict can only read `failure`, but so can the job's checkout step, so `failure` is never
+ * reported as a conflict by itself; a job GitHub abandoned in an outage reads `abandoned`. The sentence
  * matched here mirrors test.yml, a drift risk of the kind CTK-ADR-0014 names: if it changes, this returns null (no line).
  *
- * @returns {{status: 'infrastructure'|'conflict', result: string}|{status: 'unknown', error: string}|null} null when
+ * @returns {{status: 'infrastructure'|'failed', result: string}|{status: 'unknown', error: string}|null} null when
  *   Required tests is not red or the red did not come from the preflight.
  */
 function preflightVerdict(repo, checks, deps = {}) {
@@ -1742,7 +1743,7 @@ function preflightVerdict(repo, checks, deps = {}) {
   }
   for (const a of annotations) {
     const m = /PR mergeability preflight did not pass \(([a-z_]+)\)/.exec(String((a && a.message) || ''));
-    if (m) return { status: m[1] === 'failure' ? 'conflict' : 'infrastructure', result: m[1] };
+    if (m) return { status: m[1] === 'failure' ? 'failed' : 'infrastructure', result: m[1] };
   }
   return null;
 }
@@ -1816,7 +1817,7 @@ function tildeHome(p) {
 
 function preflightLine(f) {
   if (f.status === 'unknown') return `  preflight: unknown (${clean(f.error) || 'unknown error'})`;
-  if (f.status === 'conflict') return `  preflight: ${clean(f.result)}: the PR conflicts with its base, so no test lane ran`;
+  if (f.status === 'failed') return `  preflight: ${clean(f.result)}: the mergeability preflight job failed, so no test lane ran; a merge conflict if the merge line above says so, otherwise its checkout or script failed`;
   return `  preflight: ${clean(f.result)}: the mergeability preflight gave no verdict, so no test lane ran; CI infrastructure, not a merge conflict or this PR's code; re-run the workflow runs once Actions is healthy`;
 }
 
