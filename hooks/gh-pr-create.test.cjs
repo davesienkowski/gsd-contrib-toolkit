@@ -1082,6 +1082,46 @@ test('261109-suo gh-pr-create: a check-runs page over 1 MiB read by the default 
   });
 });
 
+// Review WR-01 (fix round 2): the fail-closed direction at the default check-runs reader, which
+// had only the allow row above. Row (a) fails when that reader's opts lose the bound (with
+// `maxBuffer: Infinity` the 64 MiB plus one byte of NULs is read and the deny no longer names
+// ENOBUFS); row (b) fails when the catch after the check-runs read returns instead of throwing.
+// Both assert the catch's own text, so a deny from another ENF-18 branch does not pass them.
+test('261109-suo gh-pr-create: a check-runs page of the bound plus one byte read by the default reader still DENIES naming ENOBUFS', (t) => {
+  withStubGh(t, 'exec head -c 67108865 /dev/zero', (tmpRoot) => {
+    const d = runPrGate(
+      input(SUO_SAME_REPO_CMD),
+      deps({
+        worktreeRoot: tmpRoot,
+        headSha: 'abc1234',
+        readCheckRuns: undefined, // runPrGate installs defaultReadCheckRuns
+        listPrsForHead: () => EXISTING_PR,
+      })
+    );
+    assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+    assert.match(d.permissionDecisionReason, /ENF-18/);
+    assert.match(d.permissionDecisionReason, /ENOBUFS/);
+    assert.match(d.permissionDecisionReason, /could not read the LIVE check-runs/);
+  });
+});
+
+test('261109-suo gh-pr-create: a check-runs read whose gh exits 1 still DENIES through the default reader (ENF-18)', (t) => {
+  withStubGh(t, 'exit 1', (tmpRoot) => {
+    const d = runPrGate(
+      input(SUO_SAME_REPO_CMD),
+      deps({
+        worktreeRoot: tmpRoot,
+        headSha: 'abc1234',
+        readCheckRuns: undefined, // runPrGate installs defaultReadCheckRuns
+        listPrsForHead: () => EXISTING_PR,
+      })
+    );
+    assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+    assert.match(d.permissionDecisionReason, /ENF-18/);
+    assert.match(d.permissionDecisionReason, /could not read the LIVE check-runs/);
+  });
+});
+
 // ── CHD-03 Task 1: route-scoped --head/-H resolver (resolveHead) ────────────────
 // `-H` is ALSO gh's HTTP-header flag (the hook's own `gh api -H 'Accept: …'`, and the
 // user's gh-api/curl routes), so the head lookup is scoped to the NATIVE `gh pr create`
