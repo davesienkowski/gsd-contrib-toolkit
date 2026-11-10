@@ -14,7 +14,8 @@ require('./lib/test-isolate.cjs').isolateToolLog(); // never the real ~/.gsd-con
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { runDedupeGate } = require('./issue-dedupe.cjs');
+const { runDedupeGate, fetchOpenIssuesLive } = require('./issue-dedupe.cjs');
+const { FailClosed } = require('./lib/failclosed.cjs');
 
 // The REAL live scorer — we never reimplement the similarity logic; we call it.
 // PORTABILITY (2026-07-30): these LIVE requires were hardcoded to an absolute home path (`~/repos/gsd-core/...`),
@@ -24,9 +25,95 @@ const { runDedupeGate } = require('./issue-dedupe.cjs');
 // Skipping is the honest option: fabricating a stand-in for a LIVE gsd-core script would make this
 // suite assert against a fiction (the same reason fault-injection.test.cjs refuses to fake a
 // sentinel layout). CI's `compat` job sets GSD_CORE_ROOT so these RUN for real there.
+const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { resolveGsdCoreRoot } = require('./lib/resolve.cjs');
+
+// -- quick 261109-suo: the maxBuffer seam of fetchOpenIssuesLive ------------------------------
+// These rows need no scorer and no gsd-core checkout, so they sit ABOVE the LIVE early return
+// below and run wherever `node --test` runs. They drive the REAL fetchOpenIssuesLive through a
+// stub `gh` placed first on the process's own PATH (the function spawns with env: process.env).
+// node:test runs a file's rows in sequence, so the temporary PATH cannot leak into another row.
+
+const ONE_MIB = 1024 * 1024;
+const SUO_BOUND = 64 * 1024 * 1024; // the bound the hooks name GH_MAX_BUFFER
+
+// Run fn with a `#!/bin/sh` stub gh first on PATH; returns fn's result. `script` is the shell
+// text, or a function of the mkdtemp dir returning it (so a row can park a payload file there
+// first). The mkdtemp dir is removed by t.after; the previous PATH is restored in finally.
+function withStubGh(t, script, fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), '261109-suo-dedupe-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const bin = path.join(dir, 'bin');
+  fs.mkdirSync(bin);
+  const text = typeof script === 'function' ? script(dir) : script;
+  fs.writeFileSync(path.join(bin, 'gh'), '#!/bin/sh\n' + text + '\n', { mode: 0o755 });
+  const prevPath = process.env.PATH;
+  process.env.PATH = bin + path.delimiter + (prevPath || '');
+  try {
+    return fn(dir);
+  } finally {
+    process.env.PATH = prevPath;
+  }
+}
+
+// An open-issue listing whose BYTE length is over 1 MiB while its STRING length is under it:
+// maxBuffer counts bytes, so the bodies are 3-byte code points (U+20AC), which an all-ASCII
+// payload could not tell apart from characters.
+function suoBigListing() {
+  const body = '\u20ac'.repeat(5000);
+  const items = [];
+  for (let i = 0; i < 80; i++) {
+    items.push({ number: 1000 + i, title: 'open issue number ' + (1000 + i), body });
+  }
+  return { items, text: JSON.stringify(items) };
+}
+
+function suoAssertPayloadShape(t, text) {
+  const bytes = Buffer.byteLength(text, 'utf8');
+  t.diagnostic('261109-suo payload: ' + text.length + ' characters, ' + bytes + ' bytes');
+  assert.ok(bytes > ONE_MIB, 'payload bytes over 1 MiB: ' + bytes);
+  assert.ok(bytes < SUO_BOUND, 'payload bytes under the 64 MiB bound: ' + bytes);
+  assert.ok(text.length < ONE_MIB, 'payload string length under 1 MiB: ' + text.length);
+  return bytes;
+}
+
+const SUO_SEG = { flags: {}, shortFlags: {} };
+
+test('261109-suo issue-dedupe: a listing over 1 MiB (3-byte code points) is returned intact, in gh order', (t) => {
+  const { items, text } = suoBigListing();
+  suoAssertPayloadShape(t, text);
+  const catPayload = (dir) => {
+    const payload = path.join(dir, 'payload.json');
+    fs.writeFileSync(payload, text);
+    return 'exec cat "' + payload + '"';
+  };
+  withStubGh(t, catPayload, () => {
+    const out = fetchOpenIssuesLive(SUO_SEG, 'native');
+    assert.strictEqual(out.length, items.length);
+    assert.deepStrictEqual(out.map((c) => c.number), items.map((c) => c.number));
+    for (let i = 0; i < items.length; i++) {
+      assert.strictEqual(out[i].title, items[i].title);
+      assert.strictEqual(out[i].body, items[i].body);
+    }
+  });
+});
+
+test('261109-suo issue-dedupe: a listing of the bound plus one byte still throws FailClosed naming ENOBUFS', (t) => {
+  withStubGh(t, 'exec head -c 67108865 /dev/zero', () => {
+    assert.throws(
+      () => fetchOpenIssuesLive(SUO_SEG, 'native'),
+      (err) => err instanceof FailClosed && /ENOBUFS/.test(err.message)
+    );
+  });
+});
+
+test('261109-suo issue-dedupe: a gh that exits 1 still throws FailClosed', (t) => {
+  withStubGh(t, 'exit 1', () => {
+    assert.throws(() => fetchOpenIssuesLive(SUO_SEG, 'native'), (err) => err instanceof FailClosed);
+  });
+});
 
 function liveGsdCoreRootOrNull() {
   const candidates = [
