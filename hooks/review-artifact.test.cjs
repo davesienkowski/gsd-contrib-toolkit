@@ -2989,3 +2989,91 @@ for (const cmd of ['bash -c "gh pr review 42 -a"', 'echo x | xargs gh pr review 
 test('261006-jsm CR-02 follow-up gate: `gh api -if query=<approve> graphql` with only Bash rows -> DENY R8a-memtrace', () => {
   assertJsmR8aDeny("gh api -if query='" + JSM_GQL_SUBMIT + "' graphql");
 });
+
+// -- quick 261109-suo: the maxBuffer seam of ghLive ---------------------------------------------
+// These rows drive the exported ghLive through a stub `gh` placed first on the process's own
+// PATH (ghLive spawns with env: process.env). node:test runs a file's rows in sequence, so the
+// temporary PATH cannot leak into another row.
+
+const { FailClosed } = require('./lib/failclosed.cjs');
+const SUO_ONE_MIB = 1024 * 1024;
+const SUO_BOUND = 64 * 1024 * 1024; // the bound the hooks name GH_MAX_BUFFER
+
+// Run fn with a `#!/bin/sh` stub gh first on PATH; returns fn's result. `script` is the shell
+// text, or a function of the mkdtemp dir returning it (so a row can park a payload file there
+// first). The mkdtemp dir is removed by t.after; the previous PATH is restored in finally.
+function withStubGh(t, script, fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), '261109-suo-revart-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const bin = path.join(dir, 'bin');
+  fs.mkdirSync(bin);
+  const text = typeof script === 'function' ? script(dir) : script;
+  fs.writeFileSync(path.join(bin, 'gh'), '#!/bin/sh\n' + text + '\n', { mode: 0o755 });
+  const prevPath = process.env.PATH;
+  process.env.PATH = bin + path.delimiter + (prevPath || '');
+  try {
+    return fn(dir);
+  } finally {
+    process.env.PATH = prevPath;
+  }
+}
+
+// A reviews-shaped listing whose BYTE length is over 1 MiB while its STRING length is under
+// it: maxBuffer counts bytes, so the bodies are 3-byte code points (U+20AC), which an all-ASCII
+// payload could not tell apart from characters.
+function suoBigReviewsText() {
+  const body = '\u20ac'.repeat(5000);
+  const items = [];
+  for (let i = 0; i < 80; i++) {
+    items.push({ commit_id: 'abc1234', state: 'COMMENTED', body });
+  }
+  return JSON.stringify(items);
+}
+
+function suoAssertPayloadShape(t, text) {
+  const bytes = Buffer.byteLength(text, 'utf8');
+  t.diagnostic('261109-suo payload: ' + text.length + ' characters, ' + bytes + ' bytes');
+  assert.ok(bytes > SUO_ONE_MIB, 'payload bytes over 1 MiB: ' + bytes);
+  assert.ok(bytes < SUO_BOUND, 'payload bytes under the 64 MiB bound: ' + bytes);
+  assert.ok(text.length < SUO_ONE_MIB, 'payload string length under 1 MiB: ' + text.length);
+  return bytes;
+}
+
+const SUO_REVIEWS_ARGS = ['api', '--paginate', 'repos/o/r/pulls/1/reviews'];
+
+test('261109-suo ghLive: a payload over 1 MiB (3-byte code points) is returned as the same text', (t) => {
+  const text = suoBigReviewsText();
+  const bytes = suoAssertPayloadShape(t, text);
+  const catPayload = (dir) => {
+    const payload = path.join(dir, 'payload.json');
+    fs.writeFileSync(payload, text);
+    return 'exec cat "' + payload + '"';
+  };
+  withStubGh(t, catPayload, (dir) => {
+    const out = reviewArtifact.ghLive(dir, SUO_REVIEWS_ARGS);
+    assert.strictEqual(typeof out, 'string');
+    assert.strictEqual(Buffer.byteLength(out, 'utf8'), bytes);
+    assert.strictEqual(out, text);
+  });
+});
+
+test('261109-suo ghLive: a payload of the bound plus one byte still throws FailClosed naming ENOBUFS', (t) => {
+  withStubGh(t, 'exec head -c 67108865 /dev/zero', (dir) => {
+    assert.throws(
+      () => reviewArtifact.ghLive(dir, SUO_REVIEWS_ARGS),
+      (err) => err instanceof FailClosed && /ENOBUFS/.test(err.message)
+    );
+  });
+});
+
+test('261109-suo ghLive: a gh that exits 1 still throws FailClosed', (t) => {
+  withStubGh(t, 'exit 1', (dir) => {
+    assert.throws(() => reviewArtifact.ghLive(dir, SUO_REVIEWS_ARGS), (err) => err instanceof FailClosed);
+  });
+});
+
+test('261109-suo ghLive: a gh that prints nothing and exits 0 returns the empty string as-is', (t) => {
+  withStubGh(t, 'exit 0', (dir) => {
+    assert.strictEqual(reviewArtifact.ghLive(dir, SUO_REVIEWS_ARGS), '');
+  });
+});

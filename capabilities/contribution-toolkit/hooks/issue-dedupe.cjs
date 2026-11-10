@@ -62,6 +62,19 @@ const { resolveRootForCommand, requireLiveScript } = require('./lib/resolve.cjs'
 
 // FailClosed/safeCommand: shared IN-03 helpers from failclosed.cjs.
 
+// The bound on the child's captured output (stdout and stderr together, which is what Node's
+// maxBuffer counts for spawnSync) for the `gh issue list` read below (quick 261109-suo).
+// MEASURED (read-only, 2026-11-09): the open-issue listing of open-gsd/gsd-core at --limit 200
+// is 1,075,243 bytes for 200 of 287 open issues, about 5.4 KB per issue, which is over Node's
+// 1,048,576-byte default, so every `gh issue create` was denied with ENOBUFS. Raw text at 4
+// bytes per character is at most 200 x 262,144 = 52,428,800 body bytes (65,536-character body
+// cap), under 64 MiB (16 MiB would not cover it; 64 MiB matches bin/issue-status.cjs). Not a
+// proven ceiling: a JSON \uXXXX escape costs 6 bytes per character (200 x 393,216 = 78,643,200
+// body bytes, over the bound), and it is unverified whether such characters reach gh's JSON
+// output. Above the bound (exactly 67,108,864 bytes) the read throws FailClosed and the gate
+// denies (HARD-01) unless the logged GSD_CONTRIB_OVERRIDE valve is set.
+const GH_MAX_BUFFER = 64 * 1024 * 1024;
+
 
 /**
  * Walk a segment's STRUCTURED token list pulling `-f key=value` / `-F key=value` /
@@ -467,9 +480,10 @@ function gate(stdinString, deps) {
  */
 function fetchOpenIssuesLive(seg, route) {
   const { execFileSync } = require('node:child_process');
-  // `body` rides the SAME call the gate already made — no extra round trip, and therefore no
-  // new failure mode for the fetch. Measured marginal cost +161 ms (1.161 s → 1.322 s over
-  // 117 open issues / 620 KB). It feeds the citation advisory only.
+  // `body` rides the SAME call the gate already made: no extra round trip. It feeds the
+  // citation advisory only, and it is what made the listing outgrow Node's 1,048,576-byte
+  // default maxBuffer: measured 2026-11-09 on open-gsd/gsd-core, 1,075,243 bytes for 200 of
+  // 287 open issues at --limit 200 (about 5.4 KB per issue); see GH_MAX_BUFFER.
   const args = ['issue', 'list', '--state', 'open', '--json', 'number,title,body', '--limit', '200'];
 
   // Honor an explicit target repo (native --repo/-R; gh-api/curl carry it in the path, which
@@ -488,6 +502,7 @@ function fetchOpenIssuesLive(seg, route) {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       env: process.env,
+      maxBuffer: GH_MAX_BUFFER,
     });
   } catch (err) {
     throw new FailClosed(

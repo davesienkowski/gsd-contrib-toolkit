@@ -938,6 +938,190 @@ test('CHD-03: `--head owner:branch` with a red check-run in the HEAD owner repo 
   assert.deepStrictEqual(ciTarget, { owner: 'dave', repo: 'gsd-core' });
 });
 
+// -- quick 261109-suo: the maxBuffer seams of resolveCrossRepoHeadSha and defaultReadCheckRuns --
+// These rows drive the exported runPrGate with the DEFAULT readers un-injected, through a stub
+// `gh` placed first on the process's own PATH (the two readers set no env, so execFileSync
+// inherits process.env). Three mechanics are load-bearing: (1) deps() builds with Object.assign,
+// which copies an own `undefined`, so `headSha: undefined` removes the default stub and the real
+// resolveCrossRepoHeadSha runs, and `readCheckRuns: undefined` lets runPrGate install
+// defaultReadCheckRuns; (2) worktreeRoot is a mkdtemp dir, because deps()'s default /tmp/wt does
+// not exist and a spawn with that cwd fails with ENOENT instead of exercising the buffer; (3) the
+// command carries `-R open-gsd/gsd-core` and listPrsForHead returns EXISTING_PR, so the slug comes
+// from the target (no `git remote get-url` in the mkdtemp root) and the check-run gate engages.
+// The reader's FailClosed becomes a deny whose reason is err.message (runGateInner), so the rows
+// assert on permissionDecisionReason, never on a thrown error.
+
+const SUO_ONE_MIB = 1024 * 1024;
+const SUO_BOUND = 64 * 1024 * 1024; // the bound the hooks name GH_MAX_BUFFER
+const SUO_HEAD_SHA = 'f1e2d3c4b5a6978877665544332211ffeeddccbb';
+
+// Run fn with a `#!/bin/sh` stub gh first on PATH; returns fn's result. `script` is the shell
+// text, or a function of the mkdtemp dir returning it (so a row can park a payload file there
+// first). The mkdtemp dir is removed by t.after; the previous PATH is restored in finally.
+function withStubGh(t, script, fn) {
+  const fs = require('node:fs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), '261109-suo-prcreate-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const bin = path.join(dir, 'bin');
+  fs.mkdirSync(bin);
+  const text = typeof script === 'function' ? script(dir) : script;
+  fs.writeFileSync(path.join(bin, 'gh'), '#!/bin/sh\n' + text + '\n', { mode: 0o755 });
+  const prevPath = process.env.PATH;
+  process.env.PATH = bin + path.delimiter + (prevPath || '');
+  try {
+    return fn(dir);
+  } finally {
+    process.env.PATH = prevPath;
+  }
+}
+
+// A stub script that cats a payload parked in the mkdtemp dir.
+function suoCatPayload(text) {
+  return (dir) => {
+    const fs = require('node:fs');
+    const payload = path.join(dir, 'payload.json');
+    fs.writeFileSync(payload, text);
+    return 'exec cat "' + payload + '"';
+  };
+}
+
+// Every over-1-MiB payload is built from 3-byte code points (U+20AC): maxBuffer counts bytes,
+// so each row asserts the BYTE length is over 1 MiB and under the bound while the STRING
+// length is under 1 MiB (an all-ASCII payload could not tell bytes from characters).
+function suoAssertPayloadShape(t, text) {
+  const bytes = Buffer.byteLength(text, 'utf8');
+  t.diagnostic('261109-suo payload: ' + text.length + ' characters, ' + bytes + ' bytes');
+  assert.ok(bytes > SUO_ONE_MIB, 'payload bytes over 1 MiB: ' + bytes);
+  assert.ok(bytes < SUO_BOUND, 'payload bytes under the 64 MiB bound: ' + bytes);
+  assert.ok(text.length < SUO_ONE_MIB, 'payload string length under 1 MiB: ' + text.length);
+}
+
+// A commit object as `gh api repos/<owner>/<repo>/commits/<branch>` returns it: files[].patch is
+// what made the measured live object (open-gsd/gsd-core 72c4e14) 1,504,111 bytes.
+function suoBigCommitObject() {
+  const patch = '\u20ac'.repeat(5000);
+  const files = [];
+  for (let i = 0; i < 80; i++) files.push({ filename: 'src/file-' + i + '.cts', patch });
+  return JSON.stringify({ sha: SUO_HEAD_SHA, files });
+}
+
+// A check-runs page bounded by count (30 runs), each output.text long: green, with Tests first.
+function suoBigCheckRunsPage() {
+  const text = '\u20ac'.repeat(14000);
+  const runs = [];
+  for (let i = 0; i < 30; i++) {
+    runs.push({
+      name: i === 0 ? 'Tests' : 'check-' + i,
+      status: 'completed',
+      conclusion: 'success',
+      output: { title: 'ok', summary: 'ok', text },
+    });
+  }
+  return JSON.stringify({ total_count: 30, check_runs: runs });
+}
+
+const SUO_CROSS_REPO_CMD = `gh pr create -R open-gsd/gsd-core --head dave:fix/3-y --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`;
+const SUO_SAME_REPO_CMD = `gh pr create -R open-gsd/gsd-core --base next --title "fix(#12): x" --body "${escapeNl(GOOD_PR_BODY)}"`;
+
+// deps for the cross-repo rows: headSha removed so the REAL resolver spawns gh; readCheckRuns
+// injected and recording the sha it receives.
+function suoCrossRepoDeps(tmpRoot, seen) {
+  return deps({
+    worktreeRoot: tmpRoot,
+    headSha: undefined,
+    listPrsForHead: () => EXISTING_PR,
+    readCheckRuns: (sha) => { seen.sha = sha; return ci(); },
+  });
+}
+
+test('261109-suo gh-pr-create: a cross-repo head whose commit object is over 1 MiB resolves and allows', (t) => {
+  const text = suoBigCommitObject();
+  suoAssertPayloadShape(t, text);
+  const seen = { sha: 'UNSET' };
+  withStubGh(t, suoCatPayload(text), (tmpRoot) => {
+    const d = runPrGate(input(SUO_CROSS_REPO_CMD), suoCrossRepoDeps(tmpRoot, seen));
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+    assert.strictEqual(seen.sha, SUO_HEAD_SHA);
+  });
+});
+
+test('261109-suo gh-pr-create: a cross-repo head commit object of the bound plus one byte still DENIES naming ENOBUFS', (t) => {
+  const seen = { sha: 'UNSET' };
+  withStubGh(t, 'exec head -c 67108865 /dev/zero', (tmpRoot) => {
+    const d = runPrGate(input(SUO_CROSS_REPO_CMD), suoCrossRepoDeps(tmpRoot, seen));
+    assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+    assert.match(d.permissionDecisionReason, /ENOBUFS/);
+    assert.strictEqual(seen.sha, 'UNSET');
+  });
+});
+
+test('261109-suo gh-pr-create: a cross-repo head whose gh exits 1 still DENIES (CHD-03)', (t) => {
+  const seen = { sha: 'UNSET' };
+  withStubGh(t, 'exit 1', (tmpRoot) => {
+    const d = runPrGate(input(SUO_CROSS_REPO_CMD), suoCrossRepoDeps(tmpRoot, seen));
+    assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+    assert.match(d.permissionDecisionReason, /CHD-03/);
+    assert.strictEqual(seen.sha, 'UNSET');
+  });
+});
+
+test('261109-suo gh-pr-create: a check-runs page over 1 MiB read by the default reader allows', (t) => {
+  const text = suoBigCheckRunsPage();
+  suoAssertPayloadShape(t, text);
+  withStubGh(t, suoCatPayload(text), (tmpRoot) => {
+    const d = runPrGate(
+      input(SUO_SAME_REPO_CMD),
+      deps({
+        worktreeRoot: tmpRoot,
+        headSha: 'abc1234',
+        readCheckRuns: undefined, // runPrGate installs defaultReadCheckRuns
+        listPrsForHead: () => EXISTING_PR,
+      })
+    );
+    assert.strictEqual(d.permissionDecision, 'allow', d.permissionDecisionReason);
+  });
+});
+
+// Review WR-01 (fix round 2): the fail-closed direction at the default check-runs reader, which
+// had only the allow row above. Row (a) fails when that reader's opts lose the bound (with
+// `maxBuffer: Infinity` the 64 MiB plus one byte of NULs is read and the deny no longer names
+// ENOBUFS); row (b) fails when the catch after the check-runs read returns instead of throwing.
+// Both assert the catch's own text, so a deny from another ENF-18 branch does not pass them.
+test('261109-suo gh-pr-create: a check-runs page of the bound plus one byte read by the default reader still DENIES naming ENOBUFS', (t) => {
+  withStubGh(t, 'exec head -c 67108865 /dev/zero', (tmpRoot) => {
+    const d = runPrGate(
+      input(SUO_SAME_REPO_CMD),
+      deps({
+        worktreeRoot: tmpRoot,
+        headSha: 'abc1234',
+        readCheckRuns: undefined, // runPrGate installs defaultReadCheckRuns
+        listPrsForHead: () => EXISTING_PR,
+      })
+    );
+    assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+    assert.match(d.permissionDecisionReason, /ENF-18/);
+    assert.match(d.permissionDecisionReason, /ENOBUFS/);
+    assert.match(d.permissionDecisionReason, /could not read the LIVE check-runs/);
+  });
+});
+
+test('261109-suo gh-pr-create: a check-runs read whose gh exits 1 still DENIES through the default reader (ENF-18)', (t) => {
+  withStubGh(t, 'exit 1', (tmpRoot) => {
+    const d = runPrGate(
+      input(SUO_SAME_REPO_CMD),
+      deps({
+        worktreeRoot: tmpRoot,
+        headSha: 'abc1234',
+        readCheckRuns: undefined, // runPrGate installs defaultReadCheckRuns
+        listPrsForHead: () => EXISTING_PR,
+      })
+    );
+    assert.strictEqual(d.permissionDecision, 'deny', d.permissionDecisionReason);
+    assert.match(d.permissionDecisionReason, /ENF-18/);
+    assert.match(d.permissionDecisionReason, /could not read the LIVE check-runs/);
+  });
+});
+
 // ── CHD-03 Task 1: route-scoped --head/-H resolver (resolveHead) ────────────────
 // `-H` is ALSO gh's HTTP-header flag (the hook's own `gh api -H 'Accept: …'`, and the
 // user's gh-api/curl routes), so the head lookup is scoped to the NATIVE `gh pr create`

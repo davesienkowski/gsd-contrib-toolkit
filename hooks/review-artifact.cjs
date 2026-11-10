@@ -130,6 +130,15 @@ const COMMENT_ACTIONS = Object.freeze(new Set(PR_COMMENT_EQUIVALENT_ACTIONS));
 /** Where a PR's review artifacts live, relative to the worktree root. `.gsd` is gitignored. */
 const ARTIFACT_DIR = '.gsd/contrib';
 
+/**
+ * The bound on the child's captured output (stdout and stderr together, which is what Node's
+ * maxBuffer counts for spawnSync) for every ghLive read (quick 261109-suo). The paginated
+ * posted-reviews listing carries full review bodies, the payload class bin/pr-status.cjs
+ * MAX_BUFFER bounds at the same 64 MiB; Node's 1,048,576-byte default was the bound before.
+ * A payload above it still throws, so the gate stays closed (HARD-01). Exact integer: 67,108,864.
+ */
+const GH_MAX_BUFFER = 64 * 1024 * 1024;
+
 /** Characters of the head oid used in the directory key. 12 is git's own abbrev comfort zone. */
 const OID_KEY_LENGTH = 12;
 
@@ -2074,6 +2083,7 @@ function ghLive(root, args) {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       env: process.env,
+      maxBuffer: GH_MAX_BUFFER,
     });
   } catch (err) {
     const tail = String((err && (err.stderr || err.message)) || 'gh failure').trim().slice(-400);
