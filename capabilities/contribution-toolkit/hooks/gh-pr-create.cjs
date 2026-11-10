@@ -62,6 +62,14 @@ const {
 // Toolkit-OWNED policies (replicated from gsd-core CI workflows — H-A). Documented as
 // ours; the deny reasons name them as the toolkit's own.
 const LINKED_ISSUE_RE = /\b(?:Fixes|Closes|Resolves)\s+#\d+\b/i;
+// The bound on the child's captured output (stdout and stderr together, which is what Node's
+// maxBuffer counts for spawnSync) for the two gh api reads that are not bounded by shape
+// (quick 261109-suo): the commit object a cross-repo head is resolved from carries
+// files[].patch (1,504,111 bytes measured read-only for open-gsd/gsd-core 72c4e14 on
+// 2026-11-10, over Node's 1,048,576-byte default), and a check-runs page is bounded by count
+// (30 runs, each output.text up to 65,535 characters), not by bytes. A payload above the bound
+// still throws, so the gate stays closed (HARD-01). Exact integer: 67,108,864.
+const GH_MAX_BUFFER = 64 * 1024 * 1024;
 // The branch-name policy is deliberately NOT defined here. It is ONE shared definition in
 // `lib/resolve.cjs` (`isConventionalBranch` / `UPSTREAM_BRANCH_PREFIXES`), mirrored from
 // upstream `branch-naming.yml`. A second local copy is what let this gate and
@@ -1192,7 +1200,7 @@ function resolveCrossRepoHeadSha(root, headRepo, headBranch) {
   if (typeof headBranch !== 'string' || !headBranch) {
     throw new FailClosed('CHD-03: no head branch to resolve the cross-repo head SHA — failing closed.');
   }
-  const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] };
+  const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: GH_MAX_BUFFER };
   if (root) opts.cwd = root;
   let raw;
   try {
@@ -1255,7 +1263,9 @@ function defaultReadCheckRuns(root, headSha, targetRepo) {
   if (typeof headSha !== 'string' || !headSha) {
     throw new FailClosed('ENF-18: no head SHA to read check-runs for — failing closed');
   }
-  const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] };
+  // This opts is also passed to the `git remote get-url origin` read below, where the option is
+  // inert (a few bytes of URL).
+  const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: GH_MAX_BUFFER };
   if (root) opts.cwd = root;
 
   // Resolve owner/repo. WR-01: when the command carries an EXPLICIT -R/GH_REPO target, read the
