@@ -282,7 +282,7 @@ function acquireLock(lock) {
           dead = k.code === 'ESRCH';
         }
       }
-      if (!dead) throw new UsageError(`lock ${lock} is held (pid ${held.pid} on ${held.host} since ${held.at}); if that session is gone run: node bin/pr-update.cjs unlock --repo R --pr N --reason <why>`);
+      if (!dead) throw new UsageError(`lock ${lock} is held (pid ${held.pid} on ${held.host} since ${held.at}); if that session is gone run: node ${__filename} unlock --repo R --pr N --reason <why>`);
       process.stderr.write(`stale lock (pid ${held.pid} is dead on this host) replaced: ${lock}\n`);
       fs.rmSync(lock, { force: true });
     }
@@ -691,7 +691,7 @@ function runBundle(o) {
       fs.mkdirSync(work, { recursive: true });
       fs.writeFileSync(path.join(work, `next-${step.id}.txt`), lines.join('\n') + '\n');
       for (const l of lines) process.stdout.write(`NEXT: ${l}\n`);
-      process.stdout.write(`run it as its own call, then re-run: node bin/pr-update.cjs run ... (step ${step.id}: ${step.name})\n`);
+      process.stdout.write(`run it as its own call, then re-run: node ${__filename} run ... (step ${step.id}: ${step.name})\n`);
       return 3;
     }
     process.stdout.write(`all ${STEPS.length} steps verified for ${o.repo}#${o.pr} at ${o.head}\n`);
