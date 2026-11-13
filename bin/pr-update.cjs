@@ -10,7 +10,7 @@
  *
  *   node bin/pr-update.cjs run --repo owner/name --pr N --head <sha> --branch <fork branch> --remote <git remote>
  *        --worktree <dir> --fork davesienkowski/gsd-core --report-inputs <json> --findings <md>
- *        (--ctx-tokens N | --transcript <session.jsonl>) [--budget N] [--ledger-dir D] [--policy-dir P | --core-dir C]
+ *        (--ctx-tokens N | --transcript <session.jsonl>) [--budget N] [--ledger-dir D] [--policy-dir P]
  *        [--supersede --reason <text>] [--run-id N]
  *   node bin/pr-update.cjs --pending [--ledger-dir D]       one "bundle pending: <repo>#N steps a-b" line per open bundle
  *   node bin/pr-update.cjs status --repo R --pr N [--ledger-dir D]
@@ -55,6 +55,7 @@ const { spawnSync } = require('node:child_process');
 const CTX_BUDGET_TOKENS = 600000; // policy value, tunable with --budget
 const EXPERIMENTS = 'davesienkowski/gsd-core-experiments';
 const UPSTREAM_URL = 'https://github.com/open-gsd/gsd-core.git';
+const FETCH_TIMEOUT_MS = 120000;
 const MAX_TRANSCRIPT_BYTES = 256 * 1024 * 1024;
 const SELFTEST_FORK = 'davesienkowski/gsd-core';
 const SELFTEST_BRANCH = 'selftest/run';
@@ -107,7 +108,9 @@ const ghApiAll = (p) => readJson('gh', ['api', '--paginate', '--slurp', p]).flat
 function ctxFromTranscript(file) {
   let text;
   try {
-    const size = fs.statSync(file).size;
+    const stat = fs.statSync(file);
+    if (!stat.isFile()) throw new UsageError(`transcript ${file} is not a regular file`);
+    const size = stat.size;
     if (size > MAX_TRANSCRIPT_BYTES) throw new UsageError(`transcript ${file} is too large to read (${size} bytes, limit ${MAX_TRANSCRIPT_BYTES}); pass --ctx-tokens N instead`);
     text = fs.readFileSync(file, 'utf8');
   } catch (e) {
@@ -563,6 +566,14 @@ const STEPS = [
   },
 ];
 
+/** The env for the throwaway git calls: no GIT_* from the caller (GIT_DIR, GIT_WORK_TREE and friends would steer the fetch into an existing repo). */
+function cleanGitEnv() {
+  const env = {};
+  for (const [k, v] of Object.entries(process.env)) if (!/^GIT_/i.test(k)) env[k] = v;
+  env.GIT_TERMINAL_PROMPT = '0';
+  return env;
+}
+
 /** Run the LIVE self-test-report policy on the exact composed body; refuse unless it says ok_report. */
 function runPolicy(c, view, bodyFile) {
   let dir = c.o['policy-dir'];
@@ -573,12 +584,13 @@ function runPolicy(c, view, bodyFile) {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-update-policy-'));
     try {
       const bare = path.join(tmp, 'bare');
-      const url = c.o['upstream-url'] || UPSTREAM_URL;
-      const init = spawnSync('git', ['init', '-q', '--bare', bare], { encoding: 'utf8' });
+      const url = UPSTREAM_URL;
+      const env = cleanGitEnv();
+      const init = spawnSync('git', ['init', '-q', '--bare', bare], { encoding: 'utf8', env });
       if (init.status !== 0) throw new StepFail(`cannot create the throwaway repo: ${String(init.stderr).split('\n')[0]}`);
-      const fetched = spawnSync('git', ['-C', bare, 'fetch', '-q', '--depth=1', url, 'next'], { encoding: 'utf8' });
+      const fetched = spawnSync('git', ['-C', bare, 'fetch', '-q', '--depth=1', url, 'refs/heads/next'], { encoding: 'utf8', env, timeout: FETCH_TIMEOUT_MS });
       if (fetched.status !== 0) throw new StepFail(`cannot fetch origin/next from ${url} (${String(fetched.stderr).split('\n')[0]}); the policy would be judged from a stale copy: fix the fetch or pass --policy-dir with a fresh extract`);
-      const tar = spawnSync('git', ['-C', bare, 'archive', 'FETCH_HEAD', 'scripts', '.github/MAINTAINERS'], { maxBuffer: MAX_BUFFER });
+      const tar = spawnSync('git', ['-C', bare, 'archive', 'FETCH_HEAD', 'scripts', '.github/MAINTAINERS'], { maxBuffer: MAX_BUFFER, env });
       if (tar.status !== 0) throw new StepFail(`cannot read the live policy (git archive FETCH_HEAD): ${String(tar.stderr).split('\n')[0]}`);
       const out = path.join(tmp, 'policy');
       fs.mkdirSync(out);
@@ -611,7 +623,7 @@ function runPolicy(c, view, bodyFile) {
 
 // ---------- CLI ----------
 
-const USAGE = 'usage: pr-update run --repo owner/name --pr N --head <sha> --branch <b> --remote <r> --worktree <dir> --fork davesienkowski/gsd-core --report-inputs <json> --findings <md> (--ctx-tokens N | --transcript <jsonl>) [--budget N] [--ledger-dir D] [--policy-dir P | --core-dir C] [--run-id N] [--supersede --reason T] | --pending [--ledger-dir D] | status --repo R --pr N | unlock --repo R --pr N --reason T';
+const USAGE = 'usage: pr-update run --repo owner/name --pr N --head <sha> --branch <b> --remote <r> --worktree <dir> --fork davesienkowski/gsd-core --report-inputs <json> --findings <md> (--ctx-tokens N | --transcript <jsonl>) [--budget N] [--ledger-dir D] [--policy-dir P] [--run-id N] [--supersede --reason T] | --pending [--ledger-dir D] | status --repo R --pr N | unlock --repo R --pr N --reason T';
 
 function parseArgs(argv) {
   const o = { _: [] };
