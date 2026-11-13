@@ -254,7 +254,9 @@ test('end to end: --json prints a JSON array of derive() results in argv order, 
   assert.deepEqual(arr.map((d) => d.number), [5079, 5235]);
   assert.deepEqual(arr[0].reviewers.map((x) => x.login), ['davesienkowski', 'trek-e']);
   assert.equal(arr[0].queue.mode, 'absent', 'an empty stub repo reads as no merge queue');
-  assert.deepEqual(arr[0], { repo: 'open-gsd/gsd-core', ...prStatus.derive({ ...loadFixture('two-crs-captured.json'), queue: arr[0].queue }) });
+  assert.equal(arr[0].bundle.status, 'no-ledger', 'the stub HOME has no pr-update ledger');
+  const { bundle, ...rest } = arr[0];
+  assert.deepEqual(rest, { repo: 'open-gsd/gsd-core', ...prStatus.derive({ ...loadFixture('two-crs-captured.json'), queue: arr[0].queue }) });
 });
 
 test('end to end: --repo passes through to every gh call', (t) => {

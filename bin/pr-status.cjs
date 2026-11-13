@@ -68,6 +68,10 @@
  * Any queue read that fails makes the mode `unknown` with the error named; it never fails the PR block
  * or the exit code (fail open to informational). Known limit: a queue configured through classic branch
  * protection rather than a ruleset is not visible to these reads.
+ * plus one local file read per PR (quick 261113-wg1): the bundle ledger of bin/pr-update.cjs, `<ledger dir>/<owner>__<name>__<N>.jsonl`
+ * (dir: deps.ledgerDir, else $PR_UPDATE_LEDGER_DIR, else ~/repos/gsd-core-notes/ledgers/pr-update). It prints pr-update's own
+ * `bundle pending: <repo>#N steps a-b` line, or `bundle: complete`, `bundle: no ledger`, `bundle ledger unreadable|corrupt: <why>`; never
+ * "no bundle pending" for a file it could not read. `--json` carries the same as `bundle: {status, line, pending, file, error}`. Read only.
  * No mutating verb (pr edit/review/merge/comment/close/ready), no `gh api -X/--method/-f/-F`, and no
  * `gh api graphql` (hooks/review-artifact.cjs gates GraphQL). statusCheckRollup is NOT used: it keeps
  * superseded runs, while `gh pr checks --json` returns the current run per check.
@@ -105,6 +109,7 @@
  */
 
 const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
@@ -904,6 +909,7 @@ function formatText(d) {
   if (bl) lines.push(bl);
   if (d.mergeStateStatus === 'BEHIND') lines.push(behindNote(d.queue));
   if (d.decisionNote) lines.push(`  note: ${clean(d.decisionNote)}`);
+  lines.push(...bundleLines(d.bundle));
   if (d.overlap) lines.push(...overlapLines(d.overlap));
   if (d.cr) lines.push(...crLines(d.cr));
   if (d.body) lines.push(...bodyLines(d.body));
@@ -1550,6 +1556,7 @@ function logHasLine(contents, text) {
 // The selftest/run commit message of gsd-core-experiments, anchored: "selftest: run gsd-core <sha> (PR <n>)". Any extra text or a second sha is no title.
 const TESTED_TITLE_RE = /^selftest: run gsd-core ([0-9a-f]{7,40}) \(PR ([0-9]+)\)$/i;
 const TESTED_MARKER_RE = /^[ \t]*SELFTEST_SHA:[ \t]*['"]?([0-9a-f]{40})['"]?[ \t]*$/im; // selftest.yml env, committed with the run's head commit
+const TESTED_MARKER_LINE_RE = /^[ \t]*SELFTEST_SHA:/gim; // every marker-shaped line, well formed or not: two of them are ambiguous
 // Policy data: repos whose workflow marker and run titles are trusted to name the tested gsd-core sha. A run URL comes
 // from the author-written PR body, so any other repo (the PR's own repo aside) is never read for a marker or a title.
 const TRUSTED_SELFTEST_REPOS = Object.freeze(['davesienkowski/gsd-core-experiments']);
@@ -1577,7 +1584,17 @@ function compareTested(view, run, head, pr, gh, trusted) {
   let marker = null;
   try {
     const file = gh(['api', `repos/${run.repo}/contents/.github/workflows/selftest.yml?ref=${view.headSha}`]);
-    const text = file && file.encoding === 'base64' && typeof file.content === 'string' ? Buffer.from(file.content, 'base64').toString('utf8') : '';
+    // A file over 1 MB comes back with encoding "none" and no content; an undecodable one is no text. Neither may fall through to the title.
+    if (!file || file.encoding !== 'base64' || typeof file.content !== 'string') return Object.assign(res, { headNote: 'marker unread (unsupported encoding)' });
+    let text;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(file.content, 'base64'));
+    } catch {
+      return Object.assign(res, { headNote: 'marker unread (unsupported encoding)' });
+    }
+    // Two SELFTEST_SHA lines name two candidate shas: ambiguous, never a match and never a fall-through to the author-written title.
+    const lines = (text.match(TESTED_MARKER_LINE_RE) || []).length;
+    if (lines > 1) return Object.assign(res, { headNote: `workflow marker is ambiguous (${lines} SELFTEST_SHA lines)` });
     const m = TESTED_MARKER_RE.exec(text);
     if (m) marker = m[1];
   } catch (err) {
@@ -2127,6 +2144,46 @@ function policyLines(p) {
   return lines;
 }
 
+/**
+ * quick 261113-wg1: the pr-update ledger of this PR, read only (fs.readFileSync; nothing is written, locked or repaired).
+ * status: pending (steps left), complete, no-ledger (no file), unreadable (a read error other than a missing file), corrupt
+ * (not JSON, not the ledger shape, or naming another repo or PR). A bad ledger is never reported as "no ledger".
+ *
+ * @returns {{status: string, line: (string|null), pending: number[], file: string, error: (string|null)}}
+ */
+function readBundle(repo, number, dir) {
+  const { ledgerFileName, pendingLine } = require('./pr-update.cjs'); // the ledger's own name and pending-line format, not a copy
+  const file = path.join(dir, `${ledgerFileName(repo, number)}.jsonl`);
+  const res = { status: 'no-ledger', line: null, pending: [], file, error: null };
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return res;
+    return Object.assign(res, { status: 'unreadable', error: firstErrorLine(err) });
+  }
+  const bad = (why) => Object.assign(res, { status: 'corrupt', error: why });
+  let l;
+  try {
+    l = JSON.parse(text.trim());
+  } catch {
+    return bad('not valid JSON');
+  }
+  if (!l || l.v !== 1 || !Array.isArray(l.steps) || l.steps.length !== 8 || l.steps.some((x) => !x || !Number.isInteger(x.id) || typeof x.state !== 'string')) return bad('unknown version or shape');
+  if (lower(l.repo) !== lower(repo) || Number(l.pr) !== Number(number)) return bad(`names ${clean(l.repo)}#${clean(l.pr)}, not ${repo}#${number}`);
+  const line = pendingLine(l);
+  if (!line) return Object.assign(res, { status: 'complete' });
+  return Object.assign(res, { status: 'pending', line, pending: l.steps.filter((x) => x.state !== 'done').map((x) => x.id) });
+}
+
+function bundleLines(b) {
+  if (!b) return [];
+  if (b.status === 'pending') return [`  ${clean(b.line)}`];
+  if (b.status === 'complete') return ['  bundle: complete (every step done)'];
+  if (b.status === 'no-ledger') return ['  bundle: no ledger'];
+  return [`  bundle ledger ${b.status}: ${clean(b.error)} (${clean(tildeHome(b.file))})`];
+}
+
 /** First non-empty line of a gh failure (its stderr, else the error message). */
 function firstErrorLine(err) {
   const text = String((err && err.stderr) || '').trim() || String((err && err.message) || err || 'unknown error');
@@ -2174,7 +2231,7 @@ function parseArgs(argv) {
  * CLI entry. Returns the exit code: 0 ok, 1 when any PR read failed, 2 usage.
  *
  * @param {string[]} argv
- * @param {{gh?: Function, sleep?: Function, stdout?: {write: Function}, stderr?: {write: Function}, policies?: object, policyRoot?: string}} [deps]
+ * @param {{ledgerDir?: string, gh?: Function, sleep?: Function, stdout?: {write: Function}, stderr?: {write: Function}, policies?: object, policyRoot?: string}} [deps]
  *   policies injects the three gsd-core policy modules (tests); policyRoot names the only gsd-core root to load them from
  * @returns {number}
  */
@@ -2189,6 +2246,7 @@ function runCli(argv, deps = {}) {
   let failed = false;
   const queues = new Map(); // base branch -> fetchQueue result, one set of queue reads per repo and base
   const policyCache = newPolicyCache(); // policy modules, base runs, MAINTAINERS and permissions: once per run
+  const ledgerDir = deps.ledgerDir || process.env.PR_UPDATE_LEDGER_DIR || path.join(os.homedir(), 'repos', 'gsd-core-notes', 'ledgers', 'pr-update'); // the dir pr-update writes
   const results = args.numbers.map((n) => {
     try {
       const pr = fetchPr(n, args.repo, deps, { timeline: args.cr || args.body });
@@ -2199,7 +2257,7 @@ function runCli(argv, deps = {}) {
       const bodySink = {};
       const body = args.body ? fetchBody(n, args.repo, pr, deps, bodySink) : null;
       const policies = fetchPolicies(args.repo, pr, { body: args.body, bodyView: bodySink.bodyView, bodyError: bodySink.bodyError }, deps, policyCache);
-      return { repo: args.repo, ...derive({ ...pr, queue: queues.get(base), overlap, cr, body, policies }) };
+      return { repo: args.repo, ...derive({ ...pr, queue: queues.get(base), overlap, cr, body, policies }), bundle: readBundle(args.repo, n, ledgerDir) };
     } catch (err) {
       failed = true;
       return { repo: args.repo, number: Number(n), error: firstErrorLine(err) };
