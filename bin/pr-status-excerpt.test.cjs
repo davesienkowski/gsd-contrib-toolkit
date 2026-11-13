@@ -224,7 +224,7 @@ test('rounds: a captured fixture with author_association merged in prints the ro
   const path = require('node:path');
   const fx = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'pr-status', 'cr-5192-captured.json'), 'utf8'));
   const reviews = fx.reviews.map((page) => page.map((r) => ({ ...r, author_association: 'COLLABORATOR' })));
-  const n = reviews.flat().filter((r) => r.state === 'CHANGES_REQUESTED' && r.user.login.toLowerCase() !== String(fx.view.author.login).toLowerCase() && r.user.type !== 'Bot').length;
+  const n = new Set(reviews.flat().filter((r) => r.state === 'CHANGES_REQUESTED' && r.user.login.toLowerCase() !== String(fx.view.author.login).toLowerCase() && r.user.type !== 'Bot').map((r) => r.commit_id)).size; // one round per head commit
   assert.ok(n > 0, 'fixture has change requests');
   const r = run(['7'], { reviews: reviews.flat() });
   assert.match(r.stdout, new RegExp(`^ {2}upstream CR rounds: ${n}$`, 'm'));
