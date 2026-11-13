@@ -41,7 +41,7 @@ function review(id, login, state, assoc, extra = {}) {
 }
 
 /** Run the CLI in process; returns { status, stdout, calls, textCalls }. */
-function run(args, { bodyText = body(), reviews = [], timeline = [], log = LOG, logError = null, runHead = HEAD, runHeadError = null, runTitle = null, runMarker = null, runMarkerError = null, prHead = HEAD, trusted = undefined } = {}) {
+function run(args, { bodyText = body(), reviews = [], timeline = [], log = LOG, logError = null, runHead = HEAD, runHeadError = null, runTitle = null, runMarker = null, runMarkerError = null, runMarkerRaw = null, prHead = HEAD, trusted = undefined } = {}) {
   const calls = [];
   const textCalls = [];
   const gh = (a) => {
@@ -56,6 +56,7 @@ function run(args, { bodyText = body(), reviews = [], timeline = [], log = LOG, 
     }
     if (a[0] === 'api' && /\/contents\/\.github\/workflows\/selftest\.yml\?ref=/.test(a[1])) {
       if (runMarkerError) throw new Error(runMarkerError);
+      if (runMarkerRaw) return runMarkerRaw;
       if (runMarker == null) throw new Error('gh: Not Found (HTTP 404)');
       return { encoding: 'base64', content: Buffer.from(runMarker).toString('base64') };
     }
@@ -453,6 +454,41 @@ test('R5 W-02: only a 404 on the marker read falls through to the title; any oth
     assert.match(r.stdout, new RegExp(`^ {2}body: run head sha not compared: marker unread \\(${err.slice(0, 8)}`, 'm'));
     assert.doesNotMatch(r.stdout, /matches the PR head|run head mismatch/);
   }
+});
+
+// ---- quick 261113-wg1: the two warnings deferred from round 5 ----
+
+test('wg1 (a): a marker read whose encoding is not base64 (over 1 MB, or undecodable) is "marker unread (unsupported encoding)", never the title', () => {
+  for (const raw of [{ encoding: 'none', content: '', size: 2000000 }, { encoding: 'base64', content: Buffer.from([0xff, 0xfe, 0xfd]).toString('base64') }, { content: 'x' }]) {
+    const r = run(['--body', '5871'], own5871({ runTitle: TITLE, runMarkerRaw: raw }));
+    assert.match(r.stdout, /^ {2}body: run head sha not compared: marker unread \(unsupported encoding\)$/m, JSON.stringify(raw));
+    assert.doesNotMatch(r.stdout, /matches the PR head|run head mismatch/);
+    assert.equal(JSON.parse(run(['--json', '--body', '5871'], own5871({ runTitle: TITLE, runMarkerRaw: raw })).stdout)[0].body.excerpt.headMatch, null);
+  }
+});
+
+test('wg1 review WR-01: base64 content that is not strict base64 ("!!!!@@@@", or non-canonical) is unreadable, never the title; empty content is no marker', () => {
+  for (const content of ['!!!!@@@@', 'QUJD=', 'QUJD\nRA']) {
+    const r = run(['--body', '5871'], own5871({ runTitle: TITLE, runMarkerRaw: { encoding: 'base64', content } }));
+    assert.match(r.stdout, /^ {2}body: run head sha not compared: marker unread \(unsupported encoding\)$/m, content);
+    assert.doesNotMatch(r.stdout, /matches the PR head|run head mismatch/);
+  }
+  const empty = run(['--body', '5871'], own5871({ runTitle: TITLE, runMarkerRaw: { encoding: 'base64', content: '' } }));
+  assert.doesNotMatch(empty.stdout, /unsupported encoding/);
+});
+
+test('wg1 (b): two or more SELFTEST_SHA lines are ambiguous: not compared, whatever the title says', () => {
+  const two = `${marker(PR5871)}  SELFTEST_SHA: ${'b'.repeat(40)}\n`;
+  const r = run(['--body', '5871'], own5871({ runTitle: TITLE, runMarker: two }));
+  assert.match(r.stdout, /^ {2}body: run head sha not compared: workflow marker is ambiguous \(2 SELFTEST_SHA lines\)$/m);
+  assert.doesNotMatch(r.stdout, /matches the PR head|run head mismatch/);
+  const j = JSON.parse(run(['--json', '--body', '5871'], own5871({ runTitle: TITLE, runMarker: two })).stdout)[0].body.excerpt;
+  assert.equal(j.headMatch, null);
+  assert.equal(j.testedSha, null);
+  const same = run(['--body', '5871'], own5871({ runTitle: TITLE, runMarker: `${marker(PR5871)}  SELFTEST_SHA: ${PR5871}\n` }));
+  assert.match(same.stdout, /ambiguous \(2 SELFTEST_SHA lines\)/, 'two identical lines are still two lines');
+  const one = hosted({ runTitle: TITLE, runMarker: marker(PR5871) });
+  assert.equal(one.headMatch, true, 'one line still matches');
 });
 
 test('R5 INFO: checkExcerpt requires the pr argument', () => {

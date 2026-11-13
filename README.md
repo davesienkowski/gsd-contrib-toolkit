@@ -112,6 +112,20 @@ New here? Read the [Overview](docs/guides/overview.md), then the
 [Contributor Guide](docs/guides/contributor-guide.md) (file a change) or the
 [Maintainer Guide](docs/guides/maintainer-guide.md) (triage and review).
 
+## Review helpers (advisory, run from a clone)
+
+Three scripts in `bin/` support a fix round. None is a hook: you or the model run them, so they advise and
+do not block. Details are in the `core-contribution` skill's reference (skills/core-contribution/reference.md).
+
+- `bin/pr-status.cjs`: a read-only snapshot of a PR (checks, reviews, who owes the next move). It also prints the
+  `pr-update` bundle line for the PR (pending steps, complete, no ledger, or an unreadable or corrupt ledger).
+- `bin/pr-update.cjs`: drives the re-review bundle after a fix round in eight steps over two phases, keeps a per-PR ledger
+  file, refuses to run above about 600000 session tokens, and only prints the write commands (`NEXT: ...`) for you to run;
+  it never runs a `gh` write or a `git push` and never writes to a remote or an existing repo. It does write its own ledger and
+  lock, a throwaway temp repo for the policy fetch, and `gh run download` artifacts into its work dir.
+- `bin/claims-delta.cjs`: lists the rule-shaped sentences a fix round added (code, comments, commit messages and the PR body)
+  and, with `--gate`, refuses while one has no resolution. What it reads and the resolutions it accepts are in the reference.
+
 ## Where to go next
 
 - [Guides](docs/guides/): overview, contributor and maintainer walkthroughs.
