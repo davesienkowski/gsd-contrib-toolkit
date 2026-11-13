@@ -34,6 +34,11 @@ function main() {
   const st = state.selftest || {};
 
   if (tool === 'git') {
+    const g = argv.indexOf('remote');
+    if (g >= 0 && argv[g + 1] === 'get-url') {
+      log({});
+      return out(((state.remoteUrls || {})[argv[g + 2]] || 'https://github.com/davesienkowski/gsd-core.git') + '\n');
+    }
     const i = argv.indexOf('ls-remote');
     if (argv.includes('push') || i < 0) return refuse();
     log({});

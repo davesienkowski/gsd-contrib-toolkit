@@ -571,3 +571,56 @@ test('replaceSelfTestSection is fence-aware: a ## line inside a code fence does 
   const app = replaceSelfTestSection('## A\n', '## Self-test report\n\nNEW\n');
   assert.ok(app.endsWith('NEW\n'));
 });
+
+test('--remote must resolve to the fork: a gsd-core upstream URL is refused before any ledger or publish step (review B-01)', (t) => {
+  for (const url of ['https://github.com/open-gsd/gsd-core.git', 'git@github.com:open-gsd/gsd-core.git', 'https://github.com/davesienkowski/gsd-core-experiments.git', 'https://evil.example/davesienkowski/gsd-core.git']) {
+    const h = harness(t);
+    h.state.remoteUrls = { fork: url };
+    h.save();
+    const r = h.run();
+    assert.equal(r.status, 2, url);
+    assert.match(r.err, /remote/);
+    assert.equal(fs.existsSync(h.ledgerFile), false, url);
+    assert.ok(!/NEXT:/.test(r.out), url);
+  }
+  const h = harness(t);
+  h.state.remoteUrls = { fork: 'git@github.com:davesienkowski/gsd-core.git' };
+  h.save();
+  assert.equal(h.run().status, 3);
+});
+
+test('--supersede --reason on the SAME head archives the stuck ledger and starts clean (review W-01)', (t) => {
+  const h = harness(t);
+  h.state.remoteHeads['fork fix/5797-x'] = HEAD;
+  h.save();
+  h.run();
+  const stuck = h.ledger();
+  stuck.dispatchChurn = 9;
+  fs.writeFileSync(h.ledgerFile, JSON.stringify(stuck) + '\n');
+  assert.equal(h.run().status, 1, 'stuck without the operator action');
+  const r = h.run(['--supersede', '--reason', 'dispatch never ran']);
+  assert.equal(r.status, 3, r.out + r.err);
+  assert.equal(h.ledger().dispatchChurn, 0);
+  assert.match(fs.readFileSync(h.ledgerFile.replace(/\.jsonl$/, '.history.jsonl'), 'utf8'), /dispatch never ran/);
+});
+
+test('a CHANGES_REQUESTED review that is already on the bundle head is not re-requested (review W-02)', (t) => {
+  const h = harness(t);
+  toStep6(h);
+  h.state.comments = [{ body: marker(HEAD) }];
+  h.state.prstatus = [
+    {
+      number: 5871,
+      head: HEAD,
+      reviewers: [{ login: 'trek-e', state: 'CHANGES_REQUESTED', onHead: true }],
+      requested: [],
+      checks: { failing: [], pending: [] },
+      body: { selfTest: { status: 'bound', headSha: HEAD }, excerpt: { status: 'ok', runUrl: RUN_URL, headMatch: true } },
+      policies: { selfTest: { status: 'green', reason: 'ok_report' } },
+    },
+  ];
+  h.save();
+  const r = h.run();
+  assert.ok(!/requested_reviewers/.test(r.out), r.out);
+  assert.equal(stepState(h, 7), 'done');
+});
