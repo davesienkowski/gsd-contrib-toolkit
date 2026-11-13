@@ -18,8 +18,9 @@
  * every added commit-message line (all parents) and every body-diff line is a candidate. The kind label
  * (comment, title, code, adr, doc, commit, body) is cosmetic and may be wrong without harm; it never decides
  * what is examined. A match is read over the line plus up to 2 unchanged lines each side (a sentence half
- * added and half unchanged is read whole), after leading markers, emphasis, code-span marks and tags are
- * blanked; a claim must overlap an added line.
+ * added and half unchanged is read whole), after leading markers, emphasis and code-span marks are blanked
+ * (tags are NOT blanked: rule words in an attribute, a JSX prop or a stray < ... > are read). A match becomes
+ * a claim when any line of its whole sentence span (first line of the sentence to its last) is an added line.
  *
  * Resolved = a CLAIMS-RESOLUTIONS.json entry in DIR: kind oracle|generator with new_inputs >= minNewInputs,
  * a tracked non-empty evidence file (changed in the range or a test file) inside the repo and a command; or
@@ -46,6 +47,9 @@ const NOT_COVERED = [
   'wording with no trigger word',
   'a removed qualifier (a deleted "unless" leaves the rest of the sentence absolute)',
   'an unchanged half of a sentence more than 2 lines from the added line',
+  'unusual apostrophes (a backtick used as one), zero-width and fullwidth text are not normalised, so a trigger word written with them is unseen',
+  'a submodule bump counts as one added line and the submodule\'s own commits are not read',
+  'a quoted filename keeps a "b/ prefix in its location and skips the numstat cross-check',
   'upstream text pulled in by merging the base branch into the range (clear it with not-a-claim, reason "upstream text")',
 ];
 
@@ -105,9 +109,12 @@ function loadPolicy(o) {
     if (/[gy]/.test(p.flags || '')) throw new Refuse(`policy pattern ${p.id} sets a g or y flag (stateful matching)`);
     try { return { id: p.id, re: new RegExp(p.regex, `${p.flags || 'i'}g`) }; } catch (e) { throw new Refuse(`policy pattern ${p && p.id} invalid: ${e.message}`); }
   });
-  const SAMPLES = { quantifier: 'It never fails.', negated: 'X is not a miss.', definitional: 'The key is a hash.', 'scope-negation': 'The file is unchanged.' };
+  // each required pattern must match every sample; the last scope-negation sample is wrapped across a line break and a tab
+  const SAMPLES = { quantifier: ['It never fails.'], negated: ['X is not a miss.'], definitional: ['The key is a hash.'], 'scope-negation': ['The file is unchanged.', 'It is recorded rather\n\tthan edited here.'] };
   for (const id of REQUIRED_PATTERNS) {
-    if (!patterns.some((p) => p.id === id && new RegExp(p.re.source, p.re.flags).test(SAMPLES[id]))) throw new Refuse(`policy pattern ${id} does not match its sample sentence "${SAMPLES[id]}"`);
+    for (const sample of SAMPLES[id]) {
+      if (!patterns.some((p) => p.id === id && new RegExp(p.re.source, p.re.flags).test(sample))) throw new Refuse(`policy pattern ${id} does not match its sample sentence ${JSON.stringify(sample)}`);
+    }
   }
   const sha1 = crypto.createHash('sha1').update(raw).digest('hex');
   return { patterns, minNewInputs: pol.minNewInputs, max, info: { path: file, sha1, reason: o.policyReason || null, minNewInputs: pol.minNewInputs } };
@@ -164,7 +171,7 @@ function labelFor(file, text) {
 /**
  * Match the policy patterns over regions of lines. Each region is a list of {n, text, added, kind}; consecutive
  * lines are joined with a space. Display text blanks only a leading run of non-letter, non-digit characters
- * (comment, quote, list markers); the match copy also blanks emphasis marks, code-span marks and tags, so
+ * (comment, quote, list markers); the match copy also blanks emphasis marks and code-span marks, so
  * offsets agree. A claim is a match that overlaps an added line; its id is the matched lines' own text.
  */
 function claimsFromRegion(region, pol, loc, defaultKind) {
@@ -180,8 +187,7 @@ function claimsFromRegion(region, pol, loc, defaultKind) {
     return d;
   });
   const D = parts.join(' ');
-  const TAG = /<\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z-]+(?:=(?:"[^"]*"|'[^']*'|[^\s>"']+))?)*\s*\/?>/g;
-  const M = parts.map((d) => d.replace(/[*_`]/g, ' ').replace(TAG, blank)).join(' ');
+  const M = parts.map((d) => d.replace(/[*_`]/g, ' ')).join(' ');
   const lineAt = (off) => {
     let lo = 0;
     let hi = starts.length - 1;
@@ -199,34 +205,40 @@ function claimsFromRegion(region, pol, loc, defaultKind) {
       if (m[0].length === 0) { re.lastIndex += 1; continue; }
       const ls = lineAt(m.index);
       const le = lineAt(m.index + m[0].length - 1);
-      let touched = false;
-      for (let i = ls; i <= le; i += 1) if (region[i].added) touched = true;
-      if (!touched) continue;
       const key = `${ls}-${le}`;
       let c = found.get(key);
-      if (!c) {
+      if (c === undefined) {
         const lo = Math.max(0, ls - CONTEXT_LINES);
         const hi = Math.min(region.length - 1, le + CONTEXT_LINES);
         const wStart = starts[lo];
+        const wEnd = starts[hi] + disp[hi].length;
         let s = m.index;
         const lineStarts = new Set(starts.slice(lo + 1, ls + 1));
         while (s > wStart && !/[.!?]\s$/.test(D.slice(Math.max(0, s - 2), s))) {
           if (lineStarts.has(s) && /[.!?;:{}]\s*$/.test(disp[lineAt(s) - 1])) break;
           s -= 1;
         }
-        const lineEnd = starts[le] + disp[le].length;
+        const laterStarts = new Set(starts.slice(le + 1, hi + 1));
         let e = m.index + m[0].length;
-        while (e < lineEnd && !/[.!?]/.test(D[e - 1])) e += 1;
-        const text = D.slice(s, e).replace(/\s+/g, ' ').trim();
+        while (e < wEnd && !/[.!?]/.test(D[e - 1])) {
+          if (laterStarts.has(e) && /[;:{}]\s*$/.test(disp[lineAt(e) - 1])) break;
+          e += 1;
+        }
+        // the whole sentence span decides: any added line from the sentence's first line to its last
+        let touched = false;
+        for (let i = lineAt(s); i <= lineAt(Math.max(s, e - 1)); i += 1) if (region[i].added) touched = true;
+        if (!touched) { found.set(key, null); continue; }
+        const text = D.slice(s, Math.min(e, Math.max(m.index + m[0].length, starts[le] + disp[le].length))).replace(/\s+/g, ' ').trim();
         const matched = disp.slice(ls, le + 1).join(' ');
         const first = region.slice(ls, le + 1).find((l) => l.added) || region[ls];
         c = { kind: first.kind || defaultKind, loc: `${loc}:${first.n}`, text, id: claimId(matched), flags: [] };
         found.set(key, c);
       }
+      if (c === null) continue;
       if (!c.flags.includes(p.id)) c.flags.push(p.id);
     }
   }
-  return [...found.values()];
+  return [...found.values()].filter(Boolean);
 }
 
 /** Split lines into paragraphs of non-blank lines, widened by CONTEXT_LINES around the added ones. */
@@ -303,8 +315,12 @@ function collect(o, pol) {
   const log = git(o.repo, ['log', '--format=%h%x01%B%x00', `${from}..${b}`]);
   let nCommits = 0;
   for (const rec of log.split('\0')) {
-    const [sha, msg] = rec.replace(/^\n/, '').split('\x01');
-    if (!sha || msg === undefined) continue;
+    const body = rec.replace(/^\n/, '');
+    const sep = body.indexOf('\x01');
+    if (sep < 0) continue;
+    const sha = body.slice(0, sep);
+    const msg = body.slice(sep + 1);
+    if (!sha) continue;
     nCommits += 1;
     const lines = msg.split('\n').map((text, i) => ({ n: i + 1, text: text.replace(/\r$/, ''), added: true, kind: 'commit' }));
     for (const l of lines) if (l.text.trim()) examined.commit += 1;

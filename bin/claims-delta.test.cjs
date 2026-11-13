@@ -436,9 +436,9 @@ test('R3 B-01: a sentence whose other half is an unchanged line is read whole', 
   assert.ok(c.flags.includes('negated'));
 });
 
-test('R3 W-01: emphasis, code spans and tags inside a phrase do not hide it', () => {
-  const fx = makeRepo({}, { 'n.md': 'The value is **not** safe.\n\nIt does _not_ work.\n\nIt is `not` safe.\n\nIt is <b>not</b> safe.\n' });
-  assert.equal(claims(run(fx, NOBODY)).filter((c) => c.flags.includes('negated')).length, 4);
+test('R3 W-01: emphasis and code spans inside a phrase do not hide it', () => {
+  const fx = makeRepo({}, { 'n.md': 'The value is **not** safe.\n\nIt does _not_ work.\n\nIt is `not` safe.\n' });
+  assert.equal(claims(run(fx, NOBODY)).filter((c) => c.flags.includes('negated')).length, 3);
 });
 
 test('R3 W-02: wrapped lines under ///, --, nested > and numbered markers still match', () => {
