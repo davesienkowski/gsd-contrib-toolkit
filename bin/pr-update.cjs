@@ -85,7 +85,9 @@ const cmdText = (argv) => argv.map(shq).join(' ');
 
 /** The one read seam: spawn with an argv array, no shell. */
 function read(cmd, args, opts = {}) {
-  const r = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: MAX_BUFFER, ...opts });
+  // Every git read gets the scrubbed env: a leaked GIT_DIR or GIT_WORK_TREE would redirect ls-remote and remote get-url.
+  const env = cmd === 'git' ? { env: cleanGitEnv() } : {};
+  const r = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: MAX_BUFFER, ...env, ...opts });
   if (r.error || r.status !== 0) {
     const why = (r.stderr || (r.error && r.error.message) || '').split('\n')[0];
     throw new StepFail(`${cmd} ${args.slice(0, 3).join(' ')} failed (${r.status}): ${why}`);
@@ -554,7 +556,8 @@ const STEPS = [
       if (lower(ex.runUrl) !== lower(ledger.runUrl)) bad.push(`the excerpt is checked against ${ex.runUrl}, not this bundle's run ${ledger.runUrl}`);
     }
     const pol = st.policies && st.policies.selfTest;
-    if (pol && !(pol.status === 'green' && pol.reason === 'ok_report')) bad.push(`policies.selfTest is ${pol.status}/${pol.reason}`);
+    if (!pol) bad.push('Self-test policy result missing from pr-status (policies.selfTest absent)');
+    else if (!(pol.status === 'green' && pol.reason === 'ok_report')) bad.push(`policies.selfTest is ${pol.status}/${pol.reason}`);
     if (((st.checks && st.checks.failing) || []).includes('Self-test report')) bad.push('the "Self-test report" check is failing (it may not have re-run since the body edit)');
     const requested = (st.requested || []).map(lower);
     for (const login of crToRerequest(st)) if (!requested.includes(lower(login))) bad.push(`${login} is CHANGES_REQUESTED and not re-requested`);
@@ -571,6 +574,9 @@ function cleanGitEnv() {
   const env = {};
   for (const [k, v] of Object.entries(process.env)) if (!/^GIT_/i.test(k)) env[k] = v;
   env.GIT_TERMINAL_PROMPT = '0';
+  // No global or system config either: init.templateDir or core.hooksPath there could run hooks in the throwaway repo.
+  env.GIT_CONFIG_GLOBAL = '/dev/null';
+  env.GIT_CONFIG_NOSYSTEM = '1';
   return env;
 }
 
