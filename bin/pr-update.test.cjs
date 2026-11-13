@@ -108,11 +108,11 @@ function harness(t, over = {}) {
   ctx.ledgerFile = path.join(ctx.ledgerDir, 'open-gsd__gsd-core__5871.jsonl');
   ctx.workDir = path.join(ctx.ledgerDir, 'open-gsd__gsd-core__5871.work');
   ctx.ledger = () => JSON.parse(fs.readFileSync(ctx.ledgerFile, 'utf8').trim());
-  ctx.run = (extra = [], { head = HEAD, ctx: tokens = ['--ctx-tokens', '1000'], env = {} } = {}) => {
+  ctx.run = (extra = [], { head = HEAD, ctx: tokens = ['--ctx-tokens', '1000'], env = {}, noPolicyDir = false } = {}) => {
     const args = [
       SCRIPT, 'run', '--repo', 'open-gsd/gsd-core', '--pr', '5871', '--head', head, '--branch', 'fix/5797-x', '--remote', 'fork',
       '--worktree', root, '--fork', 'davesienkowski/gsd-core', '--report-inputs', reportInputs, '--findings', findings,
-      '--ledger-dir', ctx.ledgerDir, '--policy-dir', policy, ...tokens, ...extra,
+      '--ledger-dir', ctx.ledgerDir, ...(noPolicyDir ? ['--core-dir', root] : ['--policy-dir', policy]), ...tokens, ...extra,
     ];
     const r = spawnSync(process.execPath, args, {
       encoding: 'utf8',
@@ -680,4 +680,37 @@ test('a failed or cancelled hosted run names the recovery (rerun the failed jobs
   fs.writeFileSync(h.ledgerFile, JSON.stringify(l) + '\n');
   h.run(['--supersede', '--reason', 'author asked for a redo']);
   assert.match(fs.readFileSync(h.ledgerFile.replace(/\.jsonl$/, '.history.jsonl'), 'utf8'), /author asked for a redo/);
+});
+
+test('production policy path: git fetch then git archive of origin/next feed the live policy; a failed fetch fails step 5 closed (review R2 B-01)', (t) => {
+  const h = harness(t);
+  toStep4(h);
+  h.state.selftest.runs[0].status = 'completed';
+  h.state.selftest.runs[0].conclusion = 'success';
+  h.state.policyArchiveDir = h.policy;
+  h.save();
+  const ok = h.run([], { noPolicyDir: true });
+  assert.equal(ok.status, 3, ok.out + ok.err);
+  assert.match(ok.out, /NEXT: gh pr edit/);
+  const git = h.logLines().filter((l) => l.tool === 'git').map((l) => l.argv.join(' '));
+  assert.ok(git.some((a) => /fetch -q origin next/.test(a)), 'fetched origin/next first');
+  assert.ok(git.some((a) => /archive origin\/next scripts \.github\/MAINTAINERS/.test(a)), 'archived from origin/next');
+  const h2 = harness(t);
+  toStep4(h2);
+  h2.state.selftest.runs[0].status = 'completed';
+  h2.state.selftest.runs[0].conclusion = 'success';
+  h2.state.policyArchiveDir = h2.policy;
+  h2.state.fetchFails = true;
+  h2.save();
+  const bad = h2.run([], { noPolicyDir: true });
+  assert.equal(bad.status, 1);
+  assert.match(bad.out, /cannot fetch origin\/next/);
+  assert.ok(!/NEXT:/.test(bad.out));
+});
+
+test('emitted and printed hints name the script by absolute path, not a cwd-relative one (code review IN-07)', (t) => {
+  const h = harness(t);
+  const r = h.run();
+  assert.ok(r.out.includes(SCRIPT), r.out);
+  assert.ok(!/node bin\/pr-update\.cjs/.test(r.out));
 });

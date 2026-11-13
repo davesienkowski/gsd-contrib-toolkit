@@ -42,6 +42,16 @@ function main() {
       const url = (push && (state.remotePushUrls || {})[name]) || (state.remoteUrls || {})[name] || 'https://github.com/davesienkowski/gsd-core.git';
       return out(url + '\n');
     }
+    if (argv.includes('fetch')) {
+      log({});
+      return state.fetchFails ? fail('fatal: unable to access origin', 128) : undefined;
+    }
+    if (argv.includes('archive')) {
+      log({});
+      const r = require('node:child_process').spawnSync('tar', ['-c', '-C', state.policyArchiveDir, 'scripts', '.github/MAINTAINERS']);
+      process.stdout.write(r.stdout);
+      return;
+    }
     const i = argv.indexOf('ls-remote');
     if (argv.includes('push') || i < 0) return refuse();
     log({});
