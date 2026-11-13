@@ -158,15 +158,19 @@ function ghArgs(number, repo) {
   };
 }
 
-/** Default gh runner: no shell, stdout parsed as JSON; a non-zero exit throws the execFileSync error. */
-function defaultGh(args) {
-  const out = execFileSync('gh', args, {
+/** Default gh text runner: no shell, stdout as text (a run log is not JSON); a non-zero exit throws the execFileSync error. */
+function defaultGhText(args) {
+  return execFileSync('gh', args, {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 60000,
     maxBuffer: MAX_BUFFER,
   });
-  return JSON.parse(out);
+}
+
+/** Default gh runner: no shell, stdout parsed as JSON; a non-zero exit throws the execFileSync error. */
+function defaultGh(args) {
+  return JSON.parse(defaultGhText(args));
 }
 
 /** Default sleep: a synchronous wait, so the CLI stays a plain synchronous program. */
@@ -315,7 +319,10 @@ function fetchBody(number, repo, pr, deps = {}, sink = null) {
   }
   // The Self-test policy needs the body text itself, which deriveBody does not keep: hand it to the caller.
   if (sink) Object.assign(sink, { bodyView, bodyError });
-  return deriveBody({ view: pr.view, reviews: pr.reviews, timeline: pr.timeline, timelineError: pr.timelineError, bodyView, bodyError });
+  const derived = deriveBody({ view: pr.view, reviews: pr.reviews, timeline: pr.timeline, timelineError: pr.timelineError, bodyView, bodyError });
+  // quick 261113-wb1: the only run-log read; skipped when the body was not read or has no Self-test section.
+  if (!derived.error && derived.selfTest.status !== 'none') derived.excerpt = checkExcerpt(bodyView.body, deps, derived.head);
+  return derived;
 }
 
 /** Every path a compare/pulls file entry names (its filename, plus previous_filename for a rename). */
@@ -629,7 +636,54 @@ function derive({ view, reviews, checks, queue, timeline, timelineError, overlap
     cr: cr || null, // null = --cr not given (a deriveCr result otherwise)
     body: body || null, // null = --body not given (a deriveBody result otherwise)
     policies: policies || null, // null = no gsd-core CI check consulted (a fetchPolicies result otherwise)
+    upstreamCr: deriveUpstreamCr(v, reviews, timeline, timelineError),
   };
+}
+
+const MAINTAINER_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+const BAND_ABSTAIN_REASON =
+  'no honest definition from the reads made: a review carries severity labels, not a failure family, and the inline comment paths need one more read per review';
+
+/**
+ * quick 261113-wb1, item 5: upstream change-request rounds. A round is one distinct head commit (the review's
+ * commit_id) that received at least one CHANGES_REQUESTED review from a non-bot, non-author user whose
+ * author_association is OWNER, MEMBER or COLLABORATOR (two maintainers on one head are one round; a review with
+ * no commit_id counts as a round of its own). A DISMISSED review counts when the timeline shows its original
+ * state was changes_requested; a dismissed maintainer review the timeline does not classify is not counted and
+ * is reported in unclassifiedDismissed, so the count is then a floor.
+ *
+ * @returns {{rounds: number, unclassifiedDismissed: number, lastThree: string[], band: {label: 'ABSTAIN', reason: string}}}
+ *   lastThree = the commit ids of the last three rounds (a review id for a review with no commit_id)
+ */
+function deriveUpstreamCr(view, reviews, timeline, timelineError) {
+  const dismissals = new Map(deriveDismissals(reviews, timeline === undefined ? null : timeline, timelineError || null).map((x) => [x.reviewId, x]));
+  const rounds = new Map(); // head commit id -> true, in order of the first change request on it
+  let unclassified = 0;
+  for (const r of humanReviews(view, reviews)) {
+    if (!MAINTAINER_ASSOCIATIONS.has(String(r.author_association || '').toUpperCase())) continue;
+    let counts = r.state === 'CHANGES_REQUESTED';
+    if (r.state === 'DISMISSED') {
+      const d = dismissals.get(r.id == null ? null : String(r.id));
+      if (d && d.originalState === 'CHANGES_REQUESTED') counts = true;
+      else if (!d || !d.found) unclassified += 1;
+    }
+    if (counts) rounds.set(r.commit_id ? lower(r.commit_id) : `review ${r.id}`, true);
+  }
+  const keys = [...rounds.keys()];
+  return {
+    rounds: keys.length,
+    unclassifiedDismissed: unclassified,
+    lastThree: keys.slice(-3),
+    band: { label: 'ABSTAIN', reason: BAND_ABSTAIN_REASON },
+  };
+}
+
+/** The upstream-rounds lines: always the rounds line (0 included), the band line from 3 rounds. */
+function upstreamCrLines(u) {
+  const floor = u.unclassifiedDismissed > 0 ? ` (at least; ${u.unclassifiedDismissed} dismissed review(s) not classified by the timeline)` : '';
+  const lines = [`  upstream CR rounds: ${u.rounds}${floor}`];
+  if (u.rounds >= 3) lines.push(`  same band: ${u.band.label} (${u.band.reason}); last 3 rounds ${u.lastThree.map((c) => clean(/^[0-9a-f]{40}$/i.test(c) ? short(c, 7) : c)).join(', ')}`);
+  return lines;
 }
 
 /** GitHub's reviewDecision versus this reading; a note string when they disagree, else null. */
@@ -844,6 +898,7 @@ function formatText(d) {
   }
   for (const x of d.dismissals || []) lines.push(dismissalLine(x));
   lines.push(`  requested: ${d.requested.length ? d.requested.map(clean).join(', ') : 'none'}`);
+  if (d.upstreamCr) lines.push(...upstreamCrLines(d.upstreamCr));
   lines.push(...policyLines(d.policies));
   const bl = ballLine(d);
   if (bl) lines.push(bl);
@@ -1381,6 +1436,161 @@ function deriveBody({ view, reviews, timeline, timelineError, bodyView, bodyErro
   };
 }
 
+const RUN_URL_RE = /https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/actions\/runs\/([0-9]+)(?:\/attempts\/([0-9]+))?(?![0-9A-Za-z])/;
+const RUN_LINE_RE = /^\s*(?:[-*+]\s+)?(?:\*\*)?run(?:\*\*)?\s*:/i; // a "Run:" line, with an optional list marker and bold
+const MAX_EXCERPT_ECHO = 120; // a missing excerpt line prints cut at this length, after cleaning
+// `gh run view --log` line: <job> TAB <step> TAB <ISO timestamp>Z SPACE <content>; a BOM may open the first line.
+const LOG_PREFIX_RE = /^\ufeff?[^\t]*\t[^\t]*\t\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?/;
+const ANSI_RE = /\u001b\[[0-9;]*m/g;
+
+/**
+ * quick 261113-wb1: the prose of the Self-test report section for the run-URL scan (heading line excluded), by
+ * the same heading rule as selfTestBlock. Fenced code (the report JSON) and HTML comments are left out, so
+ * neither can name the run. Null when there is no section.
+ */
+function selfTestSection(body) {
+  let fence = null;
+  let inComment = false;
+  let level = 0;
+  const kept = [];
+  for (const full of String(body == null ? '' : body).split(/\r?\n/)) {
+    let line = full.length > SYNTAX_LINE_MAX ? full.slice(0, SYNTAX_LINE_MAX) : full;
+    if (!fence) {
+      let prose = '';
+      let rest = line;
+      for (;;) {
+        if (inComment) {
+          const end = rest.indexOf('-->');
+          if (end === -1) {
+            rest = '';
+            break;
+          }
+          rest = rest.slice(end + 3);
+          inComment = false;
+        }
+        const at = rest.indexOf('<!--');
+        if (at === -1) break;
+        prose += rest.slice(0, at);
+        rest = rest.slice(at + 4);
+        inComment = true;
+      }
+      line = prose + rest;
+    }
+    const open = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      if (open && open[1][0] === fence.ch && open[1].length >= fence.len && /^\s*(`{3,}|~{3,})\s*$/.test(line)) fence = null;
+      continue;
+    }
+    if (open) {
+      fence = { ch: open[1][0], len: open[1].length };
+      continue;
+    }
+    const h = headingOf(line);
+    if (h) {
+      if (level === 0 && h.text === SELF_TEST_TITLE) {
+        level = h.level;
+        continue;
+      }
+      if (level > 0 && h.level <= level) break;
+    }
+    if (level > 0) kept.push(line);
+  }
+  return level > 0 ? kept : null;
+}
+
+/**
+ * The github.com Actions run URL of the Self-test section, or null: the first URL on a "Run:" line, else the
+ * first URL in the section's prose. Only this exact shape is accepted (repo and numeric run id), because both
+ * go to `gh run view` as argv from an author-written body.
+ */
+function selfTestRunUrl(body) {
+  const lines = selfTestSection(body);
+  if (lines == null) return null;
+  const find = (list) => {
+    for (const l of list) {
+      const m = RUN_URL_RE.exec(l);
+      if (m) return { url: m[0], repo: m[1], runId: m[2], attempt: m[3] || null };
+    }
+    return null;
+  };
+  return find(lines.filter((l) => RUN_LINE_RE.test(l))) || find(lines);
+}
+
+/** The output_excerpt lines to look for: split on \n, a trailing \r dropped, blank lines skipped. Null when no string excerpt. */
+function excerptLines(body) {
+  const block = selfTestBlock(body);
+  if (block == null) return null;
+  let report;
+  try {
+    report = JSON.parse(block);
+  } catch {
+    return null;
+  }
+  if (!report || typeof report !== 'object' || typeof report.output_excerpt !== 'string') return null;
+  return report.output_excerpt
+    .split('\n')
+    .map((l) => l.replace(/\r$/, ''))
+    .map((text, i) => ({ text, n: i + 1 }))
+    .filter((l) => l.text.trim() !== '');
+}
+
+/** The log lines of a `gh run view --log` text with the gh prefix removed (a line without the prefix is kept whole). */
+function logContents(log) {
+  return String(log)
+    .split(/\r?\n/)
+    .map((l) => l.replace(LOG_PREFIX_RE, ''));
+}
+
+/** A log line matches an excerpt line when its content (as is, or with ANSI colour removed) equals it, ignoring surrounding whitespace. */
+function logHasLine(contents, text) {
+  const want = text.trim();
+  return contents.some((c) => c.trim() === want || (c.includes('\u001b') && c.replace(ANSI_RE, '').trim() === want));
+}
+
+/**
+ * Item 2: every non-blank output_excerpt line must appear in the linked run log, per log line. `gh run view
+ * --log` puts job, step and a timestamp before each line, so the prefix is removed first; a line then matches
+ * when the content equals it, ignoring surrounding whitespace (so `# pass 5171` is not in `# pass 51719` and `ok 1 - foo` is not in `not ok 1 - foo`).
+ * The run's head sha is read apart and compared with the PR head. A failed read is named, never thrown.
+ *
+ * @param {string} body PR body
+ * @param {{ghText?: Function, gh?: Function}} [deps]
+ * @param {string} [head] the PR head sha, for the run head comparison
+ * @returns {{status: 'ok'|'missing'|'no-run-url'|'no-excerpt'|'log-unread', runUrl: (string|null), runRepo: (string|null), lines: number, missingLine: (number|null), missingText: (string|null), missingOf: (number|null), error: (string|null), runHeadSha: (string|null), headMatch: (boolean|null), headError: (string|null)}}
+ */
+function checkExcerpt(body, deps = {}, head = '') {
+  const out = {
+    status: 'no-run-url', runUrl: null, runRepo: null, lines: 0, missingLine: null, missingText: null, missingOf: null, error: null,
+    runHeadSha: null, headMatch: null, headError: null,
+  };
+  const run = selfTestRunUrl(body);
+  if (!run) return out;
+  out.runUrl = run.url;
+  out.runRepo = run.repo;
+  const lines = excerptLines(body);
+  if (!lines || lines.length === 0) return Object.assign(out, { status: 'no-excerpt' });
+  out.lines = lines.length;
+  const attempt = run.attempt ? ['--attempt', run.attempt] : [];
+  let contents;
+  try {
+    contents = logContents((deps.ghText || defaultGhText)(['run', 'view', run.runId, '--repo', run.repo, ...attempt, '--log']));
+  } catch (err) {
+    return Object.assign(out, { status: 'log-unread', error: firstErrorLine(err) });
+  }
+  const miss = lines.find((l) => !logHasLine(contents, l.text));
+  if (miss) Object.assign(out, { status: 'missing', missingLine: miss.n, missingText: cut(miss.text, MAX_EXCERPT_ECHO), missingOf: lines.length });
+  else out.status = 'ok';
+  try {
+    const view = (deps.gh || defaultGh)(['run', 'view', run.runId, '--repo', run.repo, ...attempt, '--json', 'headSha']);
+    if (!view || typeof view.headSha !== 'string' || view.headSha === '') throw new Error('run view reply has no headSha');
+    out.runHeadSha = view.headSha;
+    out.headMatch = head === '' ? null : lower(view.headSha) === lower(head); // an unknown PR head is unknown, not a mismatch
+  } catch (err) {
+    out.headError = firstErrorLine(err);
+  }
+  return out;
+}
+
 /** The --body lines of one PR block. */
 function bodyLines(b) {
   if (b.error) return [`  body: unknown (read failed: ${clean(b.error)})`];
@@ -1405,6 +1615,21 @@ function bodyLines(b) {
   else if (s.status === 'unparsable') lines.push('  body: Self-test report unparsable JSON');
   else if (s.status === 'no-head-sha') lines.push('  body: Self-test report has no head_sha string');
   else lines.push('  body: Self-test report none');
+  const x = b.excerpt;
+  if (x) {
+    if (x.status === 'ok') {
+      const heads = x.headMatch === true ? 'run head sha matches the PR head' : x.headMatch === false ? 'run head sha differs from the PR head, see below' : 'run head sha not compared, see below';
+      lines.push(`  body: excerpt in run log: ok (${x.lines} lines; run ${clean(x.runRepo)}, ${heads})`);
+    } else if (x.status === 'missing') lines.push(`  body: excerpt not in run log: line ${x.missingLine} "${clean(x.missingText)}" (first missing of ${x.missingOf}; not found in the log gh returned, which an excerpt from a local run or an earlier attempt will not be in)`);
+    else if (x.status === 'no-run-url') lines.push('  body: no run URL');
+    else if (x.status === 'no-excerpt') lines.push('  body: excerpt not checked: no output_excerpt string, or no non-blank line, in the Self-test block');
+    else lines.push(`  body: excerpt not checked: run log unread (${clean(x.error)})`);
+    if (x.status === 'ok' || x.status === 'missing') {
+      if (x.headError) lines.push(`  body: run head sha unread (${clean(x.headError)})`);
+      else if (x.headMatch == null && x.runHeadSha) lines.push('  body: run head sha not compared: the PR head is unknown');
+      else if (x.headMatch === false) lines.push(`  body: run head mismatch: the run ran on ${clean(short(x.runHeadSha, 7))}, the PR head is ${clean(short(b.head, 7))}`);
+    }
+  }
   lines.push(`  body: counts checked: files-changed phrases only (changedFiles ${b.changedFiles == null ? 'unknown' : b.changedFiles})`);
   for (const m of b.filesChanged) lines.push(`    L${m.line} "${clean(m.phrase)}" says ${m.n}`);
   return lines;
@@ -1931,6 +2156,7 @@ function runCli(argv, deps = {}) {
 module.exports = {
   ballLineOf: ballLine,
   bodyLines,
+  checkExcerpt,
   chooseCr,
   classifyBodyShas,
   clean,
@@ -1943,6 +2169,7 @@ module.exports = {
   deriveOverlap,
   deriveQueue,
   deriveRerequests,
+  deriveUpstreamCr,
   fetchBody,
   fetchCr,
   fetchOverlap,
@@ -1959,6 +2186,7 @@ module.exports = {
   runCli,
   selfTestBinding,
   selfTestBlock,
+  selfTestRunUrl,
 };
 
 if (require.main === module) process.exitCode = runCli(process.argv.slice(2));

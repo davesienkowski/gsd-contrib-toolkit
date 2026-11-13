@@ -1128,6 +1128,7 @@ test('2u4 body: the 5192 capture reports the Self-test report bound to the head 
     '  body: shas 8 head, 8 base, 0 pr commit, 0 former head, 0 earlier commit, 0 ambiguous, 1 unresolved ' + BODY_TAIL.replace('%s', 'aff15bafb'),
     '    L44 067a4d1c6c unresolved (may be an older base or an unrelated commit: check)',
     '  body: Self-test report bound to the head',
+    '  body: no run URL', // quick 261113-wb1: the capture's Self-test section links no run
     '  body: counts checked: files-changed phrases only (changedFiles 22)',
   ]);
   assert.ok(r.stdout.endsWith(CR_FOOTER + '\n'), 'the R8 footer line follows the default footer');
@@ -1175,6 +1176,7 @@ test('2u4 body: every token class, uppercase and duplicate tokens, ignored runs,
     '    L4 cccc04800 pr commit',
     '    L14 eeee048000000000000000000000000000000000 former head',
     `  body: Self-test report STALE (head_sha EEEE048000000000000000000000000000000000, head ${head})`,
+    '  body: no run URL', // quick 261113-wb1
     '  body: counts checked: files-changed phrases only (changedFiles 2)',
     '    L5 "3 files changed" says 3',
   ]);
