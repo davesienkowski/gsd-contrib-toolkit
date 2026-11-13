@@ -510,3 +510,49 @@ test('R3-I2 W-05: a --dir=D spelling still stubs an old clean report on a usage 
   assert.equal(u.status, 2);
   assert.match(fs.readFileSync(reportPath(fx), 'utf8'), /REFUSED/);
 });
+
+// --- Coordinator adversarial review of 49349f1..90282df (quick 261113-cde) ------------------------------
+
+test('review B-01: rule words inside tag attributes, JSX props and a stray < ... > are still read', () => {
+  const fx = makeRepo({}, {
+    'a.html': '<img alt="The gate always refuses unsigned pushes">\n',
+    'b.html': '<abbr title="This check must never be skipped">x</abbr>\n',
+    'c.jsx': '<Callout title="Tokens never expire ..." />\n',
+    'd.js': '// lo<hi holds so the scan never overruns mid>lo\n',
+    'e.md': 'The hook <must not> be skipped\n',
+  });
+  const r = run(fx, NOBODY);
+  for (const f of ['a.html', 'b.html', 'c.jsx', 'd.js', 'e.md']) assert.ok(claims(r).some((c) => c.loc.startsWith(f)), f);
+});
+
+test('review B-01: one 200 KB line of repeated "<a x=" is scanned in under 2 s', () => {
+  const fx = makeRepo({}, { 'big.txt': `${'<a x='.repeat(40000)}\n` });
+  const t0 = Date.now();
+  const r = run(fx, NOBODY);
+  assert.equal(r.code, 0, r.err);
+  assert.ok(Date.now() - t0 < 2000, `took ${Date.now() - t0} ms`);
+});
+
+test('review W-01: a broadening clause added next to an unchanged trigger line is a claim', () => {
+  const fx = makeRepo({ 'a.cjs': '// This guard never fails\nlet a = 1;\n' }, { 'a.cjs': '// This guard never fails\n// whatever process holds the lock.\nlet a = 1;\n' });
+  assert.ok(claims(run(fx, NOBODY)).some((c) => /never fails/.test(c.text)), 'sentence with an added line is a candidate');
+});
+
+test('review W-02: a 0x01 byte inside a commit message does not drop the rest', () => {
+  const fx = makeRepo({}, { 'a.cjs': 'let z = 1;\n' });
+  fs.writeFileSync(path.join(fx.root, 'msg.txt'), 'tidy \x01 the queue never drops jobs\n');
+  fs.writeFileSync(path.join(fx.root, 'a.cjs'), 'let z = 2;\n');
+  git(fx.root, 'add', 'a.cjs');
+  git(fx.root, 'commit', '-q', '-F', path.join(fx.root, 'msg.txt'));
+  assert.ok(claims(run(fx, NOBODY)).some((c) => c.kind === 'commit' && /never drops jobs/.test(c.text)));
+});
+
+test('review W-03: a policy whose patterns use single spaces is refused at load (wrapped sample)', () => {
+  const fx = makeRepo({}, { 'a.cjs': '// Adds a retry.\n' });
+  const shipped = JSON.parse(fs.readFileSync(path.join(__dirname, 'claims-delta.policy.json'), 'utf8'));
+  const single = { ...shipped, patterns: shipped.patterns.map((p) => (p.id === 'scope-negation' ? { ...p, regex: p.regex.replace(/\\s\+/g, ' ') } : p)) };
+  const f = path.join(fx.dir, 'single.json');
+  fs.writeFileSync(f, JSON.stringify(single));
+  const r = run(fx, [...NOBODY, '--policy', f, '--policy-reason', 'a single-space policy for the test']);
+  assert.equal(r.code, 1, r.out + r.err);
+});
