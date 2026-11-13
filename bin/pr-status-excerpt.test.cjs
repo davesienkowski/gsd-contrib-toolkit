@@ -321,7 +321,7 @@ test('R3: an unknown PR head is "not compared", never a mismatch against an empt
   const x = prStatus.checkExcerpt(body(), deps); // no head given
   assert.equal(x.status, 'ok');
   assert.equal(x.headMatch, null);
-  const text = prStatus.bodyLines({ head: '', counts: { head: 0, base: 0, 'pr commit': 0, 'former head': 0, 'earlier commit': 0, ambiguous: 0, unresolved: 0 }, tokens: [], selfTest: { status: 'none' }, changedFiles: null, filesChanged: [], excerpt: x }).join('\\n');
+  const text = prStatus.bodyLines({ head: '', counts: { head: 0, base: 0, 'pr commit': 0, 'former head': 0, 'earlier commit': 0, ambiguous: 0, unresolved: 0 }, tokens: [], selfTest: { status: 'none' }, changedFiles: null, filesChanged: [], excerpt: x }).join('\n');
   assert.doesNotMatch(text, /run head mismatch/);
   assert.match(text, /^ {2}body: run head sha not compared: the PR head is unknown$/m);
 });

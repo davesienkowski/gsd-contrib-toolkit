@@ -667,7 +667,7 @@ function deriveUpstreamCr(view, reviews, timeline, timelineError) {
       if (d && d.originalState === 'CHANGES_REQUESTED') counts = true;
       else if (!d || !d.found) unclassified += 1;
     }
-    if (counts) rounds.set(r.commit_id ? String(r.commit_id) : `review ${r.id}`, true);
+    if (counts) rounds.set(r.commit_id ? lower(r.commit_id) : `review ${r.id}`, true);
   }
   const keys = [...rounds.keys()];
   return {
@@ -1584,7 +1584,7 @@ function checkExcerpt(body, deps = {}, head = '') {
     const view = (deps.gh || defaultGh)(['run', 'view', run.runId, '--repo', run.repo, ...attempt, '--json', 'headSha']);
     if (!view || typeof view.headSha !== 'string' || view.headSha === '') throw new Error('run view reply has no headSha');
     out.runHeadSha = view.headSha;
-    out.headMatch = head !== '' && lower(view.headSha) === lower(head);
+    out.headMatch = head === '' ? null : lower(view.headSha) === lower(head); // an unknown PR head is unknown, not a mismatch
   } catch (err) {
     out.headError = firstErrorLine(err);
   }
@@ -1626,6 +1626,7 @@ function bodyLines(b) {
     else lines.push(`  body: excerpt not checked: run log unread (${clean(x.error)})`);
     if (x.status === 'ok' || x.status === 'missing') {
       if (x.headError) lines.push(`  body: run head sha unread (${clean(x.headError)})`);
+      else if (x.headMatch == null && x.runHeadSha) lines.push('  body: run head sha not compared: the PR head is unknown');
       else if (x.headMatch === false) lines.push(`  body: run head mismatch: the run ran on ${clean(short(x.runHeadSha, 7))}, the PR head is ${clean(short(b.head, 7))}`);
     }
   }
