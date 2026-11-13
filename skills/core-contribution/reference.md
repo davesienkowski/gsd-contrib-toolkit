@@ -497,3 +497,36 @@ Children: each is its own issue + PR. The child **PR title** follows the same en
 - A **changeset-only commit can skip the Tests workflow** → the head shows green meta-checks while a prior commit's Tests FAILED. Always read check-runs on the head SHA and confirm Tests ran there.
 - Reproduce `lint:ci` in a **clean worktree** — a stray untracked `gsd-core/bin/lib/*.cjs` in the main checkout poisons `eslint .`.
 - Don't rebase for `mergeStateStatus: BEHIND`: with the merge queue the queue tests the PR on top of `next`, without one the maintainer runs Update branch at merge time (not your job), and a push after approval dismisses the approval (CTK-ADR-0012). Rebase only for DIRTY or a needed change.
+
+## claims-delta: the author fix round check (advisory, quick 261113-cde)
+
+`<gsd-contrib-toolkit>` below is the path of your gsd-contrib-toolkit clone. The capability bundle does not ship `bin/`, so the script runs from the clone.
+
+```bash
+gh pr view <n> --json body -q .body > old.txt      # the body as it is now, BEFORE you edit it
+# ... edit the body to the current state, save as new.txt ...
+node <gsd-contrib-toolkit>/bin/claims-delta.cjs <prev-pushed-sha>..HEAD --dir "$D" --body-old old.txt --body-new new.txt          # report
+node <gsd-contrib-toolkit>/bin/claims-delta.cjs <prev-pushed-sha>..HEAD --dir "$D" --body-old old.txt --body-new new.txt --gate   # refuse while unresolved
+```
+
+`origin/next...HEAD` (three dots) diffs from the merge base: use it for the whole PR, and `<prev-pushed-sha>..HEAD` for one round. `$D` is any existing directory outside the repo's tracked files; the report lands in `$D/CLAIMS-DELTA.md` and a one-line JSON goes to stdout. Exit 0 = clean of unresolved rule-shaped claims (or report mode), 1 = refused or any doubt, 2 = usage. A run that fails or is killed leaves a `REFUSED` stub in `CLAIMS-DELTA.md`, never an older clean report.
+
+What it reads: every added line of every readable file in the range (code, comments, tests, markdown, anything), every added commit-message line (all parents) and every body-diff line. The label it gives a line (comment, title, code, adr, doc, commit, body) is cosmetic and never decides what is read. Each match is read with up to 2 unchanged lines either side, after leading comment, quote and list markers, emphasis marks and code-span marks are blanked (only bare tags such as `<b>` and `</b>` are stripped, so `<b>not</b>` reads through; tags with attributes and a stray `<...>` are not, so words in an attribute are read); a sentence with any added line, from its first line to its last, is a candidate. What it does not read: wording with no trigger word, a qualifier you deleted, an unchanged half more than 2 lines away. Binary files, files over the 64 MiB buffer and files whose parsed added lines differ from git's own count are listed `Unexamined files`, and `--gate` refuses until `--allow-unexamined "<reason>"` records that you read them by hand.
+
+Resolve a flagged claim with `$D/CLAIMS-RESOLUTIONS.json`, a JSON array. Every field is strict (an unknown field, a duplicate id or a string number is refused):
+
+```json
+[
+  { "id": "<id from CLAIMS-DELTA.md>", "kind": "oracle", "new_inputs": 12,
+    "evidence": "scripts/oracle-switch.cjs", "command": "node scripts/oracle-switch.cjs --seed 7" },
+  { "id": "<id>", "kind": "not-a-claim", "reason": "quotes the issue title, states no behavior" }
+]
+```
+
+- `kind` `oracle` or `generator`: `new_inputs` is an integer at or above `minNewInputs` (policy, default 10) and counts inputs that are NEW (none from an earlier review round); `evidence` is a git-tracked, non-empty file inside the repo that is either changed in the range or a `*.test.*` file; `command` records how the inputs were produced. The count is self-reported and the gate cannot check it.
+- `kind` `not-a-claim`: a reason of 15+ characters, listed under "Reasoned dismissals" in the report. Use it for a code line or quoted text that matches a pattern but states no rule, and for upstream text that a merged base branch added. It is also the way to clear an `oversize` claim (over 2000 characters); a rewrite clears it too.
+- A weakened rewrite needs no entry: re-run, and the rewritten line is judged afresh (it needs an entry again only if it still matches a pattern).
+- A claim id comes from the matched lines only, so an edit to a neighbouring line does not change a resolved claim's id.
+- Patterns and `minNewInputs` live in `bin/claims-delta.policy.json`. A different policy needs `--policy FILE --policy-reason "<15+ chars>"`; the report records its path, sha1 and reason.
+- `--gate` also refuses a run with no `--body-old/--body-new` unless `--no-body "<reason>"` is given, and a run that examined nothing.
+- Each side of the range is a revision name that does not start with `-`; both sides are resolved to commits before git runs.
