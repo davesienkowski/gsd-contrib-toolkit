@@ -327,3 +327,23 @@ test('W-05: evidence must be changed in the range or be a test file', () => {
   resolution(fx, { evidence: 'README.txt' });
   assert.equal(run(fx, ['--gate', ...NOBODY]).code, 1);
 });
+
+// --- R1 iteration 2 rows ------------------------------------------------------------------------------
+
+test('I2: an unterminated title line with many backslashes does not hang the parser', () => {
+  const fx = makeRepo({}, { 'x.test.cjs': `it('${'\\\\'.repeat(60)}\n` });
+  const t0 = Date.now();
+  run(fx, NOBODY);
+  assert.ok(Date.now() - t0 < 5000);
+});
+
+test('I2: titles in *.spec.* files and __tests__ dirs are sources', () => {
+  const fx = makeRepo({}, { 'a.spec.cjs': "it('never leaks', () => {});\n", '__tests__/b.cjs': "test('always safe', () => {});\n" });
+  const r = run(fx, NOBODY);
+  assert.equal(sentences(r.json).filter((s) => s.kind === 'title').length, 2);
+});
+
+test('I2: a code-only round with a commit message is examined, not refused as vacuous', () => {
+  const fx = makeRepo({}, { 'a.cjs': 'module.exports = 1;\n' });
+  assert.equal(run(fx, ['--gate', ...NOBODY]).code, 0);
+});
