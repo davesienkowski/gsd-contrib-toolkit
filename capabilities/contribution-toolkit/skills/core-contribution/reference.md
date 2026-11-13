@@ -519,10 +519,12 @@ Resolve a flagged sentence with `$D/CLAIMS-RESOLUTIONS.json`, a JSON array. Ever
 ]
 ```
 
-- `kind` `oracle` or `generator`: `new_inputs` is an integer at or above `minNewInputs` (policy, default 10) and counts inputs that are NEW (none from an earlier review round); `evidence` is a git-tracked, non-empty file inside the repo; `command` records how the inputs were produced. The count is self-reported and the gate cannot check it.
+- `kind` `oracle` or `generator`: `new_inputs` is an integer at or above `minNewInputs` (policy, default 10) and counts inputs that are NEW (none from an earlier review round); `evidence` is a git-tracked, non-empty file inside the repo that is either changed in the range or a `*.test.*` file; `command` records how the inputs were produced. The count is self-reported and the gate cannot check it.
 - `kind` `not-a-rule`: a reason of 15+ characters, listed under "Reasoned dismissals" in the report. It never resolves an `oversize` sentence (over 2000 characters): rewrite it.
 - A weakened rewrite needs no entry: re-run, and the rewritten sentence is judged afresh (it needs an entry again only if it still matches a pattern).
 - Patterns and `minNewInputs` live in `bin/claims-delta.policy.json`. A different policy needs `--policy FILE --policy-reason "<15+ chars>"`; the report records its path, sha1 and reason.
-- `--gate` also refuses a run with no `--body-old/--body-new` unless `--no-body "<reason>"` is given, and a run that examined nothing.
+- `--gate` also refuses a run with no `--body-old/--body-new` unless `--no-body "<reason>"` is given, a run whose only sentences are commit messages, and a run that changed files of a type it has no extractor for (anything but markdown, JS/TS and #-comment languages such as .sh, .py, .yml): the report lists them as `Unexamined files`, and `--allow-unexamined "<reason>"` records that you read them by hand.
+- A range that includes a merge of the base branch also contains the upstream author's text; mark those sentences `not-a-rule` with the reason "upstream text".
+- Each side of the range is a revision name that does not start with `-`; both sides are resolved to commits before git runs.
 
-Measured on gsd-core `5f166e84bc..1e345a56d` (the #5119 fix round, 2026-11-13): 21 of 40 sentences flagged (comments 16 of 26, commit messages 5 of 13, one test title 0 of 1). The "A `switch` case body is not a miss." sentence is flagged by `negated`. Expect about half of a round's sentences to need a resolution or a rewrite; tune the patterns in the policy file, never by editing the report.
+Measured on gsd-core `5f166e84bc..1e345a56d` (the #5119 fix round, 2026-11-13): 21 of 40 sentences flagged (policy sha1 f54570113105109bfab920f68951f335dec9d6f0) (comments 16 of 26, commit messages 5 of 13, one test title 0 of 1). The "A `switch` case body is not a miss." sentence is flagged by `negated`. Expect about half of a round's sentences to need a resolution or a rewrite; tune the patterns in the policy file, never by editing the report.
