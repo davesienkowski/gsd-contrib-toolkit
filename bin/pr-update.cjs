@@ -54,7 +54,7 @@ const SELFTEST_BRANCH = 'selftest/run';
 const WORKFLOW_PATH = '.github/workflows/selftest.yml';
 const EXCERPT_MAX = 2000; // the live policy's output_excerpt limit, in UTF-16 units (.length)
 const EXCERPT_LINES = 40;
-const MAX_DISPATCH_EMITS = 2;
+const MAX_DISPATCH_CHURN = 2; // SELFTEST_SHA changed by someone else between two of this bundle's dispatch emits
 const RE_EMIT_NOTE_MS = 10 * 60 * 1000;
 const MAX_BUFFER = 64 * 1024 * 1024;
 const LEDGER_VERSION = 1;
@@ -86,6 +86,7 @@ function read(cmd, args, opts = {}) {
 }
 const readJson = (cmd, args, opts) => JSON.parse(read(cmd, args, opts));
 const ghApi = (p) => readJson('gh', ['api', p]);
+const ghApiAll = (p) => readJson('gh', ['api', '--paginate', '--slurp', p]).flat();
 
 // ---------- context budget ----------
 
@@ -116,7 +117,10 @@ function ctxFromTranscript(file) {
 function checkBudget(opts) {
   const budget = opts.budget ? Number(opts.budget) : CTX_BUDGET_TOKENS;
   let used;
-  if (opts['ctx-tokens'] !== undefined) used = Number(opts['ctx-tokens']);
+  if (opts['ctx-tokens'] !== undefined) {
+    if (!/^[0-9]+$/.test(opts['ctx-tokens'])) throw new UsageError('--ctx-tokens must be a plain non-negative integer');
+    used = Number(opts['ctx-tokens']);
+  }
   else if (opts.transcript) used = ctxFromTranscript(opts.transcript);
   else throw new UsageError('context size unknown: pass --ctx-tokens N or --transcript <session.jsonl> (the script cannot read the session size itself)');
   if (!Number.isFinite(used) || used < 0 || !Number.isFinite(budget)) throw new UsageError('--ctx-tokens and --budget must be numbers');
@@ -251,7 +255,8 @@ function newLedger(o) {
     runUrl: null,
     artifactDir: null,
     counts: null,
-    dispatchEmits: 0,
+    dispatchSeen: null,
+    dispatchChurn: 0,
     steps: STEP_NAMES.map((name, i) => ({ id: i + 1, name, state: 'pending', at: null, emittedAt: null, note: null })),
   };
 }
@@ -319,7 +324,9 @@ function makeContext(o, ledger, work) {
     ledger,
     work,
     prView() {
-      return readJson('gh', ['pr', 'view', String(ledger.pr), ...prUrl, '--json', 'headRefOid,headRefName,isCrossRepository,headRepositoryOwner,body,title']);
+      const v = readJson('gh', ['pr', 'view', String(ledger.pr), ...prUrl, '--json', 'headRefOid,headRefName,isCrossRepository,headRepositoryOwner,body,title']);
+      v.body = String(v.body || '').replace(/\r\n/g, '\n'); // a CRLF body would hide every heading and fence from the scanners
+      return v;
     },
     assertHeadStill() {
       const v = ctx.prView();
@@ -392,10 +399,12 @@ const STEPS = [
       ledger.runUrl = run.html_url;
       return done(`run ${run.id}`);
     }
-    if (ledger.dispatchEmits >= MAX_DISPATCH_EMITS) {
-      throw new StepFail(`${SELFTEST_BRANCH} was emitted for dispatch ${ledger.dispatchEmits} times and SELFTEST_SHA is still ${yml.selftestSha}: another bundle is rewriting it; settle that first`);
+    // Re-emitting the same write after a dead session is fine; SELFTEST_SHA moving under us means another bundle shares the branch.
+    if (ledger.dispatchSeen && ledger.dispatchSeen !== yml.selftestSha) ledger.dispatchChurn += 1;
+    if (ledger.dispatchChurn > MAX_DISPATCH_CHURN) {
+      throw new StepFail(`SELFTEST_SHA on ${SELFTEST_BRANCH} changed ${ledger.dispatchChurn} times between this bundle's dispatch emits (now ${yml.selftestSha}): another bundle is rewriting it; settle that first`);
     }
-    ledger.dispatchEmits += 1;
+    ledger.dispatchSeen = yml.selftestSha;
     const next = yml.text.replace(/^(\s*SELFTEST_SHA:\s*)\S+/m, `$1${ledger.head}`);
     const file = c.writeWork('selftest.b64', Buffer.from(next).toString('base64'));
     return emit(['gh', 'api', '-X', 'PUT', `repos/${EXPERIMENTS}/contents/${WORKFLOW_PATH}`, '-f', `message=selftest: run gsd-core ${ledger.head.slice(0, 9)} (PR ${ledger.pr})`, '-f', `branch=${SELFTEST_BRANCH}`, '-f', `sha=${yml.sha}`, '-F', `content=@${path.resolve(file)}`]);
@@ -447,7 +456,7 @@ const STEPS = [
     const v = c.assertHeadStill();
     const sec = selfTestSection(v.body);
     const report = selfTestReport(v.body);
-    if (report && lower(report.head_sha) === lower(ledger.head) && sec.includes(ledger.runUrl) && !v.body.includes('Self-test pending for')) return done();
+    if (report && lower(report.head_sha) === lower(ledger.head) && sec.includes(ledger.runUrl) && !sec.includes('Self-test pending for')) return done();
     const inputs = loadReportInputs(o['report-inputs']);
     const headTxt = fs.readFileSync(path.join(ledger.artifactDir, 'head.txt'), 'utf8').split('\n').filter((l) => l !== '');
     const out = fs.readFileSync(path.join(ledger.artifactDir, 'npmtest.out'), 'utf8');
@@ -471,7 +480,7 @@ const STEPS = [
   (c) => {
     const { o, ledger } = c;
     const v = c.assertHeadStill();
-    const comments = ghApi(`repos/${o.repo}/issues/${ledger.pr}/comments?per_page=100`);
+    const comments = ghApiAll(`repos/${o.repo}/issues/${ledger.pr}/comments?per_page=100`);
     if ((Array.isArray(comments) ? comments : []).some((m) => String(m.body || '').includes(marker(ledger.head)))) return done();
     let text = '';
     try {
@@ -595,8 +604,9 @@ function runBundle(o) {
   acquireLock(`${file}.lock`);
   try {
     // Preconditions read the PR once; a refusal here leaves no ledger.
-    const pre = readJson('gh', ['pr', 'view', String(o.pr), '--repo', o.repo, '--json', 'isCrossRepository,headRepositoryOwner']);
+    const pre = readJson('gh', ['pr', 'view', String(o.pr), '--repo', o.repo, '--json', 'isCrossRepository,headRepositoryOwner,headRefName']);
     if (!pre.isCrossRepository) throw new UsageError(`PR ${o.repo}#${o.pr} is not from a fork: the bundle publishes to ${SELFTEST_FORK} only and never writes to ${o.repo}`);
+    if (pre.headRefName !== o.branch) throw new UsageError(`--branch ${o.branch} is not the PR's headRefName ${pre.headRefName}`);
     if (pre.headRepositoryOwner && lower(pre.headRepositoryOwner.login) !== lower(SELFTEST_FORK.split('/')[0])) throw new UsageError(`PR head repository owner is ${pre.headRepositoryOwner.login}, not ${SELFTEST_FORK.split('/')[0]}`);
 
     let ledger = parseLedger(file);
