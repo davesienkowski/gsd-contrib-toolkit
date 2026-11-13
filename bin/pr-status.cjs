@@ -682,7 +682,7 @@ function deriveUpstreamCr(view, reviews, timeline, timelineError) {
 function upstreamCrLines(u) {
   const floor = u.unclassifiedDismissed > 0 ? ` (at least; ${u.unclassifiedDismissed} dismissed review(s) not classified by the timeline)` : '';
   const lines = [`  upstream CR rounds: ${u.rounds}${floor}`];
-  if (u.rounds >= 3) lines.push(`  same band: ${u.band.label} (${u.band.reason}); last 3 rounds ${u.lastThree.map((c) => clean(short(c, 7))).join(', ')}`);
+  if (u.rounds >= 3) lines.push(`  same band: ${u.band.label} (${u.band.reason}); last 3 rounds ${u.lastThree.map((c) => clean(/^[0-9a-f]{40}$/i.test(c) ? short(c, 7) : c)).join(', ')}`);
   return lines;
 }
 
@@ -1541,16 +1541,16 @@ function logContents(log) {
     .map((l) => l.replace(LOG_PREFIX_RE, ''));
 }
 
-/** A log line matches an excerpt line when its content (as is, or with ANSI colour removed) equals it or ends with it after whitespace. */
+/** A log line matches an excerpt line when its content (as is, or with ANSI colour removed) equals it, ignoring surrounding whitespace. */
 function logHasLine(contents, text) {
-  const hit = (c) => c === text || (c.endsWith(text) && /\s/.test(c[c.length - text.length - 1]));
-  return contents.some((c) => hit(c) || (c.includes('\u001b') && hit(c.replace(ANSI_RE, ''))));
+  const want = text.trim();
+  return contents.some((c) => c.trim() === want || (c.includes('\u001b') && c.replace(ANSI_RE, '').trim() === want));
 }
 
 /**
  * Item 2: every non-blank output_excerpt line must appear in the linked run log, per log line. `gh run view
  * --log` puts job, step and a timestamp before each line, so the prefix is removed first; a line then matches
- * when the content equals it or ends with it after whitespace (so `# pass 5171` is not in `# pass 51719`).
+ * when the content equals it, ignoring surrounding whitespace (so `# pass 5171` is not in `# pass 51719` and `ok 1 - foo` is not in `not ok 1 - foo`).
  * The run's head sha is read apart and compared with the PR head. A failed read is named, never thrown.
  *
  * @param {string} body PR body
