@@ -22,8 +22,11 @@
  * `# pass` summary per chunk); 5 body: unedited excerpt + run URL + head + counts, checked by the LIVE
  * self-test-report-policy; 6 re-review comment; 7 re-request the CHANGES_REQUESTED reviewers; 8 postcondition.
  *
- * DRIVER, NOT RUNNER. Each invocation verifies steps in order with READ-ONLY commands this script runs itself (gh
- * reads, git ls-remote, gh run download, pr-status CLI, the live policy script). The first unverified step is EMITTED
+ * DRIVER, NOT RUNNER. Each invocation verifies steps in order with commands that change no remote and no existing repo:
+ * gh reads, git ls-remote, gh run download (into this script's own work dir), the pr-status CLI and the live policy script.
+ * Its local side effects are its own files (the ledger, the lock and the work dir under --ledger-dir) and, in step 5 only,
+ * a throwaway bare repo under the OS temp dir into which origin/next of open-gsd/gsd-core is fetched shallowly for the
+ * policy files and which is deleted again; no existing checkout (the shared gsd-core clone included) is fetched into. The first unverified step is EMITTED
  * as `NEXT: <command>` (exit 3) and never spawned: the caller runs it as its own Bash call, so the caller's hooks
  * decide, then re-runs `run`. No `mark` verb: a step is done only when a read proves it. There is no write seam.
  *   Exit: 0 all eight steps verified; 1 a step failed (stops there); 2 usage or refusal; 3 a write is emitted
@@ -35,7 +38,9 @@
  * (2) The script cannot read the session size; --ctx-tokens is caller-reported and --transcript reads the harness's
  * own session file, so a caller that lies defeats the 600000-token refusal. (3) The ledger is a disk file in the
  * notes repo (untracked); the lock file is not a mutex for the emit-to-rerun window, the marker and head checks narrow
- * a double write (they do not prevent it). (4) The run URL points at a runner repo that may be private.
+ * a double write (they do not prevent it). (4) The run URL points at a runner repo that may be private. (5) The pr-status
+ * path override PR_UPDATE_PRSTATUS is a TEST SEAM, honoured only when NODE_ENV=test and refused (exit 2) otherwise.
+ * (6) A non-fast-forward publish after a rebase stays stuck by design: force pushes are never grantable (CD-5).
  *
  * Node built-ins only; argv arrays, no shell.
  *
@@ -49,6 +54,8 @@ const { spawnSync } = require('node:child_process');
 
 const CTX_BUDGET_TOKENS = 600000; // policy value, tunable with --budget
 const EXPERIMENTS = 'davesienkowski/gsd-core-experiments';
+const UPSTREAM_URL = 'https://github.com/open-gsd/gsd-core.git';
+const MAX_TRANSCRIPT_BYTES = 256 * 1024 * 1024;
 const SELFTEST_FORK = 'davesienkowski/gsd-core';
 const SELFTEST_BRANCH = 'selftest/run';
 const WORKFLOW_PATH = '.github/workflows/selftest.yml';
@@ -86,6 +93,13 @@ function read(cmd, args, opts = {}) {
 }
 const readJson = (cmd, args, opts) => JSON.parse(read(cmd, args, opts));
 const ghApi = (p) => readJson('gh', ['api', p]);
+function readArtifact(dir, name) {
+  try {
+    return fs.readFileSync(path.join(dir, name), 'utf8');
+  } catch (e) {
+    throw new StepFail(`the run artifact has no readable ${name} in ${dir} (${e.code || e.message}); the hosted workflow did not produce it`);
+  }
+}
 const ghApiAll = (p) => readJson('gh', ['api', '--paginate', '--slurp', p]).flat();
 
 // ---------- context budget ----------
@@ -93,8 +107,11 @@ const ghApiAll = (p) => readJson('gh', ['api', '--paginate', '--slurp', p]).flat
 function ctxFromTranscript(file) {
   let text;
   try {
+    const size = fs.statSync(file).size;
+    if (size > MAX_TRANSCRIPT_BYTES) throw new UsageError(`transcript ${file} is too large to read (${size} bytes, limit ${MAX_TRANSCRIPT_BYTES}); pass --ctx-tokens N instead`);
     text = fs.readFileSync(file, 'utf8');
   } catch (e) {
+    if (e instanceof UsageError) throw e;
     throw new UsageError(`cannot read transcript ${file}: ${e.message}`);
   }
   const lines = text.split('\n').filter(Boolean);
@@ -105,13 +122,14 @@ function ctxFromTranscript(file) {
     } catch {
       continue;
     }
+    if (o && o.isSidechain === true) continue; // a subagent's context is not this session's
     const m = o && o.message;
     const u = m && m.usage;
     if (!u || (m.model && m.model === '<synthetic>')) continue;
-    const sum = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0);
+    const sum = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.output_tokens || 0);
     if (sum > 0) return sum;
   }
-  throw new UsageError(`no assistant line with usage above 0 in ${file}; pass --ctx-tokens N instead`);
+  throw new UsageError(`no main-chain assistant line with usage above 0 in ${file}; pass --ctx-tokens N instead`);
 }
 
 function checkBudget(opts) {
@@ -211,7 +229,12 @@ function pendingLine(ledger) {
 
 // ---------- ledger and lock ----------
 
-const ledgerBase = (dir, repo, pr) => path.join(dir, `${repo.replace('/', '__')}__${pr}`);
+/** owner__name__N with '_' inside a component percent-encoded, so '__' only ever separates components (a__b/c vs a/b__c). */
+function ledgerFileName(repo, pr) {
+  const [owner, name] = repo.split('/').map((x) => x.replace(/_/g, '%5F'));
+  return `${owner}__${name}__${pr}`;
+}
+const ledgerBase = (dir, repo, pr) => path.join(dir, ledgerFileName(repo, pr));
 
 function parseLedger(file) {
   let text;
@@ -334,7 +357,7 @@ function makeContext(o, ledger, work) {
       return v;
     },
     prStatus() {
-      const script = process.env.PR_UPDATE_PRSTATUS || path.join(__dirname, 'pr-status.cjs');
+      const script = (process.env.NODE_ENV === 'test' && process.env.PR_UPDATE_PRSTATUS) || path.join(__dirname, 'pr-status.cjs');
       const r = spawnSync(process.execPath, [script, '--json', '--body', ...prUrl, String(ledger.pr)], { encoding: 'utf8', maxBuffer: MAX_BUFFER });
       let j = null;
       try {
@@ -435,11 +458,11 @@ const STEPS = [
     const dir = path.join(c.work, `run-${ledger.runId}-${Date.now()}`);
     fs.mkdirSync(c.work, { recursive: true });
     read('gh', ['run', 'download', String(ledger.runId), '--repo', EXPERIMENTS, '-n', 'selftest', '-D', dir]);
-    const head = fs.readFileSync(path.join(dir, 'head.txt'), 'utf8').split('\n').filter((l) => l !== '');
+    const head = readArtifact(dir, 'head.txt').split('\n').filter((l) => l !== '');
     if (lower(head[0]) !== lower(ledger.head)) throw new StepFail(`head.txt names ${head[0]}, not the bundle head ${ledger.head}`);
     const exit = head[head.length - 1];
     if (exit !== 'exit=0') throw new StepFail(`head.txt says ${exit} (the suite ran red even though the run concluded success)`);
-    const out = fs.readFileSync(path.join(dir, 'npmtest.out'), 'utf8');
+    const out = readArtifact(dir, 'npmtest.out');
     const sums = { tests: 0, pass: 0, fail: 0, skipped: 0, todo: 0 };
     let summaries = 0;
     for (const line of out.split('\n')) {
@@ -465,8 +488,8 @@ const STEPS = [
     const report = selfTestReport(v.body);
     if (report && lower(report.head_sha) === lower(ledger.head) && sec.includes(ledger.runUrl) && !sec.includes('Self-test pending for')) return done();
     const inputs = loadReportInputs(o['report-inputs']);
-    const headTxt = fs.readFileSync(path.join(ledger.artifactDir, 'head.txt'), 'utf8').split('\n').filter((l) => l !== '');
-    const out = fs.readFileSync(path.join(ledger.artifactDir, 'npmtest.out'), 'utf8');
+    const headTxt = readArtifact(ledger.artifactDir, 'head.txt').split('\n').filter((l) => l !== '');
+    const out = readArtifact(ledger.artifactDir, 'npmtest.out');
     const block = {
       schema: 1,
       head_sha: ledger.head,
@@ -495,7 +518,7 @@ const STEPS = [
     } catch {
       /* refused below */
     }
-    if (!text.trim() || !/\b[0-9a-f]{7,40}\b/.test(text)) throw new UsageError('--findings must be a file mapping each open finding to a commit (at least one 7-40 hex commit ref)');
+    if (!text.trim() || !/\b(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}\b/.test(text)) throw new UsageError('--findings must be a file mapping each open finding to a commit (at least one 7-40 hex commit ref containing a digit)');
     const file = c.writeWork('comment.md', `${marker(ledger.head)}\n${text.replace(/\n*$/, '\n')}`);
     void v;
     return emit(['gh', 'pr', 'comment', String(ledger.pr), '--repo', o.repo, '--body-file', path.resolve(file)]);
@@ -544,15 +567,27 @@ function runPolicy(c, view, bodyFile) {
   let dir = c.o['policy-dir'];
   let tmp = null;
   if (!dir) {
-    const core = c.o['core-dir'] || path.join(os.homedir(), 'repos', 'gsd-core');
-    const fetched = spawnSync('git', ['-C', core, 'fetch', '-q', 'origin', 'next'], { encoding: 'utf8' });
-    if (fetched.status !== 0) throw new StepFail(`cannot fetch origin/next in ${core} (${String(fetched.stderr).split('\n')[0]}); the policy would be judged from a stale ref: fix the fetch or pass --policy-dir with a fresh extract`);
+    // A throwaway bare repo, never an existing checkout: fetching into ~/repos/gsd-core (another project's shared clone)
+    // would be an unhooked ref mutation. The whole temp dir is deleted in the finally block below.
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-update-policy-'));
-    const tar = spawnSync('git', ['-C', core, 'archive', 'origin/next', 'scripts', '.github/MAINTAINERS'], { maxBuffer: MAX_BUFFER });
-    if (tar.status !== 0) throw new StepFail(`cannot read the live policy from ${core} (git archive origin/next): ${String(tar.stderr).split('\n')[0]}`);
-    const x = spawnSync('tar', ['-x', '-C', tmp], { input: tar.stdout });
-    if (x.status !== 0) throw new StepFail('cannot extract the live policy archive');
-    dir = tmp;
+    try {
+      const bare = path.join(tmp, 'bare');
+      const url = c.o['upstream-url'] || UPSTREAM_URL;
+      const init = spawnSync('git', ['init', '-q', '--bare', bare], { encoding: 'utf8' });
+      if (init.status !== 0) throw new StepFail(`cannot create the throwaway repo: ${String(init.stderr).split('\n')[0]}`);
+      const fetched = spawnSync('git', ['-C', bare, 'fetch', '-q', '--depth=1', url, 'next'], { encoding: 'utf8' });
+      if (fetched.status !== 0) throw new StepFail(`cannot fetch origin/next from ${url} (${String(fetched.stderr).split('\n')[0]}); the policy would be judged from a stale copy: fix the fetch or pass --policy-dir with a fresh extract`);
+      const tar = spawnSync('git', ['-C', bare, 'archive', 'FETCH_HEAD', 'scripts', '.github/MAINTAINERS'], { maxBuffer: MAX_BUFFER });
+      if (tar.status !== 0) throw new StepFail(`cannot read the live policy (git archive FETCH_HEAD): ${String(tar.stderr).split('\n')[0]}`);
+      const out = path.join(tmp, 'policy');
+      fs.mkdirSync(out);
+      const x = spawnSync('tar', ['-x', '-C', out], { input: tar.stdout });
+      if (x.status !== 0) throw new StepFail('cannot extract the live policy archive');
+      dir = out;
+    } catch (e) {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      throw e;
+    }
   }
   try {
     const titleFile = path.resolve(c.writeWork('title.txt', `${view.title}\n`));
@@ -604,6 +639,7 @@ function required(o) {
 const ledgerDirOf = (o) => o['ledger-dir'] || process.env.PR_UPDATE_LEDGER_DIR || path.join(os.homedir(), 'repos', 'gsd-core-notes', 'ledgers', 'pr-update');
 
 function runBundle(o) {
+  if (process.env.PR_UPDATE_PRSTATUS && process.env.NODE_ENV !== 'test') throw new UsageError('PR_UPDATE_PRSTATUS is a test seam honoured only under NODE_ENV=test; unset it');
   required(o);
   if (!SHA_RE.test(o.head || '')) throw new UsageError('--head must be a 40-hex commit sha');
   for (const k of ['branch', 'remote', 'worktree']) if (!o[k]) throw new UsageError(`--${k} is required`);
@@ -756,6 +792,6 @@ function runCli(argv) {
   }
 }
 
-module.exports = { buildExcerpt, ctxFromTranscript, pendingLine, replaceSelfTestSection, runCli, CTX_BUDGET_TOKENS };
+module.exports = { ledgerFileName, buildExcerpt, ctxFromTranscript, pendingLine, replaceSelfTestSection, runCli, CTX_BUDGET_TOKENS };
 
 if (require.main === module) process.exitCode = runCli(process.argv.slice(2));
