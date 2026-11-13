@@ -43,6 +43,7 @@ const NOT_COVERED = [
   'removed qualifiers (a deleted "unless" leaves the rest of the sentence absolute)',
   'wording with no trigger word',
   'a sentence wrapped in a fenced block',
+  'upstream text pulled in by merging the base branch into the range (mark it not-a-rule, reason "upstream text")',
 ];
 
 class Usage extends Error {}
@@ -50,7 +51,7 @@ class Refuse extends Error {}
 
 function parseArgs(argv) {
   const o = { gate: false };
-  const valued = { '--dir': 'dir', '--repo': 'repo', '--body-old': 'bodyOld', '--body-new': 'bodyNew', '--no-body': 'noBody', '--policy': 'policy', '--policy-reason': 'policyReason' };
+  const valued = { '--allow-unexamined': 'allowUnexamined', '--dir': 'dir', '--repo': 'repo', '--body-old': 'bodyOld', '--body-new': 'bodyNew', '--no-body': 'noBody', '--policy': 'policy', '--policy-reason': 'policyReason' };
   const rest = [];
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -62,7 +63,9 @@ function parseArgs(argv) {
     else rest.push(a);
   }
   if (rest.length !== 1) throw new Usage('exactly one range (A..B or A...B) is required');
-  if (!/^[^\s-][^\s]*?\.\.\.?[^\s]+$/.test(rest[0])) throw new Usage('range must look like A..B or A...B');
+  const sides = rest[0].split(/\.\.\.?/);
+  const SIDE = /^[A-Za-z0-9._/~^@{}:+][A-Za-z0-9._/~^@{}:+-]*$/;
+  if (!/\.\./.test(rest[0]) || sides.length !== 2 || !sides.every((s) => SIDE.test(s))) throw new Usage('range must look like A..B or A...B, each side a revision that does not start with -');
   if (!o.dir || !fs.existsSync(o.dir) || !fs.statSync(o.dir).isDirectory()) throw new Usage('--dir must be an existing directory');
   if ((o.bodyOld === undefined) !== (o.bodyNew === undefined)) throw new Usage('--body-old and --body-new go together');
   o.range = rest[0];
@@ -91,31 +94,51 @@ function loadPolicy(o) {
   if (!Number.isInteger(pol.minNewInputs) || pol.minNewInputs < 1) throw new Refuse('policy minNewInputs must be an integer >= 1');
   const max = Number.isInteger(pol.maxSentenceChars) && pol.maxSentenceChars > 0 ? pol.maxSentenceChars : 2000;
   const patterns = pol.patterns.map((p) => {
+    if (/[gy]/.test(p.flags || '')) throw new Refuse(`policy pattern ${p.id} sets a g or y flag (stateful matching)`);
     try { return { id: p.id, re: new RegExp(p.regex, p.flags || 'i') }; } catch (e) { throw new Refuse(`policy pattern ${p && p.id} invalid: ${e.message}`); }
   });
-  return { patterns, minNewInputs: pol.minNewInputs, max, info: { path: file, sha1: crypto.createHash('sha1').update(raw).digest('hex'), reason: o.policyReason || null, minNewInputs: pol.minNewInputs } };
+  const SAMPLES = { quantifier: 'It never fails.', negated: 'X is not a miss.', definitional: 'The key is a hash.', 'scope-negation': 'The file is unchanged.' };
+  for (const id of REQUIRED_PATTERNS) {
+    if (!patterns.some((p) => p.id === id && p.re.test(SAMPLES[id]))) throw new Refuse(`policy pattern ${id} does not match its sample sentence "${SAMPLES[id]}"`);
+  }
+  const sha1 = crypto.createHash('sha1').update(raw).digest('hex');
+  const shipped = o.policy ? crypto.createHash('sha1').update(fs.readFileSync(SHIPPED_POLICY)).digest('hex') === sha1 : true;
+  return { patterns, minNewInputs: pol.minNewInputs, max, info: { shipped, path: file, sha1: crypto.createHash('sha1').update(raw).digest('hex'), reason: o.policyReason || null, minNewInputs: pol.minNewInputs } };
 }
 
 const ascii = (s) => s.replace(/[‘’]/g, "'").replace(/[“”]/g, '"');
 const norm = (s) => ascii(s).replace(/\s+/g, ' ').trim().toLowerCase();
 const claimId = (s) => crypto.createHash('sha1').update(norm(s)).digest('hex').slice(0, 12);
 
-/** Added lines per file from `git diff -U0`: [{file, lines: [{n, text}]}]. */
+/**
+ * Added lines per file from `git diff -U0`: [{file, lines: [{n, text}]}]. A hunk header's counts say how
+ * many old and new lines follow, so a content line that starts with "++ " is never read as a file header.
+ */
 function parseDiff(text) {
   const files = [];
   let cur = null;
   let n = 0;
+  let oldLeft = 0;
+  let newLeft = 0;
   for (const line of text.split('\n')) {
+    if (oldLeft > 0 || newLeft > 0) {
+      if (line.startsWith('+')) {
+        if (cur) cur.lines.push({ n, text: line.slice(1) });
+        n += 1;
+        newLeft -= 1;
+      } else if (line.startsWith('-')) oldLeft -= 1;
+      continue; // a "\ No newline at end of file" marker falls through here and is skipped
+    }
     if (line.startsWith('+++ ')) {
       const p = line.slice(4).replace(/\t.*$/, '');
       cur = p === '/dev/null' ? null : { file: p.replace(/^b\//, ''), lines: [] };
       if (cur) files.push(cur);
     } else if (line.startsWith('@@')) {
-      const m = /\+(\d+)/.exec(line);
-      n = m ? Number(m[1]) : 0;
-    } else if (cur && line.startsWith('+') && !line.startsWith('+++')) {
-      cur.lines.push({ n, text: line.slice(1) });
-      n += 1;
+      const m = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+      if (!m) continue;
+      oldLeft = m[1] === undefined ? 1 : Number(m[1]);
+      n = Number(m[2]);
+      newLeft = m[3] === undefined ? 1 : Number(m[3]);
     }
   }
   return files;
@@ -153,7 +176,7 @@ function proseItems(lines, counters) {
 function prose(n, text) {
   if (/^\s*\|?[\s:|-]+\|?\s*$/.test(text) && /-/.test(text)) return null;
   const m = /^\s*(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+|>\s*)?(.*)$/.exec(text);
-  return { n, text: m[1], start: /^\s*(?:#{1,6}\s|[-*+]\s|\d+\.\s)/.test(text) };
+  return { n, text: m[1], start: /^\s*(?:#{1,6}\s|[-*+]\s|\d+\.\s|\|)/.test(text) };
 }
 
 function commentItems(file, lines) {
@@ -199,11 +222,18 @@ function collect(o) {
   const add = (kind, loc, text, whole) => {
     for (const s of whole ? [text.trim()] : splitSentences(text)) if (s) claims.push({ kind, loc, text: s });
   };
-  const [a, b] = o.range.includes('...') ? o.range.split('...') : o.range.split('..');
+  const [a0, b0] = o.range.includes('...') ? o.range.split('...') : o.range.split('..');
+  const resolve = (rev) => git(o.repo, ['rev-parse', '--verify', '--end-of-options', `${rev}^{commit}`]).trim();
+  const a = resolve(a0);
+  const b = resolve(b0);
   const from = o.range.includes('...') ? git(o.repo, ['merge-base', a, b]).trim() : a;
-  const diff = git(o.repo, ['diff', '-U0', '--no-color', '--no-renames', from, b]);
+  const diff = git(o.repo, ['diff', '-U0', '--no-color', '--no-renames', '--no-ext-diff', '--no-textconv', from, b]);
+  const changed = git(o.repo, ['diff', '--name-only', '--no-renames', from, b]).split('\n').filter(Boolean);
+  const unexamined = [];
   for (const f of parseDiff(diff)) {
     const isMd = /\.md$/i.test(f.file);
+    const ext = path.extname(f.file).toLowerCase();
+    if (!isMd && !SLASH_EXT.has(ext) && !HASH_EXT.has(ext) && f.lines.some((l) => l.text.trim())) unexamined.push(f.file);
     if (isMd) {
       const kind = /(^|\/)adr\//i.test(f.file) ? 'adr' : 'doc';
       for (const bl of toBlocks(proseItems(f.lines, counters))) add(kind, `${f.file}:${bl.n}`, bl.text);
@@ -212,7 +242,7 @@ function collect(o) {
     for (const bl of toBlocks(commentItems(f.file, f.lines))) add('comment', `${f.file}:${bl.n}`, bl.text);
     for (const t of titles(f.file, f.lines)) add('title', `${f.file}:${t.n}`, t.text, true);
   }
-  const log = git(o.repo, ['log', '--format=%h%x01%B%x00', `${from}..${b}`]);
+  const log = git(o.repo, ['log', '--first-parent', '--format=%h%x01%B%x00', `${from}..${b}`]);
   for (const rec of log.split('\0')) {
     const [sha, msg] = rec.replace(/^\n/, '').split('\x01');
     if (!sha || !msg) continue;
@@ -232,10 +262,10 @@ function collect(o) {
     });
     for (const bl of toBlocks(proseItems(added, counters))) add('body', `body:${bl.n}`, bl.text);
   }
-  return { claims, counters };
+  return { claims, counters, unexamined, changed };
 }
 
-function validateResolutions(o, pol, ids) {
+function validateResolutions(o, pol, ids, changed) {
   const file = path.join(o.dir, 'CLAIMS-RESOLUTIONS.json');
   const problems = [];
   const good = new Map();
@@ -260,7 +290,7 @@ function validateResolutions(o, pol, ids) {
     } else {
       if (!Number.isInteger(e.new_inputs) || e.new_inputs < pol.minNewInputs) { problems.push(`${tag}: new_inputs must be an integer >= ${pol.minNewInputs}`); return; }
       if (typeof e.command !== 'string' || !e.command.trim()) { problems.push(`${tag}: command is empty`); return; }
-      const why = evidenceProblem(o.repo, realRoot, e.evidence);
+      const why = evidenceProblem(o.repo, realRoot, e.evidence, changed);
       if (why) { problems.push(`${tag}: evidence ${why}`); return; }
     }
     good.set(e.id, e);
@@ -268,9 +298,10 @@ function validateResolutions(o, pol, ids) {
   return { problems, good, stale: [...seen].filter((id) => !ids.has(id)) };
 }
 
-function evidenceProblem(repo, realRoot, ev) {
+function evidenceProblem(repo, realRoot, ev, changed) {
   if (typeof ev !== 'string' || !ev || path.isAbsolute(ev) || ev.split(/[\\/]/).includes('..')) return 'must be a repo-relative path without ..';
   try { git(repo, ['ls-files', '--error-unmatch', '--', ev]); } catch { return 'is not a git-tracked file'; }
+  if (!changed.includes(ev) && !/\.test\./.test(ev)) return 'is neither changed in the range nor a *.test.* file';
   let real;
   try { real = fs.realpathSync(path.join(repo, ev)); } catch { return 'does not exist'; }
   if (real !== realRoot && !real.startsWith(realRoot + path.sep)) return 'resolves outside the repo';
@@ -280,7 +311,7 @@ function evidenceProblem(repo, realRoot, ev) {
 
 function run(o) {
   const pol = loadPolicy(o);
-  const { claims, counters } = collect(o);
+  const { claims, counters, unexamined, changed } = collect(o);
   for (const c of claims) {
     const t = ascii(c.text);
     c.id = claimId(c.text);
@@ -291,7 +322,7 @@ function run(o) {
   for (const c of claims) examined[c.kind] += 1;
   const total = claims.length;
   const ids = new Set(claims.map((c) => c.id));
-  const { problems, good, stale = [] } = validateResolutions(o, pol, ids);
+  const { problems, good, stale = [] } = validateResolutions(o, pol, ids, changed);
   const warnings = stale.map((id) => `stale-resolution ${id}`);
   for (const c of claims) {
     const r = c.flags.length ? good.get(c.id) : null;
@@ -301,10 +332,11 @@ function run(o) {
   const unresolved = [...new Set(claims.filter((c) => c.status === 'unresolved').map((c) => c.id))];
   if (o.gate) {
     if (o.bodyNew === undefined && String(o.noBody || '').trim().length < 8) problems.push('gate needs --body-old/--body-new, or --no-body with a reason of 8+ characters');
-    if (total === 0) problems.push('nothing was examined (no added comment, title, ADR, doc, commit or body sentence)');
+    if (claims.filter((c) => c.kind !== 'commit').length === 0 && !unexamined.length) problems.push('nothing was examined apart from commit messages (no added comment, title, ADR, doc or body sentence)');
+    if (unexamined.length && String(o.allowUnexamined || '').trim().length < 8) problems.push(`changed files with no extractor: ${unexamined.join(', ')}; read them by hand and pass --allow-unexamined "<reason of 8+ characters>"`);
   }
   const verdict = problems.length || (o.gate && unresolved.length) ? 'refused' : 'clean';
-  const result = { verdict, gate: o.gate, range: o.range, examined, fenced_skipped: counters.fencedSkipped, policy: pol.info, no_body: o.noBody || null, self_reported: true, unresolved, problems, warnings, claims };
+  const result = { verdict, gate: o.gate, range: o.range, examined, fenced_skipped: counters.fencedSkipped, unexamined_files: unexamined, allow_unexamined: o.allowUnexamined || null, policy: pol.info, no_body: o.noBody || null, self_reported: true, unresolved, problems, warnings, claims };
   writeReport(o, result);
   return result;
 }
@@ -316,6 +348,7 @@ function writeReport(o, r) {
     '',
     `Range: \`${r.range}\`. Verdict: **${r.verdict}** (${r.gate ? 'gate' : 'report'} mode).`,
     `Policy: \`${r.policy.path}\` sha1 ${r.policy.sha1}, minNewInputs ${r.policy.minNewInputs}${r.policy.reason ? `, reason: ${r.policy.reason}` : ''}.`,
+    `Unexamined files (no extractor for their type): ${r.unexamined_files.join(', ') || 'none'}${r.allow_unexamined ? `; allowed: ${r.allow_unexamined}` : ''}.`,
     `Examined: ${Object.entries(r.examined).map(([k, v]) => `${k} ${v}`).join(', ')}; fenced lines skipped ${r.fenced_skipped}.${r.no_body ? ` No body supplied: ${r.no_body}.` : ''}`,
     '',
     'Not proven: `new_inputs` is self-reported; the gate checks that the evidence file is tracked, non-empty and inside the repo, not that it produced that many inputs or that none came from a review round.',
