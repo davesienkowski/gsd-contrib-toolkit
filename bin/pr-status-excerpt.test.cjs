@@ -24,18 +24,24 @@ const LOG = [
   '',
 ].join('\n');
 
-function body({ excerpt = '# pass 5171\n# tests 5171', url = RUN, section = true } = {}) {
+function body({ excerpt = '# pass 5171\n# tests 5171', url = RUN, section = true, raw = null, runLine = true } = {}) {
+  if (raw) return raw;
   if (!section) return 'Fixes #1\n';
   const report = { schema: 1, head_sha: HEAD, tool: 'npm-test', output_excerpt: excerpt };
-  return `Fixes #1\n\n## Self-test report\n\n${url ? `Run: ${url}\n\n` : ''}\`\`\`json\n${JSON.stringify(report, null, 2)}\n\`\`\`\n`;
+  return `Fixes #1\n\n## Self-test report\n\n${url ? (runLine ? `Run: ${url}\n\n` : `See ${url}\n\n`) : ''}\`\`\`json\n${JSON.stringify(report, null, 2)}\n\`\`\`\n`;
 }
 
+const sha = (n) => n.toString(16).padStart(2, '0').repeat(20); // a distinct 40-hex commit per number
+const HEAD2 = sha(2);
+const HEAD3 = sha(3);
+const HEAD4 = sha(4);
+
 function review(id, login, state, assoc, extra = {}) {
-  return { id, user: { login, type: 'User' }, state, author_association: assoc, submitted_at: `2026-11-1${id % 10}T00:00:00Z`, commit_id: HEAD, body: '', ...extra };
+  return { id, user: { login, type: 'User' }, state, author_association: assoc, submitted_at: `2026-11-1${id % 10}T00:00:00Z`, commit_id: sha(id), body: '', ...extra };
 }
 
 /** Run the CLI in process; returns { status, stdout, calls, textCalls }. */
-function run(args, { bodyText = body(), reviews = [], timeline = [], log = LOG, logError = null } = {}) {
+function run(args, { bodyText = body(), reviews = [], timeline = [], log = LOG, logError = null, runHead = HEAD, runHeadError = null } = {}) {
   const calls = [];
   const textCalls = [];
   const gh = (a) => {
@@ -43,6 +49,10 @@ function run(args, { bodyText = body(), reviews = [], timeline = [], log = LOG, 
     if (a[0] === 'pr' && a[1] === 'view') {
       if (a[a.indexOf('--json') + 1].startsWith('body')) return { body: bodyText, baseRefOid: 'b'.repeat(40), changedFiles: 1 };
       return { number: 7, state: 'OPEN', isDraft: false, author: { login: 'me' }, headRefOid: HEAD, baseRefName: 'next', mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', reviewDecision: null, reviewRequests: [], commits: [], headRefName: 'fix/x', title: 'fix: x' };
+    }
+    if (a[0] === 'run' && a[1] === 'view') {
+      if (runHeadError) throw new Error(runHeadError);
+      return { headSha: runHead };
     }
     if (a[0] === 'pr' && a[1] === 'checks') return [];
     if (a[0] === 'api' && /\/reviews\?/.test(a.join(' '))) return [reviews];
@@ -65,14 +75,14 @@ const json = (args, opts) => JSON.parse(run(['--json', ...args], opts).stdout)[0
 
 test('excerpt: every line found in the run log -> ok, and the log is read through the text seam with run view --log', () => {
   const r = run(['--body', '7']);
-  assert.match(r.stdout, /^ {2}body: excerpt in run log: ok \(2 counted lines; run davesienkowski\/gsd-core-experiments, its head sha not compared with the PR head\)$/m);
+  assert.match(r.stdout, /^ {2}body: excerpt in run log: ok \(2 lines; run davesienkowski\/gsd-core-experiments, run head sha matches the PR head\)$/m);
   assert.deepEqual(r.textCalls, [['run', 'view', '42744528257', '--repo', 'davesienkowski/gsd-core-experiments', '--log']]);
   assert.equal(r.status, 0);
 });
 
 test('excerpt: one altered character (hyphen for an em dash) -> not in run log, naming the first missing line', () => {
   const r = run(['--body', '7'], { bodyText: body({ excerpt: '# pass 5171\n# fail 0 - ok' }), log: LOG.replace('# fail 0', '# fail 0 — ok') });
-  assert.match(r.stdout, /^ {2}body: excerpt not in run log: line 2 "# fail 0 - ok" \(first missing of 2 counted; not found in the log gh returned.*\)$/m);
+  assert.match(r.stdout, /^ {2}body: excerpt not in run log: line 2 "# fail 0 - ok" \(first missing of 2; not found in the log gh returned.*\)$/m);
   assert.equal(r.status, 0);
 });
 
@@ -149,10 +159,10 @@ test('excerpt: the default text reader passes maxBuffer 64 MiB (261109-suo conve
 
 const CR = (id, login, assoc) => review(id, login, 'CHANGES_REQUESTED', assoc);
 
-test('rounds: counts CHANGES_REQUESTED reviews by OWNER, MEMBER and COLLABORATOR only', () => {
+test('rounds: counts head commits with a CHANGES_REQUESTED review by OWNER, MEMBER or COLLABORATOR only', () => {
   const reviews = [
     CR(1, 'trek-e', 'MEMBER'),
-    CR(2, 'trek-e', 'MEMBER'), // two from one reviewer = two rounds
+    CR(2, 'trek-e', 'MEMBER'), // a second head = a second round
     CR(3, 'someone', 'CONTRIBUTOR'), // not a maintainer
     CR(4, 'drive-by', 'NONE'),
     CR(5, 'me', 'OWNER'), // the PR author
@@ -167,9 +177,10 @@ test('rounds: counts CHANGES_REQUESTED reviews by OWNER, MEMBER and COLLABORATOR
   assert.equal(json(['7'], { reviews }).upstreamCr.rounds, 4);
 });
 
-test('rounds: zero rounds prints no line (existing output stays byte-identical) but --json has the object', () => {
+test('rounds: zero rounds prints "upstream CR rounds: 0" and --json has the object', () => {
   const reviews = [review(1, 'trek-e', 'APPROVED', 'MEMBER')];
-  assert.doesNotMatch(run(['7'], { reviews }).stdout, /upstream CR rounds|same band/);
+  assert.match(run(['7'], { reviews }).stdout, /^ {2}upstream CR rounds: 0$/m);
+  assert.doesNotMatch(run(['7'], { reviews }).stdout, /same band/);
   const u = json(['7'], { reviews }).upstreamCr;
   assert.equal(u.rounds, 0);
   assert.equal(u.band.label, 'ABSTAIN');
@@ -190,9 +201,9 @@ test('band: fewer than 3 rounds prints no band line; 3 or more prints ABSTAIN wi
   const four = [...two, CR(3, 'trek-e', 'MEMBER'), CR(4, 'trek-e', 'MEMBER')];
   const r = run(['7'], { reviews: four });
   assert.match(r.stdout, /^ {2}upstream CR rounds: 4$/m);
-  assert.match(r.stdout, /^ {2}same band: ABSTAIN \(.+\); last 3 reviews 2, 3, 4$/m);
+  assert.match(r.stdout, /^ {2}same band: ABSTAIN \(.+\); last 3 rounds .+$/m);
   const u = json(['7'], { reviews: four }).upstreamCr;
-  assert.deepEqual(u.lastThree, [2, 3, 4]);
+  assert.deepEqual(u.lastThree, [HEAD2, HEAD3, HEAD4]);
   assert.match(u.band.reason, /failure/);
 });
 
@@ -200,14 +211,6 @@ test('excerpt: a run URL with /attempts/N reads that attempt (--attempt N)', () 
   const r = run(['--body', '7'], { bodyText: body({ url: RUN + '/attempts/2' }) });
   assert.deepEqual(r.textCalls[0], ['run', 'view', '42744528257', '--repo', 'davesienkowski/gsd-core-experiments', '--attempt', '2', '--log']);
   assert.match(r.stdout, /excerpt in run log: ok/);
-});
-
-test('excerpt: lines under 8 non-space characters do not count; an excerpt of only such lines is not checked, never ok', () => {
-  const only = run(['--body', '7'], { bodyText: body({ excerpt: '0\nok\nexit 0' }) });
-  assert.match(only.stdout, /^ {2}body: excerpt not checked: no output_excerpt string, or no line of at least 8 non-space characters/m);
-  assert.doesNotMatch(only.stdout, /excerpt in run log: ok/);
-  const mixed = json(['--body', '7'], { bodyText: body({ excerpt: 'ok\n# pass 5171' }) });
-  assert.equal(mixed.body.excerpt.lines, 1);
 });
 
 test('rounds: timeline reviewed events duplicating the reviews payload do not change the count', () => {
@@ -225,4 +228,76 @@ test('rounds: a captured fixture with author_association merged in prints the ro
   assert.ok(n > 0, 'fixture has change requests');
   const r = run(['7'], { reviews: reviews.flat() });
   assert.match(r.stdout, new RegExp(`^ {2}upstream CR rounds: ${n}$`, 'm'));
+});
+
+// ---- fix round R2 (quick 261113-wb1 FIX-PLAN-R2): W1 no length floor, W2 per-line match, W3 URL scan, W4 rounds per head, I5, I8 ----
+
+const ts = '2026-11-13T01:00:00.1234567Z';
+const logLine = (text, first = false) => `${first ? '\ufeff' : ''}selftest\tRun npm test\t${ts} ${text}`;
+
+test('W1: a short excerpt line is checked, not skipped: "# fail 0" is not in a log saying "# fail 3"', () => {
+  const r = run(['--body', '7'], { bodyText: body({ excerpt: '# fail 0' }), log: logLine('# fail 3') + '\n' });
+  assert.match(r.stdout, /^ {2}body: excerpt not in run log: line 1 "# fail 0"/m);
+  const ok = run(['--body', '7'], { bodyText: body({ excerpt: '# fail 0' }), log: logLine('# fail 0') + '\n' });
+  assert.match(ok.stdout, /excerpt in run log: ok \(1 lines/);
+  const blank = run(['--body', '7'], { bodyText: body({ excerpt: '\n  \n' }) });
+  assert.match(blank.stdout, /^ {2}body: excerpt not checked: no output_excerpt string, or no non-blank line, in the Self-test block$/m);
+});
+
+test('W2: lines match per log line: "# pass 5171" is not in "# pass 51719" or "# pass 51710 of 5171x"', () => {
+  const log = [logLine('# pass 51719', true), logLine('# tests 5171 total'), ''].join('\r\n');
+  const r = run(['--body', '7'], { bodyText: body({ excerpt: '# pass 5171' }), log });
+  assert.match(r.stdout, /excerpt not in run log: line 1 "# pass 5171"/);
+  const json1 = json(['--body', '7'], { bodyText: body({ excerpt: '# tests 5171' }), log });
+  assert.equal(json1.body.excerpt.status, 'missing', 'a prefix of the log content is not a match');
+});
+
+test('W2: real gh log shapes match: tab prefix, 7-digit timestamp, BOM, CRLF, ANSI colour, indentation and a suffix after whitespace', () => {
+  const log = [
+    logLine('\u001b[32m# pass 5171\u001b[0m', true),
+    logLine('# tests 5171'),
+    logLine('    indented line here'),
+    logLine('ok  # fail 0 (summary)'),
+    '',
+  ].join('\r\n');
+  const excerpt = ['# pass 5171', '# tests 5171', 'indented line here', '# fail 0 (summary)'].join('\n');
+  const j = json(['--body', '7'], { bodyText: body({ excerpt }), log });
+  assert.equal(j.body.excerpt.status, 'ok', JSON.stringify(j.body.excerpt));
+  assert.equal(j.body.excerpt.lines, 4);
+});
+
+test('W3: a run URL inside an HTML comment or inside the excerpt JSON is not the run URL', () => {
+  const report = JSON.stringify({ schema: 1, head_sha: HEAD, output_excerpt: `see ${RUN}` });
+  const inComment = `## Self-test report\n\n<!-- Run: ${RUN} -->\n\n\`\`\`json\n${report}\n\`\`\`\n`;
+  const r = run(['--body', '7'], { bodyText: body({ raw: inComment }) });
+  assert.match(r.stdout, /^ {2}body: no run URL$/m);
+  assert.equal(r.textCalls.length, 0);
+});
+
+test('W3: a URL on a "Run:" line wins over an earlier URL elsewhere in the section', () => {
+  const other = 'https://github.com/open-gsd/gsd-core/actions/runs/111';
+  const report = JSON.stringify({ schema: 1, head_sha: HEAD, output_excerpt: '# pass 5171' });
+  const text = `## Self-test report\n\nEarlier attempt: ${other}\n\n**Run:** ${RUN}\n\n\`\`\`json\n${report}\n\`\`\`\n`;
+  const r = run(['--body', '7'], { bodyText: body({ raw: text }) });
+  assert.equal(r.textCalls[0][2], '42744528257');
+});
+
+test('W4: a round is a distinct head commit: two maintainers on one head are one round, a second head is a second', () => {
+  const same = [{ ...CR(1, 'trek-e', 'COLLABORATOR'), commit_id: HEAD }, { ...CR(2, 'owner', 'OWNER'), commit_id: HEAD }];
+  assert.equal(json(['7'], { reviews: same }).upstreamCr.rounds, 1);
+  const two = [...same, { ...CR(3, 'trek-e', 'COLLABORATOR'), commit_id: HEAD3 }];
+  const u = json(['7'], { reviews: two }).upstreamCr;
+  assert.equal(u.rounds, 2);
+  assert.match(run(['7'], { reviews: two }).stdout, /^ {2}upstream CR rounds: 2$/m);
+});
+
+test('I5: the run head sha is compared with the PR head: match is said, mismatch is named, unread is named', () => {
+  assert.match(run(['--body', '7']).stdout, /run head sha matches the PR head/);
+  const other = 'c'.repeat(40);
+  const bad = run(['--body', '7'], { runHead: other });
+  assert.match(bad.stdout, /^ {2}body: run head mismatch: the run ran on ccccccc, the PR head is aaaaaaa$/m);
+  assert.equal(json(['--body', '7'], { runHead: other }).body.excerpt.runHeadSha, other);
+  const un = run(['--body', '7'], { runHeadError: 'HTTP 404' });
+  assert.match(un.stdout, /^ {2}body: run head sha unread \(HTTP 404\)$/m);
+  assert.equal(un.status, 0);
 });
