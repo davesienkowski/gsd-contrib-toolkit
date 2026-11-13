@@ -21,7 +21,8 @@ function main() {
   const argv = process.argv.slice(2);
   const tool = path.basename(process.argv[1]) === 'git' ? 'git' : 'gh';
   const state = JSON.parse(fs.readFileSync(process.env.PR_UPDATE_STUB_STATE, 'utf8'));
-  const log = (extra) => fs.appendFileSync(process.env.PR_UPDATE_STUB_LOG, JSON.stringify({ tool, argv, ...extra }) + '\n');
+  const gitEnv = Object.keys(process.env).filter((k) => /^GIT_/.test(k));
+  const log = (extra) => fs.appendFileSync(process.env.PR_UPDATE_STUB_LOG, JSON.stringify({ tool, argv, gitEnv, ...extra }) + '\n');
   const out = (v) => process.stdout.write(typeof v === 'string' ? v : JSON.stringify(v));
   const fail = (msg, code = 1) => {
     process.stderr.write(msg + '\n');

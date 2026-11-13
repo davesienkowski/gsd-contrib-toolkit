@@ -693,7 +693,7 @@ test('production policy path reads origin/next through a throwaway bare repo: no
     h.state.policyArchiveDir = h.policy;
     h.state.fetchFails = fetchFails;
     h.save();
-    const r = h.run([], { noPolicyDir: true });
+    const r = h.run([], { noPolicyDir: true, env: { GIT_DIR: '/nonexistent/steering', GIT_WORK_TREE: '/nonexistent/wt' } });
     const git = h.logLines().filter((l) => l.tool === 'git');
     const fetches = git.filter((l) => l.argv.includes('fetch'));
     assert.ok(fetches.length >= 1, 'it fetches origin/next somewhere');
@@ -701,7 +701,9 @@ test('production policy path reads origin/next through a throwaway bare repo: no
       const dir = f.argv[f.argv.indexOf('-C') + 1];
       assert.ok(dir && dir !== h.root && !dir.startsWith(h.root) && !/gsd-core$/.test(dir), 'the fetch runs in a throwaway dir, never in an existing repo: ' + dir);
       assert.equal(fs.existsSync(dir), false, 'the throwaway repo is deleted: ' + dir);
-      assert.ok(f.argv.includes('next'));
+      assert.ok(f.argv.includes('refs/heads/next'), 'the branch ref, so a tag named next cannot win');
+      assert.ok(f.argv.includes('https://github.com/open-gsd/gsd-core.git'), 'the fixed upstream URL');
+      assert.deepEqual(f.gitEnv.filter((k) => k !== 'GIT_TERMINAL_PROMPT'), [], 'an inherited GIT_DIR or similar must not steer the throwaway git');
     }
     assert.ok(git.some((l) => l.argv.includes('init') && l.argv.includes('--bare')), 'a bare repo is created first');
     if (fetchFails) {
@@ -711,7 +713,7 @@ test('production policy path reads origin/next through a throwaway bare repo: no
     } else {
       assert.equal(r.status, 3, r.out + r.err);
       assert.match(r.out, /NEXT: gh pr edit/);
-      assert.ok(git.some((l) => l.argv.includes('archive') && l.argv.includes('FETCH_HEAD')), 'archives FETCH_HEAD of the throwaway repo');
+      assert.ok(git.some((l) => l.argv.includes('archive') && l.argv.includes('FETCH_HEAD') && l.argv.includes('scripts') && l.argv.includes('.github/MAINTAINERS')), 'archives scripts and MAINTAINERS from FETCH_HEAD of the throwaway repo');
     }
   }
 });
@@ -784,4 +786,43 @@ test('the findings commit-ref check needs a digit: an all-letter hex word such a
   assert.equal(h.run().status, 2);
   fs.writeFileSync(h.findings, 'the badge was fixed in abcdef0\n');
   assert.equal(h.run().status, 3);
+});
+
+test('--upstream-url is gone: an option-shaped value cannot reach git, and --core-dir is not in the usage text (review R3 W-04)', (t) => {
+  const h = harness(t);
+  toStep4(h);
+  h.state.selftest.runs[0].status = 'completed';
+  h.state.selftest.runs[0].conclusion = 'success';
+  h.state.policyArchiveDir = h.policy;
+  h.save();
+  h.run(['--upstream-url', '--upload-pack=touch /tmp/pr-update-pwned'], { noPolicyDir: true });
+  for (const l of h.logLines().filter((x) => x.tool === 'git')) assert.ok(!l.argv.some((a) => /upload-pack/.test(a)), 'the flag value never reaches git');
+  assert.ok(!/--core-dir/.test(fs.readFileSync(SCRIPT, 'utf8')), '--core-dir is removed from the script and its usage');
+});
+
+test('a missing head.txt in step 4, a missing artifact file at step 5, and a non-regular transcript are clean failures (review R3 W-05, N)', (t) => {
+  const h = harness(t);
+  toStep4(h);
+  h.state.selftest.runs[0].status = 'completed';
+  h.state.selftest.runs[0].conclusion = 'success';
+  h.save();
+  fs.rmSync(path.join(h.art, 'head.txt'));
+  const r = h.run();
+  assert.equal(r.status, 1);
+  assert.match(r.out, /head\.txt/);
+  assert.ok(!/at .*\.cjs:\d+/.test(r.out + r.err));
+  const h2 = harness(t);
+  toStep6(h2);
+  const l = h2.ledger();
+  l.steps[4].state = 'pending';
+  fs.writeFileSync(h2.ledgerFile, JSON.stringify(l) + '\n');
+  h2.state.pr.body = h2.state.pr.body.replace(/## Self-test report[\s\S]*?## Checklist/, '## Self-test report\n\nSelf-test pending for ' + HEAD + '\n\n## Checklist');
+  h2.save();
+  fs.rmSync(path.join(l.artifactDir, 'npmtest.out'));
+  const r2 = h2.run();
+  assert.equal(r2.status, 1);
+  assert.match(r2.out, /npmtest\.out/);
+  const dev = h.run([], { ctx: ['--transcript', '/dev/zero'] });
+  assert.equal(dev.status, 2);
+  assert.match(dev.err, /not a regular file/);
 });
