@@ -703,7 +703,7 @@ test('production policy path reads origin/next through a throwaway bare repo: no
       assert.equal(fs.existsSync(dir), false, 'the throwaway repo is deleted: ' + dir);
       assert.ok(f.argv.includes('refs/heads/next'), 'the branch ref, so a tag named next cannot win');
       assert.ok(f.argv.includes('https://github.com/open-gsd/gsd-core.git'), 'the fixed upstream URL');
-      assert.deepEqual(f.gitEnv.filter((k) => k !== 'GIT_TERMINAL_PROMPT'), [], 'an inherited GIT_DIR or similar must not steer the throwaway git');
+      assert.deepEqual(f.gitEnv.filter((k) => !['GIT_TERMINAL_PROMPT', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'].includes(k)), [], 'an inherited GIT_DIR or similar must not steer the throwaway git');
     }
     assert.ok(git.some((l) => l.argv.includes('init') && l.argv.includes('--bare')), 'a bare repo is created first');
     if (fetchFails) {
@@ -825,4 +825,53 @@ test('a missing head.txt in step 4, a missing artifact file at step 5, and a non
   const dev = h.run([], { ctx: ['--transcript', '/dev/zero'] });
   assert.equal(dev.status, 2);
   assert.match(dev.err, /not a regular file/);
+});
+
+test('coordinator review WR-01: the fork-remote and ls-remote git reads scrub an inherited GIT_DIR / GIT_WORK_TREE', (t) => {
+  const h = harness(t);
+  const r = h.run([], { env: { GIT_DIR: '/nonexistent/steering', GIT_WORK_TREE: '/nonexistent/wt' } });
+  assert.equal(r.status, 3, r.out + r.err);
+  const reads = h.logLines().filter((l) => l.tool === 'git' && (l.argv.includes('ls-remote') || l.argv.includes('get-url')));
+  assert.ok(reads.some((l) => l.argv.includes('get-url')), 'the fork-remote check ran');
+  assert.ok(reads.some((l) => l.argv.includes('ls-remote')), 'the ls-remote read ran');
+  for (const l of reads) {
+    assert.ok(!l.gitEnv.includes('GIT_DIR') && !l.gitEnv.includes('GIT_WORK_TREE'), `${l.argv.join(' ')} inherited a steering GIT_* variable: ${l.gitEnv}`);
+  }
+});
+
+test('coordinator review IN-01: the throwaway-repo git calls run with no global or system git config', (t) => {
+  const h = harness(t);
+  toStep4(h);
+  h.state.selftest.runs[0].status = 'completed';
+  h.state.selftest.runs[0].conclusion = 'success';
+  h.state.policyArchiveDir = h.policy;
+  h.save();
+  h.run([], { noPolicyDir: true });
+  const git = h.logLines().filter((l) => l.tool === 'git' && (l.argv.includes('init') || l.argv.includes('fetch') || l.argv.includes('archive')));
+  assert.ok(git.length >= 3, 'init, fetch and archive ran');
+  for (const l of git) {
+    assert.ok(l.gitEnv.includes('GIT_CONFIG_GLOBAL') && l.gitEnv.includes('GIT_CONFIG_NOSYSTEM'), `${l.argv.join(' ')} lacks the config scrub: ${l.gitEnv}`);
+  }
+});
+
+test('coordinator review WR-02: step 8 fails when pr-status omits policies.selfTest', (t) => {
+  const h = harness(t);
+  toStep6(h);
+  h.state.comments = [{ body: `<!-- pr-update ${HEAD} -->\nx 1234567` }];
+  h.state.prstatus = [
+    {
+      number: 5871,
+      head: HEAD,
+      reviewers: [],
+      requested: [],
+      checks: { failing: [], pending: [] },
+      body: { selfTest: { status: 'bound', headSha: HEAD }, excerpt: { status: 'ok', runUrl: RUN_URL, headMatch: true } },
+      policies: {},
+    },
+  ];
+  h.save();
+  const r = h.run();
+  assert.equal(r.status, 1, r.out + r.err);
+  assert.match(r.out + r.err, /Self-test policy result missing from pr-status/);
+  assert.equal(stepState(h, 8), 'pending');
 });
