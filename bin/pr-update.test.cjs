@@ -445,8 +445,6 @@ test('step 7 re-requests exactly the CHANGES_REQUESTED reviewers not yet request
   const variants = [
     ['selfTest binding stale', { body: { selfTest: { status: 'stale', headSha: OLD } } }],
     ['excerpt not in the run log', { body: { selfTest: { status: 'bound', headSha: HEAD }, excerpt: { status: 'missing', runUrl: RUN_URL, headMatch: true } } }],
-    ['run head not compared', { body: { selfTest: { status: 'bound', headSha: HEAD }, excerpt: { status: 'ok', runUrl: RUN_URL, headMatch: null } } }],
-    ['run head differs', { body: { selfTest: { status: 'bound', headSha: HEAD }, excerpt: { status: 'ok', runUrl: RUN_URL, headMatch: false } } }],
     ['excerpt names another run', { body: { selfTest: { status: 'bound', headSha: HEAD }, excerpt: { status: 'ok', runUrl: RUN_URL.replace('77', '78'), headMatch: true } } }],
     ['no run URL', { body: { selfTest: { status: 'bound', headSha: HEAD }, excerpt: { status: 'no-run-url', runUrl: null, headMatch: null } } }],
     ['policy unknown', { policies: { selfTest: { status: 'unknown', reason: null } } }],
@@ -623,4 +621,63 @@ test('a CHANGES_REQUESTED review that is already on the bundle head is not re-re
   const r = h.run();
   assert.ok(!/requested_reviewers/.test(r.out), r.out);
   assert.equal(stepState(h, 7), 'done');
+});
+
+test('step 8 accepts excerpt ok with headMatch false or null: the hosted run head is the selftest/run commit, the binding is head.txt (review I2 B)', (t) => {
+  for (const headMatch of [false, null]) {
+    const h = harness(t);
+    toStep6(h);
+    h.state.comments = [{ body: marker(HEAD) }];
+    h.state.prstatus = [
+      {
+        number: 5871,
+        head: HEAD,
+        reviewers: [],
+        requested: [],
+        checks: { failing: [], pending: [] },
+        body: { selfTest: { status: 'bound', headSha: HEAD }, excerpt: { status: 'ok', runUrl: RUN_URL, headMatch } },
+        policies: { selfTest: { status: 'green', reason: 'ok_report' } },
+      },
+    ];
+    h.save();
+    const r = h.run();
+    assert.equal(r.status, 0, String(headMatch) + r.out + r.err);
+  }
+});
+
+test('the push URL of the remote is checked too, not only the fetch URL (review I2 W)', (t) => {
+  const h = harness(t);
+  h.state.remotePushUrls = { fork: 'https://github.com/open-gsd/gsd-core.git' };
+  h.save();
+  const r = h.run();
+  assert.equal(r.status, 2);
+  assert.match(r.err, /push/);
+  assert.equal(fs.existsSync(h.ledgerFile), false);
+});
+
+test('a Self-test pending phrase outside the section does not make step 3 look done (review I2 W, M5 at step 3)', (t) => {
+  const h = harness(t);
+  h.state.remoteHeads['fork fix/5797-x'] = HEAD;
+  greenRun(h);
+  h.state.pr.body = `Note: we once wrote Self-test pending for ${HEAD} here.\n\n` + h.state.pr.body;
+  h.save();
+  const r = h.run();
+  assert.equal(stepState(h, 3), 'pending');
+  assert.match(r.out, /NEXT: gh pr edit 5871/);
+});
+
+test('a failed or cancelled hosted run names the recovery (rerun the failed jobs yourself), and superseding a finished ledger keeps the reason text (review I2 W, N)', (t) => {
+  const h = harness(t);
+  toStep4(h);
+  h.state.selftest.runs[0].status = 'completed';
+  h.state.selftest.runs[0].conclusion = 'cancelled';
+  h.save();
+  const r = h.run();
+  assert.equal(r.status, 1);
+  assert.match(r.out, /gh run rerun 77 --repo davesienkowski\/gsd-core-experiments/);
+  const l = h.ledger();
+  for (const s of l.steps) s.state = 'done';
+  fs.writeFileSync(h.ledgerFile, JSON.stringify(l) + '\n');
+  h.run(['--supersede', '--reason', 'author asked for a redo']);
+  assert.match(fs.readFileSync(h.ledgerFile.replace(/\.jsonl$/, '.history.jsonl'), 'utf8'), /author asked for a redo/);
 });

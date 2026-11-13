@@ -37,7 +37,10 @@ function main() {
     const g = argv.indexOf('remote');
     if (g >= 0 && argv[g + 1] === 'get-url') {
       log({});
-      return out(((state.remoteUrls || {})[argv[g + 2]] || 'https://github.com/davesienkowski/gsd-core.git') + '\n');
+      const push = argv[g + 2] === '--push';
+      const name = push ? argv[g + 3] : argv[g + 2];
+      const url = (push && (state.remotePushUrls || {})[name]) || (state.remoteUrls || {})[name] || 'https://github.com/davesienkowski/gsd-core.git';
+      return out(url + '\n');
     }
     const i = argv.indexOf('ls-remote');
     if (argv.includes('push') || i < 0) return refuse();
