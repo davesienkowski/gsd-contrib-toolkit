@@ -115,6 +115,20 @@ Branch `fix/<issue#>-slug` → base `next`. **PR title MUST be `<type>(#<issue#>
 
 **Self-test report (advisory check, fix PRs; P5d).** The upstream fix template carries a `## Self-test report` section with a fenced json block (76e1d4dc7, #5612/#5614), checked by the advisory `Self-test report` status context (`scripts/self-test-report-policy.cjs`). Every PR this skill opens uses a `fix/<issue#>-slug` branch, which the policy treats as a fix PR whatever the title, and Dave is not in `.github/MAINTAINERS`, so the block is due. Use the skeleton in [reference.md](reference.md) (*Fix PR body skeleton*): fill it **after the last push** from Phase 3's red-before-green evidence (the P3b RED output, the P3c GREEN run) plus an `npm test` run on the pushed head, with `head_sha` = `git rev-parse HEAD`, and run the live policy on the exact body until it prints `ok_report`. A later push makes the report stale (`fail_stale_sha`): re-run the suite and refresh the sha, counts and excerpt together, then `gh pr edit --body-file`. Never report a run that did not happen on that head; the check validates shape and sha only.
 
+### Phase 5b - Size check, pre-push review, author fix round (advisory, model-driven)
+
+None of this is a hook; it is the author's checklist, and no script here makes a review converge.
+
+**Size warning (before reviewers are requested).** Run `git diff --shortstat origin/next...HEAD`. Over about 10 files or about 800 changed lines (both thresholds are tunable; change them here), say so in your report and suggest a split into separate PRs, one concern each, before requesting review. Large PRs outgrow bounded review: more text per round means more sentences a reviewer can refute.
+
+**Pre-push review.** Before a push that review will read, run the fresh-context review in [pre-push-review.md](pre-push-review.md). Its reviewer is scored by new inputs it tried, not by earlier counter-examples passing again.
+
+**Author fix round (every push that answers a review).**
+1. **PR body = current state only:** the head sha, what the code does now, test counts. No round history in the body.
+2. **Round history goes in the re-review comment**, one short entry per round.
+3. **Run claims-delta before you call the round MERGEABLE:** `node bin/claims-delta.cjs <prev-pushed-sha>..HEAD --dir <DIR> --body-old old.txt --body-new new.txt` (`gh pr view <n> --json body -q .body > old.txt` before the edit). It lists every sentence the round added (code comments, test titles, ADR and other markdown lines, commit messages, body lines) and flags rule-shaped wording (never, every, always, "is not a", "the X is ..."). Add `--gate` to refuse while a flagged sentence is unresolved. Resolve each one by an oracle or generator entry that tried 10 or more NEW inputs (none taken from an earlier review round), or by rewriting it to a weaker claim ("these shapes are reported: ..."). Exact schema in [reference.md](reference.md).
+4. **What it does not do:** it reads wording, not truth; the count of new inputs is self-reported; a sentence with no trigger word is unseen. A clean run is "no unresolved rule-shaped claims", not "the text is correct".
+
 ### Phase 6 — Confirm CI green on the LATEST commit
 Read **real check-run conclusions** on the head SHA (enforcement is per ruleset (on `next`, `pr-status`'s `queue:` line reads the merge-queue ruleset live; the other rulesets are audit-only `evaluate` unless a fresh `gh api repos/<owner>/<repo>/rulesets` says otherwise), and classic branch protection on `next` gates 7 checks for non-admins; no "green" summary replaces reading the runs). A **changeset-only commit can skip the Tests workflow**, leaving a stale FAILED run hidden behind green meta-checks; confirm Tests actually ran on the head SHA. Fix any failure as a follow-up commit on the same branch, before approval.
 
