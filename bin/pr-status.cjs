@@ -1563,6 +1563,10 @@ function compareTested(view, run, head, pr, gh) {
   const res = { testedSha: null, testedSource: null, headMatch: null, headNote: null };
   if (head === '') return res; // an unknown PR head is unknown, not a mismatch
   const want = lower(head);
+  // A run in the PR's own repo ran the commit it names: its headSha is exact and no author-written title or marker can override it.
+  if (pr.repo && lower(run.repo) === lower(pr.repo)) {
+    return Object.assign(res, { testedSha: view.headSha, testedSource: 'run head', headMatch: lower(view.headSha) === want });
+  }
   try {
     const file = gh(['api', `repos/${run.repo}/contents/.github/workflows/selftest.yml?ref=${view.headSha}`]);
     const text = file && file.encoding === 'base64' && typeof file.content === 'string' ? Buffer.from(file.content, 'base64').toString('utf8') : '';
@@ -1578,9 +1582,6 @@ function compareTested(view, run, head, pr, gh) {
     if (pr.number != null && t[2] !== String(pr.number)) return Object.assign(res, { headMatch: false, headNote: `the run title names PR ${t[2]}, this is PR ${pr.number}` });
     return Object.assign(res, { headMatch: want.startsWith(lower(t[1])) });
   }
-  if (pr.repo && lower(run.repo) === lower(pr.repo)) {
-    return Object.assign(res, { testedSha: view.headSha, testedSource: 'run head', headMatch: lower(view.headSha) === want });
-  }
   return res;
 }
 
@@ -1594,7 +1595,7 @@ function compareTested(view, run, head, pr, gh) {
  * @param {{ghText?: Function, gh?: Function}} [deps]
  * @param {string} [head] the PR head sha, for the tested sha comparison
  * @param {{repo?: string, number?: (string|number)}} [pr] the PR's repo and number
- * @returns {{status: 'ok'|'missing'|'no-run-url'|'no-excerpt'|'log-unread', runUrl: (string|null), runRepo: (string|null), lines: number, missingLine: (number|null), missingText: (string|null), missingOf: (number|null), error: (string|null), runHeadSha: (string|null), headMatch: (boolean|null), headError: (string|null)}}
+ * @returns {{status: 'ok'|'missing'|'no-run-url'|'no-excerpt'|'log-unread', runUrl: (string|null), runRepo: (string|null), lines: number, missingLine: (number|null), missingText: (string|null), missingOf: (number|null), error: (string|null), runHeadSha: (string|null), testedSha: (string|null), testedSource: ('workflow marker'|'run title'|'run head'|null), headMatch: (boolean|null), headNote: (string|null), headError: (string|null)}}
  */
 function checkExcerpt(body, deps = {}, head = '', pr = {}) {
   const out = {
