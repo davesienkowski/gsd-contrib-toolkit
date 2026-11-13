@@ -380,12 +380,33 @@ test('R2: an added line in the middle of an existing block comment is read', () 
   assert.ok(flaggedTexts(run(fx, NOBODY)).some((t) => /never wrong/.test(t)));
 });
 
-test('R2: a file with an added line inside an unterminated block comment is listed partial; --allow-unexamined passes', () => {
-  const fx = makeRepo({}, { 'a.js': 'let a = 1;\n/* opened here\nnever closed\n' });
-  const g = run(fx, ['--gate', ...NOBODY]);
-  assert.equal(g.code, 1);
-  assert.ok(g.json.unexamined_files.some((f) => /^a\.js \(partial: /.test(f)));
-  assert.equal(run(fx, ['--gate', ...NOBODY, '--allow-unexamined', 'read the file by hand']).code, 0);
+test('R2: lines inside an unterminated block comment are extracted (no false refusal, no lost line)', () => {
+  const fx = makeRepo({}, { 'a.js': 'let a = 1;\n/* opened here\nthis never closes\n' });
+  const r = run(fx, ['--gate', ...NOBODY]);
+  assert.ok(flaggedTexts(r).some((t) => /never closes/.test(t)));
+  assert.deepEqual(r.json.unexamined_files, []);
+});
+
+test('R2 I2: a single-quoted docstring and a mixed triple-quote file are read', () => {
+  const fx = makeRepo({}, { 'q.py': "def f():\n    'This never raises.'\n    x = \"\"\"a\"\"\"\n    y = \'\'\'b\n    c\'\'\'\n    return 1  # always correct\n" });
+  const t = flaggedTexts(run(fx, NOBODY));
+  assert.ok(t.some((x) => /never raises/.test(x)));
+  assert.ok(t.some((x) => /always correct/.test(x)));
+});
+
+test('R2 I2: a // inside a string does not hide a real comment, and case 1:// is a comment', () => {
+  const fx = makeRepo({}, { 'a.js': "const u = 'a//b'; /* this never fails */\nswitch (x) { case 1:// always safe\n}\n" });
+  const t = flaggedTexts(run(fx, NOBODY));
+  assert.ok(t.some((x) => /never fails/.test(x)));
+  assert.ok(t.some((x) => /always safe/.test(x)));
+});
+
+test('R2 I2: an oversize block can be dismissed with a reasoned not-a-rule entry', () => {
+  const long = 'word '.repeat(420) + 'never ' + 'word '.repeat(10);
+  const fx = makeRepo({}, { 'a.cjs': `// ${long}\n` });
+  const id = run(fx, NOBODY).json.claims.find((s) => s.flags.includes('oversize')).id;
+  fs.writeFileSync(path.join(fx.dir, 'CLAIMS-RESOLUTIONS.json'), JSON.stringify([{ id, kind: 'not-a-rule', reason: 'fixture filler text with no rule' }]));
+  assert.equal(run(fx, ['--gate', ...NOBODY]).code, 0);
 });
 
 test('R2: a fake opener in a regex with no added line after it does not refuse', () => {

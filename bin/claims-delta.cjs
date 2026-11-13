@@ -43,7 +43,9 @@ const NOT_COVERED = [
   'removed qualifiers (a deleted "unless" leaves the rest of the sentence absolute)',
   'wording with no trigger word',
   'a sentence wrapped in a fenced block',
-  'Python docstrings, block-comment lines with no leading *, a mid-line /* */ comment',
+  'string and template-literal text, regex literals and code lines (not comments)',
+  'a sentence split across an added and an unchanged comment line (each added line is read on its own)',
+  'a block comment opened after a // inside a string on the same line, beyond what the per-line rule reads',
   'upstream text pulled in by merging the base branch into the range (mark it not-a-rule, reason "upstream text")',
 ];
 
@@ -180,23 +182,100 @@ function prose(n, text) {
   return { n, text: m[1], start: /^\s*(?:#{1,6}\s|[-*+]\s|\d+\.\s|\|)/.test(text) };
 }
 
-function commentItems(file, lines) {
+/**
+ * Comment text per line of a post-image, an OVER-approximating scan: only block-comment state is tracked, so a
+ * marker inside a string or regex yields extra text and never hides a real comment. Returns an array indexed by
+ * line number minus one; '' means "no comment text on that line".
+ */
+function scanComments(headText, ext) {
+  const lines = headText.replace(/^﻿/, '').split(/\r?\n/);
+  const out = new Array(lines.length).fill('');
+  if (SLASH_EXT.has(ext)) {
+    let inBlock = false;
+    lines.forEach((L, idx) => {
+      const segs = [];
+      const startedInBlock = inBlock;
+      let i = 0;
+      while (i <= L.length) {
+        if (inBlock) {
+          const j = L.indexOf('*/', i);
+          if (j < 0) { segs.push(L.slice(i)); break; }
+          segs.push(L.slice(i, j));
+          inBlock = false;
+          i = j + 2;
+          continue;
+        }
+        const p1 = L.indexOf('/*', i);
+        let p2 = -1;
+        for (let k = L.indexOf('//', i); k >= 0; k = L.indexOf('//', k + 1)) { if (L[k - 1] !== ':' || /^\s/.test(L.slice(k + 2, k + 3))) { p2 = k; break; } }
+        if (p1 < 0 && p2 < 0) break;
+        if (p2 >= 0 && (p1 < 0 || p2 < p1)) { segs.push(L.slice(p2 + 2)); break; }
+        inBlock = true;
+        i = p1 + 2;
+      }
+      let text = segs.join(' ');
+      if (startedInBlock) text = text.replace(/^\s*\*+\s?/, '');
+      out[idx] = text.trim();
+    });
+    return out;
+  }
+  let delim = null;
+  let rubyBlock = false;
+  lines.forEach((L, idx) => {
+    if (ext === '.rb') {
+      if (/^=begin\b/.test(L)) { rubyBlock = true; return; }
+      if (/^=end\b/.test(L)) { rubyBlock = false; return; }
+      if (rubyBlock) { out[idx] = L.trim(); return; }
+    }
+    if (ext === '.py') {
+      let i = 0;
+      const segs = [];
+      while (i <= L.length) {
+        if (delim) {
+          const j = L.indexOf(delim, i);
+          if (j < 0) { segs.push(L.slice(i)); break; }
+          segs.push(L.slice(i, j));
+          delim = null;
+          i = j + 3;
+          continue;
+        }
+        const t3 = [L.indexOf('"""', i), L.indexOf("'''", i)].filter((x) => x >= 0).sort((a, b) => a - b)[0];
+        const h = L.indexOf('#', i);
+        if (h >= 0 && (t3 === undefined || h < t3)) { segs.push(L.slice(h + 1)); break; }
+        if (t3 === undefined) break;
+        delim = L.slice(t3, t3 + 3);
+        i = t3 + 3;
+      }
+      let text = segs.join(' ').trim();
+      if (!text) { const m = /^\s*[rbuRBU]{0,2}(['"])(.+)\1\s*$/.exec(L); if (m) text = m[2].trim(); }
+      out[idx] = text;
+      return;
+    }
+    if (idx === 0 && /^#!/.test(L)) return;
+    const h = L.indexOf('#');
+    if (h >= 0) out[idx] = L.slice(h + 1).trim();
+  });
+  return out;
+}
+
+/** Added comment lines of one file: scanner text from the post-image, falling back to the per-line rule. */
+function commentItems(file, lines, headText) {
   const ext = path.extname(file).toLowerCase();
   const slash = SLASH_EXT.has(ext);
   const hash = HASH_EXT.has(ext);
   if (!slash && !hash) return [];
+  const scanned = headText === null ? null : scanComments(headText, ext);
   const items = [];
   for (const { n, text } of lines) {
-    let body = null;
-    if (slash) {
-      const m = /^\s*(?:\/\/+|\/\*+|\*(?!\/))\s?(.*?)(?:\*\/)?\s*$/.exec(text) || /\s\/\/\s(.*)$/.exec(text);
-      if (m) body = m[1];
-    } else {
-      const m = /^\s*#(?!!)\s?(.*)$/.exec(text) || /\s#\s(.*)$/.exec(text);
+    let body = scanned ? scanned[n - 1] || '' : '';
+    if (!body) {
+      const m = slash
+        ? /^\s*(?:\/\/+|\/\*+|\*(?!\/))\s?(.*?)(?:\*\/)?\s*$/.exec(text) || /\s\/\/\s(.*)$/.exec(text)
+        : /^\s*#(?!!)\s?(.*)$/.exec(text) || /\s#\s(.*)$/.exec(text);
       if (m) body = m[1];
     }
-    if (body === null) continue;
     body = body.trim();
+    if (!body) continue;
     items.push({ n, text: body.replace(/^[-*]\s+/, ''), start: /^[-*]\s+/.test(body) });
   }
   return items;
@@ -228,7 +307,7 @@ function collect(o) {
   const a = resolve(a0);
   const b = resolve(b0);
   const from = o.range.includes('...') ? git(o.repo, ['merge-base', a, b]).trim() : a;
-  const diff = git(o.repo, ['diff', '-U0', '--no-color', '--no-renames', '--no-ext-diff', '--no-textconv', from, b]);
+  const diff = git(o.repo, ['diff', '-U0', '--no-color', '--no-renames', '--no-ext-diff', '--no-textconv', '--text', from, b]);
   const changed = git(o.repo, ['diff', '--name-only', '--no-renames', from, b]).split('\n').filter(Boolean);
   const unexamined = [];
   for (const f of parseDiff(diff)) {
@@ -240,7 +319,11 @@ function collect(o) {
       for (const bl of toBlocks(proseItems(f.lines, counters))) add(kind, `${f.file}:${bl.n}`, bl.text);
       continue;
     }
-    for (const bl of toBlocks(commentItems(f.file, f.lines))) add('comment', `${f.file}:${bl.n}`, bl.text);
+    let headText = null;
+    if (SLASH_EXT.has(ext) || HASH_EXT.has(ext)) {
+      try { headText = git(o.repo, ['show', '--no-textconv', `${b}:${f.file}`]); } catch { unexamined.push(`${f.file} (partial: post-image unreadable)`); }
+    }
+    for (const bl of toBlocks(commentItems(f.file, f.lines, headText))) add('comment', `${f.file}:${bl.n}`, bl.text);
     for (const t of titles(f.file, f.lines)) add('title', `${f.file}:${t.n}`, t.text, true);
   }
   const log = git(o.repo, ['log', '--first-parent', '--format=%h%x01%B%x00', `${from}..${b}`]);
@@ -327,7 +410,7 @@ function run(o) {
   const warnings = stale.map((id) => `stale-resolution ${id}`);
   for (const c of claims) {
     const r = c.flags.length ? good.get(c.id) : null;
-    c.status = !c.flags.length ? 'plain' : c.flags.includes('oversize') ? 'unresolved' : r ? (r.kind === 'not-a-rule' ? 'dismissed' : 'resolved') : 'unresolved';
+    c.status = !c.flags.length ? 'plain' : r && r.kind === 'not-a-rule' ? 'dismissed' : r && !c.flags.includes('oversize') ? 'resolved' : 'unresolved';
   }
   for (const id of good.keys()) if (ids.has(id) && !claims.some((c) => c.id === id && c.flags.length)) warnings.push(`unneeded-resolution ${id}`);
   const unresolved = [...new Set(claims.filter((c) => c.status === 'unresolved').map((c) => c.id))];
