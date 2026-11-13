@@ -295,6 +295,18 @@ test('W4: a round is a distinct head commit: two maintainers on one head are one
   assert.match(run(['7'], { reviews: two }).stdout, /^ {2}upstream CR rounds: 2$/m);
 });
 
+test('R2 B-01: an excerpt line is not matched by a longer log line that ends with it, nor by a bare token', () => {
+  for (const [excerpt, line] of [['ok 1 - foo', 'not ok 1 - foo'], ['ok 1 - foo', '# Subtest: ok 1 - foo'], ['0', '# fail 0'], ['# fail 0', '# fail 0 (3ms)']]) {
+    const j = json(['--body', '7'], { bodyText: body({ excerpt }), log: logLine(line) + '\n' });
+    assert.equal(j.body.excerpt.status, 'missing', `${excerpt} vs ${line}`);
+  }
+});
+
+test('R2 W-03: a round with no commit_id prints its review key whole in the band line', () => {
+  const rs = [1, 2, 3].map((id) => ({ ...CR(id, 'trek-e', 'COLLABORATOR'), commit_id: '' }));
+  assert.match(run(['7'], { reviews: rs }).stdout, /last 3 rounds review 1, review 2, review 3$/m);
+});
+
 // ---- fix round R3 (quick 261113-wb1): an unknown PR head reads as unknown; round keys are case-insensitive ----
 
 test('R3: an unknown PR head is "not compared", never a mismatch against an empty head', () => {
@@ -379,4 +391,11 @@ test('R4: an unreadable run head sha is named and the compare is skipped', () =>
   const un = run(['--body', '7'], { runHeadError: 'HTTP 404' });
   assert.match(un.stdout, /^ {2}body: run head sha unread \(HTTP 404\)$/m);
   assert.equal(un.status, 0);
+});
+
+test('R4 W-01: a run in the PR repo itself is judged by its own headSha; an author-written title cannot override it', () => {
+  const own = 'https://github.com/open-gsd/gsd-core/actions/runs/42744528257';
+  const lying = json(['--body', '7'], { bodyText: body({ url: own }), runHead: 'c'.repeat(40), runTitle: 'selftest: run gsd-core aaaaaaa (PR 7)' }).body.excerpt;
+  assert.equal(lying.headMatch, false);
+  assert.equal(lying.testedSource, 'run head');
 });
