@@ -252,12 +252,12 @@ test('W2: lines match per log line: "# pass 5171" is not in "# pass 51719" or "#
   assert.equal(json1.body.excerpt.status, 'missing', 'a prefix of the log content is not a match');
 });
 
-test('W2: real gh log shapes match: tab prefix, 7-digit timestamp, BOM, CRLF, ANSI colour, indentation and a suffix after whitespace', () => {
+test('W2: real gh log shapes match: tab prefix, 7-digit timestamp, BOM, CRLF, ANSI colour and indentation', () => {
   const log = [
     logLine('\u001b[32m# pass 5171\u001b[0m', true),
     logLine('# tests 5171'),
     logLine('    indented line here'),
-    logLine('ok  # fail 0 (summary)'),
+    logLine('# fail 0 (summary)'),
     '',
   ].join('\r\n');
   const excerpt = ['# pass 5171', '# tests 5171', 'indented line here', '# fail 0 (summary)'].join('\n');
@@ -300,4 +300,16 @@ test('I5: the run head sha is compared with the PR head: match is said, mismatch
   const un = run(['--body', '7'], { runHeadError: 'HTTP 404' });
   assert.match(un.stdout, /^ {2}body: run head sha unread \(HTTP 404\)$/m);
   assert.equal(un.status, 0);
+});
+
+test('R2 B-01: an excerpt line is not matched by a longer log line that ends with it, nor by a bare token', () => {
+  for (const [excerpt, line] of [['ok 1 - foo', 'not ok 1 - foo'], ['ok 1 - foo', '# Subtest: ok 1 - foo'], ['0', '# fail 0'], ['# fail 0', '# fail 0 (3ms)']]) {
+    const j = json(['--body', '7'], { bodyText: body({ excerpt }), log: logLine(line) + '\n' });
+    assert.equal(j.body.excerpt.status, 'missing', `${excerpt} vs ${line}`);
+  }
+});
+
+test('R2 W-03: a round with no commit_id prints its review key whole in the band line', () => {
+  const rs = [1, 2, 3].map((id) => ({ ...CR(id, 'trek-e', 'COLLABORATOR'), commit_id: '' }));
+  assert.match(run(['7'], { reviews: rs }).stdout, /last 3 rounds review 1, review 2, review 3$/m);
 });
