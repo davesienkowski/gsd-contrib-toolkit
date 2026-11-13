@@ -1,0 +1,30 @@
+{
+  "minNewInputs": 10,
+  "maxSentenceChars": 2000,
+  "patterns": [
+    {
+      "id": "quantifier",
+      "flags": "i",
+      "regex": "\\b(?:never|always|every|none|nothing|nowhere|nobody|neither|cannot|impossible|guarantee[ds]?|exactly|must|whenever|unless|ensures?|prevents?)\\b|\\bno\\s+[a-z]{2,}",
+      "why": "an absolute or universal statement"
+    },
+    {
+      "id": "negated",
+      "flags": "i",
+      "regex": "\\b(?:is|are|was|were|does|do|did|can|could|will|would|should|has|have|had|must|may|might|need|shall)\\s+not\\b|\\b\\w+n't\\b|\\bcannot\\b",
+      "why": "a negative claim about a class (X is not a miss)"
+    },
+    {
+      "id": "definitional",
+      "flags": "i",
+      "regex": "\\b(?:the|an?)\\s+(?:\\S+\\s+){1,4}?(?:is|are)\\s+(?:an?|the|pure|safe|valid|correct|equivalent|identical|sufficient)\\b",
+      "why": "a definition of a class or a key (the X is ...)"
+    },
+    {
+      "id": "scope-negation",
+      "flags": "i",
+      "regex": "\\b(?:rather than|instead of|not (?:edited|changed)|unchanged|untouched|without (?:editing|changing|touching|modifying))\\b",
+      "why": "a claim about what the change does not touch"
+    }
+  ]
+}

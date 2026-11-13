@@ -127,9 +127,11 @@ test('gate: an unresolved flagged claim exits 1; report mode exits 0', () => {
 
 function resolution(fx, patch) {
   const id = run(fx, NOBODY).json.claims.find((s) => s.flags.length).id;
-  fs.writeFileSync(path.join(fx.root, 'oracle.cjs'), '// oracle\nmodule.exports = 1;\n');
-  git(fx.root, 'add', 'oracle.cjs');
-  git(fx.root, 'commit', '-q', '-m', 'oracle');
+  if (!fs.existsSync(path.join(fx.root, 'oracle.cjs'))) {
+    fs.writeFileSync(path.join(fx.root, 'oracle.cjs'), '// oracle\nmodule.exports = 1;\n');
+    git(fx.root, 'add', 'oracle.cjs');
+    git(fx.root, 'commit', '-q', '-m', 'oracle');
+  }
   const entry = { id, kind: 'oracle', new_inputs: 10, evidence: 'oracle.cjs', command: 'node oracle.cjs', ...patch };
   fs.writeFileSync(path.join(fx.dir, 'CLAIMS-RESOLUTIONS.json'), JSON.stringify([entry]));
   return entry;
@@ -205,7 +207,7 @@ test('gate: a weakened rewrite passes because the delta is recomputed', () => {
   const fx = makeRepo({}, { 'a.cjs': `// ${SWITCH}\n` });
   assert.equal(run(fx, ['--gate', ...NOBODY]).code, 1);
   fs.writeFileSync(path.join(fx.root, 'a.cjs'), '// These switch shapes are reported: case 1, case 2.\n');
-  git(fx.root, 'add', '-A');
+  git(fx.root, 'add', 'a.cjs');
   git(fx.root, 'commit', '-q', '-m', 'weaken');
   assert.equal(run(fx, ['--gate', ...NOBODY]).code, 0);
 });
