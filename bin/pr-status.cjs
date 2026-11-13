@@ -1547,39 +1547,49 @@ function logHasLine(contents, text) {
   return contents.some((c) => c.trim() === want || (c.includes('\u001b') && c.replace(ANSI_RE, '').trim() === want));
 }
 
-const TESTED_TITLE_RE = /\brun gsd-core ([0-9a-f]{7,40}) \(PR ([0-9]+)\)/i; // the selftest/run commit message of gsd-core-experiments: "selftest: run gsd-core <sha> (PR <n>)"
+// The selftest/run commit message of gsd-core-experiments, anchored: "selftest: run gsd-core <sha> (PR <n>)". Any extra text or a second sha is no title.
+const TESTED_TITLE_RE = /^selftest: run gsd-core ([0-9a-f]{7,40}) \(PR ([0-9]+)\)$/i;
 const TESTED_MARKER_RE = /^[ \t]*SELFTEST_SHA:[ \t]*['"]?([0-9a-f]{40})['"]?[ \t]*$/im; // selftest.yml env, committed with the run's head commit
+// Policy data: repos whose workflow marker and run titles are trusted to name the tested gsd-core sha. A run URL comes
+// from the author-written PR body, so any other repo (the PR's own repo aside) is never read for a marker or a title.
+const TRUSTED_SELFTEST_REPOS = Object.freeze(['davesienkowski/gsd-core-experiments']);
 
 /**
- * quick 261113-wb1 R4: a hosted Self-test run's headSha is the commit of the experiments repo that holds the
- * workflow, not the commit that was tested. The tested sha is, in order: the workflow's committed SELFTEST_SHA
- * (read at the run's headSha through the contents API), the run title's `run gsd-core <sha> (PR <n>)` (prefix
- * match, the PR number must be this PR's), and the run's own headSha only when the run is in the PR's repo.
- * Otherwise the compare is unknown, never a mismatch.
+ * quick 261113-wb1 R4/R5: a hosted Self-test run's headSha is the commit of the experiments repo that holds the
+ * workflow, not the commit that was tested. The compare is, in order: a run in the PR's own repo is judged by its
+ * own headSha; a run in a repo not on the trusted list (deps.trustedSelfTestRepos, default TRUSTED_SELFTEST_REPOS)
+ * is not compared; in a trusted repo the tested sha is the workflow's committed SELFTEST_SHA (read at the run's
+ * headSha; only a 404 means "no marker", any other read error is "marker unread") and/or the anchored run title
+ * `selftest: run gsd-core <sha> (PR <n>)`. When both exist they must agree (title sha is a prefix of the marker,
+ * PR number is this PR's), else unknown. Anything unknown is never a mismatch.
  *
  * @returns {{testedSha: (string|null), testedSource: (string|null), headMatch: (boolean|null), headNote: (string|null)}}
  */
-function compareTested(view, run, head, pr, gh) {
+function compareTested(view, run, head, pr, gh, trusted) {
   const res = { testedSha: null, testedSource: null, headMatch: null, headNote: null };
   if (head === '') return res; // an unknown PR head is unknown, not a mismatch
   const want = lower(head);
   // A run in the PR's own repo ran the commit it names: its headSha is exact and no author-written title or marker can override it.
-  if (pr.repo && lower(run.repo) === lower(pr.repo)) {
+  if (lower(run.repo) === lower(pr.repo)) {
     return Object.assign(res, { testedSha: view.headSha, testedSource: 'run head', headMatch: lower(view.headSha) === want });
   }
+  if (!trusted.map(lower).includes(lower(run.repo))) return Object.assign(res, { headNote: 'run repo is not a trusted Self-test repo' });
+  let marker = null;
   try {
     const file = gh(['api', `repos/${run.repo}/contents/.github/workflows/selftest.yml?ref=${view.headSha}`]);
     const text = file && file.encoding === 'base64' && typeof file.content === 'string' ? Buffer.from(file.content, 'base64').toString('utf8') : '';
     const m = TESTED_MARKER_RE.exec(text);
-    if (m) return Object.assign(res, { testedSha: m[1], testedSource: 'workflow marker', headMatch: lower(m[1]) === want });
-  } catch {
-    // no marker at that commit: fall through to the title
+    if (m) marker = m[1];
+  } catch (err) {
+    if (!/\b404\b/.test(`${err && err.message} ${err && err.stderr}`)) return Object.assign(res, { headNote: `marker unread (${firstErrorLine(err)})` });
   }
-  const t = TESTED_TITLE_RE.exec(String(view.displayTitle || ''));
+  const t = TESTED_TITLE_RE.exec(String(view.displayTitle || '').trim());
+  if (marker && t && (!lower(marker).startsWith(lower(t[1])) || t[2] !== String(pr.number))) return Object.assign(res, { headNote: 'workflow marker and run title disagree' });
+  if (marker) return Object.assign(res, { testedSha: marker, testedSource: 'workflow marker', headMatch: lower(marker) === want });
   if (t) {
     res.testedSha = t[1];
     res.testedSource = 'run title';
-    if (pr.number != null && t[2] !== String(pr.number)) return Object.assign(res, { headMatch: false, headNote: `the run title names PR ${t[2]}, this is PR ${pr.number}` });
+    if (t[2] !== String(pr.number)) return Object.assign(res, { headMatch: false, headNote: `the run title names PR ${t[2]}, this is PR ${pr.number}` });
     return Object.assign(res, { headMatch: want.startsWith(lower(t[1])) });
   }
   return res;
@@ -1597,7 +1607,8 @@ function compareTested(view, run, head, pr, gh) {
  * @param {{repo?: string, number?: (string|number)}} [pr] the PR's repo and number
  * @returns {{status: 'ok'|'missing'|'no-run-url'|'no-excerpt'|'log-unread', runUrl: (string|null), runRepo: (string|null), lines: number, missingLine: (number|null), missingText: (string|null), missingOf: (number|null), error: (string|null), runHeadSha: (string|null), testedSha: (string|null), testedSource: ('workflow marker'|'run title'|'run head'|null), headMatch: (boolean|null), headNote: (string|null), headError: (string|null)}}
  */
-function checkExcerpt(body, deps = {}, head = '', pr = {}) {
+function checkExcerpt(body, deps = {}, head = '', pr) {
+  if (!pr || typeof pr !== 'object') throw new TypeError('checkExcerpt needs the PR repo and number');
   const out = {
     status: 'no-run-url', runUrl: null, runRepo: null, lines: 0, missingLine: null, missingText: null, missingOf: null, error: null,
     runHeadSha: null, testedSha: null, testedSource: null, headMatch: null, headNote: null, headError: null,
@@ -1624,7 +1635,7 @@ function checkExcerpt(body, deps = {}, head = '', pr = {}) {
     const view = gh(['run', 'view', run.runId, '--repo', run.repo, ...attempt, '--json', 'headSha,displayTitle']);
     if (!view || typeof view.headSha !== 'string' || view.headSha === '') throw new Error('run view reply has no headSha');
     out.runHeadSha = view.headSha;
-    Object.assign(out, compareTested(view, run, head, pr, gh));
+    Object.assign(out, compareTested(view, run, head, pr, gh, deps.trustedSelfTestRepos || TRUSTED_SELFTEST_REPOS));
   } catch (err) {
     out.headError = firstErrorLine(err);
   }
@@ -1670,7 +1681,9 @@ function bodyLines(b) {
         lines.push(
           b.head === ''
             ? '  body: run head sha not compared: the PR head is unknown'
-            : "  body: run head sha not compared: tested sha unknown (no run title or workflow marker carries it, and the run is not in the PR's repo)"
+            : x.headNote
+              ? `  body: run head sha not compared: ${clean(x.headNote)}`
+              : '  body: run head sha not compared: tested sha unknown (no run title or workflow marker carries it)'
         );
       } else if (x.headMatch === false) {
         lines.push(
