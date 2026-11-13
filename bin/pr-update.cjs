@@ -511,6 +511,13 @@ const STEPS = [
     const bad = [];
     const bound = st.body && st.body.selfTest;
     if (!bound || bound.status !== 'bound' || lower(bound.headSha) !== lower(ledger.head)) bad.push(`the Self-test block is not bound to ${ledger.head} (body.selfTest ${JSON.stringify(bound || null)})`);
+    // W-B (quick 261113-wb1): the excerpt must be in THIS run's log and the run's head must equal the PR head; 'not compared' is not satisfied.
+    const ex = st.body && st.body.excerpt;
+    if (!ex || ex.status !== 'ok') bad.push(`excerpt check is ${ex ? ex.status : 'absent'} (needs ok: every excerpt line in the run log, run URL present)`);
+    else {
+      if (ex.headMatch !== true) bad.push(`run head sha vs PR head: ${ex.headMatch === false ? 'mismatch' : 'not compared'}`);
+      if (lower(ex.runUrl) !== lower(ledger.runUrl)) bad.push(`the excerpt is checked against ${ex.runUrl}, not this bundle's run ${ledger.runUrl}`);
+    }
     const pol = st.policies && st.policies.selfTest;
     if (pol && !(pol.status === 'green' && pol.reason === 'ok_report')) bad.push(`policies.selfTest is ${pol.status}/${pol.reason}`);
     if (((st.checks && st.checks.failing) || []).includes('Self-test report')) bad.push('the "Self-test report" check is failing (it may not have re-run since the body edit)');
