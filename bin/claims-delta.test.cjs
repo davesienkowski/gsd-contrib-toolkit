@@ -347,3 +347,99 @@ test('I2: a code-only round with a commit message is examined, not refused as va
   const fx = makeRepo({}, { 'a.cjs': 'module.exports = 1;\n' });
   assert.equal(run(fx, ['--gate', ...NOBODY]).code, 0);
 });
+
+// --- FIX-PLAN R2 rows: comment carriers the extractor must read (T1, T5, T8 and neighbours) ------------
+
+const flaggedTexts = (r) => sentences(r.json).filter((s) => s.flags.length).map((s) => s.text);
+
+test('R2 T1: a star-less block-comment continuation line is extracted', () => {
+  const fx = makeRepo({}, { 'a.js': '/* first line\n   this never fails and is always safe\n*/\nmodule.exports = 1;\n' });
+  assert.ok(flaggedTexts(run(fx, NOBODY)).some((t) => /never fails/.test(t)));
+});
+
+test('R2 T5: a mid-line block comment after code is extracted', () => {
+  const fx = makeRepo({}, { 'a.js': 'let z = 1; /* this never fails */\n' });
+  assert.ok(flaggedTexts(run(fx, NOBODY)).some((t) => /never fails/.test(t)));
+});
+
+test('R2 T8: a Python docstring and a mid-line # comment are extracted', () => {
+  const fx = makeRepo({}, { 'q.py': 'def f():\n    """This never raises."""\n    return 1  # always correct\n', 'run.sh': 'echo hi #never fails\n' });
+  const t = flaggedTexts(run(fx, NOBODY));
+  assert.ok(t.some((x) => /never raises/.test(x)));
+  assert.ok(t.some((x) => /always correct/.test(x)));
+  assert.ok(t.some((x) => /never fails/.test(x)));
+});
+
+test('R2: Ruby =begin/=end body lines are extracted', () => {
+  const fx = makeRepo({}, { 'r.rb': '=begin\nthis never fails\n=end\nputs 1\n' });
+  assert.ok(flaggedTexts(run(fx, NOBODY)).some((t) => /never fails/.test(t)));
+});
+
+test('R2: an added line in the middle of an existing block comment is read', () => {
+  const fx = makeRepo({ 'a.js': '/*\n * one\n * three\n */\n' }, { 'a.js': '/*\n * one\n * two is never wrong\n * three\n */\n' });
+  assert.ok(flaggedTexts(run(fx, NOBODY)).some((t) => /never wrong/.test(t)));
+});
+
+test('R2: a file with an added line inside an unterminated block comment is listed partial; --allow-unexamined passes', () => {
+  const fx = makeRepo({}, { 'a.js': 'let a = 1;\n/* opened here\nnever closed\n' });
+  const g = run(fx, ['--gate', ...NOBODY]);
+  assert.equal(g.code, 1);
+  assert.ok(g.json.unexamined_files.some((f) => /^a\.js \(partial: /.test(f)));
+  assert.equal(run(fx, ['--gate', ...NOBODY, '--allow-unexamined', 'read the file by hand']).code, 0);
+});
+
+test('R2: a fake opener in a regex with no added line after it does not refuse', () => {
+  const fx = makeRepo({}, { 'a.js': "const re = /\\/*$/;\n", });
+  const g = run(fx, ['--gate', ...NOBODY]);
+  assert.equal(g.code, 0, g.out + g.err);
+});
+
+test('R2: https:// in a string is not a // comment', () => {
+  const fx = makeRepo({}, { 'a.js': "const u = 'https://example.com/never';\n" });
+  assert.ok(!sentences(run(fx, NOBODY).json).some((s) => s.kind === 'comment'));
+});
+
+test('R2: a .cjs with a NUL byte still yields its comments (diff --text)', () => {
+  const fx = makeRepo({}, { 'n.cjs': '// this never fails\nlet x = "\u0000";\n' });
+  assert.ok(flaggedTexts(run(fx, NOBODY)).some((t) => /never fails/.test(t)));
+});
+
+test('R2: CRLF and a BOM give the same sentence', () => {
+  const fx = makeRepo({}, { 'a.js': '﻿// this never fails\r\nlet x = 1;\r\n' });
+  assert.ok(flaggedTexts(run(fx, NOBODY)).some((t) => t === 'this never fails'));
+});
+
+test('R2: deleted files add nothing; a renamed file lists its comments (--no-renames)', () => {
+  const fx = makeRepo({ 'old.cjs': '// this never fails\nlet y = 2;\n', 'gone.cjs': '// always\n' }, { 'touch.txt': 'x\n' });
+  git(fx.root, 'rm', '-q', 'gone.cjs');
+  git(fx.root, 'mv', 'old.cjs', 'new.cjs');
+  git(fx.root, 'commit', '-q', '-m', 'move');
+  const r = run(fx, NOBODY);
+  assert.ok(sentences(r.json).some((s) => s.loc.startsWith('new.cjs') && /never fails/.test(s.text)));
+  assert.ok(!sentences(r.json).some((s) => s.loc.startsWith('gone.cjs')));
+});
+
+test('R2: --first-parent keeps upstream commit messages of a merged base out of the delta', () => {
+  const fx = makeRepo({}, { 'a.cjs': '// Adds a retry.\n' });
+  git(fx.root, 'checkout', '-q', '-b', 'up', 'base');
+  fs.writeFileSync(path.join(fx.root, 'u.cjs'), 'let u = 1;\n');
+  git(fx.root, 'add', 'u.cjs');
+  git(fx.root, 'commit', '-q', '-m', 'upstream says never');
+  git(fx.root, 'checkout', '-q', 'main');
+  git(fx.root, 'merge', '-q', '--no-edit', 'up');
+  const r = run(fx, NOBODY);
+  assert.ok(!sentences(r.json).some((s) => s.kind === 'commit' && /upstream says never/.test(s.text)));
+});
+
+test('R2 Q-02: a configured external diff program is never run', () => {
+  const fx = makeRepo({}, { 'a.cjs': '// Adds a retry.\n' });
+  git(fx.root, 'config', 'diff.external', '/nonexistent/program');
+  assert.equal(run(fx, NOBODY).code, 0);
+});
+
+test('R2: a 100000-character line is scanned in linear time', () => {
+  const fx = makeRepo({}, { 'a.js': `/* ${'x '.repeat(50000)}\nlet a = 1;\n` });
+  const t0 = Date.now();
+  run(fx, NOBODY);
+  assert.ok(Date.now() - t0 < 5000);
+});
