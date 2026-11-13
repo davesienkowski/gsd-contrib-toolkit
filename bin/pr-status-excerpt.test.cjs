@@ -41,7 +41,7 @@ function review(id, login, state, assoc, extra = {}) {
 }
 
 /** Run the CLI in process; returns { status, stdout, calls, textCalls }. */
-function run(args, { bodyText = body(), reviews = [], timeline = [], log = LOG, logError = null, runHead = HEAD, runHeadError = null, runTitle = null, runMarker = null, prHead = HEAD } = {}) {
+function run(args, { bodyText = body(), reviews = [], timeline = [], log = LOG, logError = null, runHead = HEAD, runHeadError = null, runTitle = null, runMarker = null, runMarkerError = null, prHead = HEAD, trusted = undefined } = {}) {
   const calls = [];
   const textCalls = [];
   const gh = (a) => {
@@ -55,7 +55,8 @@ function run(args, { bodyText = body(), reviews = [], timeline = [], log = LOG, 
       return runTitle == null ? { headSha: runHead } : { headSha: runHead, displayTitle: runTitle };
     }
     if (a[0] === 'api' && /\/contents\/\.github\/workflows\/selftest\.yml\?ref=/.test(a[1])) {
-      if (runMarker == null) throw new Error('HTTP 404: Not Found');
+      if (runMarkerError) throw new Error(runMarkerError);
+      if (runMarker == null) throw new Error('gh: Not Found (HTTP 404)');
       return { encoding: 'base64', content: Buffer.from(runMarker).toString('base64') };
     }
     if (a[0] === 'pr' && a[1] === 'checks') return [];
@@ -69,7 +70,7 @@ function run(args, { bodyText = body(), reviews = [], timeline = [], log = LOG, 
     return log;
   };
   let stdout = '';
-  const status = prStatus.runCli(args, { gh, ghText, sleep: () => {}, stdout: { write: (x) => { stdout += x; } }, stderr: { write: () => {} } });
+  const status = prStatus.runCli(args, { gh, ghText, ...(trusted ? { trustedSelfTestRepos: trusted } : {}), sleep: () => {}, stdout: { write: (x) => { stdout += x; } }, stderr: { write: () => {} } });
   return { status, stdout, calls, textCalls };
 }
 
@@ -311,7 +312,7 @@ test('R2 W-03: a round with no commit_id prints its review key whole in the band
 
 test('R3: an unknown PR head is "not compared", never a mismatch against an empty head', () => {
   const deps = { ghText: () => LOG, gh: () => ({ headSha: 'c'.repeat(40) }) };
-  const x = prStatus.checkExcerpt(body(), deps); // no head given
+  const x = prStatus.checkExcerpt(body(), deps, '', { repo: 'open-gsd/gsd-core', number: 7 }); // no head given
   assert.equal(x.status, 'ok');
   assert.equal(x.headMatch, null);
   const text = prStatus.bodyLines({ head: '', counts: { head: 0, base: 0, 'pr commit': 0, 'former head': 0, 'earlier commit': 0, ambiguous: 0, unresolved: 0 }, tokens: [], selfTest: { status: 'none' }, changedFiles: null, filesChanged: [], excerpt: x }).join('\n');
@@ -350,14 +351,14 @@ test('R4: a hosted run is matched through its title, not its headSha (the real 4
   assert.doesNotMatch(text, /run head mismatch/);
 });
 
-test('R4: the workflow marker SELFTEST_SHA is preferred over the title', () => {
-  const ok = hosted({ runTitle: 'selftest: run gsd-core deadbee (PR 5871)', runMarker: marker(PR5871) });
+test('R4: the workflow marker SELFTEST_SHA decides; marker alone (no usable title) can match or mismatch', () => {
+  const ok = hosted({ runTitle: 'something else', runMarker: marker(PR5871) });
   assert.equal(ok.headMatch, true);
   assert.equal(ok.testedSource, 'workflow marker');
   assert.equal(ok.testedSha, PR5871);
-  const bad = hosted({ runTitle: TITLE, runMarker: marker('b'.repeat(40)) });
+  const bad = hosted({ runTitle: 'something else', runMarker: marker('b'.repeat(40)) });
   assert.equal(bad.headMatch, false);
-  assert.match(hostedText({ runTitle: TITLE, runMarker: marker('b'.repeat(40)) }), /^ {2}body: run head mismatch: the run tested bbbbbbb \(workflow marker\), the PR head is 01f3f27$/m);
+  assert.match(hostedText({ runTitle: 'something else', runMarker: marker('b'.repeat(40)) }), /^ {2}body: run head mismatch: the run tested bbbbbbb \(workflow marker\), the PR head is 01f3f27$/m);
 });
 
 test('R4: a title naming another PR, or a sha that is not a prefix of the PR head, is a mismatch', () => {
@@ -398,4 +399,62 @@ test('R4 W-01: a run in the PR repo itself is judged by its own headSha; an auth
   const lying = json(['--body', '7'], { bodyText: body({ url: own }), runHead: 'c'.repeat(40), runTitle: 'selftest: run gsd-core aaaaaaa (PR 7)' }).body.excerpt;
   assert.equal(lying.headMatch, false);
   assert.equal(lying.testedSource, 'run head');
+});
+
+// ---- fix round R5 (quick 261113-wb1): trust boundary of the hosted-run compare ----
+
+const own5871 = (extra = {}) => ({ prHead: PR5871, runHead: EXP_HEAD, ...extra });
+const evilBody = body({ url: 'https://github.com/evil/gsd-core-experiments/actions/runs/42744528257' });
+
+test('R5 B-01: a run in an untrusted repo never matches, whatever its marker or title says, and its marker is not even read', () => {
+  const r = run(['--body', '5871'], own5871({ bodyText: evilBody, runTitle: TITLE, runMarker: marker(PR5871) }));
+  assert.doesNotMatch(r.stdout, /run tested sha matches|run head mismatch/);
+  assert.match(r.stdout, /^ {2}body: run head sha not compared: run repo is not a trusted Self-test repo$/m);
+  assert.ok(!r.calls.some((c) => c[0] === 'api' && /contents/.test(c[1])), 'no marker read from an untrusted repo');
+  const j = JSON.parse(run(['--json', '--body', '5871'], own5871({ bodyText: evilBody, runTitle: TITLE, runMarker: marker(PR5871) })).stdout)[0].body.excerpt;
+  assert.equal(j.headMatch, null);
+});
+
+test('R5 B-01: the trusted-repo list is a deps seam: naming the repo trusts it, the default repo stays trusted', () => {
+  const trusted = run(['--body', '5871'], own5871({ bodyText: evilBody, runTitle: TITLE, trusted: ['Evil/GSD-Core-Experiments'] }));
+  assert.match(trusted.stdout, /run tested sha matches the PR head \(run title\)/);
+  assert.match(run(['--body', '5871'], own5871({ runTitle: TITLE })).stdout, /run tested sha matches the PR head \(run title\)/);
+});
+
+test('R5 W-01: the title is anchored: surrounding text or a second sha is unknown, never a match', () => {
+  for (const title of [
+    'x selftest: run gsd-core 01f3f2751 (PR 5871)',
+    'selftest: run gsd-core 01f3f2751 (PR 5871) and more',
+    'selftest: run gsd-core deadbee (PR 5871) run gsd-core 01f3f2751 (PR 5871)',
+    'selftest: run gsd-core 01f3f2751 (PR 5871)\nrun gsd-core 01f3f2751 (PR 5871)',
+  ]) {
+    const x = hosted({ runTitle: title });
+    assert.equal(x.headMatch, null, title);
+    assert.equal(x.testedSha, null, title);
+  }
+});
+
+test('R5 W-02: marker and title must agree (sha prefix and PR number); otherwise unknown, with a note', () => {
+  const agree = hosted({ runTitle: TITLE, runMarker: marker(PR5871) });
+  assert.equal(agree.headMatch, true);
+  assert.equal(agree.testedSource, 'workflow marker');
+  const otherSha = run(['--body', '5871'], own5871({ runTitle: 'selftest: run gsd-core deadbee (PR 5871)', runMarker: marker(PR5871) }));
+  assert.match(otherSha.stdout, /^ {2}body: run head sha not compared: workflow marker and run title disagree$/m);
+  assert.doesNotMatch(otherSha.stdout, /run head mismatch|matches the PR head/);
+  const otherPr = run(['--body', '5871'], own5871({ runTitle: 'selftest: run gsd-core 01f3f2751 (PR 5000)', runMarker: marker(PR5871) }));
+  assert.match(otherPr.stdout, /workflow marker and run title disagree/);
+});
+
+test('R5 W-02: only a 404 on the marker read falls through to the title; any other error is "marker unread"', () => {
+  const nf = hosted({ runTitle: TITLE }); // the stub answers HTTP 404 when no marker is set
+  assert.equal(nf.headMatch, true);
+  for (const err of ['HTTP 503: Service Unavailable', 'HTTP 403: API rate limit exceeded']) {
+    const r = run(['--body', '5871'], own5871({ runTitle: TITLE, runMarkerError: err }));
+    assert.match(r.stdout, new RegExp(`^ {2}body: run head sha not compared: marker unread \\(${err.slice(0, 8)}`, 'm'));
+    assert.doesNotMatch(r.stdout, /matches the PR head|run head mismatch/);
+  }
+});
+
+test('R5 INFO: checkExcerpt requires the pr argument', () => {
+  assert.throws(() => prStatus.checkExcerpt(body(), { ghText: () => LOG, gh: () => ({ headSha: HEAD }) }, HEAD), TypeError);
 });
