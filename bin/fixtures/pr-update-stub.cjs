@@ -68,7 +68,7 @@ function main() {
     return r ? out(r) : fail('gh: Not Found (HTTP 404)');
   }
   if (/\/actions\/runs\?/.test(p)) return out({ workflow_runs: st.runs || [] });
-  if (/\/issues\/\d+\/comments/.test(p)) return out(state.comments || []);
+  if (/\/issues\/\d+\/comments/.test(p)) return out(state.commentsPages || state.comments || []);
   return fail(`stub: unexpected api read ${p}`);
 }
 

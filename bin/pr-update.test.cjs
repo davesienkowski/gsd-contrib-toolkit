@@ -29,6 +29,7 @@ const PRSTATUS_STUB = path.join(__dirname, 'fixtures', 'pr-update-prstatus-stub.
 const HEAD = 'a'.repeat(40);
 const OLD = 'b'.repeat(40);
 const EXP = 'davesienkowski/gsd-core-experiments';
+const marker = (head) => `<!-- pr-update ${head} -->`;
 const RUN_URL = `https://github.com/${EXP}/actions/runs/77`;
 const EM = '—';
 
@@ -234,15 +235,55 @@ test('step 2 adopts an existing run when SELFTEST_SHA already equals the head; n
   h.noWritesSpawned();
 });
 
-test('a third dispatch emit refuses (another bundle keeps rewriting selftest/run)', (t) => {
+test('dispatch cap counts churn of SELFTEST_SHA by others, not repeated emits of the same write (review M1)', (t) => {
   const h = harness(t);
   h.state.remoteHeads['fork fix/5797-x'] = HEAD;
   h.save();
-  assert.equal(h.run().status, 3);
-  assert.equal(h.run().status, 3);
+  for (let i = 0; i < 4; i += 1) assert.equal(h.run().status, 3, 'the same PUT may be emitted again after a dead session');
+  for (const sha of ['c'.repeat(40), 'd'.repeat(40)]) {
+    h.state.selftest.ymlSha = sha;
+    h.save();
+    assert.equal(h.run().status, 3);
+  }
+  h.state.selftest.ymlSha = 'e'.repeat(40);
+  h.save();
   const third = h.run();
   assert.equal(third.status, 1);
-  assert.match(third.out + third.err, /another bundle|rewritten/);
+  assert.match(third.out + third.err, /another bundle|rewriting/);
+});
+
+test('--branch must equal the PR head ref and --ctx-tokens must be a plain integer (review M2, m4)', (t) => {
+  const h = harness(t);
+  const r = h.run(['--branch', 'fix/typo']);
+  assert.equal(r.status, 2);
+  assert.match(r.err, /headRefName|fix\/5797-x/);
+  assert.equal(fs.existsSync(h.ledgerFile), false, 'no ledger with a wrong branch frozen in');
+  for (const v of ['', '0x10', '1e3', '-5']) assert.equal(h.run([], { ctx: ['--ctx-tokens', v] }).status, 2, v);
+});
+
+test('a CRLF body with a finished report still verifies step 3; the pending phrase outside the section does not block step 5; marker on page 2 of comments is found (review M3, M4, M5)', (t) => {
+  const h = harness(t);
+  h.state.remoteHeads['fork fix/5797-x'] = HEAD;
+  greenRun(h);
+  h.state.pr.body = h.state.pr.body.replace(new RegExp(OLD, 'g'), HEAD).replace(/\n/g, '\r\n');
+  h.save();
+  const r = h.run();
+  assert.equal(stepState(h, 3), 'done', r.out + r.err);
+
+  const h2 = harness(t);
+  toStep6(h2);
+  h2.state.pr.body = 'Notes: the earlier text said Self-test pending for something.\n\n' + h2.state.pr.body;
+  h2.save();
+  h2.run();
+  assert.equal(stepState(h2, 5), 'done', 'a phrase outside the Self-test section is not a pending marker');
+
+  const h3 = harness(t);
+  toStep6(h3);
+  h3.state.commentsPages = [Array.from({ length: 100 }, () => ({ body: 'x' })), [{ body: marker(HEAD) }]];
+  h3.save();
+  const again = h3.run();
+  assert.equal(stepState(h3, 6), 'done');
+  assert.ok(!/gh pr comment/.test(again.out), 'no duplicate comment past page 1');
 });
 
 test('step 3 emits a body with the Self-test section replaced by the pending line (fence-aware, no stale block)', (t) => {
