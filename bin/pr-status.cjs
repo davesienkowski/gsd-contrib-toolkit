@@ -321,7 +321,7 @@ function fetchBody(number, repo, pr, deps = {}, sink = null) {
   if (sink) Object.assign(sink, { bodyView, bodyError });
   const derived = deriveBody({ view: pr.view, reviews: pr.reviews, timeline: pr.timeline, timelineError: pr.timelineError, bodyView, bodyError });
   // quick 261113-wb1: the only run-log read; skipped when the body was not read or has no Self-test section.
-  if (!derived.error && derived.selfTest.status !== 'none') derived.excerpt = checkExcerpt(bodyView.body, deps, derived.head);
+  if (!derived.error && derived.selfTest.status !== 'none') derived.excerpt = checkExcerpt(bodyView.body, deps, derived.head, { repo, number });
   return derived;
 }
 
@@ -1547,6 +1547,54 @@ function logHasLine(contents, text) {
   return contents.some((c) => c.trim() === want || (c.includes('\u001b') && c.replace(ANSI_RE, '').trim() === want));
 }
 
+// The selftest/run commit message of gsd-core-experiments, anchored: "selftest: run gsd-core <sha> (PR <n>)". Any extra text or a second sha is no title.
+const TESTED_TITLE_RE = /^selftest: run gsd-core ([0-9a-f]{7,40}) \(PR ([0-9]+)\)$/i;
+const TESTED_MARKER_RE = /^[ \t]*SELFTEST_SHA:[ \t]*['"]?([0-9a-f]{40})['"]?[ \t]*$/im; // selftest.yml env, committed with the run's head commit
+// Policy data: repos whose workflow marker and run titles are trusted to name the tested gsd-core sha. A run URL comes
+// from the author-written PR body, so any other repo (the PR's own repo aside) is never read for a marker or a title.
+const TRUSTED_SELFTEST_REPOS = Object.freeze(['davesienkowski/gsd-core-experiments']);
+
+/**
+ * quick 261113-wb1 R4/R5: a hosted Self-test run's headSha is the commit of the experiments repo that holds the
+ * workflow, not the commit that was tested. The compare is, in order: a run in the PR's own repo is judged by its
+ * own headSha; a run in a repo not on the trusted list (deps.trustedSelfTestRepos, default TRUSTED_SELFTEST_REPOS)
+ * is not compared; in a trusted repo the tested sha is the workflow's committed SELFTEST_SHA (read at the run's
+ * headSha; only a 404 means "no marker", any other read error is "marker unread") and/or the anchored run title
+ * `selftest: run gsd-core <sha> (PR <n>)`. When both exist they must agree (title sha is a prefix of the marker,
+ * PR number is this PR's), else unknown. Anything unknown is never a mismatch.
+ *
+ * @returns {{testedSha: (string|null), testedSource: (string|null), headMatch: (boolean|null), headNote: (string|null)}}
+ */
+function compareTested(view, run, head, pr, gh, trusted) {
+  const res = { testedSha: null, testedSource: null, headMatch: null, headNote: null };
+  if (head === '') return res; // an unknown PR head is unknown, not a mismatch
+  const want = lower(head);
+  // A run in the PR's own repo ran the commit it names: its headSha is exact and no author-written title or marker can override it.
+  if (lower(run.repo) === lower(pr.repo)) {
+    return Object.assign(res, { testedSha: view.headSha, testedSource: 'run head', headMatch: lower(view.headSha) === want });
+  }
+  if (!trusted.map(lower).includes(lower(run.repo))) return Object.assign(res, { headNote: 'run repo is not a trusted Self-test repo' });
+  let marker = null;
+  try {
+    const file = gh(['api', `repos/${run.repo}/contents/.github/workflows/selftest.yml?ref=${view.headSha}`]);
+    const text = file && file.encoding === 'base64' && typeof file.content === 'string' ? Buffer.from(file.content, 'base64').toString('utf8') : '';
+    const m = TESTED_MARKER_RE.exec(text);
+    if (m) marker = m[1];
+  } catch (err) {
+    if (!/\b404\b/.test(`${err && err.message} ${err && err.stderr}`)) return Object.assign(res, { headNote: `marker unread (${firstErrorLine(err)})` });
+  }
+  const t = TESTED_TITLE_RE.exec(String(view.displayTitle || '').trim());
+  if (marker && t && (!lower(marker).startsWith(lower(t[1])) || t[2] !== String(pr.number))) return Object.assign(res, { headNote: 'workflow marker and run title disagree' });
+  if (marker) return Object.assign(res, { testedSha: marker, testedSource: 'workflow marker', headMatch: lower(marker) === want });
+  if (t) {
+    res.testedSha = t[1];
+    res.testedSource = 'run title';
+    if (t[2] !== String(pr.number)) return Object.assign(res, { headMatch: false, headNote: `the run title names PR ${t[2]}, this is PR ${pr.number}` });
+    return Object.assign(res, { headMatch: want.startsWith(lower(t[1])) });
+  }
+  return res;
+}
+
 /**
  * Item 2: every non-blank output_excerpt line must appear in the linked run log, per log line. `gh run view
  * --log` puts job, step and a timestamp before each line, so the prefix is removed first; a line then matches
@@ -1555,13 +1603,15 @@ function logHasLine(contents, text) {
  *
  * @param {string} body PR body
  * @param {{ghText?: Function, gh?: Function}} [deps]
- * @param {string} [head] the PR head sha, for the run head comparison
- * @returns {{status: 'ok'|'missing'|'no-run-url'|'no-excerpt'|'log-unread', runUrl: (string|null), runRepo: (string|null), lines: number, missingLine: (number|null), missingText: (string|null), missingOf: (number|null), error: (string|null), runHeadSha: (string|null), headMatch: (boolean|null), headError: (string|null)}}
+ * @param {string} [head] the PR head sha, for the tested sha comparison
+ * @param {{repo?: string, number?: (string|number)}} [pr] the PR's repo and number
+ * @returns {{status: 'ok'|'missing'|'no-run-url'|'no-excerpt'|'log-unread', runUrl: (string|null), runRepo: (string|null), lines: number, missingLine: (number|null), missingText: (string|null), missingOf: (number|null), error: (string|null), runHeadSha: (string|null), testedSha: (string|null), testedSource: ('workflow marker'|'run title'|'run head'|null), headMatch: (boolean|null), headNote: (string|null), headError: (string|null)}}
  */
-function checkExcerpt(body, deps = {}, head = '') {
+function checkExcerpt(body, deps = {}, head = '', pr) {
+  if (!pr || typeof pr !== 'object') throw new TypeError('checkExcerpt needs the PR repo and number');
   const out = {
     status: 'no-run-url', runUrl: null, runRepo: null, lines: 0, missingLine: null, missingText: null, missingOf: null, error: null,
-    runHeadSha: null, headMatch: null, headError: null,
+    runHeadSha: null, testedSha: null, testedSource: null, headMatch: null, headNote: null, headError: null,
   };
   const run = selfTestRunUrl(body);
   if (!run) return out;
@@ -1580,11 +1630,12 @@ function checkExcerpt(body, deps = {}, head = '') {
   const miss = lines.find((l) => !logHasLine(contents, l.text));
   if (miss) Object.assign(out, { status: 'missing', missingLine: miss.n, missingText: cut(miss.text, MAX_EXCERPT_ECHO), missingOf: lines.length });
   else out.status = 'ok';
+  const gh = deps.gh || defaultGh;
   try {
-    const view = (deps.gh || defaultGh)(['run', 'view', run.runId, '--repo', run.repo, ...attempt, '--json', 'headSha']);
+    const view = gh(['run', 'view', run.runId, '--repo', run.repo, ...attempt, '--json', 'headSha,displayTitle']);
     if (!view || typeof view.headSha !== 'string' || view.headSha === '') throw new Error('run view reply has no headSha');
     out.runHeadSha = view.headSha;
-    out.headMatch = head === '' ? null : lower(view.headSha) === lower(head); // an unknown PR head is unknown, not a mismatch
+    Object.assign(out, compareTested(view, run, head, pr, gh, deps.trustedSelfTestRepos || TRUSTED_SELFTEST_REPOS));
   } catch (err) {
     out.headError = firstErrorLine(err);
   }
@@ -1618,7 +1669,7 @@ function bodyLines(b) {
   const x = b.excerpt;
   if (x) {
     if (x.status === 'ok') {
-      const heads = x.headMatch === true ? 'run head sha matches the PR head' : x.headMatch === false ? 'run head sha differs from the PR head, see below' : 'run head sha not compared, see below';
+      const heads = x.headMatch === true ? `run tested sha matches the PR head (${clean(x.testedSource)})` : x.headMatch === false ? 'run tested sha differs from the PR head, see below' : 'run tested sha not compared, see below';
       lines.push(`  body: excerpt in run log: ok (${x.lines} lines; run ${clean(x.runRepo)}, ${heads})`);
     } else if (x.status === 'missing') lines.push(`  body: excerpt not in run log: line ${x.missingLine} "${clean(x.missingText)}" (first missing of ${x.missingOf}; not found in the log gh returned, which an excerpt from a local run or an earlier attempt will not be in)`);
     else if (x.status === 'no-run-url') lines.push('  body: no run URL');
@@ -1626,8 +1677,21 @@ function bodyLines(b) {
     else lines.push(`  body: excerpt not checked: run log unread (${clean(x.error)})`);
     if (x.status === 'ok' || x.status === 'missing') {
       if (x.headError) lines.push(`  body: run head sha unread (${clean(x.headError)})`);
-      else if (x.headMatch == null && x.runHeadSha) lines.push('  body: run head sha not compared: the PR head is unknown');
-      else if (x.headMatch === false) lines.push(`  body: run head mismatch: the run ran on ${clean(short(x.runHeadSha, 7))}, the PR head is ${clean(short(b.head, 7))}`);
+      else if (x.headMatch == null && x.runHeadSha) {
+        lines.push(
+          b.head === ''
+            ? '  body: run head sha not compared: the PR head is unknown'
+            : x.headNote
+              ? `  body: run head sha not compared: ${clean(x.headNote)}`
+              : '  body: run head sha not compared: tested sha unknown (no run title or workflow marker carries it)'
+        );
+      } else if (x.headMatch === false) {
+        lines.push(
+          x.headNote
+            ? `  body: run head mismatch: ${clean(x.headNote)}`
+            : `  body: run head mismatch: the run tested ${clean(short(x.testedSha, 7))} (${clean(x.testedSource)}), the PR head is ${clean(short(b.head, 7))}`
+        );
+      }
     }
   }
   lines.push(`  body: counts checked: files-changed phrases only (changedFiles ${b.changedFiles == null ? 'unknown' : b.changedFiles})`);

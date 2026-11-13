@@ -41,18 +41,23 @@ function review(id, login, state, assoc, extra = {}) {
 }
 
 /** Run the CLI in process; returns { status, stdout, calls, textCalls }. */
-function run(args, { bodyText = body(), reviews = [], timeline = [], log = LOG, logError = null, runHead = HEAD, runHeadError = null } = {}) {
+function run(args, { bodyText = body(), reviews = [], timeline = [], log = LOG, logError = null, runHead = HEAD, runHeadError = null, runTitle = null, runMarker = null, runMarkerError = null, prHead = HEAD, trusted = undefined } = {}) {
   const calls = [];
   const textCalls = [];
   const gh = (a) => {
     calls.push(a);
     if (a[0] === 'pr' && a[1] === 'view') {
       if (a[a.indexOf('--json') + 1].startsWith('body')) return { body: bodyText, baseRefOid: 'b'.repeat(40), changedFiles: 1 };
-      return { number: 7, state: 'OPEN', isDraft: false, author: { login: 'me' }, headRefOid: HEAD, baseRefName: 'next', mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', reviewDecision: null, reviewRequests: [], commits: [], headRefName: 'fix/x', title: 'fix: x' };
+      return { number: Number(a[2]), state: 'OPEN', isDraft: false, author: { login: 'me' }, headRefOid: prHead, baseRefName: 'next', mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', reviewDecision: null, reviewRequests: [], commits: [], headRefName: 'fix/x', title: 'fix: x' };
     }
     if (a[0] === 'run' && a[1] === 'view') {
       if (runHeadError) throw new Error(runHeadError);
-      return { headSha: runHead };
+      return runTitle == null ? { headSha: runHead } : { headSha: runHead, displayTitle: runTitle };
+    }
+    if (a[0] === 'api' && /\/contents\/\.github\/workflows\/selftest\.yml\?ref=/.test(a[1])) {
+      if (runMarkerError) throw new Error(runMarkerError);
+      if (runMarker == null) throw new Error('gh: Not Found (HTTP 404)');
+      return { encoding: 'base64', content: Buffer.from(runMarker).toString('base64') };
     }
     if (a[0] === 'pr' && a[1] === 'checks') return [];
     if (a[0] === 'api' && /\/reviews\?/.test(a.join(' '))) return [reviews];
@@ -65,7 +70,7 @@ function run(args, { bodyText = body(), reviews = [], timeline = [], log = LOG, 
     return log;
   };
   let stdout = '';
-  const status = prStatus.runCli(args, { gh, ghText, sleep: () => {}, stdout: { write: (x) => { stdout += x; } }, stderr: { write: () => {} } });
+  const status = prStatus.runCli(args, { gh, ghText, ...(trusted ? { trustedSelfTestRepos: trusted } : {}), sleep: () => {}, stdout: { write: (x) => { stdout += x; } }, stderr: { write: () => {} } });
   return { status, stdout, calls, textCalls };
 }
 
@@ -75,7 +80,7 @@ const json = (args, opts) => JSON.parse(run(['--json', ...args], opts).stdout)[0
 
 test('excerpt: every line found in the run log -> ok, and the log is read through the text seam with run view --log', () => {
   const r = run(['--body', '7']);
-  assert.match(r.stdout, /^ {2}body: excerpt in run log: ok \(2 lines; run davesienkowski\/gsd-core-experiments, run head sha matches the PR head\)$/m);
+  assert.match(r.stdout, /^ {2}body: excerpt in run log: ok \(2 lines; run davesienkowski\/gsd-core-experiments, run tested sha not compared, see below\)$/m);
   assert.deepEqual(r.textCalls, [['run', 'view', '42744528257', '--repo', 'davesienkowski/gsd-core-experiments', '--log']]);
   assert.equal(r.status, 0);
 });
@@ -291,17 +296,6 @@ test('W4: a round is a distinct head commit: two maintainers on one head are one
   assert.match(run(['7'], { reviews: two }).stdout, /^ {2}upstream CR rounds: 2$/m);
 });
 
-test('I5: the run head sha is compared with the PR head: match is said, mismatch is named, unread is named', () => {
-  assert.match(run(['--body', '7']).stdout, /run head sha matches the PR head/);
-  const other = 'c'.repeat(40);
-  const bad = run(['--body', '7'], { runHead: other });
-  assert.match(bad.stdout, /^ {2}body: run head mismatch: the run ran on ccccccc, the PR head is aaaaaaa$/m);
-  assert.equal(json(['--body', '7'], { runHead: other }).body.excerpt.runHeadSha, other);
-  const un = run(['--body', '7'], { runHeadError: 'HTTP 404' });
-  assert.match(un.stdout, /^ {2}body: run head sha unread \(HTTP 404\)$/m);
-  assert.equal(un.status, 0);
-});
-
 test('R2 B-01: an excerpt line is not matched by a longer log line that ends with it, nor by a bare token', () => {
   for (const [excerpt, line] of [['ok 1 - foo', 'not ok 1 - foo'], ['ok 1 - foo', '# Subtest: ok 1 - foo'], ['0', '# fail 0'], ['# fail 0', '# fail 0 (3ms)']]) {
     const j = json(['--body', '7'], { bodyText: body({ excerpt }), log: logLine(line) + '\n' });
@@ -318,7 +312,7 @@ test('R2 W-03: a round with no commit_id prints its review key whole in the band
 
 test('R3: an unknown PR head is "not compared", never a mismatch against an empty head', () => {
   const deps = { ghText: () => LOG, gh: () => ({ headSha: 'c'.repeat(40) }) };
-  const x = prStatus.checkExcerpt(body(), deps); // no head given
+  const x = prStatus.checkExcerpt(body(), deps, '', { repo: 'open-gsd/gsd-core', number: 7 }); // no head given
   assert.equal(x.status, 'ok');
   assert.equal(x.headMatch, null);
   const text = prStatus.bodyLines({ head: '', counts: { head: 0, base: 0, 'pr commit': 0, 'former head': 0, 'earlier commit': 0, ambiguous: 0, unresolved: 0 }, tokens: [], selfTest: { status: 'none' }, changedFiles: null, filesChanged: [], excerpt: x }).join('\n');
@@ -331,4 +325,136 @@ test('R3: commit ids that differ only in case are one round', () => {
   const u = json(['7'], { reviews: rs }).upstreamCr;
   assert.equal(u.rounds, 1);
   assert.deepEqual(u.lastThree, ['a'.repeat(40)]);
+});
+
+// ---- fix round R4 (quick 261113-wb1): the tested sha of a hosted Self-test run is not the run's headSha ----
+// Real field shapes (read-only gh, 2026-11-13): run 43384994160 of davesienkowski/gsd-core-experiments has
+// headSha 8b7997881b52... (the selftest/run commit of the experiments repo) and displayTitle
+// "selftest: run gsd-core 01f3f2751 (PR 5871)"; PR 5871 of open-gsd/gsd-core has headRefOid 01f3f27513f7... .
+// The experiments workflow (selftest.yml on selftest/run) commits SELFTEST_SHA: <40 hex> beside it.
+
+const PR5871 = '01f3f27513f7688fdcc4faf9d351a8e17ecf49bb';
+const EXP_HEAD = '8b7997881b52'.padEnd(40, '0'); // fixture filler after the real 12-hex prefix
+const TITLE = 'selftest: run gsd-core 01f3f2751 (PR 5871)';
+const marker = (sha) => `name: selftest\non: push\nenv:\n  SELFTEST_REPO: davesienkowski/gsd-core\n  SELFTEST_SHA: ${sha}\njobs: {}\n`;
+const hosted = (opts) => json(['--body', '5871'], { prHead: PR5871, runHead: EXP_HEAD, ...opts }).body.excerpt;
+const hostedText = (opts) => run(['--body', '5871'], { prHead: PR5871, runHead: EXP_HEAD, ...opts }).stdout;
+
+test('R4: a hosted run is matched through its title, not its headSha (the real 43384994160 shapes)', () => {
+  const x = hosted({ runTitle: TITLE });
+  assert.equal(x.headMatch, true);
+  assert.equal(x.testedSha, '01f3f2751');
+  assert.equal(x.testedSource, 'run title');
+  assert.equal(x.runHeadSha, EXP_HEAD);
+  const text = hostedText({ runTitle: TITLE });
+  assert.match(text, /run tested sha matches the PR head \(run title\)/);
+  assert.doesNotMatch(text, /run head mismatch/);
+});
+
+test('R4: the workflow marker SELFTEST_SHA decides; marker alone (no usable title) can match or mismatch', () => {
+  const ok = hosted({ runTitle: 'something else', runMarker: marker(PR5871) });
+  assert.equal(ok.headMatch, true);
+  assert.equal(ok.testedSource, 'workflow marker');
+  assert.equal(ok.testedSha, PR5871);
+  const bad = hosted({ runTitle: 'something else', runMarker: marker('b'.repeat(40)) });
+  assert.equal(bad.headMatch, false);
+  assert.match(hostedText({ runTitle: 'something else', runMarker: marker('b'.repeat(40)) }), /^ {2}body: run head mismatch: the run tested bbbbbbb \(workflow marker\), the PR head is 01f3f27$/m);
+});
+
+test('R4: a title naming another PR, or a sha that is not a prefix of the PR head, is a mismatch', () => {
+  const other = 'selftest: run gsd-core 01f3f2751 (PR 5000)';
+  assert.equal(hosted({ runTitle: other }).headMatch, false);
+  assert.match(hostedText({ runTitle: other }), /^ {2}body: run head mismatch: the run title names PR 5000, this is PR 5871$/m);
+  const sha = 'selftest: run gsd-core deadbee (PR 5871)';
+  assert.equal(hosted({ runTitle: sha }).headMatch, false);
+  assert.match(hostedText({ runTitle: sha }), /^ {2}body: run head mismatch: the run tested deadbee \(run title\), the PR head is 01f3f27$/m);
+});
+
+test('R4: no title and no marker in another repo than the PR: not compared, tested sha unknown (never a mismatch)', () => {
+  const x = hosted({ runTitle: 'something else' });
+  assert.equal(x.headMatch, null);
+  assert.equal(x.testedSha, null);
+  const text = hostedText({});
+  assert.match(text, /^ {2}body: run head sha not compared: tested sha unknown \(no run title or workflow marker carries it\)$/m);
+  assert.doesNotMatch(text, /run head mismatch/);
+});
+
+test('R4: a run in the PR repo itself falls back to its headSha', () => {
+  const own = `https://github.com/open-gsd/gsd-core/actions/runs/42744528257`;
+  const same = json(['--body', '7'], { bodyText: body({ url: own }) }).body.excerpt;
+  assert.equal(same.headMatch, true);
+  assert.equal(same.testedSource, 'run head');
+  const diff = run(['--body', '7'], { bodyText: body({ url: own }), runHead: 'c'.repeat(40) });
+  assert.match(diff.stdout, /^ {2}body: run head mismatch: the run tested ccccccc \(run head\), the PR head is aaaaaaa$/m);
+});
+
+test('R4: an unreadable run head sha is named and the compare is skipped', () => {
+  const un = run(['--body', '7'], { runHeadError: 'HTTP 404' });
+  assert.match(un.stdout, /^ {2}body: run head sha unread \(HTTP 404\)$/m);
+  assert.equal(un.status, 0);
+});
+
+test('R4 W-01: a run in the PR repo itself is judged by its own headSha; an author-written title cannot override it', () => {
+  const own = 'https://github.com/open-gsd/gsd-core/actions/runs/42744528257';
+  const lying = json(['--body', '7'], { bodyText: body({ url: own }), runHead: 'c'.repeat(40), runTitle: 'selftest: run gsd-core aaaaaaa (PR 7)' }).body.excerpt;
+  assert.equal(lying.headMatch, false);
+  assert.equal(lying.testedSource, 'run head');
+});
+
+// ---- fix round R5 (quick 261113-wb1): trust boundary of the hosted-run compare ----
+
+const own5871 = (extra = {}) => ({ prHead: PR5871, runHead: EXP_HEAD, ...extra });
+const evilBody = body({ url: 'https://github.com/evil/gsd-core-experiments/actions/runs/42744528257' });
+
+test('R5 B-01: a run in an untrusted repo never matches, whatever its marker or title says, and its marker is not even read', () => {
+  const r = run(['--body', '5871'], own5871({ bodyText: evilBody, runTitle: TITLE, runMarker: marker(PR5871) }));
+  assert.doesNotMatch(r.stdout, /run tested sha matches|run head mismatch/);
+  assert.match(r.stdout, /^ {2}body: run head sha not compared: run repo is not a trusted Self-test repo$/m);
+  assert.ok(!r.calls.some((c) => c[0] === 'api' && /contents/.test(c[1])), 'no marker read from an untrusted repo');
+  const j = JSON.parse(run(['--json', '--body', '5871'], own5871({ bodyText: evilBody, runTitle: TITLE, runMarker: marker(PR5871) })).stdout)[0].body.excerpt;
+  assert.equal(j.headMatch, null);
+});
+
+test('R5 B-01: the trusted-repo list is a deps seam: naming the repo trusts it, the default repo stays trusted', () => {
+  const trusted = run(['--body', '5871'], own5871({ bodyText: evilBody, runTitle: TITLE, trusted: ['Evil/GSD-Core-Experiments'] }));
+  assert.match(trusted.stdout, /run tested sha matches the PR head \(run title\)/);
+  assert.match(run(['--body', '5871'], own5871({ runTitle: TITLE })).stdout, /run tested sha matches the PR head \(run title\)/);
+});
+
+test('R5 W-01: the title is anchored: surrounding text or a second sha is unknown, never a match', () => {
+  for (const title of [
+    'x selftest: run gsd-core 01f3f2751 (PR 5871)',
+    'selftest: run gsd-core 01f3f2751 (PR 5871) and more',
+    'selftest: run gsd-core deadbee (PR 5871) run gsd-core 01f3f2751 (PR 5871)',
+    'selftest: run gsd-core 01f3f2751 (PR 5871)\nrun gsd-core 01f3f2751 (PR 5871)',
+  ]) {
+    const x = hosted({ runTitle: title });
+    assert.equal(x.headMatch, null, title);
+    assert.equal(x.testedSha, null, title);
+  }
+});
+
+test('R5 W-02: marker and title must agree (sha prefix and PR number); otherwise unknown, with a note', () => {
+  const agree = hosted({ runTitle: TITLE, runMarker: marker(PR5871) });
+  assert.equal(agree.headMatch, true);
+  assert.equal(agree.testedSource, 'workflow marker');
+  const otherSha = run(['--body', '5871'], own5871({ runTitle: 'selftest: run gsd-core deadbee (PR 5871)', runMarker: marker(PR5871) }));
+  assert.match(otherSha.stdout, /^ {2}body: run head sha not compared: workflow marker and run title disagree$/m);
+  assert.doesNotMatch(otherSha.stdout, /run head mismatch|matches the PR head/);
+  const otherPr = run(['--body', '5871'], own5871({ runTitle: 'selftest: run gsd-core 01f3f2751 (PR 5000)', runMarker: marker(PR5871) }));
+  assert.match(otherPr.stdout, /workflow marker and run title disagree/);
+});
+
+test('R5 W-02: only a 404 on the marker read falls through to the title; any other error is "marker unread"', () => {
+  const nf = hosted({ runTitle: TITLE }); // the stub answers HTTP 404 when no marker is set
+  assert.equal(nf.headMatch, true);
+  for (const err of ['HTTP 503: Service Unavailable', 'HTTP 403: API rate limit exceeded']) {
+    const r = run(['--body', '5871'], own5871({ runTitle: TITLE, runMarkerError: err }));
+    assert.match(r.stdout, new RegExp(`^ {2}body: run head sha not compared: marker unread \\(${err.slice(0, 8)}`, 'm'));
+    assert.doesNotMatch(r.stdout, /matches the PR head|run head mismatch/);
+  }
+});
+
+test('R5 INFO: checkExcerpt requires the pr argument', () => {
+  assert.throws(() => prStatus.checkExcerpt(body(), { ghText: () => LOG, gh: () => ({ headSha: HEAD }) }, HEAD), TypeError);
 });
