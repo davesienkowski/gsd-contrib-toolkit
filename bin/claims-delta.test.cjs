@@ -275,3 +275,55 @@ test('three-dot range diffs from the merge base', () => {
   assert.ok(sentences(r.json).some((s) => s.text.includes('side never fails')));
   assert.ok(!sentences(r.json).some((s) => s.text.includes('Adds a retry')));
 });
+
+// --- R1 iteration 1 rows (B-01, B-02, W-01, W-02, W-04, W-05) ---------------------------------------
+
+test('B-01: a range side that starts with - is a usage error and git writes nothing', () => {
+  const fx = makeRepo({}, { 'a.cjs': '// Adds a retry.\n' });
+  const target = path.join(os.tmpdir(), `cd-pwned-${process.pid}`);
+  const r = spawnSync(process.execPath, [CLI, `HEAD..--output=${target}`, '--dir', fx.dir, '--repo', fx.root, ...NOBODY], { encoding: 'utf8' });
+  const wrote = fs.existsSync(target);
+  if (wrote) fs.rmSync(target);
+  assert.equal(r.status, 2);
+  assert.equal(wrote, false);
+});
+
+test('B-02: a changed file with no extractor is listed and the gate refuses until --allow-unexamined', () => {
+  const fx = makeRepo({}, { 'x.go': '// Never leaks.\n' });
+  const g = run(fx, ['--gate', ...NOBODY]);
+  assert.equal(g.code, 1);
+  assert.deepEqual(g.json.unexamined_files, ['x.go']);
+  const ok = run(fx, ['--gate', ...NOBODY, '--allow-unexamined', 'go file reviewed by hand']);
+  assert.equal(ok.code, 0, ok.out + ok.err);
+  assert.match(fs.readFileSync(path.join(fx.dir, 'CLAIMS-DELTA.md'), 'utf8'), /x\.go/);
+});
+
+test('W-01: an added line that starts with ++ does not swallow the rest of the file', () => {
+  const fx = makeRepo({}, { 'n.md': '++ x\n\nThis never fails.\n' });
+  const r = run(fx, NOBODY);
+  assert.ok(sentences(r.json).some((s) => s.text === 'This never fails.' && s.loc.startsWith('n.md')));
+});
+
+test('W-02: a markdown table row is its own sentence, so a table is not one oversize sentence', () => {
+  const rows = Array.from({ length: 120 }, (_, i) => `| row ${i} | cell value ${i} |`).join('\n');
+  const fx = makeRepo({}, { 't.md': `| a | b |\n|---|---|\n${rows}\n` });
+  const r = run(fx, NOBODY);
+  assert.ok(!sentences(r.json).some((s) => s.flags.includes('oversize')));
+});
+
+test('W-04: a policy whose patterns match nothing, or that sets g/y flags, is refused', () => {
+  const fx = makeRepo({}, { 'a.cjs': '// Adds a retry.\n' });
+  const shipped = JSON.parse(fs.readFileSync(path.join(__dirname, 'claims-delta.policy.json'), 'utf8'));
+  const dead = path.join(fx.dir, 'dead.json');
+  fs.writeFileSync(dead, JSON.stringify({ ...shipped, patterns: shipped.patterns.map((p) => ({ ...p, regex: '(?!)' })) }));
+  assert.equal(run(fx, NOBODY.concat(['--policy', dead, '--policy-reason', 'a dead policy for the test'])).code, 1);
+  const sticky = path.join(fx.dir, 'sticky.json');
+  fs.writeFileSync(sticky, JSON.stringify({ ...shipped, patterns: shipped.patterns.map((p) => ({ ...p, flags: 'gi' })) }));
+  assert.equal(run(fx, NOBODY.concat(['--policy', sticky, '--policy-reason', 'a sticky policy for the test'])).code, 1);
+});
+
+test('W-05: evidence must be changed in the range or be a test file', () => {
+  const fx = makeRepo({}, { 'a.cjs': `// ${SWITCH}\n` });
+  resolution(fx, { evidence: 'README.txt' });
+  assert.equal(run(fx, ['--gate', ...NOBODY]).code, 1);
+});
