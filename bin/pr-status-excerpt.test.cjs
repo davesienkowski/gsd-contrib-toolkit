@@ -375,7 +375,7 @@ test('R4: no title and no marker in another repo than the PR: not compared, test
   assert.equal(x.headMatch, null);
   assert.equal(x.testedSha, null);
   const text = hostedText({});
-  assert.match(text, /^ {2}body: run head sha not compared: tested sha unknown \(no run title or workflow marker carries it, and the run is not in the PR's repo\)$/m);
+  assert.match(text, /^ {2}body: run head sha not compared: tested sha unknown \(no run title or workflow marker carries it\)$/m);
   assert.doesNotMatch(text, /run head mismatch/);
 });
 
