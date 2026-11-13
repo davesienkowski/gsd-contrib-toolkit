@@ -19,7 +19,8 @@
  * (comment, title, code, adr, doc, commit, body) is cosmetic and may be wrong without harm; it never decides
  * what is examined. A match is read over the line plus up to 2 unchanged lines each side (a sentence half
  * added and half unchanged is read whole), after leading markers, emphasis and code-span marks are blanked
- * (tags are NOT blanked: rule words in an attribute, a JSX prop or a stray < ... > are read). A match becomes
+ * (only bare tags such as <b> and </b> are blanked, so X is <b>not</b> a Y reads through; rule words in an
+ * attribute, a JSX prop or a stray < ... > stay visible). A match becomes
  * a claim when any line of its whole sentence span (first line of the sentence to its last) is an added line.
  *
  * Resolved = a CLAIMS-RESOLUTIONS.json entry in DIR: kind oracle|generator with new_inputs >= minNewInputs,
@@ -124,6 +125,8 @@ const ascii = (s) => s.replace(/[‘’]/g, "'").replace(/[“”]/g, '"');
 const norm = (s) => ascii(s).replace(/\s+/g, ' ').trim().toLowerCase();
 const claimId = (s) => crypto.createHash('sha1').update(norm(s)).digest('hex').slice(0, 12);
 const blank = (s) => ' '.repeat(s.length);
+// A bare tag (name only: no space, attribute, quote, '=' or self-closing slash) is read through. Linear: no nesting.
+const BARE_TAG = /<\/?[A-Za-z][A-Za-z0-9-]*>/g;
 
 /**
  * Added lines per file from `git diff -U0`: [{file, lines: [{n, text}]}]. A hunk header's counts say how
@@ -187,7 +190,7 @@ function claimsFromRegion(region, pol, loc, defaultKind) {
     return d;
   });
   const D = parts.join(' ');
-  const M = parts.map((d) => d.replace(/[*_`]/g, ' ')).join(' ');
+  const M = parts.map((d) => d.replace(/[*_`]/g, ' ').replace(BARE_TAG, blank)).join(' ');
   const lineAt = (off) => {
     let lo = 0;
     let hi = starts.length - 1;
