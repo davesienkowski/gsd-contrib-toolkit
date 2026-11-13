@@ -313,3 +313,22 @@ test('R2 W-03: a round with no commit_id prints its review key whole in the band
   const rs = [1, 2, 3].map((id) => ({ ...CR(id, 'trek-e', 'COLLABORATOR'), commit_id: '' }));
   assert.match(run(['7'], { reviews: rs }).stdout, /last 3 rounds review 1, review 2, review 3$/m);
 });
+
+// ---- fix round R3 (quick 261113-wb1): an unknown PR head reads as unknown; round keys are case-insensitive ----
+
+test('R3: an unknown PR head is "not compared", never a mismatch against an empty head', () => {
+  const deps = { ghText: () => LOG, gh: () => ({ headSha: 'c'.repeat(40) }) };
+  const x = prStatus.checkExcerpt(body(), deps); // no head given
+  assert.equal(x.status, 'ok');
+  assert.equal(x.headMatch, null);
+  const text = prStatus.bodyLines({ head: '', counts: { head: 0, base: 0, 'pr commit': 0, 'former head': 0, 'earlier commit': 0, ambiguous: 0, unresolved: 0 }, tokens: [], selfTest: { status: 'none' }, changedFiles: null, filesChanged: [], excerpt: x }).join('\\n');
+  assert.doesNotMatch(text, /run head mismatch/);
+  assert.match(text, /^ {2}body: run head sha not compared: the PR head is unknown$/m);
+});
+
+test('R3: commit ids that differ only in case are one round', () => {
+  const rs = [{ ...CR(1, 'trek-e', 'COLLABORATOR'), commit_id: 'A'.repeat(40) }, { ...CR(2, 'owner', 'OWNER'), commit_id: 'a'.repeat(40) }];
+  const u = json(['7'], { reviews: rs }).upstreamCr;
+  assert.equal(u.rounds, 1);
+  assert.deepEqual(u.lastThree, ['a'.repeat(40)]);
+});
