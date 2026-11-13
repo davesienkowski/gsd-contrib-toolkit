@@ -307,7 +307,7 @@ test('step 4 green: step 5 emits a body whose block carries the head, sums, run 
   const block = JSON.parse(body.match(/## Self-test report[\s\S]*?```json\n([\s\S]*?)\n```/)[1]);
   assert.equal(block.head_sha, HEAD);
   assert.equal(block.tool, 'npm-test');
-  assert.deepEqual(block.full_suite, { command: 'npm test', result: 'passed', passed: 27, failed: 0 });
+  assert.deepEqual(block.full_suite, { command: 'npm test', result: 'passed', passed: 30, failed: 0 });
   assert.equal(block.environment.node, 'v24.22.2');
   assert.match(block.environment.os, /Linux/);
   assert.deepEqual(block.commands, ['node --test tests/x.test.cjs', 'npm test']);
