@@ -467,6 +467,16 @@ test('wg1 (a): a marker read whose encoding is not base64 (over 1 MB, or undecod
   }
 });
 
+test('wg1 review WR-01: base64 content that is not strict base64 ("!!!!@@@@", or non-canonical) is unreadable, never the title; empty content is no marker', () => {
+  for (const content of ['!!!!@@@@', 'QUJD=', 'QUJD\nRA']) {
+    const r = run(['--body', '5871'], own5871({ runTitle: TITLE, runMarkerRaw: { encoding: 'base64', content } }));
+    assert.match(r.stdout, /^ {2}body: run head sha not compared: marker unread \(unsupported encoding\)$/m, content);
+    assert.doesNotMatch(r.stdout, /matches the PR head|run head mismatch/);
+  }
+  const empty = run(['--body', '5871'], own5871({ runTitle: TITLE, runMarkerRaw: { encoding: 'base64', content: '' } }));
+  assert.doesNotMatch(empty.stdout, /unsupported encoding/);
+});
+
 test('wg1 (b): two or more SELFTEST_SHA lines are ambiguous: not compared, whatever the title says', () => {
   const two = `${marker(PR5871)}  SELFTEST_SHA: ${'b'.repeat(40)}\n`;
   const r = run(['--body', '5871'], own5871({ runTitle: TITLE, runMarker: two }));
