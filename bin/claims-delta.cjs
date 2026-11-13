@@ -43,6 +43,7 @@ const NOT_COVERED = [
   'removed qualifiers (a deleted "unless" leaves the rest of the sentence absolute)',
   'wording with no trigger word',
   'a sentence wrapped in a fenced block',
+  'Python docstrings, block-comment lines with no leading *, a mid-line /* */ comment',
   'upstream text pulled in by merging the base branch into the range (mark it not-a-rule, reason "upstream text")',
 ];
 
@@ -201,9 +202,9 @@ function commentItems(file, lines) {
   return items;
 }
 
-const TITLE_RE = /\b(?:it|test|describe|t\.test)(?:\.\w+)*\s*\(\s*(['"`])((?:\\.|(?!\1).)*)\1/;
+const TITLE_RE = /\b(?:it|test|describe|t\.test)(?:\.\w+)*\s*\(\s*(['"`])((?:[^\\\n]|\\.)*?)\1/;
 function titles(file, lines) {
-  if (!(/\.test\.|(^|\/)tests?\//.test(file))) return [];
+  if (!(/\.(?:test|spec)\.|(^|\/)(?:tests?|__tests__)\//.test(file))) return [];
   const out = [];
   for (const { n, text } of lines) {
     const m = TITLE_RE.exec(text);
@@ -332,7 +333,7 @@ function run(o) {
   const unresolved = [...new Set(claims.filter((c) => c.status === 'unresolved').map((c) => c.id))];
   if (o.gate) {
     if (o.bodyNew === undefined && String(o.noBody || '').trim().length < 8) problems.push('gate needs --body-old/--body-new, or --no-body with a reason of 8+ characters');
-    if (claims.filter((c) => c.kind !== 'commit').length === 0 && !unexamined.length) problems.push('nothing was examined apart from commit messages (no added comment, title, ADR, doc or body sentence)');
+    if (total === 0) problems.push('nothing was examined (no added comment, title, ADR, doc, commit or body sentence)');
     if (unexamined.length && String(o.allowUnexamined || '').trim().length < 8) problems.push(`changed files with no extractor: ${unexamined.join(', ')}; read them by hand and pass --allow-unexamined "<reason of 8+ characters>"`);
   }
   const verdict = problems.length || (o.gate && unresolved.length) ? 'refused' : 'clean';
