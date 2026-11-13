@@ -180,7 +180,8 @@ function claimsFromRegion(region, pol, loc, defaultKind) {
     return d;
   });
   const D = parts.join(' ');
-  const M = D.replace(/[*_`]/g, ' ').replace(/<\/?[A-Za-z!][^>]*>/g, blank);
+  const TAG = /<\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z-]+(?:=(?:"[^"]*"|'[^']*'|[^\s>"']+))?)*\s*\/?>/g;
+  const M = parts.map((d) => d.replace(/[*_`]/g, ' ').replace(TAG, blank)).join(' ');
   const lineAt = (off) => {
     let lo = 0;
     let hi = starts.length - 1;
@@ -257,7 +258,7 @@ function collect(o, pol) {
   const from = o.range.includes('...') ? git(o.repo, ['merge-base', a, b]).trim() : a;
   const DIFF = ['diff', '-U0', '--no-color', '--no-renames', '--no-ext-diff', '--no-textconv'];
   const numstat = new Map();
-  for (const l of git(o.repo, ['diff', '--numstat', '--no-renames', '--no-ext-diff', '--no-textconv', from, b]).split('\n')) {
+  for (const l of git(o.repo, ['diff', '--numstat', '--no-renames', '--diff-filter=d', '--no-ext-diff', '--no-textconv', from, b]).split('\n')) {
     const m = /^(-|\d+)\t(-|\d+)\t(.+)$/.exec(l);
     if (m) numstat.set(m[3], m[1] === '-' ? null : Number(m[1]));
   }
@@ -439,7 +440,9 @@ function main(argv) {
   try { o = parseArgs(argv); } catch (e) {
     if (e instanceof Usage) {
       const i = argv.indexOf('--dir');
-      if (i >= 0 && argv[i + 1]) writeStub(argv[i + 1], `usage error: ${e.message}`, true);
+      const eq = argv.find((x) => x.startsWith('--dir='));
+      const rawDir = eq ? eq.slice(6) : i >= 0 ? argv[i + 1] : null;
+      if (rawDir) writeStub(rawDir, `usage error: ${e.message}`, true);
       process.stderr.write(`claims-delta: ${e.message}\n`);
       return 2;
     }

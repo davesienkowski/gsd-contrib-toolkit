@@ -23,7 +23,7 @@
     {
       "id": "scope-negation",
       "flags": "i",
-      "regex": "\\b(?:rather than|instead of|not (?:edited|changed)|unchanged|untouched|without (?:editing|changing|touching|modifying))\\b",
+      "regex": "\\b(?:rather\\s+than|instead\\s+of|not\\s+(?:edited|changed)|unchanged|untouched|without\\s+(?:editing|changing|touching|modifying))\\b",
       "why": "a claim about what the change does not touch"
     }
   ]
