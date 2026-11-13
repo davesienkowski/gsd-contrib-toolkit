@@ -523,7 +523,7 @@ Resolve a flagged sentence with `$D/CLAIMS-RESOLUTIONS.json`, a JSON array. Ever
 - `kind` `not-a-rule`: a reason of 15+ characters, listed under "Reasoned dismissals" in the report. It never resolves an `oversize` sentence (over 2000 characters): rewrite it.
 - A weakened rewrite needs no entry: re-run, and the rewritten sentence is judged afresh (it needs an entry again only if it still matches a pattern).
 - Patterns and `minNewInputs` live in `bin/claims-delta.policy.json`. A different policy needs `--policy FILE --policy-reason "<15+ chars>"`; the report records its path, sha1 and reason.
-- `--gate` also refuses a run with no `--body-old/--body-new` unless `--no-body "<reason>"` is given, a run whose only sentences are commit messages, and a run that changed files of a type it has no extractor for (anything but markdown, JS/TS and #-comment languages such as .sh, .py, .yml): the report lists them as `Unexamined files`, and `--allow-unexamined "<reason>"` records that you read them by hand.
+- `--gate` also refuses a run with no `--body-old/--body-new` unless `--no-body "<reason>"` is given, a run that found no sentence at all, and a run that changed files of a type it has no extractor for (anything but markdown, JS/TS and #-comment languages such as .sh, .py, .yml): the report lists them as `Unexamined files`, and `--allow-unexamined "<reason>"` records that you read them by hand.
 - A range that includes a merge of the base branch also contains the upstream author's text; mark those sentences `not-a-rule` with the reason "upstream text".
 - Each side of the range is a revision name that does not start with `-`; both sides are resolved to commits before git runs.
 
