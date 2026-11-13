@@ -172,6 +172,7 @@ function commentItems(file, lines) {
       if (m) body = m[1];
     }
     if (body === null) continue;
+    body = body.trim();
     items.push({ n, text: body.replace(/^[-*]\s+/, ''), start: /^[-*]\s+/.test(body) });
   }
   return items;
