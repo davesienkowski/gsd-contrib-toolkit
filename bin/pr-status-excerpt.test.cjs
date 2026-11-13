@@ -24,7 +24,7 @@ const LOG = [
   '',
 ].join('\n');
 
-function body({ excerpt = '# pass 5171\n# fail 0', url = RUN, section = true } = {}) {
+function body({ excerpt = '# pass 5171\n# tests 5171', url = RUN, section = true } = {}) {
   if (!section) return 'Fixes #1\n';
   const report = { schema: 1, head_sha: HEAD, tool: 'npm-test', output_excerpt: excerpt };
   return `Fixes #1\n\n## Self-test report\n\n${url ? `Run: ${url}\n\n` : ''}\`\`\`json\n${JSON.stringify(report, null, 2)}\n\`\`\`\n`;
@@ -65,14 +65,14 @@ const json = (args, opts) => JSON.parse(run(['--json', ...args], opts).stdout)[0
 
 test('excerpt: every line found in the run log -> ok, and the log is read through the text seam with run view --log', () => {
   const r = run(['--body', '7']);
-  assert.match(r.stdout, /^ {2}body: excerpt in run log: ok \(2 lines\)$/m);
+  assert.match(r.stdout, /^ {2}body: excerpt in run log: ok \(2 counted lines; run davesienkowski\/gsd-core-experiments, its head sha not compared with the PR head\)$/m);
   assert.deepEqual(r.textCalls, [['run', 'view', '42744528257', '--repo', 'davesienkowski/gsd-core-experiments', '--log']]);
   assert.equal(r.status, 0);
 });
 
 test('excerpt: one altered character (hyphen for an em dash) -> not in run log, naming the first missing line', () => {
   const r = run(['--body', '7'], { bodyText: body({ excerpt: '# pass 5171\n# fail 0 - ok' }), log: LOG.replace('# fail 0', '# fail 0 — ok') });
-  assert.match(r.stdout, /^ {2}body: excerpt not in run log: line 2 "# fail 0 - ok" \(first missing of 2\)$/m);
+  assert.match(r.stdout, /^ {2}body: excerpt not in run log: line 2 "# fail 0 - ok" \(first missing of 2 counted; not found in the log gh returned.*\)$/m);
   assert.equal(r.status, 0);
 });
 
@@ -103,7 +103,7 @@ test('excerpt: an unreadable run log is named, never thrown, exit code unchanged
 });
 
 test('excerpt: blank excerpt lines and CRLF are tolerated; --json carries the status object', () => {
-  const j = json(['--body', '7'], { bodyText: body({ excerpt: '# pass 5171\n\n# fail 0\r\n' }), log: LOG.replace(/\n/g, '\r\n') });
+  const j = json(['--body', '7'], { bodyText: body({ excerpt: '# pass 5171\n\n# tests 5171\r\n' }), log: LOG.replace(/\n/g, '\r\n') });
   assert.equal(j.body.excerpt.status, 'ok');
   assert.equal(j.body.excerpt.lines, 2);
   assert.equal(j.body.excerpt.runUrl, RUN);
@@ -194,4 +194,35 @@ test('band: fewer than 3 rounds prints no band line; 3 or more prints ABSTAIN wi
   const u = json(['7'], { reviews: four }).upstreamCr;
   assert.deepEqual(u.lastThree, [2, 3, 4]);
   assert.match(u.band.reason, /failure/);
+});
+
+test('excerpt: a run URL with /attempts/N reads that attempt (--attempt N)', () => {
+  const r = run(['--body', '7'], { bodyText: body({ url: RUN + '/attempts/2' }) });
+  assert.deepEqual(r.textCalls[0], ['run', 'view', '42744528257', '--repo', 'davesienkowski/gsd-core-experiments', '--attempt', '2', '--log']);
+  assert.match(r.stdout, /excerpt in run log: ok/);
+});
+
+test('excerpt: lines under 8 non-space characters do not count; an excerpt of only such lines is not checked, never ok', () => {
+  const only = run(['--body', '7'], { bodyText: body({ excerpt: '0\nok\nexit 0' }) });
+  assert.match(only.stdout, /^ {2}body: excerpt not checked: no output_excerpt string, or no line of at least 8 non-space characters/m);
+  assert.doesNotMatch(only.stdout, /excerpt in run log: ok/);
+  const mixed = json(['--body', '7'], { bodyText: body({ excerpt: 'ok\n# pass 5171' }) });
+  assert.equal(mixed.body.excerpt.lines, 1);
+});
+
+test('rounds: timeline reviewed events duplicating the reviews payload do not change the count', () => {
+  const reviews = [CR(1, 'trek-e', 'COLLABORATOR'), CR(2, 'trek-e', 'COLLABORATOR')];
+  const timeline = reviews.map((r) => ({ event: 'reviewed', id: r.id, state: 'changes_requested', user: r.user }));
+  assert.equal(json(['7'], { reviews, timeline }).upstreamCr.rounds, 2);
+});
+
+test('rounds: a captured fixture with author_association merged in prints the rounds line (the real API shape)', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const fx = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'pr-status', 'cr-5192-captured.json'), 'utf8'));
+  const reviews = fx.reviews.map((page) => page.map((r) => ({ ...r, author_association: 'COLLABORATOR' })));
+  const n = reviews.flat().filter((r) => r.state === 'CHANGES_REQUESTED' && r.user.login.toLowerCase() !== String(fx.view.author.login).toLowerCase() && r.user.type !== 'Bot').length;
+  assert.ok(n > 0, 'fixture has change requests');
+  const r = run(['7'], { reviews: reviews.flat() });
+  assert.match(r.stdout, new RegExp(`^ {2}upstream CR rounds: ${n}$`, 'm'));
 });
