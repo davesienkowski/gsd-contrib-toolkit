@@ -545,8 +545,9 @@ const STEPS = [
     const ex = st.body && st.body.excerpt;
     if (!ex || ex.status !== 'ok') bad.push(`excerpt check is ${ex ? ex.status : 'absent'} (needs ok: every excerpt line in the run log, run URL present)`);
     else {
-      // pr-status's headMatch compares the run's own head sha (the selftest/run commit in the experiments repo, never the gsd-core head)
-      // with the PR head, so it is false or null for every hosted run. The binding to the PR head is head.txt line 1, checked in step 4.
+      // Since W-B round 4 (dbffc5d) headMatch compares the TESTED gsd-core sha (workflow marker or run title) with the PR head;
+      // false is a mismatch and null is 'not compared', and neither is satisfied. Step 4 also binds head.txt line 1 to the head.
+      if (ex.headMatch !== true) bad.push(`tested sha vs PR head: ${ex.headMatch === false ? 'mismatch' : 'not compared'} (the excerpt check must show the run tested this head)`);
       if (lower(ex.runUrl) !== lower(ledger.runUrl)) bad.push(`the excerpt is checked against ${ex.runUrl}, not this bundle's run ${ledger.runUrl}`);
     }
     const pol = st.policies && st.policies.selfTest;
