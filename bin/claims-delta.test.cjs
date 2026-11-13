@@ -436,9 +436,9 @@ test('R3 B-01: a sentence whose other half is an unchanged line is read whole', 
   assert.ok(c.flags.includes('negated'));
 });
 
-test('R3 W-01: emphasis and code spans inside a phrase do not hide it', () => {
-  const fx = makeRepo({}, { 'n.md': 'The value is **not** safe.\n\nIt does _not_ work.\n\nIt is `not` safe.\n' });
-  assert.equal(claims(run(fx, NOBODY)).filter((c) => c.flags.includes('negated')).length, 3);
+test('R3 W-01: emphasis, code spans and bare tags inside a phrase do not hide it', () => {
+  const fx = makeRepo({}, { 'n.md': 'The value is **not** safe.\n\nIt does _not_ work.\n\nIt is `not` safe.\n\nIt is <b>not</b> safe.\n' });
+  assert.equal(claims(run(fx, NOBODY)).filter((c) => c.flags.includes('negated')).length, 4);
 });
 
 test('R3 W-02: wrapped lines under ///, --, nested > and numbered markers still match', () => {
@@ -555,4 +555,27 @@ test('review W-03: a policy whose patterns use single spaces is refused at load 
   fs.writeFileSync(f, JSON.stringify(single));
   const r = run(fx, [...NOBODY, '--policy', f, '--policy-reason', 'a single-space policy for the test']);
   assert.equal(r.code, 1, r.out + r.err);
+});
+
+// --- Coordinator follow-up: only bare tags are read through (quick 261113-cde) ---------------------------
+
+test('bare-tag follow-up: tag-hiding cases stay flagged next to bare tags, and <em>never</em> is flagged', () => {
+  const fx = makeRepo({}, {
+    'a.html': '<p><img alt="The gate always refuses unsigned pushes"></p>\n',
+    'b.html': '<abbr title="This check must never be skipped">x</abbr>\n',
+    'c.jsx': '<Callout title="Tokens never expire ..." />\n',
+    'd.js': '// lo<hi holds so the scan never overruns mid>lo\n',
+    'e.md': 'The hook <must not> be skipped\n',
+    'f.md': 'This <em>never</em> expires.\n',
+  });
+  const r = run(fx, NOBODY);
+  for (const f of ['a.html', 'b.html', 'c.jsx', 'd.js', 'e.md', 'f.md']) assert.ok(claims(r).some((c) => c.loc.startsWith(f)), f);
+});
+
+test('bare-tag follow-up: one 200 KB line of repeated "<b>x</b> " is scanned in under 2 s', () => {
+  const fx = makeRepo({}, { 'big.txt': `${'<b>x</b> '.repeat(20000)}\n` });
+  const t0 = Date.now();
+  const r = run(fx, NOBODY);
+  assert.equal(r.code, 0, r.err);
+  assert.ok(Date.now() - t0 < 2000, `took ${Date.now() - t0} ms`);
 });
