@@ -112,11 +112,11 @@ function harness(t, over = {}) {
     const args = [
       SCRIPT, 'run', '--repo', 'open-gsd/gsd-core', '--pr', '5871', '--head', head, '--branch', 'fix/5797-x', '--remote', 'fork',
       '--worktree', root, '--fork', 'davesienkowski/gsd-core', '--report-inputs', reportInputs, '--findings', findings,
-      '--ledger-dir', ctx.ledgerDir, ...(noPolicyDir ? ['--core-dir', root] : ['--policy-dir', policy]), ...tokens, ...extra,
+      '--ledger-dir', ctx.ledgerDir, ...(noPolicyDir ? [] : ['--policy-dir', policy]), ...tokens, ...extra,
     ];
     const r = spawnSync(process.execPath, args, {
       encoding: 'utf8',
-      env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, PR_UPDATE_STUB_STATE: stateFile, PR_UPDATE_STUB_LOG: ctx.log, PR_UPDATE_PRSTATUS: PRSTATUS_STUB, ...env },
+      env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, PR_UPDATE_STUB_STATE: stateFile, PR_UPDATE_STUB_LOG: ctx.log, PR_UPDATE_PRSTATUS: PRSTATUS_STUB, NODE_ENV: 'test', ...env },
     });
     return { status: r.status, out: r.stdout, err: r.stderr };
   };
@@ -682,30 +682,36 @@ test('a failed or cancelled hosted run names the recovery (rerun the failed jobs
   assert.match(fs.readFileSync(h.ledgerFile.replace(/\.jsonl$/, '.history.jsonl'), 'utf8'), /author asked for a redo/);
 });
 
-test('production policy path: git fetch then git archive of origin/next feed the live policy; a failed fetch fails step 5 closed (review R2 B-01)', (t) => {
-  const h = harness(t);
-  toStep4(h);
-  h.state.selftest.runs[0].status = 'completed';
-  h.state.selftest.runs[0].conclusion = 'success';
-  h.state.policyArchiveDir = h.policy;
-  h.save();
-  const ok = h.run([], { noPolicyDir: true });
-  assert.equal(ok.status, 3, ok.out + ok.err);
-  assert.match(ok.out, /NEXT: gh pr edit/);
-  const git = h.logLines().filter((l) => l.tool === 'git').map((l) => l.argv.join(' '));
-  assert.ok(git.some((a) => /fetch -q origin next/.test(a)), 'fetched origin/next first');
-  assert.ok(git.some((a) => /archive origin\/next scripts \.github\/MAINTAINERS/.test(a)), 'archived from origin/next');
-  const h2 = harness(t);
-  toStep4(h2);
-  h2.state.selftest.runs[0].status = 'completed';
-  h2.state.selftest.runs[0].conclusion = 'success';
-  h2.state.policyArchiveDir = h2.policy;
-  h2.state.fetchFails = true;
-  h2.save();
-  const bad = h2.run([], { noPolicyDir: true });
-  assert.equal(bad.status, 1);
-  assert.match(bad.out, /cannot fetch origin\/next/);
-  assert.ok(!/NEXT:/.test(bad.out));
+test('production policy path reads origin/next through a throwaway bare repo: no fetch into any existing repo, the dir is deleted, a failed fetch fails step 5 closed (review W1)', (t) => {
+  for (const fetchFails of [false, true]) {
+    const h = harness(t);
+    toStep4(h);
+    h.state.selftest.runs[0].status = 'completed';
+    h.state.selftest.runs[0].conclusion = 'success';
+    h.state.policyArchiveDir = h.policy;
+    h.state.fetchFails = fetchFails;
+    h.save();
+    const r = h.run([], { noPolicyDir: true });
+    const git = h.logLines().filter((l) => l.tool === 'git');
+    const fetches = git.filter((l) => l.argv.includes('fetch'));
+    assert.ok(fetches.length >= 1, 'it fetches origin/next somewhere');
+    for (const f of fetches) {
+      const dir = f.argv[f.argv.indexOf('-C') + 1];
+      assert.ok(dir && dir !== h.root && !dir.startsWith(h.root) && !/gsd-core$/.test(dir), 'the fetch runs in a throwaway dir, never in an existing repo: ' + dir);
+      assert.equal(fs.existsSync(dir), false, 'the throwaway repo is deleted: ' + dir);
+      assert.ok(f.argv.includes('next'));
+    }
+    assert.ok(git.some((l) => l.argv.includes('init') && l.argv.includes('--bare')), 'a bare repo is created first');
+    if (fetchFails) {
+      assert.equal(r.status, 1);
+      assert.match(r.out, /cannot fetch origin\/next/);
+      assert.ok(!/NEXT:/.test(r.out));
+    } else {
+      assert.equal(r.status, 3, r.out + r.err);
+      assert.match(r.out, /NEXT: gh pr edit/);
+      assert.ok(git.some((l) => l.argv.includes('archive') && l.argv.includes('FETCH_HEAD')), 'archives FETCH_HEAD of the throwaway repo');
+    }
+  }
 });
 
 test('emitted and printed hints name the script by absolute path, not a cwd-relative one (code review IN-07)', (t) => {
@@ -713,4 +719,67 @@ test('emitted and printed hints name the script by absolute path, not a cwd-rela
   const r = h.run();
   assert.ok(r.out.includes(SCRIPT), r.out);
   assert.ok(!/node bin\/pr-update\.cjs/.test(r.out));
+});
+
+test('transcript budget skips isSidechain lines, counts output tokens, and fails closed on a too-large or unreadable file (review W2)', (t) => {
+  const h = harness(t);
+  const line = (extra, u) => JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-5-5', usage: u }, ...extra });
+  const main = { input_tokens: 2, cache_creation_input_tokens: 100, cache_read_input_tokens: 899900, output_tokens: 3 };
+  const side = { input_tokens: 2, cache_creation_input_tokens: 0, cache_read_input_tokens: 20000, output_tokens: 3 };
+  const tr = path.join(h.root, 't.jsonl');
+  fs.writeFileSync(tr, [line({}, main), line({ isSidechain: true }, side)].join('\n') + '\n');
+  const over = h.run([], { ctx: ['--transcript', tr] });
+  assert.equal(over.status, 2, 'a sidechain last line must not hide a 900K main chain: ' + over.err);
+  assert.match(over.err, /900005/);
+  const edge = { input_tokens: 2, cache_creation_input_tokens: 0, cache_read_input_tokens: 599990, output_tokens: 20 };
+  fs.writeFileSync(tr, line({}, edge) + '\n');
+  assert.equal(h.run([], { ctx: ['--transcript', tr] }).status, 2, 'output_tokens count: 600012 is over 600000');
+  fs.writeFileSync(tr, line({ isSidechain: true }, side) + '\n');
+  assert.equal(h.run([], { ctx: ['--transcript', tr] }).status, 2, 'only sidechain lines: no main-chain usage, refuse');
+  const big = path.join(h.root, 'big.jsonl');
+  fs.writeFileSync(big, '');
+  fs.truncateSync(big, 300 * 1024 * 1024);
+  const tooBig = h.run([], { ctx: ['--transcript', big] });
+  assert.equal(tooBig.status, 2);
+  assert.match(tooBig.err, /too large/);
+  assert.ok(!/at .*\.cjs:\d+/.test(tooBig.err), 'no stack trace');
+  const dirAsFile = h.run([], { ctx: ['--transcript', h.root] });
+  assert.equal(dirAsFile.status, 2);
+  assert.ok(!/at .*\.cjs:\d+/.test(dirAsFile.err), 'no stack trace');
+});
+
+test('ledger names are unambiguous: a__b/c and a/b__c do not collide, ordinary names are unchanged (review INFO)', () => {
+  const { ledgerFileName } = require('./pr-update.cjs');
+  assert.notEqual(ledgerFileName('a__b/c', 1), ledgerFileName('a/b__c', 1));
+  assert.equal(ledgerFileName('open-gsd/gsd-core', 5871), 'open-gsd__gsd-core__5871');
+});
+
+test('a missing head.txt or npmtest.out is a clear step failure, not a stack trace (review INFO)', (t) => {
+  const h = harness(t);
+  toStep4(h);
+  h.state.selftest.runs[0].status = 'completed';
+  h.state.selftest.runs[0].conclusion = 'success';
+  h.save();
+  fs.rmSync(path.join(h.art, 'npmtest.out'));
+  const r = h.run();
+  assert.equal(r.status, 1);
+  assert.match(r.out, /npmtest\.out/);
+  assert.ok(!/at .*\.cjs:\d+/.test(r.out + r.err));
+});
+
+test('PR_UPDATE_PRSTATUS is a test seam: honoured only under NODE_ENV=test, refused otherwise (review INFO)', (t) => {
+  const h = harness(t);
+  const r = h.run([], { env: { NODE_ENV: '' } });
+  assert.equal(r.status, 2);
+  assert.match(r.err, /PR_UPDATE_PRSTATUS/);
+  assert.equal(fs.existsSync(h.ledgerFile), false);
+});
+
+test('the findings commit-ref check needs a digit: an all-letter hex word such as "defaced" is not a commit (review INFO)', (t) => {
+  const h = harness(t);
+  toStep6(h);
+  fs.writeFileSync(h.findings, 'the badge was defaced and then fixed\n');
+  assert.equal(h.run().status, 2);
+  fs.writeFileSync(h.findings, 'the badge was fixed in abcdef0\n');
+  assert.equal(h.run().status, 3);
 });

@@ -42,6 +42,11 @@ function main() {
       const url = (push && (state.remotePushUrls || {})[name]) || (state.remoteUrls || {})[name] || 'https://github.com/davesienkowski/gsd-core.git';
       return out(url + '\n');
     }
+    if (argv.includes('init')) {
+      log({});
+      fs.mkdirSync(argv[argv.length - 1], { recursive: true });
+      return;
+    }
     if (argv.includes('fetch')) {
       log({});
       return state.fetchFails ? fail('fatal: unable to access origin', 128) : undefined;
