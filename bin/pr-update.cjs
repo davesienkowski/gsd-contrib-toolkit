@@ -34,8 +34,8 @@
  * session started there; step 5 therefore also runs the live policy itself and refuses unless it says ok_report.
  * (2) The script cannot read the session size; --ctx-tokens is caller-reported and --transcript reads the harness's
  * own session file, so a caller that lies defeats the 600000-token refusal. (3) The ledger is a disk file in the
- * notes repo (untracked); the lock file is not a mutex for the emit-to-rerun window, the marker and head checks bound
- * a double write. (4) The run URL points at a runner repo that may be private.
+ * notes repo (untracked); the lock file is not a mutex for the emit-to-rerun window, the marker and head checks narrow
+ * a double write (they do not prevent it). (4) The run URL points at a runner repo that may be private.
  *
  * Node built-ins only; argv arrays, no shell.
  *
@@ -419,7 +419,7 @@ const STEPS = [
     const { o, ledger } = c;
     const v = c.assertHeadStill();
     const report = selfTestReport(v.body);
-    if (v.body.includes(`Self-test pending for ${ledger.head}`) || (report && lower(report.head_sha) === lower(ledger.head))) return done();
+    if ((selfTestSection(v.body) || '').includes(`Self-test pending for ${ledger.head}`) || (report && lower(report.head_sha) === lower(ledger.head))) return done();
     const file = c.writeWork('body-pending.md', replaceSelfTestSection(v.body, `## Self-test report\n\nSelf-test pending for ${ledger.head}\n`));
     return emit(['gh', 'pr', 'edit', String(ledger.pr), '--repo', o.repo, '--body-file', path.resolve(file)]);
   },
@@ -429,7 +429,9 @@ const STEPS = [
     if (!ledger.runId) throw new StepFail('no hosted run recorded: step 2 has not seen one');
     const run = ghApi(`repos/${EXPERIMENTS}/actions/runs/${ledger.runId}`);
     if (run.status !== 'completed') return waitFor(`run ${ledger.runId} is ${run.status}; arm: node ~/repos/dev-env/scripts/event-monitor.mjs (or poll: gh run view ${ledger.runId} --repo ${EXPERIMENTS}); then re-run`);
-    if (run.conclusion !== 'success') throw new StepFail(`run ${ledger.runId} conclusion ${run.conclusion}`);
+    if (run.conclusion !== 'success') {
+      throw new StepFail(`run ${ledger.runId} conclusion ${run.conclusion}; if the cause is the runner, rerun it yourself as its own call: gh run rerun ${ledger.runId} --repo ${EXPERIMENTS} --failed (then re-run this script); a red suite needs a fix and a new head`);
+    }
     const dir = path.join(c.work, `run-${ledger.runId}-${Date.now()}`);
     fs.mkdirSync(c.work, { recursive: true });
     read('gh', ['run', 'download', String(ledger.runId), '--repo', EXPERIMENTS, '-n', 'selftest', '-D', dir]);
@@ -516,11 +518,12 @@ const STEPS = [
     const bad = [];
     const bound = st.body && st.body.selfTest;
     if (!bound || bound.status !== 'bound' || lower(bound.headSha) !== lower(ledger.head)) bad.push(`the Self-test block is not bound to ${ledger.head} (body.selfTest ${JSON.stringify(bound || null)})`);
-    // W-B (quick 261113-wb1): the excerpt must be in THIS run's log and the run's head must equal the PR head; 'not compared' is not satisfied.
+    // W-B (quick 261113-wb1): the excerpt must be in THIS run's log (the run URL is the ledger's run).
     const ex = st.body && st.body.excerpt;
     if (!ex || ex.status !== 'ok') bad.push(`excerpt check is ${ex ? ex.status : 'absent'} (needs ok: every excerpt line in the run log, run URL present)`);
     else {
-      if (ex.headMatch !== true) bad.push(`run head sha vs PR head: ${ex.headMatch === false ? 'mismatch' : 'not compared'}`);
+      // pr-status's headMatch compares the run's own head sha (the selftest/run commit in the experiments repo, never the gsd-core head)
+      // with the PR head, so it is false or null for every hosted run. The binding to the PR head is head.txt line 1, checked in step 4.
       if (lower(ex.runUrl) !== lower(ledger.runUrl)) bad.push(`the excerpt is checked against ${ex.runUrl}, not this bundle's run ${ledger.runUrl}`);
     }
     const pol = st.policies && st.policies.selfTest;
@@ -543,7 +546,7 @@ function runPolicy(c, view, bodyFile) {
   if (!dir) {
     const core = c.o['core-dir'] || path.join(os.homedir(), 'repos', 'gsd-core');
     const fetched = spawnSync('git', ['-C', core, 'fetch', '-q', 'origin', 'next'], { encoding: 'utf8' });
-    if (fetched.status !== 0) process.stderr.write(`NOTE: could not fetch origin/next in ${core}; the policy is read from the local origin/next ref\n`);
+    if (fetched.status !== 0) throw new StepFail(`cannot fetch origin/next in ${core} (${String(fetched.stderr).split('\n')[0]}); the policy would be judged from a stale ref: fix the fetch or pass --policy-dir with a fresh extract`);
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-update-policy-'));
     const tar = spawnSync('git', ['-C', core, 'archive', 'origin/next', 'scripts', '.github/MAINTAINERS'], { maxBuffer: MAX_BUFFER });
     if (tar.status !== 0) throw new StepFail(`cannot read the live policy from ${core} (git archive origin/next): ${String(tar.stderr).split('\n')[0]}`);
@@ -621,8 +624,10 @@ function runBundle(o) {
     const pre = readJson('gh', ['pr', 'view', String(o.pr), '--repo', o.repo, '--json', 'isCrossRepository,headRepositoryOwner,headRefName']);
     if (!pre.isCrossRepository) throw new UsageError(`PR ${o.repo}#${o.pr} is not from a fork: the bundle publishes to ${SELFTEST_FORK} only and never writes to ${o.repo}`);
     const url = read('git', ['-C', o.worktree, 'remote', 'get-url', o.remote]).trim();
-    if (!/^(https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)davesienkowski\/gsd-core(\.git)?\/?$/i.test(url)) {
-      throw new UsageError(`--remote ${o.remote} resolves to ${url}, not ${SELFTEST_FORK}: the bundle publishes to the fork only`);
+    const pushUrl = read('git', ['-C', o.worktree, 'remote', 'get-url', '--push', o.remote]).trim();
+    const forkUrl = (u) => /^(https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)davesienkowski\/gsd-core(\.git)?\/?$/i.test(u);
+    for (const [kind, u] of [['fetch', url], ['push', pushUrl]]) {
+      if (!forkUrl(u)) throw new UsageError(`--remote ${o.remote} ${kind} URL resolves to ${u}, not ${SELFTEST_FORK}: the bundle publishes to the fork only`);
     }
     if (pre.headRefName !== o.branch) throw new UsageError(`--branch ${o.branch} is not the PR's headRefName ${pre.headRefName}`);
     if (pre.headRepositoryOwner && lower(pre.headRepositoryOwner.login) !== lower(SELFTEST_FORK.split('/')[0])) throw new UsageError(`PR head repository owner is ${pre.headRepositoryOwner.login}, not ${SELFTEST_FORK.split('/')[0]}`);
@@ -632,7 +637,7 @@ function runBundle(o) {
       const history = `${base}.history.jsonl`;
       const finished = ledger.steps.every((s) => s.state === 'done');
       if (!finished && !o.supersede) throw new UsageError(`an unfinished bundle for head ${ledger.head} exists (${pendingLine(ledger)}); finish it, or start over with --supersede --reason <text>`);
-      fs.appendFileSync(history, JSON.stringify({ archivedAt: new Date().toISOString(), reason: finished ? 'finished' : o.reason, ledger }) + '\n');
+      fs.appendFileSync(history, JSON.stringify({ archivedAt: new Date().toISOString(), reason: o.reason || 'finished', ledger }) + '\n');
       ledger = null;
     }
     if (!ledger) {
