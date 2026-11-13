@@ -358,6 +358,11 @@ function makeContext(o, ledger, work) {
   return ctx;
 }
 
+/** CHANGES_REQUESTED reviewers whose review is on an OLDER commit; one already on the head is the author's to answer. */
+function crToRerequest(st) {
+  return (st.reviewers || []).filter((r) => r.state === 'CHANGES_REQUESTED' && r.onHead !== true).map((r) => r.login);
+}
+
 const emit = (...cmds) => ({ r: 'emit', cmds });
 const waitFor = (note) => ({ r: 'await', note });
 const done = (note) => ({ r: 'done', note: note || null });
@@ -497,7 +502,7 @@ const STEPS = [
   (c) => {
     const { o, ledger } = c;
     const st = c.prStatus();
-    const cr = (st.reviewers || []).filter((r) => r.state === 'CHANGES_REQUESTED').map((r) => r.login);
+    const cr = crToRerequest(st);
     const requested = (st.requested || []).map(lower);
     const missing = cr.filter((l) => !requested.includes(lower(l)));
     if (missing.length === 0) return done(cr.length ? null : 'no CHANGES_REQUESTED reviewer');
@@ -522,7 +527,7 @@ const STEPS = [
     if (pol && !(pol.status === 'green' && pol.reason === 'ok_report')) bad.push(`policies.selfTest is ${pol.status}/${pol.reason}`);
     if (((st.checks && st.checks.failing) || []).includes('Self-test report')) bad.push('the "Self-test report" check is failing (it may not have re-run since the body edit)');
     const requested = (st.requested || []).map(lower);
-    for (const r of (st.reviewers || []).filter((x) => x.state === 'CHANGES_REQUESTED')) if (!requested.includes(lower(r.login))) bad.push(`${r.login} is CHANGES_REQUESTED and not re-requested`);
+    for (const login of crToRerequest(st)) if (!requested.includes(lower(login))) bad.push(`${login} is CHANGES_REQUESTED and not re-requested`);
     const body = c.prView().body;
     const sec = selfTestSection(body) || '';
     if (!ledger.runUrl || !sec.includes(ledger.runUrl)) bad.push('the Self-test section does not hold the run URL');
@@ -537,6 +542,8 @@ function runPolicy(c, view, bodyFile) {
   let tmp = null;
   if (!dir) {
     const core = c.o['core-dir'] || path.join(os.homedir(), 'repos', 'gsd-core');
+    const fetched = spawnSync('git', ['-C', core, 'fetch', '-q', 'origin', 'next'], { encoding: 'utf8' });
+    if (fetched.status !== 0) process.stderr.write(`NOTE: could not fetch origin/next in ${core}; the policy is read from the local origin/next ref\n`);
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-update-policy-'));
     const tar = spawnSync('git', ['-C', core, 'archive', 'origin/next', 'scripts', '.github/MAINTAINERS'], { maxBuffer: MAX_BUFFER });
     if (tar.status !== 0) throw new StepFail(`cannot read the live policy from ${core} (git archive origin/next): ${String(tar.stderr).split('\n')[0]}`);
@@ -613,11 +620,15 @@ function runBundle(o) {
     // Preconditions read the PR once; a refusal here leaves no ledger.
     const pre = readJson('gh', ['pr', 'view', String(o.pr), '--repo', o.repo, '--json', 'isCrossRepository,headRepositoryOwner,headRefName']);
     if (!pre.isCrossRepository) throw new UsageError(`PR ${o.repo}#${o.pr} is not from a fork: the bundle publishes to ${SELFTEST_FORK} only and never writes to ${o.repo}`);
+    const url = read('git', ['-C', o.worktree, 'remote', 'get-url', o.remote]).trim();
+    if (!/^(https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)davesienkowski\/gsd-core(\.git)?\/?$/i.test(url)) {
+      throw new UsageError(`--remote ${o.remote} resolves to ${url}, not ${SELFTEST_FORK}: the bundle publishes to the fork only`);
+    }
     if (pre.headRefName !== o.branch) throw new UsageError(`--branch ${o.branch} is not the PR's headRefName ${pre.headRefName}`);
     if (pre.headRepositoryOwner && lower(pre.headRepositoryOwner.login) !== lower(SELFTEST_FORK.split('/')[0])) throw new UsageError(`PR head repository owner is ${pre.headRepositoryOwner.login}, not ${SELFTEST_FORK.split('/')[0]}`);
 
     let ledger = parseLedger(file);
-    if (ledger && ledger.head !== o.head) {
+    if (ledger && (ledger.head !== o.head || o.supersede)) {
       const history = `${base}.history.jsonl`;
       const finished = ledger.steps.every((s) => s.state === 'done');
       if (!finished && !o.supersede) throw new UsageError(`an unfinished bundle for head ${ledger.head} exists (${pendingLine(ledger)}); finish it, or start over with --supersede --reason <text>`);
