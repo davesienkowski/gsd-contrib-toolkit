@@ -2,28 +2,33 @@
 'use strict';
 
 /**
- * bin/claims-delta.cjs — lists every sentence a fix round added, flags the rule-shaped ones, and
- * (with --gate) refuses while one is unresolved (quick 261113-cde, PROPOSAL item 3).
+ * bin/claims-delta.cjs — flags the rule-shaped wording a fix round added, and (with --gate) refuses while a
+ * flagged claim is unresolved (quick 261113-cde, PROPOSAL item 3; redesign FIX-PLAN-R3, approved by Dave).
  *
- *   node bin/claims-delta.cjs <A..B | A...B> --dir DIR [--repo R] [--body-old F --body-new F | --no-body REASON]
- *                             [--policy P --policy-reason TEXT] [--gate]
+ *   node <gsd-contrib-toolkit>/bin/claims-delta.cjs <A..B | A...B> --dir DIR [--repo R]
+ *        [--body-old F --body-new F | --no-body REASON] [--policy P --policy-reason TEXT]
+ *        [--allow-unexamined REASON] [--gate]
  *
  * Exit 0 = report written (gate: clean of unresolved rule-shaped claims), 1 = gate refused or any doubt
- * (bad policy, bad resolutions, git failure, nothing examined), 2 = usage (nothing is written).
- * ADVISORY AND MODEL-RUN: this is not a PreToolUse hook. It reads files and runs read-only git verbs
- * with argv arrays (no shell); it writes only DIR/CLAIMS-DELTA.md.
+ * (bad policy, bad resolutions, git failure, nothing examined, a binary or partly read file), 2 = usage.
+ * ADVISORY AND MODEL-RUN: not a PreToolUse hook. It reads files and runs read-only git verbs with argv arrays
+ * (no shell, no external diff or textconv drivers); it writes only DIR/CLAIMS-DELTA.md.
  *
- * Sources: added code comments, test titles, ADR lines, other added markdown, commit messages in the
- * range, and PR body lines (new body minus old body). Rule-shaped = matches a pattern of
- * bin/claims-delta.policy.json (policy data, tunable). Resolved = a CLAIMS-RESOLUTIONS.json entry in
- * DIR: kind oracle|generator with new_inputs >= minNewInputs, a tracked non-empty evidence file inside
- * the repo and a command; or kind not-a-rule with a 15+ char reason. A weakened rewrite needs no
- * entry: the delta is recomputed, so a rewritten sentence is judged afresh.
+ * MODEL (over-extract by construction): every added line of every readable file in the range, code included,
+ * every added commit-message line (all parents) and every body-diff line is a candidate. The kind label
+ * (comment, title, code, adr, doc, commit, body) is cosmetic and may be wrong without harm; it never decides
+ * what is examined. A match is read over the line plus up to 2 unchanged lines each side (a sentence half
+ * added and half unchanged is read whole), after leading markers, emphasis, code-span marks and tags are
+ * blanked; a claim must overlap an added line.
  *
- * WHAT THIS DOES NOT PROVE: new_inputs is self-reported (the evidence file is checked to exist, not to
- * produce that many inputs, nor that none came from a review round). Wording with no trigger word is
- * unseen. Not covered: a test title on a line after its call, assert and Error messages, removed
- * qualifiers (the reverse of the #5119 failure), and a sentence wrapped in a fenced block.
+ * Resolved = a CLAIMS-RESOLUTIONS.json entry in DIR: kind oracle|generator with new_inputs >= minNewInputs,
+ * a tracked non-empty evidence file (changed in the range or a test file) inside the repo and a command; or
+ * kind not-a-claim with a 15+ char reason. A weakened rewrite needs no entry: the delta is recomputed.
+ *
+ * WHAT THIS DOES NOT PROVE: new_inputs is self-reported. Wording with no trigger word is unseen. A removed
+ * qualifier (the reverse of the #5119 failure) is unseen. An unchanged half further than 2 lines away is
+ * unseen. A merged base branch adds upstream text to the range (clear it with not-a-claim, "upstream text").
+ * Only binary, too-large or partly parsed files are listed as unexamined.
  *
  * @module bin/claims-delta
  */
@@ -31,22 +36,17 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { execFileSync } = require('node:child_process');
+const { spawnSync } = require('node:child_process');
 
 const SHIPPED_POLICY = path.join(__dirname, 'claims-delta.policy.json');
 const REQUIRED_PATTERNS = ['quantifier', 'negated', 'definitional', 'scope-negation'];
-const SLASH_EXT = new Set(['.js', '.cjs', '.mjs', '.ts', '.cts', '.mts', '.jsx', '.tsx']);
-const HASH_EXT = new Set(['.sh', '.py', '.yml', '.yaml', '.rb', '.toml']);
+const CONTEXT_LINES = 2;
+const MAX_BUFFER = 64 * 1024 * 1024;
 const NOT_COVERED = [
-  'a test title on a line after its call',
-  'assert and Error messages',
-  'removed qualifiers (a deleted "unless" leaves the rest of the sentence absolute)',
   'wording with no trigger word',
-  'a sentence wrapped in a fenced block',
-  'string and template-literal text, regex literals and code lines (not comments)',
-  'a sentence split across an added and an unchanged comment line (each added line is read on its own)',
-  'a block comment opened after a // inside a string on the same line, beyond what the per-line rule reads',
-  'upstream text pulled in by merging the base branch into the range (mark it not-a-rule, reason "upstream text")',
+  'a removed qualifier (a deleted "unless" leaves the rest of the sentence absolute)',
+  'an unchanged half of a sentence more than 2 lines from the added line',
+  'upstream text pulled in by merging the base branch into the range (clear it with not-a-claim, reason "upstream text")',
 ];
 
 class Usage extends Error {}
@@ -76,14 +76,19 @@ function parseArgs(argv) {
   return o;
 }
 
-function git(repo, args) {
+/** One read-only git call, argv array, no shell. Returns {ok, out, err, tooBig}. */
+function gitRaw(repo, args) {
   const env = { ...process.env };
   for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']) delete env[k];
-  try {
-    return execFileSync('git', ['-C', repo, '-c', 'core.quotepath=false', ...args], { encoding: 'utf8', env, maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
-  } catch (e) {
-    throw new Refuse(`git ${args[0]} failed: ${String(e.stderr || e.message).trim().split('\n')[0]}`);
-  }
+  const r = spawnSync('git', ['-C', repo, '-c', 'core.quotepath=false', ...args], { encoding: 'utf8', env, maxBuffer: MAX_BUFFER, stdio: ['ignore', 'pipe', 'pipe'] });
+  const tooBig = !!(r.error && r.error.code === 'ENOBUFS');
+  return { ok: r.status === 0 && !r.error, out: r.stdout || '', err: String((r.stderr || (r.error && r.error.message) || '')).trim().split('\n')[0], tooBig };
+}
+
+function git(repo, args) {
+  const r = gitRaw(repo, args);
+  if (!r.ok) throw new Refuse(`git ${args[0]} failed: ${r.err}`);
+  return r.out;
 }
 
 function loadPolicy(o) {
@@ -98,20 +103,20 @@ function loadPolicy(o) {
   const max = Number.isInteger(pol.maxSentenceChars) && pol.maxSentenceChars > 0 ? pol.maxSentenceChars : 2000;
   const patterns = pol.patterns.map((p) => {
     if (/[gy]/.test(p.flags || '')) throw new Refuse(`policy pattern ${p.id} sets a g or y flag (stateful matching)`);
-    try { return { id: p.id, re: new RegExp(p.regex, p.flags || 'i') }; } catch (e) { throw new Refuse(`policy pattern ${p && p.id} invalid: ${e.message}`); }
+    try { return { id: p.id, re: new RegExp(p.regex, `${p.flags || 'i'}g`) }; } catch (e) { throw new Refuse(`policy pattern ${p && p.id} invalid: ${e.message}`); }
   });
   const SAMPLES = { quantifier: 'It never fails.', negated: 'X is not a miss.', definitional: 'The key is a hash.', 'scope-negation': 'The file is unchanged.' };
   for (const id of REQUIRED_PATTERNS) {
-    if (!patterns.some((p) => p.id === id && p.re.test(SAMPLES[id]))) throw new Refuse(`policy pattern ${id} does not match its sample sentence "${SAMPLES[id]}"`);
+    if (!patterns.some((p) => p.id === id && new RegExp(p.re.source, p.re.flags).test(SAMPLES[id]))) throw new Refuse(`policy pattern ${id} does not match its sample sentence "${SAMPLES[id]}"`);
   }
   const sha1 = crypto.createHash('sha1').update(raw).digest('hex');
-  const shipped = o.policy ? crypto.createHash('sha1').update(fs.readFileSync(SHIPPED_POLICY)).digest('hex') === sha1 : true;
-  return { patterns, minNewInputs: pol.minNewInputs, max, info: { shipped, path: file, sha1: crypto.createHash('sha1').update(raw).digest('hex'), reason: o.policyReason || null, minNewInputs: pol.minNewInputs } };
+  return { patterns, minNewInputs: pol.minNewInputs, max, info: { path: file, sha1, reason: o.policyReason || null, minNewInputs: pol.minNewInputs } };
 }
 
 const ascii = (s) => s.replace(/[‘’]/g, "'").replace(/[“”]/g, '"');
 const norm = (s) => ascii(s).replace(/\s+/g, ' ').trim().toLowerCase();
 const claimId = (s) => crypto.createHash('sha1').update(norm(s)).digest('hex').slice(0, 12);
+const blank = (s) => ' '.repeat(s.length);
 
 /**
  * Added lines per file from `git diff -U0`: [{file, lines: [{n, text}]}]. A hunk header's counts say how
@@ -123,7 +128,8 @@ function parseDiff(text) {
   let n = 0;
   let oldLeft = 0;
   let newLeft = 0;
-  for (const line of text.split('\n')) {
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/\r$/, '');
     if (oldLeft > 0 || newLeft > 0) {
       if (line.startsWith('+')) {
         if (cur) cur.lines.push({ n, text: line.slice(1) });
@@ -147,216 +153,190 @@ function parseDiff(text) {
   return files;
 }
 
-/** Join consecutive items into blocks; `start` opens a new block, a blank item closes one. */
-function toBlocks(items) {
-  const blocks = [];
-  let cur = null;
-  for (const it of items) {
-    if (!it.text.trim()) { cur = null; continue; }
-    if (!cur || it.start || it.n !== cur.last + 1) { cur = { n: it.n, parts: [], last: it.n }; blocks.push(cur); }
-    cur.parts.push(it.text.trim());
-    cur.last = it.n;
-  }
-  return blocks.map((b) => ({ n: b.n, text: b.parts.join(' ') }));
-}
-
-function proseItems(lines, counters) {
-  const items = [];
-  let fence = null;
-  let held = [];
-  for (const { n, text } of lines) {
-    if (/^\s*(```|~~~)/.test(text)) {
-      if (fence) { counters.fencedSkipped += held.length; held = []; fence = null; } else fence = true;
-      continue;
-    }
-    if (fence) { held.push({ n, text }); continue; }
-    items.push(prose(n, text));
-  }
-  for (const h of held) items.push(prose(h.n, h.text)); // an unterminated fence counts everything
-  return items.filter(Boolean);
-}
-
-function prose(n, text) {
-  if (/^\s*\|?[\s:|-]+\|?\s*$/.test(text) && /-/.test(text)) return null;
-  const m = /^\s*(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+|>\s*)?(.*)$/.exec(text);
-  return { n, text: m[1], start: /^\s*(?:#{1,6}\s|[-*+]\s|\d+\.\s|\|)/.test(text) };
+/** A cosmetic label for the kind of one line; a wrong label changes nothing about what is examined. */
+function labelFor(file, text) {
+  if (/\.md$/i.test(file)) return /(^|\/)adr\//i.test(file) ? 'adr' : 'doc';
+  if (/\.(?:test|spec)\.|(^|\/)(?:tests?|__tests__)\//.test(file) && /\b(?:it|test|describe|t\.test)(?:\.\w+)*\s*\(\s*['"`]/.test(text)) return 'title';
+  if (/^\s*(?:\/\/|\/\*|\*|#|--|;|%|<!--)/.test(text) || /\s\/\/\s|\/\*|\s#\s/.test(text)) return 'comment';
+  return 'code';
 }
 
 /**
- * Comment text per line of a post-image, an OVER-approximating scan: only block-comment state is tracked, so a
- * marker inside a string or regex yields extra text and never hides a real comment. Returns an array indexed by
- * line number minus one; '' means "no comment text on that line".
+ * Match the policy patterns over regions of lines. Each region is a list of {n, text, added, kind}; consecutive
+ * lines are joined with a space. Display text blanks only a leading run of non-letter, non-digit characters
+ * (comment, quote, list markers); the match copy also blanks emphasis marks, code-span marks and tags, so
+ * offsets agree. A claim is a match that overlaps an added line; its id is the matched lines' own text.
  */
-function scanComments(headText, ext) {
-  const lines = headText.replace(/^﻿/, '').split(/\r?\n/);
-  const out = new Array(lines.length).fill('');
-  if (SLASH_EXT.has(ext)) {
-    let inBlock = false;
-    lines.forEach((L, idx) => {
-      const segs = [];
-      const startedInBlock = inBlock;
-      let i = 0;
-      while (i <= L.length) {
-        if (inBlock) {
-          const j = L.indexOf('*/', i);
-          if (j < 0) { segs.push(L.slice(i)); break; }
-          segs.push(L.slice(i, j));
-          inBlock = false;
-          i = j + 2;
-          continue;
-        }
-        const p1 = L.indexOf('/*', i);
-        let p2 = -1;
-        for (let k = L.indexOf('//', i); k >= 0; k = L.indexOf('//', k + 1)) { if (L[k - 1] !== ':' || /^\s/.test(L.slice(k + 2, k + 3))) { p2 = k; break; } }
-        if (p1 < 0 && p2 < 0) break;
-        if (p2 >= 0 && (p1 < 0 || p2 < p1)) { segs.push(L.slice(p2 + 2)); break; }
-        inBlock = true;
-        i = p1 + 2;
-      }
-      let text = segs.join(' ');
-      if (startedInBlock) text = text.replace(/^\s*\*+\s?/, '');
-      out[idx] = text.trim();
-    });
-    return out;
-  }
-  let delim = null;
-  let rubyBlock = false;
-  lines.forEach((L, idx) => {
-    if (ext === '.rb') {
-      if (/^=begin\b/.test(L)) { rubyBlock = true; return; }
-      if (/^=end\b/.test(L)) { rubyBlock = false; return; }
-      if (rubyBlock) { out[idx] = L.trim(); return; }
-    }
-    if (ext === '.py') {
-      let i = 0;
-      const segs = [];
-      while (i <= L.length) {
-        if (delim) {
-          const j = L.indexOf(delim, i);
-          if (j < 0) { segs.push(L.slice(i)); break; }
-          segs.push(L.slice(i, j));
-          delim = null;
-          i = j + 3;
-          continue;
-        }
-        const t3 = [L.indexOf('"""', i), L.indexOf("'''", i)].filter((x) => x >= 0).sort((a, b) => a - b)[0];
-        const h = L.indexOf('#', i);
-        if (h >= 0 && (t3 === undefined || h < t3)) { segs.push(L.slice(h + 1)); break; }
-        if (t3 === undefined) break;
-        delim = L.slice(t3, t3 + 3);
-        i = t3 + 3;
-      }
-      let text = segs.join(' ').trim();
-      if (!text) { const m = /^\s*[rbuRBU]{0,2}(['"])(.+)\1\s*$/.exec(L); if (m) text = m[2].trim(); }
-      out[idx] = text;
-      return;
-    }
-    if (idx === 0 && /^#!/.test(L)) return;
-    const h = L.indexOf('#');
-    if (h >= 0) out[idx] = L.slice(h + 1).trim();
+function claimsFromRegion(region, pol, loc, defaultKind) {
+  const disp = [];
+  const starts = [];
+  let pos = 0;
+  const parts = region.map((l) => {
+    const t = ascii(l.text.replace(/\r$/, '').replace(/\t/g, ' '));
+    const d = t.replace(/^(?:[^\p{L}\p{N}]+)?(?:\d{1,3}[.)](?=\s))?/u, blank);
+    starts.push(pos);
+    pos += d.length + 1;
+    disp.push(d);
+    return d;
   });
-  return out;
-}
-
-/** Added comment lines of one file: scanner text from the post-image, falling back to the per-line rule. */
-function commentItems(file, lines, headText) {
-  const ext = path.extname(file).toLowerCase();
-  const slash = SLASH_EXT.has(ext);
-  const hash = HASH_EXT.has(ext);
-  if (!slash && !hash) return [];
-  const scanned = headText === null ? null : scanComments(headText, ext);
-  const items = [];
-  for (const { n, text } of lines) {
-    let body = scanned ? scanned[n - 1] || '' : '';
-    if (!body) {
-      const m = slash
-        ? /^\s*(?:\/\/+|\/\*+|\*(?!\/))\s?(.*?)(?:\*\/)?\s*$/.exec(text) || /\s\/\/\s(.*)$/.exec(text)
-        : /^\s*#(?!!)\s?(.*)$/.exec(text) || /\s#\s(.*)$/.exec(text);
-      if (m) body = m[1];
+  const D = parts.join(' ');
+  const M = D.replace(/[*_`]/g, ' ').replace(/<\/?[A-Za-z!][^>]*>/g, blank);
+  const lineAt = (off) => {
+    let lo = 0;
+    let hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (starts[mid] <= off) lo = mid; else hi = mid - 1;
     }
-    body = body.trim();
-    if (!body) continue;
-    items.push({ n, text: body.replace(/^[-*]\s+/, ''), start: /^[-*]\s+/.test(body) });
-  }
-  return items;
-}
-
-const TITLE_RE = /\b(?:it|test|describe|t\.test)(?:\.\w+)*\s*\(\s*(['"`])((?:[^\\\n]|\\.)*?)\1/;
-function titles(file, lines) {
-  if (!(/\.(?:test|spec)\.|(^|\/)(?:tests?|__tests__)\//.test(file))) return [];
-  const out = [];
-  for (const { n, text } of lines) {
-    const m = TITLE_RE.exec(text);
-    if (m) out.push({ n, text: m[2] });
-  }
-  return out;
-}
-
-function splitSentences(text) {
-  return text.split(/(?<=[.!?])\s+(?=[A-Z`"'(\[])/).map((s) => s.trim()).filter(Boolean);
-}
-
-function collect(o) {
-  const counters = { fencedSkipped: 0 };
-  const claims = [];
-  const add = (kind, loc, text, whole) => {
-    for (const s of whole ? [text.trim()] : splitSentences(text)) if (s) claims.push({ kind, loc, text: s });
+    return lo;
   };
+  const found = new Map();
+  for (const p of pol.patterns) {
+    const re = new RegExp(p.re.source, p.re.flags);
+    let m;
+    while ((m = re.exec(M)) !== null) {
+      if (m[0].length === 0) { re.lastIndex += 1; continue; }
+      const ls = lineAt(m.index);
+      const le = lineAt(m.index + m[0].length - 1);
+      let touched = false;
+      for (let i = ls; i <= le; i += 1) if (region[i].added) touched = true;
+      if (!touched) continue;
+      const key = `${ls}-${le}`;
+      let c = found.get(key);
+      if (!c) {
+        const lo = Math.max(0, ls - CONTEXT_LINES);
+        const hi = Math.min(region.length - 1, le + CONTEXT_LINES);
+        const wStart = starts[lo];
+        let s = m.index;
+        const lineStarts = new Set(starts.slice(lo + 1, ls + 1));
+        while (s > wStart && !/[.!?]\s$/.test(D.slice(Math.max(0, s - 2), s))) {
+          if (lineStarts.has(s) && /[.!?;:{}]\s*$/.test(disp[lineAt(s) - 1])) break;
+          s -= 1;
+        }
+        const lineEnd = starts[le] + disp[le].length;
+        let e = m.index + m[0].length;
+        while (e < lineEnd && !/[.!?]/.test(D[e - 1])) e += 1;
+        const text = D.slice(s, e).replace(/\s+/g, ' ').trim();
+        const matched = disp.slice(ls, le + 1).join(' ');
+        const first = region.slice(ls, le + 1).find((l) => l.added) || region[ls];
+        c = { kind: first.kind || defaultKind, loc: `${loc}:${first.n}`, text, id: claimId(matched), flags: [] };
+        found.set(key, c);
+      }
+      if (!c.flags.includes(p.id)) c.flags.push(p.id);
+    }
+  }
+  return [...found.values()];
+}
+
+/** Split lines into paragraphs of non-blank lines, widened by CONTEXT_LINES around the added ones. */
+function regionsFor(lines) {
+  const regions = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (!lines[i].text.trim()) { i += 1; continue; }
+    let j = i;
+    while (j + 1 < lines.length && lines[j + 1].text.trim()) j += 1;
+    let first = -1;
+    let last = -1;
+    for (let k = i; k <= j; k += 1) if (lines[k].added) { if (first < 0) first = k; last = k; }
+    if (first >= 0) regions.push(lines.slice(Math.max(i, first - CONTEXT_LINES), Math.min(j, last + CONTEXT_LINES) + 1));
+    i = j + 1;
+  }
+  return regions;
+}
+
+function collect(o, pol) {
+  const claims = [];
+  const files = [];
+  const unexamined = [];
+  const examined = { comment: 0, title: 0, adr: 0, doc: 0, code: 0, commit: 0, body: 0 };
   const [a0, b0] = o.range.includes('...') ? o.range.split('...') : o.range.split('..');
   const resolve = (rev) => git(o.repo, ['rev-parse', '--verify', '--end-of-options', `${rev}^{commit}`]).trim();
   const a = resolve(a0);
   const b = resolve(b0);
   const from = o.range.includes('...') ? git(o.repo, ['merge-base', a, b]).trim() : a;
-  const diff = git(o.repo, ['diff', '-U0', '--no-color', '--no-renames', '--no-ext-diff', '--no-textconv', '--text', from, b]);
-  const changed = git(o.repo, ['diff', '--name-only', '--no-renames', from, b]).split('\n').filter(Boolean);
-  const unexamined = [];
-  for (const f of parseDiff(diff)) {
-    const isMd = /\.md$/i.test(f.file);
-    const ext = path.extname(f.file).toLowerCase();
-    if (!isMd && !SLASH_EXT.has(ext) && !HASH_EXT.has(ext) && f.lines.some((l) => l.text.trim())) unexamined.push(f.file);
-    if (isMd) {
-      const kind = /(^|\/)adr\//i.test(f.file) ? 'adr' : 'doc';
-      for (const bl of toBlocks(proseItems(f.lines, counters))) add(kind, `${f.file}:${bl.n}`, bl.text);
-      continue;
-    }
-    let headText = null;
-    if (SLASH_EXT.has(ext) || HASH_EXT.has(ext)) {
-      try { headText = git(o.repo, ['show', '--no-textconv', `${b}:${f.file}`]); } catch { unexamined.push(`${f.file} (partial: post-image unreadable)`); }
-    }
-    for (const bl of toBlocks(commentItems(f.file, f.lines, headText))) add('comment', `${f.file}:${bl.n}`, bl.text);
-    for (const t of titles(f.file, f.lines)) add('title', `${f.file}:${t.n}`, t.text, true);
+  const DIFF = ['diff', '-U0', '--no-color', '--no-renames', '--no-ext-diff', '--no-textconv'];
+  const numstat = new Map();
+  for (const l of git(o.repo, ['diff', '--numstat', '--no-renames', '--no-ext-diff', '--no-textconv', from, b]).split('\n')) {
+    const m = /^(-|\d+)\t(-|\d+)\t(.+)$/.exec(l);
+    if (m) numstat.set(m[3], m[1] === '-' ? null : Number(m[1]));
   }
-  const log = git(o.repo, ['log', '--first-parent', '--format=%h%x01%B%x00', `${from}..${b}`]);
+  const changed = [...numstat.keys()];
+  for (const [f, added] of numstat) if (added === null) unexamined.push(`${f} (binary)`);
+
+  let parsed = [];
+  const whole = gitRaw(o.repo, [...DIFF, from, b]);
+  if (whole.ok) parsed = parseDiff(whole.out);
+  else if (whole.tooBig) {
+    for (const [f, added] of numstat) {
+      if (added === null || added === 0) continue;
+      const one = gitRaw(o.repo, [...DIFF, from, b, '--', f]);
+      if (one.ok) parsed.push(...parseDiff(one.out));
+      else unexamined.push(`${f} (too large)`);
+    }
+  } else throw new Refuse(`git diff failed: ${whole.err}`);
+
+  for (const f of parsed) {
+    const expected = numstat.get(f.file);
+    if (expected !== undefined && expected !== null && expected !== f.lines.length) unexamined.push(`${f.file} (partial: parsed ${f.lines.length} of ${expected} added lines)`);
+    const addedAt = new Map(f.lines.map((l) => [l.n, l.text.replace(/\r$/, '')]));
+    let lines = null;
+    const show = gitRaw(o.repo, ['show', '--no-textconv', `${b}:${f.file}`]);
+    if (show.ok) {
+      const post = show.out.replace(/^﻿/, '').split(/\r?\n/);
+      if ([...addedAt].every(([n, t]) => (post[n - 1] || '').replace(/^﻿/, '') === t.replace(/^﻿/, ''))) {
+        lines = post.map((text, i) => ({ n: i + 1, text, added: addedAt.has(i + 1) }));
+      }
+    }
+    if (!lines) lines = f.lines.map((l) => ({ n: l.n, text: l.text.replace(/\r$/, ''), added: true }));
+    for (const l of lines) l.kind = labelFor(f.file, l.text);
+    let flagged = 0;
+    let exCount = 0;
+    for (const l of lines) if (l.added && l.text.trim()) { examined[l.kind] += 1; exCount += 1; }
+    for (const region of regionsFor(lines)) {
+      for (const c of claimsFromRegion(region, pol, f.file, 'code')) { claims.push({ ...c, loc: c.loc }); flagged += 1; }
+    }
+    files.push({ file: f.file, added: f.lines.length, examined: exCount, flagged });
+  }
+
+  const log = git(o.repo, ['log', '--format=%h%x01%B%x00', `${from}..${b}`]);
+  let nCommits = 0;
   for (const rec of log.split('\0')) {
     const [sha, msg] = rec.replace(/^\n/, '').split('\x01');
-    if (!sha || !msg) continue;
-    const items = msg.split('\n').map((text, i) => ({ n: i + 1, text }));
-    for (const bl of toBlocks(items)) add('commit', `commit ${sha}`, bl.text);
+    if (!sha || msg === undefined) continue;
+    nCommits += 1;
+    const lines = msg.split('\n').map((text, i) => ({ n: i + 1, text: text.replace(/\r$/, ''), added: true, kind: 'commit' }));
+    for (const l of lines) if (l.text.trim()) examined.commit += 1;
+    for (const region of regionsFor(lines)) claims.push(...claimsFromRegion(region, pol, `commit ${sha}`, 'commit'));
   }
   if (o.bodyNew !== undefined) {
     let oldL;
     let newL;
-    try { oldL = fs.readFileSync(o.bodyOld, 'utf8').split('\n'); newL = fs.readFileSync(o.bodyNew, 'utf8').split('\n'); } catch (e) { throw new Refuse(`body file unreadable: ${e.message}`); }
+    try {
+      oldL = fs.readFileSync(o.bodyOld, 'utf8').split(/\r?\n/);
+      newL = fs.readFileSync(o.bodyNew, 'utf8').split(/\r?\n/);
+    } catch (e) { throw new Refuse(`body file unreadable: ${e.message}`); }
     const pool = new Map();
     for (const l of oldL) pool.set(l, (pool.get(l) || 0) + 1);
-    const added = [];
-    newL.forEach((text, i) => {
-      if (pool.get(text) > 0) pool.set(text, pool.get(text) - 1);
-      else added.push({ n: i + 1, text });
+    const lines = newL.map((text, i) => {
+      const had = pool.get(text) > 0;
+      if (had) pool.set(text, pool.get(text) - 1);
+      return { n: i + 1, text, added: !had, kind: 'body' };
     });
-    for (const bl of toBlocks(proseItems(added, counters))) add('body', `body:${bl.n}`, bl.text);
+    for (const l of lines) if (l.added && l.text.trim()) examined.body += 1;
+    for (const region of regionsFor(lines)) claims.push(...claimsFromRegion(region, pol, 'body', 'body'));
   }
-  return { claims, counters, unexamined, changed };
+  return { claims, files, unexamined, examined, changed, base: from, head: b, commits: nCommits };
 }
 
 function validateResolutions(o, pol, ids, changed) {
   const file = path.join(o.dir, 'CLAIMS-RESOLUTIONS.json');
   const problems = [];
   const good = new Map();
-  if (!fs.existsSync(file)) return { problems, good };
+  if (!fs.existsSync(file)) return { problems, good, stale: [] };
   let arr;
-  try { arr = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { return { problems: [`resolutions unparseable: ${e.message}`], good }; }
-  if (!Array.isArray(arr)) return { problems: ['resolutions must be a JSON array'], good };
+  try { arr = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { return { problems: [`resolutions unparseable: ${e.message}`], good, stale: [] }; }
+  if (!Array.isArray(arr)) return { problems: ['resolutions must be a JSON array'], good, stale: [] };
   let realRoot;
   try { realRoot = fs.realpathSync(o.repo); } catch { realRoot = o.repo; }
   const seen = new Set();
@@ -365,12 +345,12 @@ function validateResolutions(o, pol, ids, changed) {
     if (!e || typeof e !== 'object' || typeof e.id !== 'string') { problems.push(`${tag}: no id`); return; }
     if (seen.has(e.id)) { problems.push(`${tag}: duplicate id ${e.id}`); return; }
     seen.add(e.id);
-    const allowed = e.kind === 'not-a-rule' ? ['id', 'kind', 'reason'] : ['id', 'kind', 'new_inputs', 'evidence', 'command'];
-    if (!['oracle', 'generator', 'not-a-rule'].includes(e.kind)) { problems.push(`${tag}: unknown kind ${JSON.stringify(e.kind)}`); return; }
+    if (!['oracle', 'generator', 'not-a-claim'].includes(e.kind)) { problems.push(`${tag}: unknown kind ${JSON.stringify(e.kind)}`); return; }
+    const allowed = e.kind === 'not-a-claim' ? ['id', 'kind', 'reason'] : ['id', 'kind', 'new_inputs', 'evidence', 'command'];
     const extra = Object.keys(e).filter((k) => !allowed.includes(k));
     if (extra.length) { problems.push(`${tag}: unknown field ${extra.join(',')}`); return; }
-    if (e.kind === 'not-a-rule') {
-      if (typeof e.reason !== 'string' || e.reason.trim().length < 15) { problems.push(`${tag}: not-a-rule needs a reason of 15+ characters`); return; }
+    if (e.kind === 'not-a-claim') {
+      if (typeof e.reason !== 'string' || e.reason.trim().length < 15) { problems.push(`${tag}: not-a-claim needs a reason of 15+ characters`); return; }
     } else {
       if (!Number.isInteger(e.new_inputs) || e.new_inputs < pol.minNewInputs) { problems.push(`${tag}: new_inputs must be an integer >= ${pol.minNewInputs}`); return; }
       if (typeof e.command !== 'string' || !e.command.trim()) { problems.push(`${tag}: command is empty`); return; }
@@ -384,7 +364,7 @@ function validateResolutions(o, pol, ids, changed) {
 
 function evidenceProblem(repo, realRoot, ev, changed) {
   if (typeof ev !== 'string' || !ev || path.isAbsolute(ev) || ev.split(/[\\/]/).includes('..')) return 'must be a repo-relative path without ..';
-  try { git(repo, ['ls-files', '--error-unmatch', '--', ev]); } catch { return 'is not a git-tracked file'; }
+  if (!gitRaw(repo, ['ls-files', '--error-unmatch', '--', ev]).ok) return 'is not a git-tracked file';
   if (!changed.includes(ev) && !/\.test\./.test(ev)) return 'is neither changed in the range nor a *.test.* file';
   let real;
   try { real = fs.realpathSync(path.join(repo, ev)); } catch { return 'does not exist'; }
@@ -395,47 +375,49 @@ function evidenceProblem(repo, realRoot, ev, changed) {
 
 function run(o) {
   const pol = loadPolicy(o);
-  const { claims, counters, unexamined, changed } = collect(o);
-  for (const c of claims) {
-    const t = ascii(c.text);
-    c.id = claimId(c.text);
-    c.flags = pol.patterns.filter((p) => p.re.test(t)).map((p) => p.id);
-    if (c.text.length > pol.max) c.flags.push('oversize');
-  }
-  const examined = { comment: 0, title: 0, adr: 0, doc: 0, commit: 0, body: 0 };
-  for (const c of claims) examined[c.kind] += 1;
-  const total = claims.length;
+  const { claims, files, unexamined, examined, changed, base, head, commits } = collect(o, pol);
+  for (const c of claims) if (c.text.length > pol.max) c.flags.push('oversize');
   const ids = new Set(claims.map((c) => c.id));
-  const { problems, good, stale = [] } = validateResolutions(o, pol, ids, changed);
+  const { problems, good, stale } = validateResolutions(o, pol, ids, changed);
   const warnings = stale.map((id) => `stale-resolution ${id}`);
   for (const c of claims) {
-    const r = c.flags.length ? good.get(c.id) : null;
-    c.status = !c.flags.length ? 'plain' : r && r.kind === 'not-a-rule' ? 'dismissed' : r && !c.flags.includes('oversize') ? 'resolved' : 'unresolved';
+    const r = good.get(c.id);
+    c.status = r && r.kind === 'not-a-claim' ? 'dismissed' : r && !c.flags.includes('oversize') ? 'resolved' : 'unresolved';
   }
-  for (const id of good.keys()) if (ids.has(id) && !claims.some((c) => c.id === id && c.flags.length)) warnings.push(`unneeded-resolution ${id}`);
   const unresolved = [...new Set(claims.filter((c) => c.status === 'unresolved').map((c) => c.id))];
+  const total = Object.values(examined).reduce((x, y) => x + y, 0);
   if (o.gate) {
     if (o.bodyNew === undefined && String(o.noBody || '').trim().length < 8) problems.push('gate needs --body-old/--body-new, or --no-body with a reason of 8+ characters');
-    if (total === 0) problems.push('nothing was examined (no added comment, title, ADR, doc, commit or body sentence)');
-    if (unexamined.length && String(o.allowUnexamined || '').trim().length < 8) problems.push(`changed files with no extractor: ${unexamined.join(', ')}; read them by hand and pass --allow-unexamined "<reason of 8+ characters>"`);
+    if (total === 0) problems.push('nothing was examined (no added line, commit message line or body line)');
+    if (unexamined.length && String(o.allowUnexamined || '').trim().length < 8) problems.push(`unexamined files: ${unexamined.join(', ')}; read them by hand and pass --allow-unexamined "<reason of 8+ characters>"`);
   }
   const verdict = problems.length || (o.gate && unresolved.length) ? 'refused' : 'clean';
-  const result = { verdict, gate: o.gate, range: o.range, examined, fenced_skipped: counters.fencedSkipped, unexamined_files: unexamined, allow_unexamined: o.allowUnexamined || null, policy: pol.info, no_body: o.noBody || null, self_reported: true, unresolved, problems, warnings, claims };
+  const result = { verdict, gate: o.gate, range: o.range, base, head, commits, examined, files, unexamined_files: unexamined, allow_unexamined: o.allowUnexamined || null, policy: pol.info, no_body: o.noBody || null, self_reported: true, unresolved, problems, warnings, claims };
   writeReport(o, result);
   return result;
 }
 
+/** Overwrite the report with a refusal; used before a run (pending) and on every failure. */
+function writeStub(dir, reason, onlyIfExists) {
+  try {
+    const out = path.join(dir, 'CLAIMS-DELTA.md');
+    if (onlyIfExists && !fs.existsSync(out)) return;
+    fs.writeFileSync(`${out}.tmp`, `# CLAIMS-DELTA\n\nREFUSED: ${reason}\n`);
+    fs.renameSync(`${out}.tmp`, out);
+  } catch { /* the exit code still refuses */ }
+}
+
 function writeReport(o, r) {
-  const esc = (s) => s.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+  const esc = (s) => String(s).replace(/\|/g, '\\|').replace(/\n/g, ' ');
   const lines = [
     '# CLAIMS-DELTA',
     '',
-    `Range: \`${r.range}\`. Verdict: **${r.verdict}** (${r.gate ? 'gate' : 'report'} mode).`,
+    `Range: \`${r.range}\` (base ${r.base}, head ${r.head}, ${r.commits} commit(s)). Verdict: **${r.verdict}** (${r.gate ? 'gate' : 'report'} mode).`,
     `Policy: \`${r.policy.path}\` sha1 ${r.policy.sha1}, minNewInputs ${r.policy.minNewInputs}${r.policy.reason ? `, reason: ${r.policy.reason}` : ''}.`,
-    `Unexamined files (no extractor for their type): ${r.unexamined_files.join(', ') || 'none'}${r.allow_unexamined ? `; allowed: ${r.allow_unexamined}` : ''}.`,
-    `Examined: ${Object.entries(r.examined).map(([k, v]) => `${k} ${v}`).join(', ')}; fenced lines skipped ${r.fenced_skipped}.${r.no_body ? ` No body supplied: ${r.no_body}.` : ''}`,
+    `Examined added lines: ${Object.entries(r.examined).map(([k, v]) => `${k} ${v}`).join(', ')}.${r.no_body ? ` No body supplied: ${r.no_body}.` : ''}`,
+    `Unexamined files: ${r.unexamined_files.join(', ') || 'none'}${r.allow_unexamined ? `; allowed: ${r.allow_unexamined}` : ''}.`,
     '',
-    'Not proven: `new_inputs` is self-reported; the gate checks that the evidence file is tracked, non-empty and inside the repo, not that it produced that many inputs or that none came from a review round.',
+    'This reads every added line, flags rule-shaped wording, and judges nothing about truth. Not proven: `new_inputs` is self-reported; the gate checks that the evidence file is tracked, non-empty, inside the repo and changed in the range or a test file.',
     `Not covered: ${NOT_COVERED.join('; ')}.`,
     '',
   ];
@@ -443,8 +425,10 @@ function writeReport(o, r) {
   if (r.warnings.length) lines.push('## Warnings', '', ...r.warnings.map((p) => `- ${p}`), '');
   const dis = r.claims.filter((c) => c.status === 'dismissed');
   if (dis.length) lines.push('## Reasoned dismissals', '', ...dis.map((c) => `- ${c.id} ${esc(c.text)}`), '');
-  lines.push('## Sentences', '', '| id | kind | where | flags | status | sentence |', '|---|---|---|---|---|---|');
-  for (const c of r.claims) lines.push(`| ${c.id} | ${c.kind} | ${esc(c.loc)} | ${c.flags.join(',') || '-'} | ${c.status} | ${esc(c.text)} |`);
+  lines.push('## Files', '', '| file | added | examined | flagged |', '|---|---|---|---|');
+  for (const f of r.files) lines.push(`| ${esc(f.file)} | ${f.added} | ${f.examined} | ${f.flagged} |`);
+  lines.push('', '## Flagged claims', '', '| id | kind | where | flags | status | text |', '|---|---|---|---|---|---|');
+  for (const c of r.claims) lines.push(`| ${c.id} | ${c.kind} | ${esc(c.loc)} | ${c.flags.join(',')} | ${c.status} | ${esc(c.text)} |`);
   const out = path.join(o.dir, 'CLAIMS-DELTA.md');
   fs.writeFileSync(`${out}.tmp`, lines.join('\n') + '\n');
   fs.renameSync(`${out}.tmp`, out);
@@ -453,20 +437,27 @@ function writeReport(o, r) {
 function main(argv) {
   let o;
   try { o = parseArgs(argv); } catch (e) {
-    if (e instanceof Usage) { process.stderr.write(`claims-delta: ${e.message}\n`); return 2; }
+    if (e instanceof Usage) {
+      const i = argv.indexOf('--dir');
+      if (i >= 0 && argv[i + 1]) writeStub(argv[i + 1], `usage error: ${e.message}`, true);
+      process.stderr.write(`claims-delta: ${e.message}\n`);
+      return 2;
+    }
     throw e;
   }
+  writeStub(o.dir, 'run did not finish', false);
   try {
     const r = run(o);
     process.stdout.write(`${JSON.stringify(r)}\n`);
     if (r.verdict === 'refused') process.stderr.write(`claims-delta: refused: ${[...r.problems, ...(r.unresolved.length ? [`${r.unresolved.length} unresolved rule-shaped claim(s), see CLAIMS-DELTA.md`] : [])].join('; ')}\n`);
     return r.verdict === 'clean' || !o.gate ? 0 : 1;
   } catch (e) {
-    if (e instanceof Refuse) { process.stderr.write(`claims-delta: ${e.message}\n`); return 1; }
-    process.stderr.write(`claims-delta: internal error: ${e.stack}\n`);
+    const msg = e instanceof Refuse ? e.message : `internal error: ${e.stack}`;
+    writeStub(o.dir, msg.split('\n')[0], false);
+    process.stderr.write(`claims-delta: ${msg}\n`);
     return 1;
   }
 }
 
 if (require.main === module) process.exitCode = main(process.argv.slice(2));
-module.exports = { main, parseDiff, splitSentences, claimId };
+module.exports = { main, parseDiff, claimId };

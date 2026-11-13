@@ -419,7 +419,7 @@ test('R3 Q-02: a configured external diff program is never run', () => {
 
 test('R3: long mixed lines and a 5000-line file are scanned in bounded time', () => {
   const mixed = ('/* ' + '"""\'\'\' // /* x '.repeat(8000) + ' the key is the ').repeat(2);
-  const big = Array.from({ length: 5000 }, (_, i) => `// line ${i} with some words and no trigger`).join('\n') + '\n';
+  const big = Array.from({ length: 5000 }, (_, i) => `// line ${i} with some plain words`).join('\n') + '\n';
   const fx = makeRepo({}, { 'a.js': `${mixed}\nlet a = 1;\n`, 'b.js': big });
   const t0 = Date.now();
   const r = run(fx, NOBODY);
@@ -452,16 +452,15 @@ test('R3 W-02: wrapped lines under ///, --, nested > and numbered markers still 
   for (const f of ['a.rs', 'b.sql', 'c.md', 'd.md']) assert.ok(claims(r).some((c) => c.loc.startsWith(f) && c.flags.includes('negated')), f);
 });
 
-test('R3 Q-02: a resolved claim keeps its id when a neighbouring line changes', () => {
-  const base = { 'a.cjs': '// first\n// the cache key is a hash\n// third\nlet z = 1;\n' };
-  const fx = makeRepo(base, { 'a.cjs': '// first\n// the cache key is a hash\n// third changed\nlet z = 1;\n' });
-  const id1 = claims(run(fx, NOBODY)).find((c) => /cache key/.test(c.text));
-  assert.ok(id1, 'claim found through the unchanged-neighbour widening');
-  fs.writeFileSync(path.join(fx.root, 'a.cjs'), '// first\n// the cache key is a hash\n// third changed again\nlet z = 1;\n');
+test('R3 Q-02: a claim keeps its id when a neighbouring line changes', () => {
+  const fx = makeRepo({}, { 'a.cjs': '// first\n// the cache key is a hash\n// third\nlet z = 1;\n' });
+  const c1 = claims(run(fx, NOBODY)).find((c) => /cache key/.test(c.text));
+  assert.ok(c1);
+  fs.writeFileSync(path.join(fx.root, 'a.cjs'), '// first changed\n// the cache key is a hash\n// third changed again\nlet z = 1;\n');
   git(fx.root, 'add', 'a.cjs');
-  git(fx.root, 'commit', '-q', '-m', 'edit neighbour');
-  const id2 = claims(run(fx, NOBODY)).find((c) => /cache key/.test(c.text));
-  assert.equal(id1.id, id2.id);
+  git(fx.root, 'commit', '-q', '-m', 'edit neighbours');
+  const c2 = claims(run(fx, NOBODY)).find((c) => /cache key/.test(c.text));
+  assert.equal(c1.id, c2.id);
 });
 
 test('R3 W-04/W-07: the report names the commits and carries a per-file table', () => {
