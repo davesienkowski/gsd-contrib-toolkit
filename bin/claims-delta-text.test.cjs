@@ -33,7 +33,10 @@ test('SKILL.md Phase 5b holds the size warning, the fix-round rules and the hone
   assert.match(s, /suggest a split/);
   assert.match(s, /current state/);
   assert.match(s, /re-review comment/);
-  assert.match(s, /claims-delta\.cjs/);
+  assert.match(s, /<gsd-contrib-toolkit>\/bin\/claims-delta\.cjs/);
+  assert.match(s, /does not ship `bin\/`|not `bin\/`/);
+  assert.match(s, /reads every line the range added/);
+  assert.doesNotMatch(s, /lists every sentence|should not miss/);
   assert.match(s, /MERGEABLE/);
   assert.match(s, /10 or more NEW inputs/);
   assert.match(s, /pre-push-review\.md/);
@@ -43,7 +46,7 @@ test('SKILL.md Phase 5b holds the size warning, the fix-round rules and the hone
 
 test('reference.md documents the claims-delta commands and the resolution schema', () => {
   const s = section(read('reference.md'), '## claims-delta');
-  for (const needle of ['--gate', 'CLAIMS-RESOLUTIONS.json', 'new_inputs', 'not-a-rule', 'oversize', '--policy-reason', '--no-body']) assert.ok(s.includes(needle), needle);
+  for (const needle of ['--gate', 'CLAIMS-RESOLUTIONS.json', 'new_inputs', 'not-a-claim', 'oversize', 'REFUSED', 'Unexamined files', '--policy-reason', '--no-body']) assert.ok(s.includes(needle), needle);
 });
 
 test('pre-push-review.md quotes trek-e with the URL and names every pass and the new-inputs scoring', () => {
