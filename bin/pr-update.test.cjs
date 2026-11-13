@@ -623,25 +623,27 @@ test('a CHANGES_REQUESTED review that is already on the bundle head is not re-re
   assert.equal(stepState(h, 7), 'done');
 });
 
-test('step 8 accepts excerpt ok with headMatch false or null: the hosted run head is the selftest/run commit, the binding is head.txt (review I2 B)', (t) => {
-  for (const headMatch of [false, null]) {
+test('step 8 requires the excerpt check ok AND the tested sha matched; mismatch and not compared are not satisfied (W-B round 4, dbffc5d)', (t) => {
+  const prstatus = (headMatch) => [
+    {
+      number: 5871,
+      head: HEAD,
+      reviewers: [],
+      requested: [],
+      checks: { failing: [], pending: [] },
+      body: { selfTest: { status: 'bound', headSha: HEAD }, excerpt: { status: 'ok', runUrl: RUN_URL, headMatch } },
+      policies: { selfTest: { status: 'green', reason: 'ok_report' } },
+    },
+  ];
+  for (const [headMatch, expected] of [[true, 0], [false, 1], [null, 1]]) {
     const h = harness(t);
     toStep6(h);
     h.state.comments = [{ body: marker(HEAD) }];
-    h.state.prstatus = [
-      {
-        number: 5871,
-        head: HEAD,
-        reviewers: [],
-        requested: [],
-        checks: { failing: [], pending: [] },
-        body: { selfTest: { status: 'bound', headSha: HEAD }, excerpt: { status: 'ok', runUrl: RUN_URL, headMatch } },
-        policies: { selfTest: { status: 'green', reason: 'ok_report' } },
-      },
-    ];
+    h.state.prstatus = prstatus(headMatch);
     h.save();
     const r = h.run();
-    assert.equal(r.status, 0, String(headMatch) + r.out + r.err);
+    assert.equal(r.status, expected, String(headMatch) + r.out + r.err);
+    if (expected === 1) assert.match(r.out, /tested sha/);
   }
 });
 
