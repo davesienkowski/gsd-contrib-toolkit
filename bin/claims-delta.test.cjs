@@ -481,3 +481,32 @@ test('R3 W-03: a flag error before --dir still overwrites an existing report wit
   assert.equal(u.status, 2);
   assert.match(fs.readFileSync(reportPath(fx), 'utf8'), /REFUSED/);
 });
+
+// --- R1 iteration 2 on FIX-PLAN R3 --------------------------------------------------------------------
+
+test('R3-I2 B-01: scope-negation survives wrapping, indentation and emphasis', () => {
+  const fx = makeRepo({}, { 'a.js': '    // this is recorded rather\n    // than edited here\n', 'n.md': 'Recorded **instead** of editing.\n', 'b.js': '// no wrap but   indented  rather   than this\n' });
+  const r = run(fx, NOBODY);
+  for (const f of ['a.js', 'n.md', 'b.js']) assert.ok(claims(r).some((c) => c.loc.startsWith(f) && c.flags.includes('scope-negation')), f);
+});
+
+test('R3-I2 B-02: a stray < on a line does not blank the comment after it', () => {
+  const fx = makeRepo({}, { 'a.js': 'if (a<b) go(); // the pool must not be empty; f(x => x)\n' });
+  assert.ok(claims(run(fx, NOBODY)).some((c) => /must not be empty/.test(c.text)));
+});
+
+test('R3-I2 W-01: deleting a binary file does not refuse the gate', () => {
+  const fx = makeRepo({ 'img.bin': Buffer.from([0, 1, 2, 0, 255]) }, { 'a.cjs': '// Adds a retry.\n' });
+  git(fx.root, 'rm', '-q', 'img.bin');
+  git(fx.root, 'commit', '-q', '-m', 'drop binary');
+  const g = run(fx, ['--gate', ...NOBODY]);
+  assert.equal(g.code, 0, g.out + g.err);
+});
+
+test('R3-I2 W-05: a --dir=D spelling still stubs an old clean report on a usage error', () => {
+  const fx = makeRepo({}, { 'a.cjs': '// Adds a retry.\n' });
+  assert.equal(run(fx, ['--gate', ...NOBODY]).code, 0);
+  const u = spawnSync(process.execPath, [CLI, `--dir=${fx.dir}`, 'base..HEAD', '--repo', fx.root], { encoding: 'utf8' });
+  assert.equal(u.status, 2);
+  assert.match(fs.readFileSync(reportPath(fx), 'utf8'), /REFUSED/);
+});
