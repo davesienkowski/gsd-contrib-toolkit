@@ -431,7 +431,7 @@ test('step 7 re-requests exactly the CHANGES_REQUESTED reviewers not yet request
       reviewers: [{ login: 'trek-e', state: 'CHANGES_REQUESTED' }, { login: 'other', state: 'APPROVED' }],
       requested: [],
       checks: { failing: [], pending: [] },
-      body: { selfTest: { status: 'bound', headSha: HEAD } },
+      body: { selfTest: { status: 'bound', headSha: HEAD }, excerpt: { status: 'ok', runUrl: RUN_URL, headMatch: true } },
       policies: { selfTest: { status: 'green', reason: 'ok_report' } },
       ...over,
     },
@@ -444,6 +444,11 @@ test('step 7 re-requests exactly the CHANGES_REQUESTED reviewers not yet request
   assert.ok(!/other/.test(r.out.split('NEXT:')[1]));
   const variants = [
     ['selfTest binding stale', { body: { selfTest: { status: 'stale', headSha: OLD } } }],
+    ['excerpt not in the run log', { body: { selfTest: { status: 'bound', headSha: HEAD }, excerpt: { status: 'missing', runUrl: RUN_URL, headMatch: true } } }],
+    ['run head not compared', { body: { selfTest: { status: 'bound', headSha: HEAD }, excerpt: { status: 'ok', runUrl: RUN_URL, headMatch: null } } }],
+    ['run head differs', { body: { selfTest: { status: 'bound', headSha: HEAD }, excerpt: { status: 'ok', runUrl: RUN_URL, headMatch: false } } }],
+    ['excerpt names another run', { body: { selfTest: { status: 'bound', headSha: HEAD }, excerpt: { status: 'ok', runUrl: RUN_URL.replace('77', '78'), headMatch: true } } }],
+    ['no run URL', { body: { selfTest: { status: 'bound', headSha: HEAD }, excerpt: { status: 'no-run-url', runUrl: null, headMatch: null } } }],
     ['policy unknown', { policies: { selfTest: { status: 'unknown', reason: null } } }],
     ['Self-test report check red', { checks: { failing: ['Self-test report'], pending: [] } }],
   ];
