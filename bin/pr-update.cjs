@@ -234,9 +234,9 @@ function pendingLine(ledger) {
 
 // ---------- ledger and lock ----------
 
-/** owner__name__N with '_' inside a component percent-encoded, so '__' only ever separates components (a__b/c vs a/b__c). */
+/** owner__name__N, lowercased (GitHub owner and repo names are case-insensitive), with '_' inside a component percent-encoded, so '__' only ever separates components (a__b/c vs a/b__c). */
 function ledgerFileName(repo, pr) {
-  const [owner, name] = repo.split('/').map((x) => x.replace(/_/g, '%5F'));
+  const [owner, name] = repo.split('/').map((x) => x.toLowerCase().replace(/_/g, '%5F'));
   return `${owner}__${name}__${pr}`;
 }
 const ledgerBase = (dir, repo, pr) => path.join(dir, ledgerFileName(repo, pr));

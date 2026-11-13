@@ -68,8 +68,9 @@
  * Any queue read that fails makes the mode `unknown` with the error named; it never fails the PR block
  * or the exit code (fail open to informational). Known limit: a queue configured through classic branch
  * protection rather than a ruleset is not visible to these reads.
- * plus one local file read per PR (quick 261113-wg1): the bundle ledger of bin/pr-update.cjs, `<ledger dir>/<owner>__<name>__<N>.jsonl`
- * (dir: deps.ledgerDir, else $PR_UPDATE_LEDGER_DIR, else ~/repos/gsd-core-notes/ledgers/pr-update). It prints pr-update's own
+ *
+ * The one local file read, per PR (quick 261113-wg1), under the READ-ONLY contract: the bundle ledger of bin/pr-update.cjs, `<ledger dir>/<owner>__<name>__<N>.jsonl`
+ * (dir: deps.ledgerDir, else --ledger-dir, else $PR_UPDATE_LEDGER_DIR, else ~/repos/gsd-core-notes/ledgers/pr-update). It prints pr-update's own
  * `bundle pending: <repo>#N steps a-b` line, or `bundle: complete`, `bundle: no ledger`, `bundle ledger unreadable|corrupt: <why>`; never
  * "no bundle pending" for a file it could not read. `--json` carries the same as `bundle: {status, line, pending, file, error}`. Read only.
  * No mutating verb (pr edit/review/merge/comment/close/ready), no `gh api -X/--method/-f/-F`, and no
@@ -122,7 +123,7 @@ const BUCKETS = Object.freeze(['pass', 'fail', 'pending', 'skipping', 'cancel'])
 const IGNORED_REVIEW_STATES = new Set(['COMMENTED', 'PENDING']);
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const USAGE =
-  'usage: pr-status [--json] [--overlap] [--cr [--reviewer <login>]] [--body] [--repo owner/name] <pr-number...>  (default repo ' +
+  'usage: pr-status [--json] [--overlap] [--cr [--reviewer <login>]] [--body] [--repo owner/name] [--ledger-dir D] <pr-number...>  (default repo ' +
   DEFAULT_REPO +
   '; policy lines for the gsd-core CI checks Required tests, Base branch health, Reviewed or maintainer and Self-test report print on their own when those checks are on the PR; the Self-test verdict needs --body)';
 const FOOTER =
@@ -1588,7 +1589,11 @@ function compareTested(view, run, head, pr, gh, trusted) {
     if (!file || file.encoding !== 'base64' || typeof file.content !== 'string') return Object.assign(res, { headNote: 'marker unread (unsupported encoding)' });
     let text;
     try {
-      text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(file.content, 'base64'));
+      // Buffer.from(..., 'base64') never throws and skips junk, so the content must be strict base64 that re-encodes to itself.
+      const b64 = file.content.replace(/\s/g, '');
+      const bytes = Buffer.from(b64, 'base64');
+      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || bytes.toString('base64') !== b64) throw new Error('not strict base64');
+      text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     } catch {
       return Object.assign(res, { headNote: 'marker unread (unsupported encoding)' });
     }
@@ -2155,12 +2160,28 @@ function readBundle(repo, number, dir) {
   const { ledgerFileName, pendingLine } = require('./pr-update.cjs'); // the ledger's own name and pending-line format, not a copy
   const file = path.join(dir, `${ledgerFileName(repo, number)}.jsonl`);
   const res = { status: 'no-ledger', line: null, pending: [], file, error: null };
+  const unreadable = (why) => Object.assign(res, { status: 'unreadable', error: why });
   let text;
   try {
+    let st;
+    try {
+      st = fs.lstatSync(file);
+    } catch (err) {
+      if (err && err.code === 'ENOENT') return res;
+      return unreadable(firstErrorLine(err));
+    }
+    if (st.isSymbolicLink()) {
+      try {
+        st = fs.statSync(file);
+      } catch (err) {
+        return unreadable(err && err.code === 'ENOENT' ? 'dangling link' : firstErrorLine(err));
+      }
+    }
+    if (!st.isFile()) return unreadable('not a regular file');
+    if (st.size > 1024 * 1024) return unreadable('ledger over 1 MiB');
     text = fs.readFileSync(file, 'utf8');
   } catch (err) {
-    if (err && err.code === 'ENOENT') return res;
-    return Object.assign(res, { status: 'unreadable', error: firstErrorLine(err) });
+    return unreadable(firstErrorLine(err));
   }
   const bad = (why) => Object.assign(res, { status: 'corrupt', error: why });
   let l;
@@ -2180,7 +2201,7 @@ function bundleLines(b) {
   if (!b) return [];
   if (b.status === 'pending') return [`  ${clean(b.line)}`];
   if (b.status === 'complete') return ['  bundle: complete (every step done)'];
-  if (b.status === 'no-ledger') return ['  bundle: no ledger'];
+  if (b.status === 'no-ledger') return [`  bundle: no ledger (looked for ${clean(tildeHome(b.file))})`];
   return [`  bundle ledger ${b.status}: ${clean(b.error)} (${clean(tildeHome(b.file))})`];
 }
 
@@ -2198,6 +2219,7 @@ function parseArgs(argv) {
   let body = false;
   let reviewer = null;
   let repo = DEFAULT_REPO;
+  let ledgerDir = null;
   const numbers = [];
   const list = Array.isArray(argv) ? argv : [];
   for (let i = 0; i < list.length; i += 1) {
@@ -2210,6 +2232,11 @@ function parseArgs(argv) {
       const value = a === '--reviewer' ? list[++i] : a.slice('--reviewer='.length);
       if (value == null || !LOGIN_PATTERN.test(String(value))) return { usageError: `bad --reviewer value (not a GitHub login): ${clean(value)}` };
       reviewer = String(value);
+    }
+    else if (a === '--ledger-dir' || a.startsWith('--ledger-dir=')) {
+      const value = a === '--ledger-dir' ? list[++i] : a.slice('--ledger-dir='.length);
+      if (value == null || value === '') return { usageError: '--ledger-dir needs a directory' };
+      ledgerDir = String(value);
     }
     else if (a === '--repo' || a.startsWith('--repo=')) {
       const value = a === '--repo' ? list[++i] : a.slice('--repo='.length);
@@ -2224,7 +2251,7 @@ function parseArgs(argv) {
   }
   if (numbers.length === 0) return { usageError: 'no PR number given' };
   if (reviewer != null && !cr) return { usageError: '--reviewer needs --cr' };
-  return { json, overlap, cr, body, reviewer, repo, numbers };
+  return { json, overlap, cr, body, reviewer, repo, ledgerDir, numbers };
 }
 
 /**
@@ -2246,7 +2273,7 @@ function runCli(argv, deps = {}) {
   let failed = false;
   const queues = new Map(); // base branch -> fetchQueue result, one set of queue reads per repo and base
   const policyCache = newPolicyCache(); // policy modules, base runs, MAINTAINERS and permissions: once per run
-  const ledgerDir = deps.ledgerDir || process.env.PR_UPDATE_LEDGER_DIR || path.join(os.homedir(), 'repos', 'gsd-core-notes', 'ledgers', 'pr-update'); // the dir pr-update writes
+  const ledgerDir = deps.ledgerDir || args.ledgerDir || process.env.PR_UPDATE_LEDGER_DIR || path.join(os.homedir(), 'repos', 'gsd-core-notes', 'ledgers', 'pr-update'); // the dir pr-update writes
   const results = args.numbers.map((n) => {
     try {
       const pr = fetchPr(n, args.repo, deps, { timeline: args.cr || args.body });

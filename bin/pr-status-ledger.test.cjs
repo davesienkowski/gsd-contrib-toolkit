@@ -67,7 +67,7 @@ test('a missing ledger is reported as no ledger, never as "no bundle pending"', 
   const dir = fixtureDir();
   assert.equal(bundle(dir).status, 'no-ledger');
   const text = run(['5871'], dir).stdout;
-  assert.match(text, /^ {2}bundle: no ledger$/m);
+  assert.match(text, /^ {2}bundle: no ledger \(looked for .*\)$/m);
   assert.doesNotMatch(text, /no bundle pending|bundle pending/);
   assert.equal(bundle(path.join(dir, 'absent-subdir')).status, 'no-ledger'); // the dir itself missing is the same fact
 });

@@ -121,7 +121,8 @@ do not block. Details are in the `core-contribution` skill's reference (skills/c
   `pr-update` bundle line for the PR (pending steps, complete, no ledger, or an unreadable or corrupt ledger).
 - `bin/pr-update.cjs`: drives the re-review bundle after a fix round in eight steps over two phases, keeps a per-PR ledger
   file, refuses to run above about 600000 session tokens, and only prints the write commands (`NEXT: ...`) for you to run;
-  it never runs a write itself.
+  it never runs a `gh` write or a `git push` and never writes to a remote or an existing repo. It does write its own ledger and
+  lock, a throwaway temp repo for the policy fetch, and `gh run download` artifacts into its work dir.
 - `bin/claims-delta.cjs`: lists the rule-shaped sentences a fix round added (code, comments, commit messages and the PR body)
   and, with `--gate`, refuses while one has no resolution. What it reads and the resolutions it accepts are in the reference.
 
