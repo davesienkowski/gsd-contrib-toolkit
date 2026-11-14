@@ -123,6 +123,10 @@ do not block. Details are in the `core-contribution` skill's reference (skills/c
   file, refuses to run above about 600000 session tokens, and only prints the write commands (`NEXT: ...`) for you to run;
   it never runs a `gh` write or a `git push` and never writes to a remote or an existing repo. It does write its own ledger and
   lock, a throwaway temp repo for the policy fetch, and `gh run download` artifacts into its work dir.
+  Each emitted step also records `write: {shape, fields, text, digests}` in the ledger (the five shapes: fork branch publish, Self-test
+  contents PUT, `pr edit --body-file`, `pr comment --body-file`, POST `requested_reviewers`); every field is checked against a
+  closed class and a value outside it refuses the step. `bin/fixtures/pr-update-write-shapes.json` is the shared contract
+  (the five shapes, their fields and the exact emitted text) that dev-env's future grant hook reads as data.
 - `bin/claims-delta.cjs`: lists the rule-shaped sentences a fix round added (code, comments, commit messages and the PR body)
   and, with `--gate`, refuses while one has no resolution. What it reads and the resolutions it accepts are in the reference.
 

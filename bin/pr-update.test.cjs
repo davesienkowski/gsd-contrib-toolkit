@@ -32,6 +32,18 @@ const EXP = 'davesienkowski/gsd-core-experiments';
 const marker = (head) => `<!-- pr-update ${head} -->`;
 const RUN_URL = `https://github.com/${EXP}/actions/runs/77`;
 const EM = '—';
+const BLOB = 'e'.repeat(40); // a real blob sha is 40 lowercase hex
+const { buildWrite, fileDigests } = require('./pr-update.cjs');
+
+/** QT-1: the ledger step carries {shape, fields, text}; text is the NEXT line and buildWrite rebuilds it from the fields. */
+function assertWrite(h, r, id, shape) {
+  const w = h.ledger().steps.find((s) => s.id === id).write;
+  assert.ok(w, `step ${id} records its write`);
+  assert.equal(w.shape, shape);
+  assert.ok(r.out.split('\n').includes(`NEXT: ${w.text}`), 'the ledger text is the NEXT line, byte for byte');
+  assert.equal(buildWrite(shape, w.fields, h.workDir).text, w.text);
+  return w;
+}
 
 /** A npmtest.out shaped like the real run 42744528257: chunk banners with an em dash, TAP totals per chunk. */
 function npmtest({ chunks = 3, fail = 0, summaries = chunks } = {}) {
@@ -86,7 +98,7 @@ function harness(t, over = {}) {
       body: '## Summary\n\nfix.\n\n## Self-test report\n\n```json\n{"schema":1,"head_sha":"' + OLD + '"}\n```\n\n## Checklist\n- [x] a\n',
     },
     remoteHeads: {},
-    selftest: { ymlSha: OLD, blobSha: 'blob1', branchHead: 'c0', runs: [], artifactDir: art },
+    selftest: { ymlSha: OLD, blobSha: BLOB, branchHead: 'c0', runs: [], artifactDir: art },
     comments: [],
     prstatus: [],
   };
@@ -183,6 +195,9 @@ test('fresh run: ledger has all eight steps pending, step 1 emits the push as te
   assert.equal(l.steps.length, 8);
   assert.ok(l.steps.every((s) => s.state === 'pending'));
   assert.ok(l.steps[0].emittedAt, 'the emit window is recorded');
+  const w = assertWrite(h, r, 1, 'fork_push');
+  assert.deepEqual(w.fields, { worktree: h.root, remote: 'fork', head: HEAD, branch: 'fix/5797-x' });
+  assert.ok(l.steps.slice(1).every((s) => !s.write), 'only the emitted step carries a write');
   h.noWritesSpawned();
 });
 
@@ -207,7 +222,8 @@ test('step 2 emits the contents PUT with an absolute base64 file carrying the ne
   assert.equal(stepState(h, 1), 'done');
   assert.match(r.out, new RegExp(`NEXT: gh api -X PUT repos/${EXP}/contents/.github/workflows/selftest.yml`));
   assert.match(r.out, /branch=selftest\/run/);
-  assert.match(r.out, /sha=blob1/);
+  assert.match(r.out, new RegExp(`sha=${BLOB}`));
+  assertWrite(h, r, 2, 'selftest_put');
   const b64 = fs.readFileSync(path.join(h.workDir, 'selftest.b64'), 'utf8');
   assert.ok(!b64.endsWith('\n'), 'no trailing newline in the base64');
   const yml = Buffer.from(b64, 'base64').toString();
@@ -292,6 +308,9 @@ test('step 3 emits a body with the Self-test section replaced by the pending lin
   greenRun(h);
   const r = h.run();
   assert.match(r.out, new RegExp(`NEXT: gh pr edit 5871 --repo open-gsd/gsd-core --body-file '?${h.workDir}/body-pending.md`));
+  const w3 = assertWrite(h, r, 3, 'pr_edit_body');
+  assert.equal(w3.fields.bodyFile, path.join(h.workDir, 'body-pending.md'));
+  assert.equal(w3.digests.bodyFile, require('node:crypto').createHash('sha256').update(fs.readFileSync(w3.fields.bodyFile)).digest('hex'));
   const body = fs.readFileSync(path.join(h.workDir, 'body-pending.md'), 'utf8');
   assert.match(body, new RegExp(`Self-test pending for ${HEAD}`));
   assert.ok(!body.includes('"head_sha"'), 'the stale block is gone');
@@ -343,6 +362,7 @@ test('step 4 green: step 5 emits a body whose block carries the head, sums, run 
   const r = h.run();
   assert.equal(r.status, 3);
   assert.equal(stepState(h, 4), 'done');
+  assertWrite(h, r, 5, 'pr_edit_body');
   const body = fs.readFileSync(path.join(h.workDir, 'body-final.md'), 'utf8');
   assert.match(body, new RegExp(`Hosted run: ${RUN_URL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
   const block = JSON.parse(body.match(/## Self-test report[\s\S]*?```json\n([\s\S]*?)\n```/)[1]);
@@ -406,6 +426,7 @@ test('step 6 emits the re-review comment with the marker; findings without a com
   assert.equal(r.status, 3);
   assert.equal(stepState(h, 5), 'done');
   assert.match(r.out, new RegExp(`NEXT: gh pr comment 5871 --repo open-gsd/gsd-core --body-file '?${h.workDir}/comment.md`));
+  assertWrite(h, r, 6, 'pr_comment');
   const c = fs.readFileSync(path.join(h.workDir, 'comment.md'), 'utf8');
   assert.ok(c.startsWith(`<!-- pr-update ${HEAD} -->`));
   assert.match(c, /Major 1/);
@@ -442,6 +463,7 @@ test('step 7 re-requests exactly the CHANGES_REQUESTED reviewers not yet request
   assert.equal(r.status, 3);
   assert.match(r.out, /NEXT: gh api -X POST repos\/open-gsd\/gsd-core\/pulls\/5871\/requested_reviewers .*reviewers\[\]=trek-e/);
   assert.ok(!/other/.test(r.out.split('NEXT:')[1]));
+  assert.deepEqual(assertWrite(h, r, 7, 'reviewers_post').fields, { repo: 'open-gsd/gsd-core', pr: '5871', reviewers: ['trek-e'] });
   const variants = [
     ['selfTest binding stale', { body: { selfTest: { status: 'stale', headSha: OLD } } }],
     ['excerpt not in the run log', { body: { selfTest: { status: 'bound', headSha: HEAD }, excerpt: { status: 'missing', runUrl: RUN_URL, headMatch: true } } }],
@@ -874,4 +896,113 @@ test('coordinator review WR-02: step 8 fails when pr-status omits policies.selfT
   assert.equal(r.status, 1, r.out + r.err);
   assert.match(r.out + r.err, /Self-test policy result missing from pr-status/);
   assert.equal(stepState(h, 8), 'pending');
+});
+
+test('QT-1: a step that does not emit carries no write (done, await, fail), so a stale write is never the first pending step', (t) => {
+  const h = harness(t);
+  h.state.remoteHeads['fork fix/5797-x'] = HEAD;
+  greenRun(h);
+  const r1 = h.run();
+  assertWrite(h, r1, 3, 'pr_edit_body');
+  // the head moves: step 3 fails and must drop the write it emitted last time
+  h.state.pr.headRefOid = 'd'.repeat(40);
+  h.save();
+  assert.equal(h.run().status, 1);
+  const s3 = h.ledger().steps.find((s) => s.id === 3);
+  assert.equal(s3.state, 'pending');
+  assert.equal(s3.write || null, null);
+  // step 3 verified, step 4 awaited: no write anywhere
+  const h2 = harness(t);
+  toStep4(h2);
+  assert.equal(h2.run().status, 3);
+  assert.ok(h2.ledger().steps.every((s) => !s.write), 'await leaves no write');
+});
+
+test('QT-1: the ledger version stays 1 (additive write key; live v1 ledgers keep resuming)', (t) => {
+  const h = harness(t);
+  h.run();
+  assert.equal(h.ledger().v, 1);
+  const l = h.ledger();
+  for (const s of l.steps) delete s.write; // a ledger written before QT-1
+  fs.writeFileSync(h.ledgerFile, JSON.stringify(l) + '\n');
+  assert.equal(h.run().status, 3, 'a ledger without write keys still resumes');
+  assert.equal(h.ledger().steps[0].write.shape, 'fork_push');
+});
+
+test('QT-1: a field outside its class refuses the step (fail closed): recorded on the step, FAILED line, no NEXT', (t) => {
+  const h = harness(t);
+  h.ledgerDir = path.join(h.root, 'led gers'); // a space in the work dir puts every body path outside the path class
+  h.state.remoteHeads['fork fix/5797-x'] = HEAD;
+  greenRun(h);
+  const r = h.run(['--ledger-dir', h.ledgerDir]);
+  assert.equal(r.status, 1, r.out + r.err);
+  assert.match(r.out, /FAILED step 3 .*workDir is outside the path class/);
+  assert.ok(!/NEXT:/.test(r.out));
+  const l = JSON.parse(fs.readFileSync(path.join(h.ledgerDir, 'open-gsd__gsd-core__5871.jsonl'), 'utf8'));
+  const s3 = l.steps.find((s) => s.id === 3);
+  assert.equal(s3.state, 'pending');
+  assert.equal(s3.emittedAt, null, 'a refused build is not an emit');
+  assert.match(s3.note, /workDir/);
+  h.noWritesSpawned();
+});
+
+test('QT-1 (R1 I2 B-1): a symlink in the work dir is refused at emit, so a recorded in-class path cannot point at another file', (t) => {
+  const h = harness(t);
+  h.state.remoteHeads['fork fix/5797-x'] = HEAD;
+  greenRun(h);
+  fs.mkdirSync(h.workDir, { recursive: true });
+  const target = path.join(h.root, 'secret.txt');
+  fs.writeFileSync(target, 'not a body');
+  fs.symlinkSync(target, path.join(h.workDir, 'body-pending.md'));
+  const r = h.run();
+  assert.equal(r.status, 1, r.out + r.err);
+  assert.match(r.out, /FAILED step 3 .*(symlink|not a regular file)/);
+  assert.ok(!/NEXT:/.test(r.out));
+  assert.equal(h.ledger().steps.find((s) => s.id === 3).write || null, null);
+});
+
+test('QT-1 (R1 I2 W-1, W-2): a write left on a step after the first pending one, or by a killed run, is cleared and persisted at the next run', (t) => {
+  const h = harness(t);
+  h.run();
+  const l = h.ledger();
+  l.steps[5].write = { shape: 'pr_comment', fields: { pr: '5871', repo: 'open-gsd/gsd-core', bodyFile: path.join(h.workDir, 'comment.md') }, text: 'stale', digests: {} };
+  fs.writeFileSync(h.ledgerFile, JSON.stringify(l) + '\n');
+  h.run();
+  const after = h.ledger();
+  assert.equal(after.steps[5].write, null, 'a step that was not visited this run carries no write');
+  assert.equal(after.steps[0].write.shape, 'fork_push');
+});
+
+test('QT-1 (review WR-01): a pre-planted symlink at a work file is never written through; the target stays untouched', (t) => {
+  const h = harness(t);
+  h.state.remoteHeads['fork fix/5797-x'] = HEAD;
+  greenRun(h);
+  fs.mkdirSync(h.workDir, { recursive: true });
+  const target = path.join(h.root, 'victim.txt');
+  fs.writeFileSync(target, 'victim content');
+  fs.symlinkSync(target, path.join(h.workDir, 'body-pending.md'));
+  const r = h.run();
+  assert.equal(r.status, 1, r.out + r.err);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'victim content', 'the symlink target must not be clobbered');
+  assert.ok(!/NEXT:/.test(r.out));
+});
+
+test('QT-1 (review WR-02): fileDigests hashes a regular file from one fd and refuses a symlink, a directory and a path outside the work dir', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pru-fd-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const work = path.join(dir, 'w');
+  fs.mkdirSync(work);
+  const f = path.join(work, 'a.md');
+  fs.writeFileSync(f, 'hello');
+  const crypto = require('node:crypto');
+  assert.equal(typeof fileDigests, 'function');
+  const w = { shape: 'pr_comment', fields: { bodyFile: f } };
+  assert.equal(fileDigests(w, work).bodyFile, crypto.createHash('sha256').update('hello').digest('hex'));
+  fs.symlinkSync(f, path.join(work, 'l.md'));
+  assert.throws(() => fileDigests({ shape: 'pr_comment', fields: { bodyFile: path.join(work, 'l.md') } }, work), /StepFail|regular file|symlink|cannot read/);
+  fs.mkdirSync(path.join(work, 'd'));
+  assert.throws(() => fileDigests({ shape: 'pr_comment', fields: { bodyFile: path.join(work, 'd') } }, work), /regular file|cannot read/);
+  const out = path.join(dir, 'o.md');
+  fs.writeFileSync(out, 'x');
+  assert.throws(() => fileDigests({ shape: 'pr_comment', fields: { bodyFile: out } }, work), /outside the work dir/);
 });
