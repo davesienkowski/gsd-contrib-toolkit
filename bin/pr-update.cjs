@@ -91,11 +91,11 @@ const cmdText = (argv) => argv.map(shq).join(' ');
 const FIELD_CLASS = {
   pr: /^[1-9][0-9]*$/,
   repo: /^(?!\.{1,2}\/)(?!.*\/\.{1,2}$)[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/,
-  path: /^(?!.*(?:^|\/)\.\.(?:\/|$))(?!.*\/\/)\/[A-Za-z0-9_./-]+$/,
+  path: /^(?!.*(?:^|\/)\.\.(?:\/|$))(?!.*\/\/)\/[A-Za-z0-9_./%+-]+$/,
   login: /^(?!-)[A-Za-z0-9-]+$/,
   sha: /^[0-9a-f]{40}$/,
-  branch: /^(?!-)[A-Za-z0-9._/-]+$/,
-  remote: /^(?!-)[A-Za-z0-9_.-]+$/,
+  branch: /^(?!-)(?!\/)(?!.*\/$)(?!.*\/\/)(?!.*\.\.)(?!.*@\{)(?!.*(?:^|\/)\.)(?!.*\.lock(?:\/|$))(?!.*\.$)[A-Za-z0-9._/-]+$/,
+  remote: /^[A-Za-z0-9][A-Za-z0-9._-]*$/,
 };
 
 /** kind per field; 'workfile' is a path that must also sit under the pr-update work dir. */
@@ -130,7 +130,7 @@ function buildWrite(shape, fields, workDir) {
   if (!f) throw new StepFail(`${shape}: fields must be an object`);
   for (const k of Object.keys(f)) if (!Object.prototype.hasOwnProperty.call(spec.fields, k)) throw new StepFail(`${shape}: unexpected field ${k}`);
   const needsWork = Object.values(spec.fields).includes('workfile');
-  if (needsWork && !(typeof workDir === 'string' && FIELD_CLASS.path.test(workDir))) throw new StepFail(`${shape}: workDir is outside the path class [A-Za-z0-9_./-]+ (absolute): ${JSON.stringify(workDir)}`);
+  if (needsWork && !(typeof workDir === 'string' && FIELD_CLASS.path.test(workDir))) throw new StepFail(`${shape}: workDir is outside the path class [A-Za-z0-9_./%+-]+ (absolute): ${JSON.stringify(workDir)}`);
   for (const [k, kind] of Object.entries(spec.fields)) {
     const v = f[k];
     if (v === undefined) throw new StepFail(`${shape}: missing field ${k}`);
@@ -138,7 +138,7 @@ function buildWrite(shape, fields, workDir) {
     if (kind === 'logins') ok = Array.isArray(v) && v.length > 0 && v.every((l) => typeof l === 'string' && FIELD_CLASS.login.test(l));
     else if (kind === 'workfile') ok = typeof v === 'string' && FIELD_CLASS.path.test(v) && v.startsWith(`${workDir}/`);
     else ok = typeof v === 'string' && FIELD_CLASS[kind].test(v);
-    if (!ok) throw new StepFail(`${shape}: field ${k} is outside its class (${kind === 'workfile' ? `an absolute path under ${workDir} in [A-Za-z0-9_./-]+` : kind}): ${JSON.stringify(v)}`);
+    if (!ok) throw new StepFail(`${shape}: field ${k} is outside its class (${kind === 'workfile' ? `an absolute path under ${workDir} in [A-Za-z0-9_./%+-]+` : kind}): ${JSON.stringify(v)}`);
   }
   const argv = spec.argv(f);
   return { shape, fields: f, argv, text: cmdText(argv) };
@@ -153,16 +153,21 @@ function fileDigests(w, workDir) {
   const out = {};
   for (const k of ['bodyFile', 'contentFile']) {
     if (typeof w.fields[k] !== 'string') continue;
+    let fd = null;
     try {
-      const st = fs.lstatSync(w.fields[k]);
-      if (!st.isFile()) throw new StepFail(`${w.shape}: ${k} ${w.fields[k]} is not a regular file (a symlink or other node is refused)`);
-      const real = fs.realpathSync(w.fields[k]);
+      // One open, no race: O_NOFOLLOW refuses a symlink at the last component (ELOOP); the fd is then checked and read.
+      fd = fs.openSync(w.fields[k], fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+      if (!fs.fstatSync(fd).isFile()) throw new StepFail(`${w.shape}: ${k} ${w.fields[k]} is not a regular file`);
+      const realDir = fs.realpathSync(path.dirname(w.fields[k]));
       const realWork = fs.realpathSync(workDir);
-      if (!real.startsWith(`${realWork}/`)) throw new StepFail(`${w.shape}: ${k} ${w.fields[k]} resolves outside the work dir (${real})`);
-      out[k] = crypto.createHash('sha256').update(fs.readFileSync(w.fields[k])).digest('hex');
+      if (realDir !== realWork && !realDir.startsWith(`${realWork}/`)) throw new StepFail(`${w.shape}: ${k} ${w.fields[k]} resolves outside the work dir (${realDir})`);
+      out[k] = crypto.createHash('sha256').update(fs.readFileSync(fd)).digest('hex');
     } catch (e) {
       if (e instanceof StepFail) throw e;
+      if (e && e.code === 'ELOOP') throw new StepFail(`${w.shape}: ${k} ${w.fields[k]} is a symlink (refused)`);
       throw new StepFail(`${w.shape}: cannot read ${k} ${w.fields[k]} to record its digest (${e.code || e.message})`);
+    } finally {
+      if (fd !== null) fs.closeSync(fd);
     }
   }
   return out;
@@ -464,7 +469,17 @@ function makeContext(o, ledger, work) {
     writeWork(name, text) {
       fs.mkdirSync(work, { recursive: true });
       const p = path.join(work, name);
-      fs.writeFileSync(p, text);
+      // O_NOFOLLOW: a symlink pre-planted at p fails the open (ELOOP) instead of being written through.
+      let fd = null;
+      try {
+        fd = fs.openSync(p, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW, 0o600);
+        fs.writeFileSync(fd, text);
+      } catch (e) {
+        if (e && (e.code === 'ELOOP' || e.code === 'EMLINK')) throw new StepFail(`work file ${p} is a symlink (refused, not written through)`);
+        throw e;
+      } finally {
+        if (fd !== null) fs.closeSync(fd);
+      }
       return p;
     },
   };
@@ -912,6 +927,6 @@ function runCli(argv) {
   }
 }
 
-module.exports = { buildWrite, FIELD_CLASS, ledgerFileName, buildExcerpt, ctxFromTranscript, pendingLine, replaceSelfTestSection, runCli, CTX_BUDGET_TOKENS };
+module.exports = { buildWrite, fileDigests, FIELD_CLASS, ledgerFileName, buildExcerpt, ctxFromTranscript, pendingLine, replaceSelfTestSection, runCli, CTX_BUDGET_TOKENS };
 
 if (require.main === module) process.exitCode = runCli(process.argv.slice(2));

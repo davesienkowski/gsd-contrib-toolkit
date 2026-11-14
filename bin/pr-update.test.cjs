@@ -956,7 +956,7 @@ test('QT-1 (R1 I2 B-1): a symlink in the work dir is refused at emit, so a recor
   fs.symlinkSync(target, path.join(h.workDir, 'body-pending.md'));
   const r = h.run();
   assert.equal(r.status, 1, r.out + r.err);
-  assert.match(r.out, /FAILED step 3 .*not a regular file/);
+  assert.match(r.out, /FAILED step 3 .*(symlink|not a regular file)/);
   assert.ok(!/NEXT:/.test(r.out));
   assert.equal(h.ledger().steps.find((s) => s.id === 3).write || null, null);
 });
