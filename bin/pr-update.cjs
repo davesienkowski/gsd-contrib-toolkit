@@ -144,14 +144,24 @@ function buildWrite(shape, fields, workDir) {
   return { shape, fields: f, argv, text: cmdText(argv) };
 }
 
-/** sha256 of each file a write names (bodyFile, contentFile), so the hook can bind the content that existed at emit time. */
-function fileDigests(w) {
+/**
+ * sha256 of each file a write names (bodyFile, contentFile), so the hook can bind the content that existed at emit time.
+ * The file must be a regular file whose real path sits under the real work dir: buildWrite checks the path lexically, and a
+ * symlink inside the work dir would otherwise point the recorded (in-class) path at any readable file.
+ */
+function fileDigests(w, workDir) {
   const out = {};
   for (const k of ['bodyFile', 'contentFile']) {
     if (typeof w.fields[k] !== 'string') continue;
     try {
+      const st = fs.lstatSync(w.fields[k]);
+      if (!st.isFile()) throw new StepFail(`${w.shape}: ${k} ${w.fields[k]} is not a regular file (a symlink or other node is refused)`);
+      const real = fs.realpathSync(w.fields[k]);
+      const realWork = fs.realpathSync(workDir);
+      if (!real.startsWith(`${realWork}/`)) throw new StepFail(`${w.shape}: ${k} ${w.fields[k]} resolves outside the work dir (${real})`);
       out[k] = crypto.createHash('sha256').update(fs.readFileSync(w.fields[k])).digest('hex');
     } catch (e) {
+      if (e instanceof StepFail) throw e;
       throw new StepFail(`${w.shape}: cannot read ${k} ${w.fields[k]} to record its digest (${e.code || e.message})`);
     }
   }
@@ -778,6 +788,11 @@ function runBundle(o) {
     const c = makeContext(o, ledger, work);
     const save = () => writeLedger(file, ledger);
 
+    // A write is valid only for the step the current visit emits: clear every stale one (also those after the first pending step) and persist that before any read can hang.
+    if (ledger.steps.some((s) => s.write)) {
+      for (const s of ledger.steps) s.write = null;
+      save();
+    }
     for (let i = 0; i < STEPS.length; i += 1) {
       const step = ledger.steps[i];
       step.write = null; // any exit below that saves the ledger (a thrown non-StepFail included) leaves no stale write
@@ -790,7 +805,7 @@ function runBundle(o) {
         // Build inside the try and before emittedAt: a field outside its class is a recorded refusal, not an emit.
         if (res.r === 'emit') {
           res.write = buildWrite(res.shape, res.fields, path.resolve(work));
-          res.write.digests = fileDigests(res.write);
+          res.write.digests = fileDigests(res.write, path.resolve(work));
         }
       } catch (e) {
         if (e instanceof StepFail) {

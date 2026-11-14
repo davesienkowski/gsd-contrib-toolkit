@@ -945,3 +945,30 @@ test('QT-1: a field outside its class refuses the step (fail closed): recorded o
   assert.match(s3.note, /workDir/);
   h.noWritesSpawned();
 });
+
+test('QT-1 (R1 I2 B-1): a symlink in the work dir is refused at emit, so a recorded in-class path cannot point at another file', (t) => {
+  const h = harness(t);
+  h.state.remoteHeads['fork fix/5797-x'] = HEAD;
+  greenRun(h);
+  fs.mkdirSync(h.workDir, { recursive: true });
+  const target = path.join(h.root, 'secret.txt');
+  fs.writeFileSync(target, 'not a body');
+  fs.symlinkSync(target, path.join(h.workDir, 'body-pending.md'));
+  const r = h.run();
+  assert.equal(r.status, 1, r.out + r.err);
+  assert.match(r.out, /FAILED step 3 .*not a regular file/);
+  assert.ok(!/NEXT:/.test(r.out));
+  assert.equal(h.ledger().steps.find((s) => s.id === 3).write || null, null);
+});
+
+test('QT-1 (R1 I2 W-1, W-2): a write left on a step after the first pending one, or by a killed run, is cleared and persisted at the next run', (t) => {
+  const h = harness(t);
+  h.run();
+  const l = h.ledger();
+  l.steps[5].write = { shape: 'pr_comment', fields: { pr: '5871', repo: 'open-gsd/gsd-core', bodyFile: path.join(h.workDir, 'comment.md') }, text: 'stale', digests: {} };
+  fs.writeFileSync(h.ledgerFile, JSON.stringify(l) + '\n');
+  h.run();
+  const after = h.ledger();
+  assert.equal(after.steps[5].write, null, 'a step that was not visited this run carries no write');
+  assert.equal(after.steps[0].write.shape, 'fork_push');
+});
