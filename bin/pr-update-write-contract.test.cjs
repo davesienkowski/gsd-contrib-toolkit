@@ -18,7 +18,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const { buildWrite } = require('./pr-update.cjs');
+const { buildWrite, FIELD_CLASS } = require('./pr-update.cjs');
 const FIXTURE = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'pr-update-write-shapes.json'), 'utf8'));
 
 const five = ['fork_push', 'selftest_put', 'pr_edit_body', 'pr_comment', 'reviewers_post'];
@@ -79,4 +79,11 @@ test('refuses an extra field', () => {
 test('refuses a work dir outside the path class', () => {
   const s = FIXTURE.shapes.find((x) => x.shape === 'pr_comment');
   assert.throws(() => buildWrite('pr_comment', clone(s.fields), '/home/x y/work'), /workDir/);
+});
+
+test('the fixture classes are the FIELD_CLASS regex sources, exactly (no prose, no drift)', () => {
+  for (const [k, src] of Object.entries(FIXTURE.classes)) {
+    assert.equal(new RegExp(src).source, FIELD_CLASS[k].source, k);
+  }
+  assert.deepEqual(Object.keys(FIXTURE.classes).sort(), Object.keys(FIELD_CLASS).sort());
 });

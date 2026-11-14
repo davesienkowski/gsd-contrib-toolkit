@@ -780,6 +780,7 @@ function runBundle(o) {
 
     for (let i = 0; i < STEPS.length; i += 1) {
       const step = ledger.steps[i];
+      step.write = null; // any exit below that saves the ledger (a thrown non-StepFail included) leaves no stale write
       // Steps 1, 2 and 4 are monotonic facts (a published commit, a finished run, a stored artifact): trusted once recorded.
       const trusted = step.state === 'done' && [0, 1, 3].includes(i) && (i !== 3 || (ledger.artifactDir && fs.existsSync(ledger.artifactDir)));
       if (trusted) continue;

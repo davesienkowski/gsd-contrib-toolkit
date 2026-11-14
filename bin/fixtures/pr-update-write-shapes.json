@@ -2,10 +2,11 @@
   "version": 1,
   "about": "Contract fixture: the five outward writes bin/pr-update.cjs emits, with the structured ledger fields each needs and the exact emitted text. Read as DATA by bin/pr-update-write-contract.test.cjs and by dev-env's PermissionRequest hook tests (no import). text is hand-written, one line, as shq serializes the argv; running it through bash printf must yield argv.",
   "workDir": "/home/dave/repos/gsd-core-notes/ledgers/pr-update/open-gsd__gsd-core__5871.work",
+  "classNotes": "Every classes value is a bare JS RegExp source. bodyFile and contentFile are paths that must also sit under workDir (workDir is a pr-update ledger-dir work dir, not recorded in the ledger: a consumer pins its own). reviewers is a non-empty list of logins.",
   "classes": {
     "pr": "^[1-9][0-9]*$",
     "repo": "^(?!\\.{1,2}/)(?!.*/\\.{1,2}$)[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
-    "path": "^(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*//)/[A-Za-z0-9_./-]+$ (absolute, no '..' segment, no '//'; bodyFile and contentFile must also sit under workDir)",
+    "path": "^(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*//)/[A-Za-z0-9_./-]+$",
     "login": "^(?!-)[A-Za-z0-9-]+$",
     "sha": "^[0-9a-f]{40}$",
     "branch": "^(?!-)[A-Za-z0-9._/-]+$",
