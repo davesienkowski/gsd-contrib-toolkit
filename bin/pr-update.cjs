@@ -47,6 +47,7 @@
  * @module bin/pr-update
  */
 
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -82,6 +83,80 @@ function shq(a) {
   return /^[A-Za-z0-9_@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`;
 }
 const cmdText = (argv) => argv.map(shq).join(' ');
+
+// ---------- the five outward writes: closed field classes and fixed argv templates (QT-1) ----------
+// Each class is a subset of shq's bare class, so bash expands the emitted text to exactly the argv built here. The fixture
+// bin/fixtures/pr-update-write-shapes.json is the shared contract: dev-env's PermissionRequest hook rebuilds the same text from
+// the ledger fields. A value outside its class refuses the step (StepFail).
+const FIELD_CLASS = {
+  pr: /^[1-9][0-9]*$/,
+  repo: /^(?!\.{1,2}\/)(?!.*\/\.{1,2}$)[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/,
+  path: /^(?!.*(?:^|\/)\.\.(?:\/|$))(?!.*\/\/)\/[A-Za-z0-9_./-]+$/,
+  login: /^(?!-)[A-Za-z0-9-]+$/,
+  sha: /^[0-9a-f]{40}$/,
+  branch: /^(?!-)[A-Za-z0-9._/-]+$/,
+  remote: /^(?!-)[A-Za-z0-9_.-]+$/,
+};
+
+/** kind per field; 'workfile' is a path that must also sit under the pr-update work dir. */
+const WRITE_SHAPES = {
+  fork_push: {
+    fields: { worktree: 'path', remote: 'remote', head: 'sha', branch: 'branch' },
+    argv: (f) => ['git', '-C', f.worktree, 'push', f.remote, `${f.head}:refs/heads/${f.branch}`],
+  },
+  selftest_put: {
+    fields: { repo: 'repo', branch: 'branch', pr: 'pr', head: 'sha', blobSha: 'sha', contentFile: 'workfile' },
+    argv: (f) => ['gh', 'api', '-X', 'PUT', `repos/${f.repo}/contents/${WORKFLOW_PATH}`, '-f', `message=selftest: run gsd-core ${f.head.slice(0, 9)} (PR ${f.pr})`, '-f', `branch=${f.branch}`, '-f', `sha=${f.blobSha}`, '-F', `content=@${f.contentFile}`],
+  },
+  pr_edit_body: {
+    fields: { pr: 'pr', repo: 'repo', bodyFile: 'workfile' },
+    argv: (f) => ['gh', 'pr', 'edit', f.pr, '--repo', f.repo, '--body-file', f.bodyFile],
+  },
+  pr_comment: {
+    fields: { pr: 'pr', repo: 'repo', bodyFile: 'workfile' },
+    argv: (f) => ['gh', 'pr', 'comment', f.pr, '--repo', f.repo, '--body-file', f.bodyFile],
+  },
+  reviewers_post: {
+    fields: { repo: 'repo', pr: 'pr', reviewers: 'logins' },
+    argv: (f) => ['gh', 'api', '-X', 'POST', `repos/${f.repo}/pulls/${f.pr}/requested_reviewers`, ...f.reviewers.flatMap((l) => ['-f', `reviewers[]=${l}`])],
+  },
+};
+
+/** Build one write from its shape and fields; throws StepFail naming the offending field. Pure: no I/O. */
+function buildWrite(shape, fields, workDir) {
+  if (!Object.prototype.hasOwnProperty.call(WRITE_SHAPES, shape)) throw new StepFail(`unknown shape ${JSON.stringify(shape)}`);
+  const spec = WRITE_SHAPES[shape];
+  const f = fields && typeof fields === 'object' && !Array.isArray(fields) ? fields : null;
+  if (!f) throw new StepFail(`${shape}: fields must be an object`);
+  for (const k of Object.keys(f)) if (!Object.prototype.hasOwnProperty.call(spec.fields, k)) throw new StepFail(`${shape}: unexpected field ${k}`);
+  const needsWork = Object.values(spec.fields).includes('workfile');
+  if (needsWork && !(typeof workDir === 'string' && FIELD_CLASS.path.test(workDir))) throw new StepFail(`${shape}: workDir is outside the path class [A-Za-z0-9_./-]+ (absolute): ${JSON.stringify(workDir)}`);
+  for (const [k, kind] of Object.entries(spec.fields)) {
+    const v = f[k];
+    if (v === undefined) throw new StepFail(`${shape}: missing field ${k}`);
+    let ok;
+    if (kind === 'logins') ok = Array.isArray(v) && v.length > 0 && v.every((l) => typeof l === 'string' && FIELD_CLASS.login.test(l));
+    else if (kind === 'workfile') ok = typeof v === 'string' && FIELD_CLASS.path.test(v) && v.startsWith(`${workDir}/`);
+    else ok = typeof v === 'string' && FIELD_CLASS[kind].test(v);
+    if (!ok) throw new StepFail(`${shape}: field ${k} is outside its class (${kind === 'workfile' ? `an absolute path under ${workDir} in [A-Za-z0-9_./-]+` : kind}): ${JSON.stringify(v)}`);
+  }
+  const argv = spec.argv(f);
+  return { shape, fields: f, argv, text: cmdText(argv) };
+}
+
+/** sha256 of each file a write names (bodyFile, contentFile), so the hook can bind the content that existed at emit time. */
+function fileDigests(w) {
+  const out = {};
+  for (const k of ['bodyFile', 'contentFile']) {
+    if (typeof w.fields[k] !== 'string') continue;
+    try {
+      out[k] = crypto.createHash('sha256').update(fs.readFileSync(w.fields[k])).digest('hex');
+    } catch (e) {
+      throw new StepFail(`${w.shape}: cannot read ${k} ${w.fields[k]} to record its digest (${e.code || e.message})`);
+    }
+  }
+  return out;
+}
 
 /** The one read seam: spawn with an argv array, no shell. */
 function read(cmd, args, opts = {}) {
@@ -285,7 +360,7 @@ function newLedger(o) {
     counts: null,
     dispatchSeen: null,
     dispatchChurn: 0,
-    steps: STEP_NAMES.map((name, i) => ({ id: i + 1, name, state: 'pending', at: null, emittedAt: null, note: null })),
+    steps: STEP_NAMES.map((name, i) => ({ id: i + 1, name, state: 'pending', at: null, emittedAt: null, note: null, write: null })),
   };
 }
 
@@ -391,7 +466,7 @@ function crToRerequest(st) {
   return (st.reviewers || []).filter((r) => r.state === 'CHANGES_REQUESTED' && r.onHead !== true).map((r) => r.login);
 }
 
-const emit = (...cmds) => ({ r: 'emit', cmds });
+const emit = (shape, fields) => ({ r: 'emit', shape, fields });
 const waitFor = (note) => ({ r: 'await', note });
 const done = (note) => ({ r: 'done', note: note || null });
 
@@ -408,7 +483,7 @@ const STEPS = [
     const { o, ledger } = c;
     const out = read('git', ['-C', o.worktree, 'ls-remote', o.remote, `refs/heads/${ledger.branch}`]);
     if (out.split('\t')[0].trim() === ledger.head) return done();
-    return emit(['git', '-C', o.worktree, 'push', o.remote, `${ledger.head}:refs/heads/${ledger.branch}`]);
+    return emit('fork_push', { worktree: o.worktree, remote: o.remote, head: ledger.head, branch: ledger.branch });
   },
   // 2 dispatch the hosted Self-test
   (c) => {
@@ -440,7 +515,7 @@ const STEPS = [
     ledger.dispatchSeen = yml.selftestSha;
     const next = yml.text.replace(/^(\s*SELFTEST_SHA:\s*)\S+/m, `$1${ledger.head}`);
     const file = c.writeWork('selftest.b64', Buffer.from(next).toString('base64'));
-    return emit(['gh', 'api', '-X', 'PUT', `repos/${EXPERIMENTS}/contents/${WORKFLOW_PATH}`, '-f', `message=selftest: run gsd-core ${ledger.head.slice(0, 9)} (PR ${ledger.pr})`, '-f', `branch=${SELFTEST_BRANCH}`, '-f', `sha=${yml.sha}`, '-F', `content=@${path.resolve(file)}`]);
+    return emit('selftest_put', { repo: EXPERIMENTS, branch: SELFTEST_BRANCH, pr: String(ledger.pr), head: ledger.head, blobSha: yml.sha, contentFile: path.resolve(file) });
   },
   // 3 body "Self-test pending for <head>"
   (c) => {
@@ -449,7 +524,7 @@ const STEPS = [
     const report = selfTestReport(v.body);
     if ((selfTestSection(v.body) || '').includes(`Self-test pending for ${ledger.head}`) || (report && lower(report.head_sha) === lower(ledger.head))) return done();
     const file = c.writeWork('body-pending.md', replaceSelfTestSection(v.body, `## Self-test report\n\nSelf-test pending for ${ledger.head}\n`));
-    return emit(['gh', 'pr', 'edit', String(ledger.pr), '--repo', o.repo, '--body-file', path.resolve(file)]);
+    return emit('pr_edit_body', { pr: String(ledger.pr), repo: o.repo, bodyFile: path.resolve(file) });
   },
   // 4 the hosted run is green
   (c) => {
@@ -509,7 +584,7 @@ const STEPS = [
     const body = replaceSelfTestSection(v.body, section);
     const file = path.resolve(c.writeWork('body-final.md', body));
     runPolicy(c, v, file);
-    return emit(['gh', 'pr', 'edit', String(ledger.pr), '--repo', o.repo, '--body-file', file]);
+    return emit('pr_edit_body', { pr: String(ledger.pr), repo: o.repo, bodyFile: file });
   },
   // 6 re-review comment
   (c) => {
@@ -526,7 +601,7 @@ const STEPS = [
     if (!text.trim() || !/\b(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}\b/.test(text)) throw new UsageError('--findings must be a file mapping each open finding to a commit (at least one 7-40 hex commit ref containing a digit)');
     const file = c.writeWork('comment.md', `${marker(ledger.head)}\n${text.replace(/\n*$/, '\n')}`);
     void v;
-    return emit(['gh', 'pr', 'comment', String(ledger.pr), '--repo', o.repo, '--body-file', path.resolve(file)]);
+    return emit('pr_comment', { pr: String(ledger.pr), repo: o.repo, bodyFile: path.resolve(file) });
   },
   // 7 re-request the CHANGES_REQUESTED reviewers
   (c) => {
@@ -537,7 +612,7 @@ const STEPS = [
     const missing = cr.filter((l) => !requested.includes(lower(l)));
     if (missing.length === 0) return done(cr.length ? null : 'no CHANGES_REQUESTED reviewer');
     c.assertHeadStill();
-    return emit(['gh', 'api', '-X', 'POST', `repos/${o.repo}/pulls/${ledger.pr}/requested_reviewers`, ...missing.flatMap((l) => ['-f', `reviewers[]=${l}`])]);
+    return emit('reviewers_post', { repo: o.repo, pr: String(ledger.pr), reviewers: missing });
   },
   // 8 postcondition
   (c) => {
@@ -668,7 +743,8 @@ function runBundle(o) {
   checkBudget(o);
   if (o.supersede && !o.reason) throw new UsageError('--supersede needs --reason <text>');
 
-  const dir = ledgerDirOf(o);
+  o.worktree = path.resolve(o.worktree);
+  const dir = path.resolve(ledgerDirOf(o));
   fs.mkdirSync(dir, { recursive: true });
   const base = ledgerBase(dir, o.repo, o.pr);
   const file = `${base}.jsonl`;
@@ -710,9 +786,15 @@ function runBundle(o) {
       let res;
       try {
         res = STEPS[i](c);
+        // Build inside the try and before emittedAt: a field outside its class is a recorded refusal, not an emit.
+        if (res.r === 'emit') {
+          res.write = buildWrite(res.shape, res.fields, path.resolve(work));
+          res.write.digests = fileDigests(res.write);
+        }
       } catch (e) {
         if (e instanceof StepFail) {
           step.state = 'pending';
+          step.write = null;
           step.note = e.message;
           save();
           process.stdout.write(`FAILED step ${step.id} (${step.name}): ${e.message}\n`);
@@ -723,6 +805,7 @@ function runBundle(o) {
       }
       if (res.r === 'done') {
         step.state = 'done';
+        step.write = null;
         step.at = new Date().toISOString();
         step.note = res.note;
         save();
@@ -730,6 +813,7 @@ function runBundle(o) {
         continue;
       }
       step.state = 'pending';
+      step.write = null;
       if (res.r === 'await') {
         step.note = res.note;
         save();
@@ -741,8 +825,9 @@ function runBundle(o) {
       }
       step.emittedAt = new Date().toISOString();
       step.note = null;
+      step.write = { shape: res.write.shape, fields: res.write.fields, text: res.write.text, digests: res.write.digests };
       save();
-      const lines = res.cmds.map(cmdText);
+      const lines = [res.write.text];
       fs.mkdirSync(work, { recursive: true });
       fs.writeFileSync(path.join(work, `next-${step.id}.txt`), lines.join('\n') + '\n');
       for (const l of lines) process.stdout.write(`NEXT: ${l}\n`);
@@ -811,6 +896,6 @@ function runCli(argv) {
   }
 }
 
-module.exports = { ledgerFileName, buildExcerpt, ctxFromTranscript, pendingLine, replaceSelfTestSection, runCli, CTX_BUDGET_TOKENS };
+module.exports = { buildWrite, FIELD_CLASS, ledgerFileName, buildExcerpt, ctxFromTranscript, pendingLine, replaceSelfTestSection, runCli, CTX_BUDGET_TOKENS };
 
 if (require.main === module) process.exitCode = runCli(process.argv.slice(2));

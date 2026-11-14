@@ -936,12 +936,12 @@ test('QT-1: a field outside its class refuses the step (fail closed): recorded o
   greenRun(h);
   const r = h.run(['--ledger-dir', h.ledgerDir]);
   assert.equal(r.status, 1, r.out + r.err);
-  assert.match(r.out, /FAILED step 3 .*bodyFile/);
+  assert.match(r.out, /FAILED step 3 .*workDir is outside the path class/);
   assert.ok(!/NEXT:/.test(r.out));
   const l = JSON.parse(fs.readFileSync(path.join(h.ledgerDir, 'open-gsd__gsd-core__5871.jsonl'), 'utf8'));
   const s3 = l.steps.find((s) => s.id === 3);
   assert.equal(s3.state, 'pending');
   assert.equal(s3.emittedAt, null, 'a refused build is not an emit');
-  assert.match(s3.note, /bodyFile/);
+  assert.match(s3.note, /workDir/);
   h.noWritesSpawned();
 });
