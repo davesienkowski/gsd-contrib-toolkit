@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "about": "Contract fixture: the five outward writes bin/pr-update.cjs emits, with the structured ledger fields each needs and the exact emitted text. Read as DATA by bin/pr-update-write-contract.test.cjs and by dev-env's PermissionRequest hook tests (no import). text is hand-written, one line, as shq serializes the argv; running it through bash printf must yield argv.",
+  "workDir": "/home/dave/repos/gsd-core-notes/ledgers/pr-update/open-gsd__gsd-core__5871.work",
+  "classes": {
+    "pr": "^[1-9][0-9]*$",
+    "repo": "^(?!\\.{1,2}/)(?!.*/\\.{1,2}$)[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+    "path": "^(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*//)/[A-Za-z0-9_./-]+$ (absolute, no '..' segment, no '//'; bodyFile and contentFile must also sit under workDir)",
+    "login": "^(?!-)[A-Za-z0-9-]+$",
+    "sha": "^[0-9a-f]{40}$",
+    "branch": "^(?!-)[A-Za-z0-9._/-]+$",
+    "remote": "^(?!-)[A-Za-z0-9_.-]+$"
+  },
+  "shapes": [
+    {
+      "shape": "fork_push",
+      "fields": {
+        "worktree": "/home/dave/repos/gsd-core-fork",
+        "remote": "fork",
+        "head": "0123456789abcdef0123456789abcdef01234567",
+        "branch": "fix/5797-x"
+      },
+      "argv": ["git", "-C", "/home/dave/repos/gsd-core-fork", "push", "fork", "0123456789abcdef0123456789abcdef01234567:refs/heads/fix/5797-x"],
+      "text": "git -C /home/dave/repos/gsd-core-fork push fork 0123456789abcdef0123456789abcdef01234567:refs/heads/fix/5797-x"
+    },
+    {
+      "shape": "selftest_put",
+      "fields": {
+        "repo": "davesienkowski/gsd-core-experiments",
+        "branch": "selftest/run",
+        "pr": "5871",
+        "head": "0123456789abcdef0123456789abcdef01234567",
+        "blobSha": "89abcdef0123456789abcdef0123456789abcdef",
+        "contentFile": "/home/dave/repos/gsd-core-notes/ledgers/pr-update/open-gsd__gsd-core__5871.work/selftest.b64"
+      },
+      "argv": [
+        "gh", "api", "-X", "PUT", "repos/davesienkowski/gsd-core-experiments/contents/.github/workflows/selftest.yml",
+        "-f", "message=selftest: run gsd-core 012345678 (PR 5871)",
+        "-f", "branch=selftest/run",
+        "-f", "sha=89abcdef0123456789abcdef0123456789abcdef",
+        "-F", "content=@/home/dave/repos/gsd-core-notes/ledgers/pr-update/open-gsd__gsd-core__5871.work/selftest.b64"
+      ],
+      "text": "gh api -X PUT repos/davesienkowski/gsd-core-experiments/contents/.github/workflows/selftest.yml -f 'message=selftest: run gsd-core 012345678 (PR 5871)' -f branch=selftest/run -f sha=89abcdef0123456789abcdef0123456789abcdef -F content=@/home/dave/repos/gsd-core-notes/ledgers/pr-update/open-gsd__gsd-core__5871.work/selftest.b64"
+    },
+    {
+      "shape": "pr_edit_body",
+      "fields": {
+        "pr": "5871",
+        "repo": "open-gsd/gsd-core",
+        "bodyFile": "/home/dave/repos/gsd-core-notes/ledgers/pr-update/open-gsd__gsd-core__5871.work/body-final.md"
+      },
+      "argv": ["gh", "pr", "edit", "5871", "--repo", "open-gsd/gsd-core", "--body-file", "/home/dave/repos/gsd-core-notes/ledgers/pr-update/open-gsd__gsd-core__5871.work/body-final.md"],
+      "text": "gh pr edit 5871 --repo open-gsd/gsd-core --body-file /home/dave/repos/gsd-core-notes/ledgers/pr-update/open-gsd__gsd-core__5871.work/body-final.md"
+    },
+    {
+      "shape": "pr_comment",
+      "fields": {
+        "pr": "5871",
+        "repo": "open-gsd/gsd-core",
+        "bodyFile": "/home/dave/repos/gsd-core-notes/ledgers/pr-update/open-gsd__gsd-core__5871.work/comment.md"
+      },
+      "argv": ["gh", "pr", "comment", "5871", "--repo", "open-gsd/gsd-core", "--body-file", "/home/dave/repos/gsd-core-notes/ledgers/pr-update/open-gsd__gsd-core__5871.work/comment.md"],
+      "text": "gh pr comment 5871 --repo open-gsd/gsd-core --body-file /home/dave/repos/gsd-core-notes/ledgers/pr-update/open-gsd__gsd-core__5871.work/comment.md"
+    },
+    {
+      "shape": "reviewers_post",
+      "fields": {
+        "repo": "open-gsd/gsd-core",
+        "pr": "5871",
+        "reviewers": ["trek-e", "Second-Reviewer"]
+      },
+      "argv": ["gh", "api", "-X", "POST", "repos/open-gsd/gsd-core/pulls/5871/requested_reviewers", "-f", "reviewers[]=trek-e", "-f", "reviewers[]=Second-Reviewer"],
+      "text": "gh api -X POST repos/open-gsd/gsd-core/pulls/5871/requested_reviewers -f 'reviewers[]=trek-e' -f 'reviewers[]=Second-Reviewer'"
+    }
+  ],
+  "refusals": [
+    { "shape": "pr_edit_body", "set": { "pr": "0" }, "field": "pr", "why": "zero" },
+    { "shape": "pr_edit_body", "set": { "pr": "05871" }, "field": "pr", "why": "leading zero" },
+    { "shape": "pr_edit_body", "set": { "pr": "5871; id" }, "field": "pr", "why": "non-digit" },
+    { "shape": "pr_edit_body", "set": { "repo": "open-gsd/gsd-core x" }, "field": "repo", "why": "space" },
+    { "shape": "pr_edit_body", "set": { "repo": "open-gsd/.." }, "field": "repo", "why": "dot-dot component" },
+    { "shape": "pr_edit_body", "set": { "bodyFile": "/home/dave/repos/gsd-core-notes/ledgers/pr-update/open-gsd__gsd-core__5871.work//x.md" }, "field": "bodyFile", "why": "double slash" },
+    { "shape": "pr_edit_body", "set": { "repo": "open-gsd/gsd-core/extra" }, "field": "repo", "why": "three segments" },
+    { "shape": "pr_edit_body", "set": { "repo": "open-gsd/$(id)" }, "field": "repo", "why": "expansion" },
+    { "shape": "pr_edit_body", "set": { "bodyFile": "relative/body.md" }, "field": "bodyFile", "why": "not absolute" },
+    { "shape": "pr_edit_body", "set": { "bodyFile": "/home/dave/repos/gsd-core-notes/ledgers/pr-update/open-gsd__gsd-core__5871.work/a b.md" }, "field": "bodyFile", "why": "space" },
+    { "shape": "pr_edit_body", "set": { "bodyFile": "/home/dave/repos/gsd-core-notes/ledgers/pr-update/open-gsd__gsd-core__5871.work/%5F.md" }, "field": "bodyFile", "why": "percent" },
+    { "shape": "pr_edit_body", "set": { "bodyFile": "/home/dave/repos/gsd-core-notes/ledgers/pr-update/open-gsd__gsd-core__5871.work/../x.md" }, "field": "bodyFile", "why": "dot-dot segment" },
+    { "shape": "pr_edit_body", "set": { "bodyFile": "/etc/passwd" }, "field": "bodyFile", "why": "outside the work dir" },
+    { "shape": "pr_comment", "set": { "bodyFile": "/tmp/comment.md" }, "field": "bodyFile", "why": "outside the work dir" },
+    { "shape": "selftest_put", "set": { "contentFile": "/tmp/selftest.b64" }, "field": "contentFile", "why": "outside the work dir" },
+    { "shape": "selftest_put", "set": { "blobSha": "89ABCDEF0123456789abcdef0123456789abcdef" }, "field": "blobSha", "why": "uppercase hex" },
+    { "shape": "selftest_put", "set": { "blobSha": "89abcdef" }, "field": "blobSha", "why": "short sha" },
+    { "shape": "selftest_put", "set": { "head": "xyz" }, "field": "head", "why": "not hex" },
+    { "shape": "selftest_put", "set": { "repo": "a/b;c" }, "field": "repo", "why": "semicolon" },
+    { "shape": "selftest_put", "set": { "branch": "-f" }, "field": "branch", "why": "leading dash" },
+    { "shape": "fork_push", "set": { "branch": "a b" }, "field": "branch", "why": "space" },
+    { "shape": "fork_push", "set": { "branch": "--force" }, "field": "branch", "why": "leading dash" },
+    { "shape": "fork_push", "set": { "remote": "--mirror" }, "field": "remote", "why": "leading dash" },
+    { "shape": "fork_push", "set": { "remote": "a/b" }, "field": "remote", "why": "slash" },
+    { "shape": "fork_push", "set": { "worktree": "/home/dave/a b" }, "field": "worktree", "why": "space" },
+    { "shape": "fork_push", "set": { "head": "" }, "field": "head", "why": "empty" },
+    { "shape": "reviewers_post", "set": { "reviewers": [] }, "field": "reviewers", "why": "empty list" },
+    { "shape": "reviewers_post", "set": { "reviewers": ["trek-e", "x y"] }, "field": "reviewers", "why": "space" },
+    { "shape": "reviewers_post", "set": { "reviewers": ["copilot[bot]"] }, "field": "reviewers", "why": "bot suffix outside the login class" },
+    { "shape": "reviewers_post", "set": { "reviewers": ["--web"] }, "field": "reviewers", "why": "option-shaped login" },
+    { "shape": "reviewers_post", "set": { "reviewers": ["-x"] }, "field": "reviewers", "why": "leading dash" },
+    { "shape": "reviewers_post", "set": { "reviewers": "trek-e" }, "field": "reviewers", "why": "not a list" },
+    { "shape": "reviewers_post", "set": { "pr": 5871 }, "field": "pr", "why": "number, not a digit string" }
+  ],
+  "structural": [
+    { "shape": "no_such_shape", "fields": {}, "why": "unknown shape" },
+    { "shape": "pr_comment", "drop": "bodyFile", "why": "missing field" },
+    { "shape": "pr_comment", "extra": { "flag": "--web" }, "why": "extra field" }
+  ]
+}
