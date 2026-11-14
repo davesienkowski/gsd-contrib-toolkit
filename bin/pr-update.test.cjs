@@ -33,7 +33,7 @@ const marker = (head) => `<!-- pr-update ${head} -->`;
 const RUN_URL = `https://github.com/${EXP}/actions/runs/77`;
 const EM = '—';
 const BLOB = 'e'.repeat(40); // a real blob sha is 40 lowercase hex
-const { buildWrite } = require('./pr-update.cjs');
+const { buildWrite, fileDigests } = require('./pr-update.cjs');
 
 /** QT-1: the ledger step carries {shape, fields, text}; text is the NEXT line and buildWrite rebuilds it from the fields. */
 function assertWrite(h, r, id, shape) {
@@ -971,4 +971,38 @@ test('QT-1 (R1 I2 W-1, W-2): a write left on a step after the first pending one,
   const after = h.ledger();
   assert.equal(after.steps[5].write, null, 'a step that was not visited this run carries no write');
   assert.equal(after.steps[0].write.shape, 'fork_push');
+});
+
+test('QT-1 (review WR-01): a pre-planted symlink at a work file is never written through; the target stays untouched', (t) => {
+  const h = harness(t);
+  h.state.remoteHeads['fork fix/5797-x'] = HEAD;
+  greenRun(h);
+  fs.mkdirSync(h.workDir, { recursive: true });
+  const target = path.join(h.root, 'victim.txt');
+  fs.writeFileSync(target, 'victim content');
+  fs.symlinkSync(target, path.join(h.workDir, 'body-pending.md'));
+  const r = h.run();
+  assert.equal(r.status, 1, r.out + r.err);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'victim content', 'the symlink target must not be clobbered');
+  assert.ok(!/NEXT:/.test(r.out));
+});
+
+test('QT-1 (review WR-02): fileDigests hashes a regular file from one fd and refuses a symlink, a directory and a path outside the work dir', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pru-fd-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const work = path.join(dir, 'w');
+  fs.mkdirSync(work);
+  const f = path.join(work, 'a.md');
+  fs.writeFileSync(f, 'hello');
+  const crypto = require('node:crypto');
+  assert.equal(typeof fileDigests, 'function');
+  const w = { shape: 'pr_comment', fields: { bodyFile: f } };
+  assert.equal(fileDigests(w, work).bodyFile, crypto.createHash('sha256').update('hello').digest('hex'));
+  fs.symlinkSync(f, path.join(work, 'l.md'));
+  assert.throws(() => fileDigests({ shape: 'pr_comment', fields: { bodyFile: path.join(work, 'l.md') } }, work), /StepFail|regular file|symlink|cannot read/);
+  fs.mkdirSync(path.join(work, 'd'));
+  assert.throws(() => fileDigests({ shape: 'pr_comment', fields: { bodyFile: path.join(work, 'd') } }, work), /regular file|cannot read/);
+  const out = path.join(dir, 'o.md');
+  fs.writeFileSync(out, 'x');
+  assert.throws(() => fileDigests({ shape: 'pr_comment', fields: { bodyFile: out } }, work), /outside the work dir/);
 });

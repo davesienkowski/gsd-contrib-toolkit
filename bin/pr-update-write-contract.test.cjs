@@ -61,6 +61,16 @@ for (const row of FIXTURE.refusals) {
   });
 }
 
+for (const row of FIXTURE.accepts) {
+  test(`accepts ${row.shape} (${row.why}) and bash printf round-trips it`, () => {
+    const base = clone(FIXTURE.shapes.find((x) => x.shape === row.shape).fields);
+    const w = buildWrite(row.shape, { ...base, ...clone(row.set) }, FIXTURE.workDir);
+    const r = spawnSync('bash', ['-c', `printf "%s\\n" ${w.text}`], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(r.stdout.split('\n').slice(0, -1), w.argv);
+  });
+}
+
 test('refuses an unknown shape', () => {
   assert.throws(() => buildWrite('no_such_shape', {}, FIXTURE.workDir), /unknown shape/);
 });

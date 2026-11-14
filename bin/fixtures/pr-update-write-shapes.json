@@ -6,11 +6,11 @@
   "classes": {
     "pr": "^[1-9][0-9]*$",
     "repo": "^(?!\\.{1,2}/)(?!.*/\\.{1,2}$)[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
-    "path": "^(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*//)/[A-Za-z0-9_./-]+$",
+    "path": "^(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*//)/[A-Za-z0-9_./%+-]+$",
     "login": "^(?!-)[A-Za-z0-9-]+$",
     "sha": "^[0-9a-f]{40}$",
-    "branch": "^(?!-)[A-Za-z0-9._/-]+$",
-    "remote": "^(?!-)[A-Za-z0-9_.-]+$"
+    "branch": "^(?!-)(?!/)(?!.*/$)(?!.*//)(?!.*\\.\\.)(?!.*@\\{)(?!.*(?:^|/)\\.)(?!.*\\.lock(?:/|$))(?!.*\\.$)[A-Za-z0-9._/-]+$",
+    "remote": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
   },
   "shapes": [
     {
@@ -85,7 +85,6 @@
     { "shape": "pr_edit_body", "set": { "repo": "open-gsd/$(id)" }, "field": "repo", "why": "expansion" },
     { "shape": "pr_edit_body", "set": { "bodyFile": "relative/body.md" }, "field": "bodyFile", "why": "not absolute" },
     { "shape": "pr_edit_body", "set": { "bodyFile": "/home/dave/repos/gsd-core-notes/ledgers/pr-update/open-gsd__gsd-core__5871.work/a b.md" }, "field": "bodyFile", "why": "space" },
-    { "shape": "pr_edit_body", "set": { "bodyFile": "/home/dave/repos/gsd-core-notes/ledgers/pr-update/open-gsd__gsd-core__5871.work/%5F.md" }, "field": "bodyFile", "why": "percent" },
     { "shape": "pr_edit_body", "set": { "bodyFile": "/home/dave/repos/gsd-core-notes/ledgers/pr-update/open-gsd__gsd-core__5871.work/../x.md" }, "field": "bodyFile", "why": "dot-dot segment" },
     { "shape": "pr_edit_body", "set": { "bodyFile": "/etc/passwd" }, "field": "bodyFile", "why": "outside the work dir" },
     { "shape": "pr_comment", "set": { "bodyFile": "/tmp/comment.md" }, "field": "bodyFile", "why": "outside the work dir" },
@@ -107,7 +106,47 @@
     { "shape": "reviewers_post", "set": { "reviewers": ["--web"] }, "field": "reviewers", "why": "option-shaped login" },
     { "shape": "reviewers_post", "set": { "reviewers": ["-x"] }, "field": "reviewers", "why": "leading dash" },
     { "shape": "reviewers_post", "set": { "reviewers": "trek-e" }, "field": "reviewers", "why": "not a list" },
-    { "shape": "reviewers_post", "set": { "pr": 5871 }, "field": "pr", "why": "number, not a digit string" }
+    { "shape": "reviewers_post", "set": { "pr": 5871 }, "field": "pr", "why": "number, not a digit string" },
+    { "shape": "fork_push", "set": { "branch": "a/.hidden" }, "field": "branch", "why": "branch: segment starting with dot" },
+    { "shape": "fork_push", "set": { "branch": ".x" }, "field": "branch", "why": "branch: leading dot" },
+    { "shape": "fork_push", "set": { "branch": "a/b.lock" }, "field": "branch", "why": "branch: segment ending .lock" },
+    { "shape": "fork_push", "set": { "branch": "a.lock/b" }, "field": "branch", "why": "branch: inner segment ending .lock" },
+    { "shape": "fork_push", "set": { "branch": "a..b" }, "field": "branch", "why": "branch: double dot" },
+    { "shape": "fork_push", "set": { "branch": "/a" }, "field": "branch", "why": "branch: leading slash" },
+    { "shape": "fork_push", "set": { "branch": "a/" }, "field": "branch", "why": "branch: trailing slash" },
+    { "shape": "fork_push", "set": { "branch": "a//b" }, "field": "branch", "why": "branch: double slash" },
+    { "shape": "fork_push", "set": { "branch": "a@{u}" }, "field": "branch", "why": "branch: at-brace" },
+    { "shape": "fork_push", "set": { "branch": "a." }, "field": "branch", "why": "branch: trailing dot" },
+    { "shape": "fork_push", "set": { "remote": "." }, "field": "remote", "why": "remote: dot" },
+    { "shape": "fork_push", "set": { "remote": ".." }, "field": "remote", "why": "remote: dot-dot" },
+    { "shape": "fork_push", "set": { "remote": ".x" }, "field": "remote", "why": "remote: leading dot" },
+    { "shape": "fork_push", "set": { "remote": "_x" }, "field": "remote", "why": "remote: leading underscore" },
+    { "shape": "fork_push", "set": { "worktree": "/home/dave/a$b" }, "field": "worktree", "why": "path: dollar still refused" },
+    { "shape": "fork_push", "set": { "worktree": "/home/dave/a~b" }, "field": "worktree", "why": "path: tilde still refused" }
+  ],
+  "accepts": [
+    {
+      "shape": "pr_edit_body",
+      "set": {
+        "bodyFile": "/home/dave/repos/gsd-core-notes/ledgers/pr-update/open-gsd__gsd-core__5871.work/%5F.md"
+      },
+      "why": "percent-encoded underscore in a work path"
+    },
+    {
+      "shape": "pr_edit_body",
+      "set": {
+        "bodyFile": "/home/dave/repos/gsd-core-notes/ledgers/pr-update/open-gsd__gsd-core__5871.work/a+b.md"
+      },
+      "why": "plus in a work path"
+    },
+    {
+      "shape": "fork_push",
+      "set": {
+        "branch": "fix/5797-x.y_z",
+        "remote": "my.fork-1"
+      },
+      "why": "dots inside a branch segment and a dotted remote"
+    }
   ],
   "structural": [
     { "shape": "no_such_shape", "fields": {}, "why": "unknown shape" },
