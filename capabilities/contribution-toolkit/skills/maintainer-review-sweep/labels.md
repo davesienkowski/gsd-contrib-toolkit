@@ -24,11 +24,12 @@ Authoritative source: **`docs/agents/triage-labels.md`** in the repo (read it li
 - **Size:** `size/S` · `size/M` · `size/L` · `size/XL`
 - **Area:** `area: agents|commands|config|core|docs|hooks|installer|performance|workflow|workflows`
 - **Runtime:** `runtime: claude-code|codex|gemini|opencode|qwen|copilot|cursor|windsurf|...` — apply when the issue is runtime-specific (e.g. #1394 gemini, #1383 codex, #1400 windows→`os: windows`)
-- **PR review state:** `needs-review` → `review: changes requested` (+`needs changes`) / `review: approved` / `review: approved (merge conflict)` / `review: needs discussion`; `needs rebase`, `needs merge fixes`, `ci: failing`; `approved to merge` (CI green + approved); `no-changelog` (docs-only/changelog-direct, opts out of changeset)
+- **PR review state:** `needs-review` -> `review: changes requested` (+`needs changes`) / `review: approved` / `review: approved (merge conflict)` / `review: needs discussion`; `needs rebase`, `needs merge fixes`, `ci: failing`; `needs-review: merge-conflict`, `needs-review: ci/failing`; the bare `changes-requested` (no description, applied by trek-e on #6111 and #6194, 2026-11-14); `approved to merge` (CI green + approved); `no-changelog` (docs-only/changelog-direct, opts out of changeset)
+- **Live labelling is intermittent:** several conflict-only reviews left the PR with no labels at all (observed on #6312 and #6310, 2026-11-19/20), so a label, or its absence, is not a status signal. Read the review and the checks.
 
 ## PR re-review → label transition (mirror trek-e)
 
-After a re-review verdict, set the PR's review-state label to match:
+After a re-review verdict, set the PR's review-state label to match. The verdict is the one in the review body's Verdict line, not the review state: some change-request bodies land as COMMENTED reviews.
 - `CLEAR` -> `review: approved`; add `approved to merge` only when CI conclusions are actually green and it is not DIRTY. If conflicting, use `review: approved (merge conflict)` + `needs rebase` (a DIRTY conflict is the one case where `needs rebase` applies).
 - `CHANGES REQUESTED` / `blocker open` -> `review: changes requested` + `needs changes`; add `ci: failing` if checks red. Never add `needs rebase` for BEHIND: a PR is not stale because `next` moved (CTK-ADR-0012), the label would send the author into a rebase that dismisses review, and with no active queue the maintainer runs Update branch at merge time instead.
 - **Re-review confirms a prior reviewer's requested changes are addressed** (all prior blockers `Resolved`, no new blocker) → **remove the now-stale `review: changes requested` + `needs changes`** — they flag outstanding *contributor* work, and there is none. Do this even when you leave the formal approve/CR state to the original reviewer: the label answers "are changes still needed?" (no), while the formal review state tracks their re-flip. Keep the labels only if your re-review found a NEW blocker.

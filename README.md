@@ -119,7 +119,9 @@ Three scripts in `bin/` support a fix round. None is a hook: you or the model ru
 do not block. Details are in the `core-contribution` skill's reference (skills/core-contribution/reference.md).
 
 - `bin/pr-status.cjs`: a read-only snapshot of a PR (checks, reviews, who owes the next move). It also prints the
-  `pr-update` bundle line for the PR (pending steps, complete, no ledger, or an unreadable or corrupt ledger).
+  `pr-update` bundle line for the PR (pending steps, complete, no ledger, or an unreadable or corrupt ledger). Under an
+  `AUTHOR owes changes` ball it prints an advisory `author clock:` line (an estimate; WARN at 3 days, ALARM at 5; never a gate);
+  the rule and its limits are in the AUTHOR CLOCK paragraph of the header comment in `bin/pr-status.cjs`.
 - `bin/pr-update.cjs`: drives the re-review bundle after a fix round in eight steps over two phases, keeps a per-PR ledger
   file, refuses to run above about 600000 session tokens, and only prints the write commands (`NEXT: ...`) for you to run;
   it never runs a `gh` write or a `git push` and never writes to a remote or an existing repo. It does write its own ledger and
