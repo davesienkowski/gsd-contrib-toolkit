@@ -1,8 +1,8 @@
 # CTK-ADR-0018: A fail-open edit guard may deny a stale timeout-evidence edit
 
 - **Status:** Proposed (2026-11-20), implemented on the `gate-timeout-increase` branch (quick 261120-2a2). The
-  gsd-contrib-toolkit orchestrator dispatched the hook under Dave's standing approval to build the hooks as Tier A
-  gates with tests; Dave has not reviewed the content of this record.
+  gsd-contrib-toolkit orchestrator dispatched the build as a Tier A quick task; Dave has not reviewed the content of
+  this record.
 - **Review:** Published for maintainer review and open to revision. A changed decision will be recorded by a
   superseding or amending CTK-ADR, never by a silent edit to an accepted record.
 - **Date:** 2026-11-20 (milestone v2.8).
@@ -59,8 +59,8 @@ choices: a non-denying advisory, which leaves the gap open, or a new class.
    existing value, and 0 denies. A deny would have blocked that move.
 4. **Silent pass, never an explicit allow or ask.** As in CTK-ADR-0017, every other path writes nothing and exits
    0, and only a `deny` with a non-empty reason or an `additionalContext` with no decision produces output. `ask`
-   is no middle ground here either: CTK-ADR-0005 and CTK-ADR-0017 recorded that it degrades to allow under bypass
-   mode and denies in a `-p` run, and interactive Orca workers stalled at hook prompts (2026-10-06). Neither path
+   is no middle ground here either: CTK-ADR-0017 recorded that it degrades to allow under bypass mode and denies
+   in a `-p` run, and interactive Orca workers stalled at hook prompts (2026-10-06). Neither path
    adds a check, so the guard never emits it.
 5. **Fail open.** Any error or undecidable input (malformed payload, no gsd-core root, a filesystem error, a
    non-regular or oversized file, a module that fails to load) is a silent pass. So is format drift: a
@@ -91,7 +91,12 @@ choices: a non-denying advisory, which leaves the gap open, or a new class.
   `timeouts.cjs`; a new helper constant re-exported through a new destructure; an entry kind changed from measured
   to an exempt kind; an entry-only change that leaves the comment stale (CI checks the 2x floor); a non-exported
   constant in `timeouts.cjs`; Claude Code's fuzzy quote matching on Edit; production `src/` and `bin/` timeouts.
-  Upstream relies on code review for these, and the guard removes no review.
+  Upstream relies on code review for these, and the guard removes no review. Two parse limits fail open: a
+  right-hand side that starts on the next line is unresolved and trusted, and a MultiEdit with more than 200 edits
+  passes silently.
+- **First tag occurrence.** The Evidence comment is read from the first occurrence of its
+  `Evidence (TIMEOUT_EVIDENCE.<NAME>):` tag. An earlier mention of the same tag text (none upstream today) would be
+  read instead of the comment above the declaration and could cause a false deny until that mention is edited.
 - **Known false denies.** A value edited before its entry or comment, and correct figures in other wording. The
   reason answers both: it names the passing order and the exact accepted forms.
 - **Arm B is advisory and weak.** Its evidence words can be satisfied by a comment with no real evidence, and its

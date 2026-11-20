@@ -302,7 +302,7 @@ const PROOF_TABLE = [
   // committed artifact. The deny envelope and the empty-stdout pass are proven on the SPAWNED hook in
   // hooks/emitted-cjs-read.test.cjs (hermetic fixture checkout plus a read-only live gsd-core row).
   //
-  // ── DELIBERATE EXCLUSION: hooks/timeout-evidence-edit.cjs (ENF-27, quick 261120-2a2) ────────────
+  // -- DELIBERATE EXCLUSION: hooks/timeout-evidence-edit.cjs (ENF-27, quick 261120-2a2) --
   // WIRED (PreToolUse, matcher 'Write|Edit|MultiEdit') with no entry here, for the same reason: neither proof
   // KIND fits. It has three outputs: a deny (a stale or missing timeout evidence in gsd-core
   // tests/helpers/timeouts.cjs), a context-only note (additionalContext and NO permissionDecision, for an

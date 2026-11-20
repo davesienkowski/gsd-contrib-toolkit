@@ -59,8 +59,8 @@
  *
  * FAILS OPEN. A malformed payload, a non-matching tool, a target outside <root>/tests/ or not JS-family, no gsd-core
  * root, a missing target on an Edit whose old_string is not empty, an old_string that is absent or not unique
- * without replace_all, a non-regular or over-1-MiB target, content, new_string or post-image over 1 MiB, a parse
- * the guard cannot read, and any throw (requires are lazy, inside the try) are a silent pass. A hook Claude Code
+ * without replace_all, a MultiEdit with more than 200 edits, a non-regular or over-1-MiB target, content,
+ * new_string or post-image over 1 MiB, a parse the guard cannot read, and any throw (requires are lazy, inside the try) are a silent pass. A hook Claude Code
  * cancels at its timeout does not block the call either.
  *
  * NOT COVERED. Only Write, Edit and MultiEdit (MultiEdit only where the client offers it) on gsd-core tests/** are
@@ -72,7 +72,10 @@
  * checks the 2x floor); a non-exported numeric constant in timeouts.cjs; Claude Code's fuzzy quote matching on Edit
  * (an old_string the guard does not find is a silent pass); a dangling symlink outside the checkout whose target is
  * in tests/ (unconfirmed what the Write tool does with it); arm B's multiset rule, which misses a raise of the
- * smaller of two same-name locals that stays below the larger one; production src/ and bin/ timeouts.
+ * smaller of two same-name locals that stays below the larger one; a right-hand side that starts on the next line
+ * (`const X =` then the value), which is unresolved and trusted; production src/ and bin/ timeouts. The Evidence
+ * comment is read from the FIRST occurrence of its tag, so an earlier mention of the same tag text (none upstream
+ * today) is read instead of the comment above the declaration.
  *
  * KNOWN FALSE DENIES. A value edited before its entry or comment, and correct figures in other wording. Both are
  * answered by the reason, which names the passing order and the exact accepted forms.
@@ -96,6 +99,12 @@ const JS_EXT_RE = /\.(?:[cm]?js|[cm]?ts)$/i;
 const TOP_DECL_RE = /^(?:const|let|var)[ \t]+([A-Za-z_$][A-Za-z0-9_$]*)[ \t]*=(?![=>])/;
 const ANY_DECL_RE = /^([ \t]*)(?:export[ \t]+)?(?:const|let|var)[ \t]+([A-Za-z_$][A-Za-z0-9_$]*)[ \t]*=(?![=>])/;
 const MAX_DEPTH = 20;
+/** The most edits one MultiEdit may carry before the guard passes it silently (each edit scans the image). */
+const MAX_EDITS = 200;
+/** A destructure's braces must close within this many characters (a real one is a line or two). */
+const MAX_DESTRUCTURE_CHARS = 4096;
+/** The most failing constants a deny reason lists one by one. */
+const MAX_LISTED = 25;
 
 const lf = (s) => s.replace(/\r\n/g, '\n');
 const bytes = (s) => Buffer.byteLength(s, 'utf8');
@@ -312,10 +321,11 @@ function topDecls(A) {
 
 // ---------------------------------------------------------------- object literals
 
-/** Index of the `}` closing the code `{` at `open`, or -1. */
-function closeOf(A, open) {
+/** Index of the `}` closing the code `{` at `open`, or -1 (also past `limit` characters). */
+function closeOf(A, open, limit = Infinity) {
   let depth = 0;
-  for (let j = open; j < A.text.length; j++) {
+  const stop = Math.min(A.text.length, open + limit);
+  for (let j = open; j < stop; j++) {
     if (A.kinds[j] !== 0) continue;
     const ch = A.text[j];
     if (ch === '{') depth++;
@@ -448,15 +458,29 @@ function parseTimeoutsModule(text) {
   const exportsSet = exportsOf(A);
   const decls = topDecls(A);
   const ev = evidenceOf(A);
-  const tags = new Set();
-  for (const m of A.text.matchAll(/Evidence \(TIMEOUT_EVIDENCE\.([A-Za-z_$][A-Za-z0-9_$]*)\):/g)) tags.add(m[1]);
+  // The first offset of each `Evidence (TIMEOUT_EVIDENCE.<NAME>):` tag, found in one pass (commentFor reads the
+  // first occurrence; a per-constant search of the whole text would be quadratic, T-261120-04).
+  const tagAt = new Map();
+  for (const m of A.text.matchAll(/Evidence \(TIMEOUT_EVIDENCE\.([A-Za-z_$][A-Za-z0-9_$]*)\):/g)) {
+    if (!tagAt.has(m[1])) tagAt.set(m[1], m.index);
+  }
+  const tags = new Set(tagAt.keys());
   const reexports = new Map();
-  const dre = /^(?:const|let|var)[ \t]*\{([^}]*)\}[ \t]*=[ \t]*require\([ \t]*(['"])([^'"\n]+)\2[ \t]*\)/gm;
-  let m;
-  while ((m = dre.exec(A.blanked))) {
-    if (A.kinds[m.index] !== 0) continue;
-    const perSource = reexports.get(m[3]) || new Map();
-    for (const part of m[1].split(',')) {
+  // `const { A, B: alias } = require('./<f>')` at the start of a code line; the braces close within a bounded span
+  // (linear in the image, T-261120-04).
+  for (let idx = 0; idx < A.starts.length; idx++) {
+    const ls = A.starts[idx];
+    if (A.kinds[ls] !== 0) continue;
+    const head = /^(?:const|let|var)[ \t]*\{/.exec(A.blanked.slice(ls, ls + 16));
+    if (!head) continue;
+    const open = ls + head[0].length - 1;
+    const close = closeOf(A, open, MAX_DESTRUCTURE_CHARS);
+    if (close === -1) continue;
+    const tail = /^[ \t]*=[ \t]*require\([ \t]*(['"])([^'"\n]+)\1[ \t]*\)/.exec(A.blanked.slice(close + 1, close + 1 + 512));
+    if (!tail) continue;
+    const source = tail[2];
+    const perSource = reexports.get(source) || new Map();
+    for (const part of A.blanked.slice(open + 1, close).split(',')) {
       const pm = /^\s*([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*))?\s*$/.exec(part);
       if (!pm) continue;
       const src = pm[1];
@@ -466,9 +490,9 @@ function parseTimeoutsModule(text) {
       if (exportsSet && exportsSet.has(local)) names.push(local);
       perSource.set(src, names);
     }
-    reexports.set(m[3], perSource);
+    reexports.set(source, perSource);
   }
-  return { exports: exportsSet, decls, entries: ev.entries, evidenceFound: ev.found, readable: ev.readable, tags, reexports };
+  return { text: A.text, exports: exportsSet, decls, entries: ev.entries, evidenceFound: ev.found, readable: ev.readable, tags, tagAt, reexports };
 }
 
 // ---------------------------------------------------------------- arm A
@@ -478,9 +502,9 @@ function parseTimeoutsModule(text) {
  * comment, or to the end of the run of `//` lines holding the tag; whitespace and comment leaders collapsed.
  * null when the tag is absent.
  */
-function commentFor(text, name) {
+function commentFor(text, name, tagAt) {
   const tag = 'Evidence (TIMEOUT_EVIDENCE.' + name + '):';
-  const at = text.indexOf(tag);
+  const at = tagAt ? (tagAt.has(name) ? tagAt.get(name) : -1) : text.indexOf(tag);
   if (at === -1) return null;
   const from = at + tag.length;
   const lineStart = text.lastIndexOf('\n', at) + 1;
@@ -515,9 +539,9 @@ const fmt = (h) => (h / 100).toFixed(2);
 /**
  * Problems with NAME's comment for `value` against its measured entry, or null when it is current.
  */
-function measuredProblems(text, name, value, entry) {
+function measuredProblems(text, name, value, entry, tagAt) {
   const obs = entry.observedMaxMs;
-  const c = commentFor(text, name);
+  const c = commentFor(text, name, tagAt);
   const hInt = Math.floor((value * 100) / obs);
   const hFlt = Math.floor((value / obs) * 100);
   const need =
@@ -547,7 +571,8 @@ function denyReason(failures) {
   return (
     'ENF-27: this edit raises, newly sets or newly exports ' + failures.length + ' timeout constant(s) whose ' +
     'evidence in `tests/helpers/timeouts.cjs` is missing or not current:\n' +
-    failures.map((f) => '- ' + f).join('\n') + '\n' +
+    failures.slice(0, MAX_LISTED).map((f) => '- ' + f).join('\n') + '\n' +
+    (failures.length > MAX_LISTED ? '- ... and ' + (failures.length - MAX_LISTED) + ' more constant(s)\n' : '') +
     'Fix `tests/helpers/timeouts.cjs`. Accepted forms, read only inside the comment that starts ' +
     '`Evidence (TIMEOUT_EVIDENCE.<NAME>):` (up to its closing star-slash, or the end of its `//` run): ' +
     '`worst observed <N>ms` with N equal to the entry\'s observedMaxMs (not needed when the entry has ' +
@@ -599,7 +624,7 @@ function armA(baseline, post) {
     }
     if (e.kind !== 'measured') continue;
     if (!(typeof e.observedMaxMs === 'number' && e.observedMaxMs > 0)) continue;
-    const p = measuredProblems(post, j.name, j.value, e);
+    const p = measuredProblems(P.text, j.name, j.value, e, P.tagAt);
     if (p) failures.push(head + ' (TIMEOUT_EVIDENCE.' + j.name + ' observedMaxMs ' + e.observedMaxMs + (e.censored ? ', censored' : '') + '): ' + p);
   }
   return failures;
@@ -617,7 +642,6 @@ function armAReexport(rel, baseline, post, timeoutsText) {
   const base = rel.slice('tests/helpers/'.length);
   const map = T.reexports.get('./' + base) || T.reexports.get('./' + base.replace(/\.[^.]+$/, ''));
   if (!map) return out;
-  const tText = lf(timeoutsText);
   const P = topDecls(analyze(post));
   const B = topDecls(analyze(baseline));
   for (const [src, exportNames] of map) {
@@ -631,7 +655,7 @@ function armAReexport(rel, baseline, post, timeoutsText) {
       if (!e || e.kind !== 'measured') continue;
       out.handledLines.add(d.line);
       if (!(typeof e.observedMaxMs === 'number' && e.observedMaxMs > 0)) continue;
-      const p = measuredProblems(tText, E, d.value, e);
+      const p = measuredProblems(T.text, E, d.value, e, T.tagAt);
       if (p) {
         out.failures.push(
           src + ' in `' + rel + '` (re-exported by tests/helpers/timeouts.cjs as ' + E + ') ' + shown(old) + ' -> ' +
@@ -774,7 +798,7 @@ function judge({ rel, baseline, post, timeoutsText }) {
  * @returns {string|null}
  */
 function applyEdits(image, edits) {
-  if (typeof image !== 'string' || !Array.isArray(edits) || edits.length === 0) return null;
+  if (typeof image !== 'string' || !Array.isArray(edits) || edits.length === 0 || edits.length > MAX_EDITS) return null;
   let img = lf(image);
   for (const e of edits) {
     if (!e || typeof e !== 'object') return null;
@@ -788,9 +812,9 @@ function applyEdits(image, edits) {
       continue;
     }
     if (oldS === newS) return null;
-    const count = img.split(oldS).length - 1;
-    if (count === 0) return null;
-    if (count > 1 && e.replace_all !== true) return null;
+    const first = img.indexOf(oldS);
+    if (first === -1) return null;
+    if (e.replace_all !== true && img.indexOf(oldS, first + oldS.length) !== -1) return null;
     if (newS === '' && !oldS.endsWith('\n') && img.includes(oldS + '\n')) oldS += '\n';
     if (e.replace_all === true) img = img.split(oldS).join(newS);
     else {
@@ -971,4 +995,5 @@ module.exports = {
   applyEdits,
   realpathNearest,
   main,
+  MAX_EDITS,
 };

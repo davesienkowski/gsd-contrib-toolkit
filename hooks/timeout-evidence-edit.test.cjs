@@ -739,6 +739,45 @@ test('cost (T-261120-04): a 30000-line run of adjacent timeout declarations and 
   assert.ok(Date.now() - t0 < 5000, 'judged in ' + (Date.now() - t0) + ' ms');
 });
 
+test('cost (T-261120-04): 90000 unclosed destructure lines, 6000 untagged measured exports and a 20000-edit MultiEdit stay well under the hook timeout', { timeout: 8000 }, () => {
+  const t0 = Date.now();
+  const destr = 'const x = `\n' + 'const { A\n'.repeat(90000) + '`;\n';
+  assertSilent(mod.judge({ rel: TO, baseline: '', post: destr }));
+  assertAdvisory(mod.judge({ rel: 'tests/helpers/git-fixture.cjs', baseline: '', post: 'const A_TIMEOUT_MS = 2;\n', timeoutsText: destr }), 'A_TIMEOUT_MS');
+  const N = 6000;
+  let body = '';
+  for (let i = 0; i < N; i++) body += 'const C' + i + '_MS = 20;\n';
+  body += 'const TIMEOUT_EVIDENCE = Object.freeze({\n';
+  for (let i = 0; i < N; i++) body += '  C' + i + "_MS: { kind: 'measured', observedMaxMs: 10 },\n";
+  body += '});\nmodule.exports = {\n';
+  for (let i = 0; i < N; i++) body += '  C' + i + '_MS,\n';
+  body += '};\n';
+  assertDeny(mod.judge({ rel: TO, baseline: '', post: body }), 'C0_MS', 'and 5975 more');
+  const img = Array.from({ length: 20000 }, (_, i) => 'const v' + i + ' = 1;').join('\n') + '\n';
+  const edits = Array.from({ length: 20000 }, (_, i) => ({ old_string: 'const v' + i + ' = 1;', new_string: 'const v' + i + ' = 2;' }));
+  assert.strictEqual(mod.applyEdits(img, edits), null, 'a MultiEdit over the edit cap is a silent pass');
+  assert.ok(Date.now() - t0 < 5000, 'judged in ' + (Date.now() - t0) + ' ms');
+});
+
+test('applyEdits: a MultiEdit at the edit cap is applied; one edit more is a silent pass', () => {
+  const cap = mod.MAX_EDITS;
+  assert.ok(Number.isInteger(cap) && cap >= 50, 'MAX_EDITS is exported: ' + cap);
+  const img = Array.from({ length: cap + 1 }, (_, i) => 'v' + i + ';').join('\n');
+  const edits = (n) => Array.from({ length: n }, (_, i) => ({ old_string: 'v' + i + ';', new_string: 'w' + i + ';' }));
+  assert.ok(mod.applyEdits(img, edits(cap)).startsWith('w0;'));
+  assert.strictEqual(mod.applyEdits(img, edits(cap + 1)), null);
+});
+
+test('A2 (`//` run): the margin on the run\'s second line is read; a margin after the run ends is not', () => {
+  const asRun = (tail) => sub(
+    TIMEOUTS,
+    '/**\n * A short CLI probe.\n *\n * Evidence (TIMEOUT_EVIDENCE.PROBE_TIMEOUT_MS): worst observed 7424ms on darwin (p50 111ms, p99 3411ms of recorded spawns),\n * margin 2.02x; CI seam spawn-stall records, 196 runs.\n */\n' + PROBE_DECL,
+    '// A short CLI probe.\n// Evidence (TIMEOUT_EVIDENCE.PROBE_TIMEOUT_MS): worst observed 7424ms on darwin (p50 111ms, p99 3411ms),\n' + tail + 'const PROBE_TIMEOUT_MS = 30000;'
+  );
+  assertSilent(guardWrite(ROOT, TO, asRun('// margin 4.04x; CI seam spawn-stall records, 196 runs.\n')));
+  assertDeny(guardWrite(ROOT, TO, asRun('// CI seam spawn-stall records, 196 runs.\n\n// margin 4.04x\n')), 'PROBE_TIMEOUT_MS', 'margin 4.04x');
+});
+
 // ---------------------------------------------------------------- creation, deletion, CRLF (truths 10, 11, 15)
 
 test('creation: an Edit with an empty old_string on a missing, empty or whitespace-only target is a creation', () => {
