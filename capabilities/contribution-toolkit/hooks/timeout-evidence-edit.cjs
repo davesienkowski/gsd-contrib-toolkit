@@ -14,71 +14,112 @@
  * ARM A (deny), target tests/helpers/timeouts.cjs. A top-level numeric constant listed in the post-image
  * `module.exports = { ... }` is JUDGED when its value rises (the post value resolves and the baseline has no
  * resolved value for it or a smaller one) or when it is newly listed in module.exports (amendment A1, so a
- * declaration, its entry and its export added in three separate Edits are judged at the export step). A judged
- * constant is denied when:
- *   - it has no TIMEOUT_EVIDENCE entry, but only when the entry set is readable: the TIMEOUT_EVIDENCE object
- *     literal was parsed with every member an unquoted key at the start of a line holding an object literal, it
- *     has entries, and every other exported numeric constant has one (amendment A3). Anything else (a spread-built
- *     map, a quoted or computed key, an empty or missing literal) is format drift: a silent pass, because a deny
- *     there could name an entry the file already has and could not be satisfied;
- *   - or its entry is kind `measured` with a positive literal observedMaxMs and the comment that starts
- *     `Evidence (TIMEOUT_EVIDENCE.<NAME>):` is missing, or lacks `worst observed <observedMaxMs>ms` (entries without
- *     censoredBelowMs only), or its first `margin <M>x` / `margin at least <M>x` has Math.round(M * 100) equal to
- *     neither Math.floor((value * 100) / observedMaxMs) nor upstream's Math.floor((value / observedMaxMs) * 100).
- *     The comment is bounded (amendment A2): from the tag to the closing star-slash of the same block comment, or to
- *     the end of a run of `//` lines; nothing after it is read.
+ * declaration, its entry and its export added in three separate Edits are judged at the export step). Declarators
+ * after the first in one statement (`const A = 1, B = 2;`, also continued on following lines after a trailing
+ * comma) are declarations too. A judged constant is denied when:
+ *   - it has no TIMEOUT_EVIDENCE entry, but only when the entry set is fully readable: the TIMEOUT_EVIDENCE object
+ *     literal was found, every member is an unquoted key at the start of a line holding an object literal, it has
+ *     entries, and every other exported numeric constant has one (amendment A3). Otherwise a missing entry is
+ *     undecidable and passes, because CI loads the object and may see an entry the static parse cannot;
+ *   - or its entry is kind `measured` with a positive literal observedMaxMs and its Evidence comment is missing, or
+ *     lacks `worst observed <observedMaxMs>ms` (entries without censoredBelowMs only; a fraction is accepted), or its
+ *     first `margin <M>x` / `margin at least <M>x` has Math.round(M * 100) equal to neither
+ *     Math.floor((value * 100) / observedMaxMs) nor upstream's Math.floor((value / observedMaxMs) * 100). This check
+ *     runs whenever the literal is found, whatever other members it holds (review WR-01), EXCEPT for an entry that a
+ *     later member may override: a later spread, computed, accessor or other non-key member, or a later member of
+ *     the same name that is quoted, shorthand, not at a line start or not an object literal (R2-I2 W-03). Such a
+ *     constant is not judged, because its effective entry is not the one the parser read.
+ * The Evidence comment of NAME starts at the first ACCEPTED `Evidence (TIMEOUT_EVIDENCE.<NAME>):` tag. A tag is
+ * accepted only where it starts a comment line: an own-line `//`, a line inside a block comment (with or without a
+ * leading `*`), or the first text after `/*` or `/**`. A tag after code on the same line, or after other text on its
+ * comment line, is ignored, and the deny reason says so. The comment runs from the tag to the end of its own block
+ * comment or its own run of `//` lines, or to the next accepted tag inside that comment (amendment A2, review
+ * WR-04); nothing after it is read.
  * Re-exports: for another tests/helpers/<f> file, the ON-DISK timeouts.cjs maps `const { A, B: alias } =
  * require('./<f>')` to exports in two forms, `const NAME = alias;` and the destructured name exported as itself. A
  * rising top-level constant A of <f> whose export has a measured entry is judged against that entry and comment in
  * the on-disk timeouts.cjs, and the reason names tests/helpers/timeouts.cjs; an export with no entry, a mirror or an
  * exempt kind sends A to arm B in its own file. Identifiers on a right-hand side resolve only through the image's
- * own top-level numeric constants, built in declaration order (`5 * PROBE_TIMEOUT_MS`); an imported or otherwise
- * unresolved identifier is trusted, as upstream's ESLint rule trusts it. Every deny names every failing constant,
- * the file to fix, the accepted forms and the passing order (entry and comment first, then the value; or all in
- * one Write or MultiEdit; a comment-only or evidence-only edit is never denied).
+ * own top-level numeric constants, built in declaration order (`5 * PROBE_TIMEOUT_MS`); any other identifier,
+ * call (`Number(30000)`) or operator outside + - * / (`2 ** 15`) is unresolved and trusted, as upstream's ESLint
+ * rule trusts a non-literal. Every deny names every failing constant (at most 25 one by one), the file to fix, the
+ * accepted forms, the position rule and the passing order (entry and comment first, then the value; or all in one
+ * Write or MultiEdit).
  *
  * ARM A CHECKS ARITHMETIC CURRENCY ONLY. It checks that the stated figures agree with the TIMEOUT_EVIDENCE entry
  * and the value. It cannot check that an observation is real: a raise with a recomputed margin and no new
  * measurement passes.
  *
  * ARM B (context only), every other gsd-core tests/** JS-family file (.js .cjs .mjs .ts .cts .mts, any case). A
- * declaration (any indentation) whose ASCII identifier contains `timeout` in any case, with a numeric-literal
- * right-hand side, rises when its value is greater than every baseline value of that name or the name is absent
- * from the baseline. Its comment block is the contiguous comment lines directly above the run of adjacent timeout
- * declarations it belongs to, plus the run's trailing `//` comments; a blank line ends the block. When that text
- * names neither an exempt kind (fixture data, test backstop, mirror; a bare "fixture" does not exempt) nor
- * (observed or worst) AND (margin or <n>x) AND a platform, the hook emits additionalContext and NO
- * permissionDecision, naming each constant in line order with its old and new value. Arm B never denies and never
- * asks; its evidence words can be satisfied by a comment with no real evidence behind it.
+ * declaration (any indentation, optionally `export`, optionally with a one-word TypeScript annotation such as
+ * `: number`) whose ASCII identifier contains `timeout` in any case, with a numeric-literal right-hand side, rises
+ * when its value is greater than every baseline value of that name or the name is absent from the baseline. Its
+ * comment block is the contiguous comment lines directly above the run of adjacent timeout declarations it belongs
+ * to, plus the run's trailing `//` comments; a blank line ends the block. When that text names neither an exempt
+ * kind (fixture data, test backstop, mirror; a bare "fixture" does not exempt) nor (observed or worst) AND (margin
+ * or <n>x) AND a platform, the hook emits additionalContext and NO permissionDecision, naming each constant (at most
+ * 25) in line order with its old and new value. Arm B never denies and never asks; its evidence words can be
+ * satisfied by a comment with no real evidence behind it.
  *
- * SILENT PASS, NEVER AN EXPLICIT ALLOW OR ASK. Every other path writes NOTHING to stdout and exits 0. An explicit
- * allow would skip Claude Code's permission prompt; an ask degrades to allow under bypass mode, denies in a -p run
- * and has stalled interactive Orca workers. Only an object whose permissionDecision is exactly `deny` with a
- * non-empty reason, or an object with a non-empty additionalContext and no permissionDecision key, produces output.
- * It never uses failclosed.cjs emit() or runGate.
+ * OUTPUT. Never an explicit allow or ask: an allow would skip Claude Code's permission prompt; an ask degrades to
+ * allow under bypass mode, denies in a -p run and has stalled interactive Orca workers. Only an object whose
+ * permissionDecision is exactly `deny` with a non-empty reason, or an object with a non-empty additionalContext and
+ * no permissionDecision key, produces output. It never uses failclosed.cjs emit() or runGate. Names and file paths
+ * in a reason or note are printed as JSON string literals, cut to 120 characters before quoting; the names inside
+ * the forms the reason asks the agent to write stay verbatim, and a name over 200 characters gets no such form.
  *
- * FAILS OPEN. A malformed payload, a non-matching tool, a target outside <root>/tests/ or not JS-family, no gsd-core
- * root, a missing target on an Edit whose old_string is not empty, an old_string that is absent or not unique
- * without replace_all, a MultiEdit with more than 200 edits, a non-regular or over-1-MiB target, content,
- * new_string or post-image over 1 MiB, a parse the guard cannot read, and any throw (requires are lazy, inside the try) are a silent pass. A hook Claude Code
- * cancels at its timeout does not block the call either.
+ * WORK BUDGET. Every scan counts its work (characters scanned and loop steps) against WORK_BUDGET, a fixed
+ * multiple of the 1 MiB input cap (a deps.workBudget seam overrides it in tests). The count includes applying the
+ * edits. When it runs out the hook stops judging and emits a context-only note, "ENF-27 did not judge this edit
+ * (work budget)", with no decision and no verdict-log line. The result is a pure function of the payload and the
+ * on-disk files, never of the clock. A file crafted to exhaust the budget is a known fail-open route: its edits
+ * get the note instead of a judgement. Claude Code's own timeout still applies (10 s in settings.snippet.json; 600 s
+ * by default for a command hook with no timeout key, the capability.json route); a cancelled PreToolUse command hook
+ * does not block the call.
+ *
+ * FAILS OPEN. A malformed payload, a non-matching tool, a target outside <root>/tests/ or not JS-family, a path over
+ * 4096 characters or 256 segments, no gsd-core root, a missing target on an Edit whose old_string is not empty, an
+ * old_string that is absent or not unique without replace_all, a MultiEdit with more than 200 edits, a non-regular or
+ * over-1-MiB target, content, new_string or post-image over 1 MiB (a replace_all is measured before it is built), a
+ * parse the guard cannot read, and any throw (requires are lazy, inside the try) are a silent pass.
+ *
+ * ROOT. The gsd-core root is the OUTERMOST checkout above the target (hooks/lib/resolve.cjs sentinel layout, applied
+ * repeatedly) whose tests/ directory holds the target (security review MEDIUM-2: a sentinel planted inside tests/
+ * no longer moves the root). A checkout nested elsewhere in another (for example .claude/worktrees/w1) is judged
+ * against itself, because the outer checkout's tests/ does not hold the target. A directory outside gsd-core that
+ * carries the sentinel layout is judged as gsd-core (INFO-2, shared with every gate using the resolver).
  *
  * NOT COVERED. Only Write, Edit and MultiEdit (MultiEdit only where the client offers it) on gsd-core tests/** are
- * seen: not Bash (sed, a heredoc, cp), NotebookEdit or git apply. Also not: a call-site swap to a larger existing
- * constant; an identifier at a call site (`IDENT * 4`); an imported identifier in timeouts.cjs; a new helper
- * constant re-exported through a NEW destructure in timeouts.cjs (a destructure is not a numeric declaration of
- * timeouts.cjs, and the on-disk map is read before the edit); an entry kind changed from measured to an exempt kind,
- * in the same edit as a raise or before it; an entry-only change that leaves the comment stale (no value rises; CI
- * checks the 2x floor); a non-exported numeric constant in timeouts.cjs; Claude Code's fuzzy quote matching on Edit
- * (an old_string the guard does not find is a silent pass); a dangling symlink outside the checkout whose target is
- * in tests/ (unconfirmed what the Write tool does with it); arm B's multiset rule, which misses a raise of the
- * smaller of two same-name locals that stays below the larger one; a right-hand side that starts on the next line
- * (`const X =` then the value), which is unresolved and trusted; production src/ and bin/ timeouts. The Evidence
- * comment is read from the FIRST occurrence of its tag, so an earlier mention of the same tag text (none upstream
- * today) is read instead of the comment above the declaration.
+ * seen: not Bash (sed, a heredoc, cp), NotebookEdit or git apply. Also not:
+ *   - a call-site swap to a larger existing constant; an identifier at a call site (`IDENT * 4`); an imported
+ *     identifier, a call or a `**` expression on a right-hand side in timeouts.cjs (trusted);
+ *   - a numeric literal written inside the module.exports object (`PROBE_TIMEOUT_MS: 30000,`) or a later
+ *     `module.exports.PROBE_TIMEOUT_MS = ...` assignment (only declarations are judged);
+ *   - a right-hand side that starts on the next line (`const X =`, then the value), and a declarator that follows a
+ *     multi-line object or array in the same statement (unresolved or unseen);
+ *   - a TypeScript annotation in arm B beyond one word (`: Record<string, number>`);
+ *   - a lone CR, U+2028 or U+2029 used as a line break: JavaScript ends a `//` comment there and the hook does not
+ *     (security review INFO-1), so a declaration after one on a comment line is hidden from the hook;
+ *   - lexer limits: a regex literal is recognised after an operator, `( , = : [ ! & | ? { } ;`, the start of the file
+ *     or the keywords return, case, typeof, void, delete, in, of, instanceof, new, throw, yield, await, else and do;
+ *     a regex after `)` or `]`, and a template literal nested inside `${ }`, are misread. A misread slash-star opens a
+ *     phantom comment in both directions: it can hide a raised declaration until the next star-slash (a silent
+ *     pass), or a later comment-only edit can expose a declaration the baseline hid, which is then judged as new (a
+ *     false deny, satisfied by restating that constant's figures);
+ *   - a new helper constant re-exported through a NEW destructure in timeouts.cjs (a destructure is not a numeric
+ *     declaration of timeouts.cjs, and the on-disk map is read before the edit);
+ *   - an entry kind changed from measured to an exempt kind, in the same edit as a raise or before it; an
+ *     entry-only change that leaves the comment stale (no value rises; CI checks the 2x floor); a non-exported
+ *     numeric constant in timeouts.cjs;
+ *   - Claude Code's fuzzy quote matching on Edit (an old_string the guard does not find is a silent pass); a
+ *     dangling symlink outside the checkout whose target is in tests/ (unconfirmed what the Write tool does);
+ *   - arm B's multiset rule, which misses a raise of the smaller of two same-name locals that stays below the larger
+ *     one; production src/ and bin/ timeouts.
  *
- * KNOWN FALSE DENIES. A value edited before its entry or comment, and correct figures in other wording. Both are
- * answered by the reason, which names the passing order and the exact accepted forms.
+ * KNOWN FALSE DENIES. A value edited before its entry or comment; correct figures in other wording; a correct
+ * Evidence comment whose tag does not start its comment line (after code, or after other text); and the phantom
+ * comment case above. The reason answers each: it names the passing order, the exact accepted forms and the
+ * position rule.
  *
  * READ-ONLY. It realpaths the target, reads the target and (for a helper) the on-disk timeouts.cjs once each through
  * hooks/lib/regular-file.cjs (O_NONBLOCK, regular files only, 1 MiB), and parses text statically: no eval, no
@@ -96,44 +137,165 @@ const MAX_BYTES = 1024 * 1024;
 const TIMEOUTS_REL = 'tests/helpers/timeouts.cjs';
 const TOOLS = new Set(['Write', 'Edit', 'MultiEdit']);
 const JS_EXT_RE = /\.(?:[cm]?js|[cm]?ts)$/i;
-const TOP_DECL_RE = /^(?:const|let|var)[ \t]+([A-Za-z_$][A-Za-z0-9_$]*)[ \t]*=(?![=>])/;
-const ANY_DECL_RE = /^([ \t]*)(?:export[ \t]+)?(?:const|let|var)[ \t]+([A-Za-z_$][A-Za-z0-9_$]*)[ \t]*=(?![=>])/;
+const DECL_HEAD =
+  '(?:const|let|var)[ \\t]+([A-Za-z_$][A-Za-z0-9_$]*)(?:[ \\t]*:[ \\t]*[A-Za-z_$][A-Za-z0-9_$]*)?[ \\t]*=(?![=>])';
+const TOP_DECL_RE = new RegExp('^' + DECL_HEAD);
+const ANY_DECL_RE = new RegExp('^([ \\t]*)(?:export[ \\t]+)?' + DECL_HEAD);
 const MAX_DEPTH = 20;
 /** The most edits one MultiEdit may carry before the guard passes it silently (each edit scans the image). */
 const MAX_EDITS = 200;
 /** A destructure's braces must close within this many characters (a real one is a line or two). */
 const MAX_DESTRUCTURE_CHARS = 4096;
-/** The most failing constants a deny reason lists one by one. */
+/** The most constants a deny reason or a note lists one by one. */
 const MAX_LISTED = 25;
+/** A name or path is cut to this many characters before it is printed as a JSON string literal. */
+const MAX_LABEL = 120;
+/** A name longer than this gets no write-this form in the reason (it would be the reason's whole length). */
+const MAX_NAME_IN_FORM = 200;
+/** Paths longer than this, or with more segments, are a silent pass before any filesystem call. */
+const MAX_PATH_CHARS = 4096;
+const MAX_PATH_SEGMENTS = 256;
+/** A multi-declarator statement is followed across at most this many continuation lines. */
+const MAX_CONTINUATION_LINES = 64;
+/** The most nested gsd-core checkouts walked when choosing the root. */
+const MAX_ROOT_WALK = 64;
+/**
+ * The work budget, in counted steps (characters scanned plus loop iterations): a fixed multiple of the 1 MiB input
+ * cap, sized so that a MultiEdit at the 200-edit cap over a 1 MiB image plus the judging of both images fits.
+ */
+const WORK_BUDGET = 256 * MAX_BYTES;
 
 const lf = (s) => s.replace(/\r\n/g, '\n');
 const bytes = (s) => Buffer.byteLength(s, 'utf8');
 
+// ---------------------------------------------------------------- work budget
+
+class BudgetExceeded extends Error {}
+let CURRENT = null;
+
+/** Count n steps against the active budget (none outside gate() and judge()); throw BudgetExceeded past it. */
+function spend(n) {
+  if (CURRENT === null) return;
+  CURRENT.left -= n;
+  if (CURRENT.left < 0) throw new BudgetExceeded('ENF-27 work budget exhausted');
+}
+
+/** Run fn under a fresh budget of n steps, restoring the previous one after. */
+function withBudget(n, fn) {
+  const prev = CURRENT;
+  CURRENT = { left: Number.isFinite(n) && n >= 0 ? n : WORK_BUDGET };
+  try {
+    return fn();
+  } finally {
+    CURRENT = prev;
+  }
+}
+
+function budgetNote(rel) {
+  return {
+    additionalContext:
+      'ENF-27 did not judge this edit (work budget): the file ' + label(rel) + ' or the edit is too large or too ' +
+      'unusual to check within the guard\'s fixed work limit, so nothing was checked and nothing was blocked. If ' +
+      'this edit raises or adds a gsd-core test timeout, restate its TIMEOUT_EVIDENCE entry and Evidence comment ' +
+      'yourself. (ENF-27, context-only note)',
+  };
+}
+
+// ---------------------------------------------------------------- printing
+
+/** A name or path as a JSON string literal, cut to MAX_LABEL characters first (review LOW-4, LOW-5). */
+function label(s) {
+  const t = String(s);
+  return JSON.stringify(t.length > MAX_LABEL ? t.slice(0, MAX_LABEL) + '...' : t);
+}
+
+/** A finite number in plain decimal form (never exponent form), so the `ms`/`x` patterns can read it back. */
+function plain(x) {
+  const s = String(x);
+  const m = /^(-?)(\d)(?:\.(\d+))?e([+-]\d+)$/.exec(s);
+  if (!m) return s;
+  const digits = m[2] + (m[3] || '');
+  const point = 1 + Number(m[4]);
+  if (point <= 0) return m[1] + '0.' + '0'.repeat(-point) + digits;
+  if (point >= digits.length) return m[1] + digits + '0'.repeat(point - digits.length);
+  return m[1] + digits.slice(0, point) + '.' + digits.slice(point);
+}
+
+/** An integer count of hundredths as a decimal with two places (`213` -> `2.13`). */
+function hundredths(h) {
+  const neg = h < 0;
+  const d = plain(Math.abs(h)).padStart(3, '0');
+  return (neg ? '-' : '') + d.slice(0, -2) + '.' + d.slice(-2);
+}
+
+const shown = (v) => (v === null || v === undefined ? 'none' : plain(v));
+
 // ---------------------------------------------------------------- lexing
 
+const REGEX_AFTER_CHARS = new Set('(,=:[!&|?{};+-*%<>~^'.split(''));
+const REGEX_AFTER_WORDS = new Set(['return', 'case', 'typeof', 'void', 'delete', 'in', 'of', 'instanceof', 'new', 'throw', 'yield', 'await', 'else', 'do']);
+const isIdentChar = (c) => /[A-Za-z0-9_$]/.test(c);
+
 /**
- * Per-character kinds of a JS-like text: 0 code, 1 comment, 2 string. Linear; regex literals are not recognised
- * (an unterminated quote ends at its line, so a stray quote damages one line at most).
+ * Per-character kinds of a JS-like text (0 code, 1 comment, 2 string or regex literal) and the comment tokens
+ * ({start, end, block}). Linear. A regex literal is recognised after an operator or punctuator that can precede an
+ * expression, the start of the text, or a keyword in REGEX_AFTER_WORDS (review LOW-3, R2-I2 W-06); elsewhere a slash
+ * is division. An unterminated quote or regex ends at its line.
  *
  * @param {string} text
- * @returns {Uint8Array}
  */
 function classify(text) {
   const n = text.length;
+  spend(n);
   const k = new Uint8Array(n);
+  const comments = [];
   let i = 0;
+  let lastSig = '';
+  let word = '';
   while (i < n) {
     const c = text[i];
     const d = text[i + 1];
     if (c === '/' && d === '/') {
+      const s = i;
       while (i < n && text[i] !== '\n') k[i++] = 1;
+      comments.push({ start: s, end: i, block: false });
       continue;
     }
     if (c === '/' && d === '*') {
+      const s = i;
       const end = text.indexOf('*/', i + 2);
       const stop = end === -1 ? n : end + 2;
       while (i < stop) k[i++] = 1;
+      comments.push({ start: s, end: stop, block: true });
       continue;
+    }
+    if (c === '/' && (lastSig === '' || REGEX_AFTER_CHARS.has(lastSig) || (isIdentChar(lastSig) && REGEX_AFTER_WORDS.has(word)))) {
+      let j = i + 1;
+      let inClass = false;
+      let closed = false;
+      while (j < n && text[j] !== '\n') {
+        const ch = text[j];
+        if (ch === '\\') {
+          j += 2;
+          continue;
+        }
+        if (inClass) {
+          if (ch === ']') inClass = false;
+        } else if (ch === '[') inClass = true;
+        else if (ch === '/') {
+          closed = true;
+          break;
+        }
+        j++;
+      }
+      if (closed) {
+        j++;
+        while (j < n && /[A-Za-z]/.test(text[j])) j++;
+        while (i < j) k[i++] = 2;
+        lastSig = 'a';
+        word = '';
+        continue;
+      }
     }
     if (c === "'" || c === '"' || c === '`') {
       k[i++] = 2;
@@ -151,21 +313,28 @@ function classify(text) {
         if (ch === '\n' && c !== '`') break;
         k[i++] = 2;
       }
+      lastSig = '"';
+      word = '';
       continue;
     }
     k[i++] = 0;
+    if (c === ' ' || c === '\t' || c === '\n' || c === '\r') continue;
+    if (isIdentChar(c)) word = isIdentChar(lastSig) ? word + c : c;
+    else word = '';
+    lastSig = c;
   }
-  return k;
+  return { kinds: k, comments };
 }
 
 /**
- * The analysed image: kinds, a copy with every comment character blanked to a space (newlines kept), and line
- * start offsets.
+ * The analysed image: kinds, comment tokens, a copy with every comment character blanked to a space (newlines
+ * kept), and line start offsets.
  *
  * @param {string} text LF-normalised
  */
 function analyze(text) {
-  const kinds = classify(text);
+  const { kinds, comments } = classify(text);
+  spend(2 * text.length);
   const parts = [];
   let i = 0;
   while (i < text.length) {
@@ -177,9 +346,21 @@ function analyze(text) {
   }
   const blanked = parts.join('');
   const starts = [0];
-  for (let i = 0; i < text.length; i++) if (text[i] === '\n') starts.push(i + 1);
+  for (let q = 0; q < text.length; q++) if (text[q] === '\n') starts.push(q + 1);
   const lineEnd = (idx) => (idx + 1 < starts.length ? starts[idx + 1] - 1 : text.length);
-  return { text, kinds, blanked, starts, lineEnd };
+  return { text, kinds, comments, blanked, starts, lineEnd };
+}
+
+/** The line index holding offset `off` (binary search over line starts). */
+function lineOf(A, off) {
+  let lo = 0;
+  let hi = A.starts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (A.starts[mid] <= off) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
 }
 
 // ---------------------------------------------------------------- numbers
@@ -199,6 +380,7 @@ const ID_RE = /[A-Za-z_$][A-Za-z0-9_$]*/y;
  */
 function evalNumeric(src, symtab) {
   if (typeof src !== 'string') return null;
+  spend(src.length + 1);
   const s = src;
   let i = 0;
   const ws = () => {
@@ -276,16 +458,22 @@ function evalNumeric(src, symtab) {
 
 // ---------------------------------------------------------------- declarations
 
+const MORE_DECL_RE = /^\s*([A-Za-z_$][A-Za-z0-9_$]*)(?:[ \t]*:[ \t]*[A-Za-z_$][A-Za-z0-9_$]*)?[ \t]*=(?![=>])([\s\S]*)$/;
+
 /**
- * Declarations of an analysed image. topLevel: `const|let|var NAME = ...` at column 0; otherwise any indentation
- * (optionally `export`). The right-hand side runs to the first code `;` or the end of the line, comments blanked.
+ * Declarations of an analysed image. topLevel: a statement `const|let|var NAME = ...` at column 0; otherwise any
+ * indentation (optionally `export`). The statement runs to the first code `;` at depth 0 or the end of its line, and
+ * on to the next line while that line ends with a depth-0 `,` (review WR-02, R2-I2 W-08). It is split at depth-0
+ * commas; each part `IDENT = rhs` after the first is a declaration too, on the line where it starts.
  *
  * @returns {{name:string, rhs:string, line:number}[]}
  */
 function declarations(A, topLevel) {
   const out = [];
   const re = topLevel ? TOP_DECL_RE : ANY_DECL_RE;
+  const n = A.text.length;
   for (let idx = 0; idx < A.starts.length; idx++) {
+    spend(1);
     const s = A.starts[idx];
     const e = A.lineEnd(idx);
     const line = A.text.slice(s, e);
@@ -293,15 +481,44 @@ function declarations(A, topLevel) {
     if (!m) continue;
     const kwOff = s + (topLevel ? 0 : m[1].length);
     if (A.kinds[kwOff] !== 0) continue;
+    const name = topLevel ? m[1] : m[2];
     const rhsStart = s + m[0].length;
-    let rhsEnd = e;
-    for (let j = rhsStart; j < e; j++) {
-      if (A.kinds[j] === 0 && A.text[j] === ';') {
-        rhsEnd = j;
-        break;
+    const parts = [];
+    let partStart = rhsStart;
+    let partLine = idx;
+    let curLine = idx;
+    let depth = 0;
+    let lastSig = '';
+    let continued = 0;
+    let j = rhsStart;
+    for (; j < n; j++) {
+      const ch = A.text[j];
+      if (ch === '\n') {
+        if (depth !== 0 || lastSig !== ',' || ++continued > MAX_CONTINUATION_LINES) break;
+        curLine++;
+        continue;
       }
+      if (A.kinds[j] !== 0) continue;
+      if (ch === '(' || ch === '[' || ch === '{') depth++;
+      else if (ch === ')' || ch === ']' || ch === '}') depth--;
+      else if (ch === ';' && depth === 0) break;
+      else if (ch === ',' && depth === 0) {
+        parts.push({ a: partStart, b: j, line: partLine });
+        partStart = j + 1;
+        partLine = curLine;
+      }
+      if (ch !== ' ' && ch !== '\t') lastSig = ch;
     }
-    out.push({ name: topLevel ? m[1] : m[2], rhs: A.blanked.slice(rhsStart, rhsEnd).trim(), line: idx });
+    spend(j - rhsStart + 1);
+    parts.push({ a: partStart, b: j, line: partLine });
+    out.push({ name, rhs: A.blanked.slice(parts[0].a, parts[0].b).trim(), line: idx });
+    for (let p = 1; p < parts.length; p++) {
+      const raw = A.blanked.slice(parts[p].a, parts[p].b);
+      const lead = /^\s*/.exec(raw)[0];
+      const more = MORE_DECL_RE.exec(raw);
+      if (!more) continue;
+      out.push({ name: more[1], rhs: more[2].trim(), line: parts[p].line + (lead.match(/\n/g) || []).length });
+    }
   }
   return out;
 }
@@ -325,23 +542,30 @@ function topDecls(A) {
 function closeOf(A, open, limit = Infinity) {
   let depth = 0;
   const stop = Math.min(A.text.length, open + limit);
-  for (let j = open; j < stop; j++) {
-    if (A.kinds[j] !== 0) continue;
-    const ch = A.text[j];
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) return j;
+  let j = open;
+  try {
+    for (; j < stop; j++) {
+      if (A.kinds[j] !== 0) continue;
+      const ch = A.text[j];
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) return j;
+      }
     }
+    return -1;
+  } finally {
+    spend(j - open + 1);
   }
-  return -1;
 }
 
 /**
  * Members of the object literal between `open` and `close`: { form, key, start, valueStart, end, lineStart }.
- * form is 'key' (IDENT: value), 'shorthand', 'spread', 'quoted', 'computed' or 'other'.
+ * form is 'key' (IDENT: value), 'shorthand', 'spread', 'quoted' (key holds the unquoted name when it is a plain
+ * one), 'computed' or 'other' (a method, getter or anything else).
  */
 function membersOf(A, open, close) {
+  spend(close - open + 1);
   const segs = [];
   let depth = 0;
   let segStart = open + 1;
@@ -371,7 +595,10 @@ function membersOf(A, open, close) {
     let valueStart = -1;
     let m;
     if (t.startsWith('...')) form = 'spread';
-    else if (/^['"`]/.test(t)) form = 'quoted';
+    else if ((m = /^(['"])([A-Za-z_$][A-Za-z0-9_$]*)\1\s*:/.exec(t))) {
+      form = 'quoted';
+      key = m[2];
+    } else if (/^['"`]/.test(t)) form = 'other';
     else if (t[0] === '[') form = 'computed';
     else if ((m = /^([A-Za-z_$][A-Za-z0-9_$]*)\s*:/.exec(t))) {
       form = 'key';
@@ -389,6 +616,7 @@ function membersOf(A, open, close) {
 /** Names listed in the first top-level `module.exports = { ... }` object, or null when there is none. */
 function exportsOf(A) {
   const re = /^module\.exports[ \t]*=[ \t]*\{/gm;
+  spend(A.text.length);
   let m;
   while ((m = re.exec(A.blanked))) {
     if (A.kinds[m.index] !== 0) continue;
@@ -403,11 +631,16 @@ function exportsOf(A) {
 }
 
 /**
- * The TIMEOUT_EVIDENCE object literal: { found, readable, entries }. readable only when every member is an unquoted
- * key at the start of a line whose value is an object literal, and at least one entry was read.
+ * The TIMEOUT_EVIDENCE object literal: { found, readable, entries }.
+ *   - entries: name -> { kind, observedMaxMs, censored, overridden } for every CLEAN member (an unquoted key at the
+ *     start of a line holding an object literal; the last clean one of a name wins). overridden is true when a later
+ *     member may replace it: a spread, computed, quoted-other or other member, or a later non-clean member of the
+ *     same name (R2-I2 W-03).
+ *   - readable: found, every member clean, and at least one entry (amendment A3).
  */
 function evidenceOf(A) {
   const re = /^(?:const|let|var)[ \t]+TIMEOUT_EVIDENCE[ \t]*=[ \t]*(?:Object\.freeze\(\s*)?\{/gm;
+  spend(A.text.length);
   const entries = new Map();
   let m;
   while ((m = re.exec(A.blanked))) {
@@ -415,18 +648,26 @@ function evidenceOf(A) {
     const open = m.index + m[0].length - 1;
     const close = closeOf(A, open);
     if (close === -1) return { found: true, readable: false, entries };
-    let bad = false;
-    for (const mem of membersOf(A, open, close)) {
-      if (mem.form !== 'key' || !mem.lineStart) {
-        bad = true;
-        continue;
+    const members = membersOf(A, open, close);
+    let unclean = false;
+    let lastAny = -1;
+    const lastNamed = new Map();
+    const cleanAt = new Map();
+    members.forEach((mem, idx) => {
+      let clean = mem.form === 'key' && mem.lineStart;
+      let vOpen = -1;
+      let vClose = -1;
+      if (clean) {
+        const vLead = /^\s*/.exec(A.blanked.slice(mem.valueStart, mem.end))[0];
+        vOpen = mem.valueStart + vLead.length;
+        vClose = A.blanked[vOpen] === '{' ? closeOf(A, vOpen, mem.end - vOpen) : -1;
+        if (vClose === -1 || vClose >= mem.end) clean = false;
       }
-      const vLead = /^\s*/.exec(A.blanked.slice(mem.valueStart, mem.end))[0];
-      const vOpen = mem.valueStart + vLead.length;
-      const vClose = A.blanked[vOpen] === '{' ? closeOf(A, vOpen) : -1;
-      if (vClose === -1 || vClose >= mem.end) {
-        bad = true;
-        continue;
+      if (!clean) {
+        unclean = true;
+        if (mem.key && (mem.form === 'key' || mem.form === 'quoted' || mem.form === 'shorthand')) lastNamed.set(mem.key, idx);
+        else lastAny = idx;
+        return;
       }
       const fields = Object.create(null);
       for (const f of membersOf(A, vOpen, vClose)) {
@@ -434,41 +675,97 @@ function evidenceOf(A) {
       }
       const kindRaw = fields.kind;
       const km = typeof kindRaw === 'string' ? /^(['"])([^'"]*)\1$/.exec(kindRaw) : null;
+      cleanAt.set(mem.key, idx);
       entries.set(mem.key, {
         kind: km ? km[2] : null,
         observedMaxMs: typeof fields.observedMaxMs === 'string' ? evalNumeric(fields.observedMaxMs, null) : null,
         censored: Object.prototype.hasOwnProperty.call(fields, 'censoredBelowMs'),
+        overridden: false,
       });
+    });
+    for (const [key, idx] of cleanAt) {
+      const named = lastNamed.has(key) ? lastNamed.get(key) : -1;
+      if (lastAny > idx || named > idx) entries.get(key).overridden = true;
     }
-    return { found: true, readable: !bad && entries.size > 0, entries };
+    return { found: true, readable: !unclean && entries.size > 0, entries };
   }
   return { found: false, readable: false, entries };
+}
+
+/**
+ * Evidence tags: the first ACCEPTED tag of each name with the comment text it heads, and the first ignored tag of
+ * each name that has no accepted one. A tag is accepted when it lies in a comment and its line holds, before it,
+ * only whitespace and one comment leader (`//`, `/*`, `/**` or `*`). Its text runs to the end of its comment unit
+ * (a block comment, or a run of own-line `//` comments on consecutive lines) or to the next accepted tag in that
+ * unit. Linear: every unit is scanned once.
+ */
+function evidenceTags(A) {
+  const units = [];
+  for (const c of A.comments) {
+    const ownLine = /^[ \t]*$/.test(A.text.slice(A.starts[lineOf(A, c.start)], c.start));
+    const prev = units[units.length - 1];
+    if (!c.block && ownLine && prev && !prev.block && prev.ownLine && /^\n[ \t]*$/.test(A.text.slice(prev.end, c.start))) {
+      prev.end = c.end;
+      continue;
+    }
+    units.push({ start: c.start, end: c.block && A.text.slice(c.end - 2, c.end) === '*/' ? c.end - 2 : c.end, block: c.block, ownLine });
+  }
+  spend(units.length + A.text.length);
+  const accepted = [];
+  const ignored = new Map();
+  let u = 0;
+  const tagRe = /Evidence \(TIMEOUT_EVIDENCE\.([A-Za-z_$][A-Za-z0-9_$]*)\):/g;
+  let m;
+  while ((m = tagRe.exec(A.text))) {
+    const at = m.index;
+    while (u < units.length && units[u].end <= at) u++;
+    const unit = units[u];
+    const inUnit = unit && unit.start <= at && A.kinds[at] === 1;
+    const prefix = A.text.slice(A.starts[lineOf(A, at)], at);
+    if (inUnit && /^[ \t]*(?:\/\/+|\/\*+|\*+)?[ \t]*$/.test(prefix)) {
+      accepted.push({ name: m[1], from: at + m[0].length, unit: u });
+    } else if (!ignored.has(m[1])) {
+      const codeBefore = /[^ \t]/.test(A.blanked.slice(A.starts[lineOf(A, at)], at).replace(/\/\/+|\/\*+|\*+/g, ''));
+      ignored.set(m[1], { line: lineOf(A, at) + 1, afterCode: codeBefore || !inUnit });
+    }
+  }
+  const tagAt = new Map();
+  for (let i = 0; i < accepted.length; i++) {
+    const t = accepted[i];
+    if (tagAt.has(t.name)) continue;
+    const next = accepted[i + 1];
+    const end = next && next.unit === t.unit ? next.from - ('Evidence (TIMEOUT_EVIDENCE.' + next.name + '):').length : units[t.unit].end;
+    tagAt.set(t.name, { from: t.from, to: Math.max(t.from, end) });
+  }
+  for (const name of tagAt.keys()) ignored.delete(name);
+  return { tagAt, ignored };
 }
 
 /**
  * Parse a timeouts.cjs-shaped module statically.
  *
  * @param {string} text
- * @returns {{exports:Set<string>|null, decls:Map<string,{value:number|null,rhs:string,line:number}>,
- *   entries:Map<string,{kind:string|null,observedMaxMs:number|null,censored:boolean}>, evidenceFound:boolean,
- *   readable:boolean, tags:Set<string>, reexports:Map<string,Map<string,string[]>>}}
  */
 function parseTimeoutsModule(text) {
   const A = analyze(lf(String(text)));
   const exportsSet = exportsOf(A);
   const decls = topDecls(A);
   const ev = evidenceOf(A);
-  // The first offset of each `Evidence (TIMEOUT_EVIDENCE.<NAME>):` tag, found in one pass (commentFor reads the
-  // first occurrence; a per-constant search of the whole text would be quadratic, T-261120-04).
-  const tagAt = new Map();
-  for (const m of A.text.matchAll(/Evidence \(TIMEOUT_EVIDENCE\.([A-Za-z_$][A-Za-z0-9_$]*)\):/g)) {
-    if (!tagAt.has(m[1])) tagAt.set(m[1], m.index);
-  }
+  const { tagAt, ignored } = evidenceTags(A);
   const tags = new Set(tagAt.keys());
+  // `const { A, B: alias } = require('./<f>')` at the start of a code line; the braces close within a bounded span.
+  // Exported names are looked up per right-hand side in one index (security review MEDIUM-1).
+  const byRhs = new Map();
+  if (exportsSet) {
+    for (const [name, d] of decls) {
+      if (!exportsSet.has(name)) continue;
+      if (!byRhs.has(d.rhs)) byRhs.set(d.rhs, []);
+      byRhs.get(d.rhs).push(name);
+    }
+  }
   const reexports = new Map();
-  // `const { A, B: alias } = require('./<f>')` at the start of a code line; the braces close within a bounded span
-  // (linear in the image, T-261120-04).
   for (let idx = 0; idx < A.starts.length; idx++) {
+    spend(1);
     const ls = A.starts[idx];
     if (A.kinds[ls] !== 0) continue;
     const head = /^(?:const|let|var)[ \t]*\{/.exec(A.blanked.slice(ls, ls + 16));
@@ -481,77 +778,69 @@ function parseTimeoutsModule(text) {
     const source = tail[2];
     const perSource = reexports.get(source) || new Map();
     for (const part of A.blanked.slice(open + 1, close).split(',')) {
+      spend(part.length + 1);
       const pm = /^\s*([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*))?\s*$/.exec(part);
       if (!pm) continue;
-      const src = pm[1];
       const local = pm[2] || pm[1];
-      const names = [];
-      for (const [name, d] of decls) if (d.rhs === local && exportsSet && exportsSet.has(name)) names.push(name);
+      const names = (byRhs.get(local) || []).slice();
       if (exportsSet && exportsSet.has(local)) names.push(local);
-      perSource.set(src, names);
+      perSource.set(pm[1], names);
     }
     reexports.set(source, perSource);
   }
-  return { text: A.text, exports: exportsSet, decls, entries: ev.entries, evidenceFound: ev.found, readable: ev.readable, tags, tagAt, reexports };
+  const comment = (name) => {
+    const t = tagAt.get(name);
+    if (!t) return null;
+    spend(t.to - t.from + 1);
+    return A.text.slice(t.from, t.to).replace(/\n[ \t]*(?:\*(?!\/)|\/\/)?/g, ' ').replace(/\s+/g, ' ');
+  };
+  return {
+    text: A.text,
+    exports: exportsSet,
+    decls,
+    entries: ev.entries,
+    evidenceFound: ev.found,
+    readable: ev.readable,
+    tags,
+    ignoredTags: ignored,
+    comment,
+    reexports,
+  };
 }
 
 // ---------------------------------------------------------------- arm A
 
-/**
- * The comment of NAME: from its `Evidence (TIMEOUT_EVIDENCE.NAME):` tag to the closing star-slash of the same block
- * comment, or to the end of the run of `//` lines holding the tag; whitespace and comment leaders collapsed.
- * null when the tag is absent.
- */
-function commentFor(text, name, tagAt) {
-  const tag = 'Evidence (TIMEOUT_EVIDENCE.' + name + '):';
-  const at = tagAt ? (tagAt.has(name) ? tagAt.get(name) : -1) : text.indexOf(tag);
-  if (at === -1) return null;
-  const from = at + tag.length;
-  const lineStart = text.lastIndexOf('\n', at) + 1;
-  let end;
-  if (/^[ \t]*\/\//.test(text.slice(lineStart, at))) {
-    // a run of `//` lines: up to the end of the last consecutive `//` line (amendment A2)
-    end = text.indexOf('\n', at);
-    if (end === -1) end = text.length;
-    while (end < text.length) {
-      const next = text.indexOf('\n', end + 1);
-      const stop = next === -1 ? text.length : next;
-      if (!/^[ \t]*\/\//.test(text.slice(end + 1, stop))) break;
-      end = stop;
-    }
-  } else {
-    // a block comment: up to its closing star-slash (amendment A2); an unclosed block ends at the tag's line
-    const close = text.indexOf('*/', from);
-    if (close !== -1) end = close;
-    else {
-      end = text.indexOf('\n', from);
-      if (end === -1) end = text.length;
-    }
-  }
-  return text
-    .slice(from, end)
-    .replace(/\n[ \t]*(?:\*(?!\/)|\/\/)?/g, ' ')
-    .replace(/\s+/g, ' ');
-}
-
-const fmt = (h) => (h / 100).toFixed(2);
+/** A name verbatim for a write-this form, or null when it is too long to restate. */
+const formName = (name) => (name.length <= MAX_NAME_IN_FORM ? name : null);
 
 /**
  * Problems with NAME's comment for `value` against its measured entry, or null when it is current.
  */
-function measuredProblems(text, name, value, entry, tagAt) {
+function measuredProblems(P, name, value, entry) {
   const obs = entry.observedMaxMs;
-  const c = commentFor(text, name, tagAt);
   const hInt = Math.floor((value * 100) / obs);
   const hFlt = Math.floor((value / obs) * 100);
   const need =
-    (entry.censored ? '' : '`worst observed ' + obs + 'ms` and ') +
-    '`margin ' + fmt(hInt) + 'x` or `margin at least ' + fmt(hInt) + 'x`' +
-    (hFlt !== hInt ? ' (' + fmt(hFlt) + ' is also accepted)' : '');
-  if (c === null) return 'no `Evidence (TIMEOUT_EVIDENCE.' + name + '):` comment; it needs ' + need;
+    (entry.censored ? '' : '`worst observed ' + plain(obs) + 'ms` and ') +
+    '`margin ' + hundredths(hInt) + 'x` or `margin at least ' + hundredths(hInt) + 'x`' +
+    (hFlt !== hInt ? ' (' + hundredths(hFlt) + ' is also accepted)' : '');
+  const c = P.comment(name);
+  if (c === null) {
+    const fn = formName(name);
+    const tag = fn ? '`Evidence (TIMEOUT_EVIDENCE.' + fn + '):`' : 'Evidence';
+    const ig = P.ignoredTags.get(name);
+    if (ig) {
+      return (
+        'its ' + tag + ' tag on line ' + ig.line + (ig.afterCode ? ' follows code' : ' follows other text') +
+        ' on the same line and was ignored (a tag counts only where it starts a comment line); put the Evidence ' +
+        'comment on its own line(s) above the declaration; it needs ' + need
+      );
+    }
+    return 'no ' + tag + ' comment; it needs ' + need;
+  }
   const problems = [];
   if (!entry.censored) {
-    const wo = /worst observed (\d+)ms/.exec(c);
+    const wo = /worst observed (\d+(?:\.\d+)?)ms/.exec(c);
     if (!wo) problems.push('no `worst observed <N>ms`');
     else if (Number(wo[1]) !== obs) problems.push('it states `worst observed ' + wo[1] + 'ms`');
   }
@@ -565,8 +854,6 @@ function measuredProblems(text, name, value, entry, tagAt) {
   return problems.join('; ') + '; it needs ' + need;
 }
 
-const shown = (v) => (v === null || v === undefined ? 'none' : String(v));
-
 function denyReason(failures) {
   return (
     'ENF-27: this edit raises, newly sets or newly exports ' + failures.length + ' timeout constant(s) whose ' +
@@ -574,27 +861,29 @@ function denyReason(failures) {
     failures.slice(0, MAX_LISTED).map((f) => '- ' + f).join('\n') + '\n' +
     (failures.length > MAX_LISTED ? '- ... and ' + (failures.length - MAX_LISTED) + ' more constant(s)\n' : '') +
     'Fix `tests/helpers/timeouts.cjs`. Accepted forms, read only inside the comment that starts ' +
-    '`Evidence (TIMEOUT_EVIDENCE.<NAME>):` (up to its closing star-slash, or the end of its `//` run): ' +
+    '`Evidence (TIMEOUT_EVIDENCE.<NAME>):` (up to the end of that block comment or `//` run): ' +
     '`worst observed <N>ms` with N equal to the entry\'s observedMaxMs (not needed when the entry has ' +
     'censoredBelowMs), and, as the first margin after the tag, `margin <M>x` or `margin at least <M>x`, where M is ' +
-    'value / observedMaxMs rounded down to hundredths. Passing order: add or edit the TIMEOUT_EVIDENCE entry and ' +
-    'the Evidence comment first (a comment-only or evidence-only edit is never denied), then change or export the ' +
-    'value; or do all of it in one Write or MultiEdit. This guard checks only that the stated figures are ' +
-    'arithmetically current with the entry; it cannot check that an observation is real. ' +
-    '(ENF-27, fail-open edit guard)'
+    'value / observedMaxMs rounded down to hundredths. The tag counts only where it starts a comment line (an ' +
+    'own-line `//`, a line of a block comment, or the first text after `/*` or `/**`); a tag after code on the same ' +
+    'line is ignored. A TIMEOUT_EVIDENCE key is written unquoted, as an identifier at the start of its line ' +
+    '(`NAME: { ... }`), never as a quoted string. Passing order: add or edit the TIMEOUT_EVIDENCE entry and the ' +
+    'Evidence comment first, then change or export the value; or do all of it in one Write or MultiEdit. This guard ' +
+    'checks only that the stated figures are arithmetically current with the entry; it cannot check that an ' +
+    'observation is real. (ENF-27, fail-open edit guard)'
   );
 }
 
 /** Arm A over tests/helpers/timeouts.cjs: a list of failure lines (empty when nothing fails). */
 function armA(baseline, post) {
   const P = parseTimeoutsModule(post);
-  // Format drift (amendment A3): no exports object, or a TIMEOUT_EVIDENCE literal the parser cannot read in full
-  // (missing, spread-built, a quoted, computed or non-line-start key, or empty) is a silent pass.
-  if (!P.exports || !P.readable) return [];
+  // No exports object, or no TIMEOUT_EVIDENCE literal: nothing to judge against.
+  if (!P.exports || !P.evidenceFound) return [];
   const B = parseTimeoutsModule(baseline);
   const baseExports = B.exports || new Set();
   const judged = [];
   for (const [name, d] of P.decls) {
+    spend(1);
     if (d.value === null || !P.exports.has(name)) continue;
     const b = B.decls.get(name);
     const old = b ? b.value : null;
@@ -611,21 +900,28 @@ function armA(baseline, post) {
   }
   const failures = [];
   for (const j of judged) {
-    const head = j.name + ' ' + shown(j.old) + ' -> ' + j.value + (j.newlyExported ? ' (newly exported)' : '');
+    const head = label(j.name) + ' ' + shown(j.old) + ' -> ' + plain(j.value) + (j.newlyExported ? ' (newly exported)' : '');
     const e = P.entries.get(j.name);
     if (!e) {
-      if (!othersCovered) continue;
+      // Amendment A3: a missing entry is undecidable unless the whole entry set was read and covers the others.
+      if (!P.readable || !othersCovered) continue;
+      const fn = formName(j.name);
       failures.push(
-        head + ': no TIMEOUT_EVIDENCE entry. Add `' + j.name + ": { kind: 'measured', observedMaxMs: <N>, ... }` " +
-          '(or an exempt kind with its reason) to TIMEOUT_EVIDENCE and an `Evidence (TIMEOUT_EVIDENCE.' + j.name +
-          '):` comment above the declaration first'
+        head + ': no TIMEOUT_EVIDENCE entry. ' +
+          (fn
+            ? 'Add `' + fn + ": { kind: 'measured', observedMaxMs: <N>, ... }` (key unquoted; or an exempt kind with " +
+              'its reason) to TIMEOUT_EVIDENCE and an `Evidence (TIMEOUT_EVIDENCE.' + fn + '):` comment above the ' +
+              'declaration first'
+            : 'Its name is over ' + MAX_NAME_IN_FORM + ' characters; add its TIMEOUT_EVIDENCE entry (key unquoted) and ' +
+              'its Evidence comment first')
       );
       continue;
     }
+    if (e.overridden) continue; // R2-I2 W-03: a later member may replace this entry
     if (e.kind !== 'measured') continue;
     if (!(typeof e.observedMaxMs === 'number' && e.observedMaxMs > 0)) continue;
-    const p = measuredProblems(P.text, j.name, j.value, e, P.tagAt);
-    if (p) failures.push(head + ' (TIMEOUT_EVIDENCE.' + j.name + ' observedMaxMs ' + e.observedMaxMs + (e.censored ? ', censored' : '') + '): ' + p);
+    const p = measuredProblems(P, j.name, j.value, e);
+    if (p) failures.push(head + ' (TIMEOUT_EVIDENCE observedMaxMs ' + plain(e.observedMaxMs) + (e.censored ? ', censored' : '') + '): ' + p);
   }
   return failures;
 }
@@ -638,13 +934,14 @@ function armAReexport(rel, baseline, post, timeoutsText) {
   const out = { failures: [], handledLines: new Set() };
   if (typeof timeoutsText !== 'string') return out;
   const T = parseTimeoutsModule(timeoutsText);
-  if (!T.readable) return out;
+  if (!T.evidenceFound) return out;
   const base = rel.slice('tests/helpers/'.length);
   const map = T.reexports.get('./' + base) || T.reexports.get('./' + base.replace(/\.[^.]+$/, ''));
   if (!map) return out;
   const P = topDecls(analyze(post));
   const B = topDecls(analyze(baseline));
   for (const [src, exportNames] of map) {
+    spend(1);
     const d = P.get(src);
     if (!d || d.value === null) continue;
     const b = B.get(src);
@@ -652,15 +949,15 @@ function armAReexport(rel, baseline, post, timeoutsText) {
     if (!(old === null || old < d.value)) continue;
     for (const E of exportNames) {
       const e = T.entries.get(E);
-      if (!e || e.kind !== 'measured') continue;
+      if (!e || e.kind !== 'measured' || e.overridden) continue;
       out.handledLines.add(d.line);
       if (!(typeof e.observedMaxMs === 'number' && e.observedMaxMs > 0)) continue;
-      const p = measuredProblems(T.text, E, d.value, e, T.tagAt);
+      const p = measuredProblems(T, E, d.value, e);
       if (p) {
         out.failures.push(
-          src + ' in `' + rel + '` (re-exported by tests/helpers/timeouts.cjs as ' + E + ') ' + shown(old) + ' -> ' +
-            d.value + ' (TIMEOUT_EVIDENCE.' + E + ' observedMaxMs ' + e.observedMaxMs + (e.censored ? ', censored' : '') +
-            '): ' + p
+          label(src) + ' in ' + label(rel) + ' (re-exported by tests/helpers/timeouts.cjs as ' + label(E) + ') ' +
+            shown(old) + ' -> ' + plain(d.value) + ' (TIMEOUT_EVIDENCE observedMaxMs ' + plain(e.observedMaxMs) +
+            (e.censored ? ', censored' : '') + '): ' + p
         );
       }
     }
@@ -681,6 +978,7 @@ function statesEvidence(t) {
 function commentLine(A, idx) {
   const s = A.starts[idx];
   const e = A.lineEnd(idx);
+  spend(e - s + 1);
   let any = false;
   for (let j = s; j < e; j++) {
     const ch = A.text[j];
@@ -693,6 +991,7 @@ function commentLine(A, idx) {
 
 /** The comment text of a line's comment characters (a trailing `//` or block). */
 function trailingComment(A, idx) {
+  spend(A.lineEnd(idx) - A.starts[idx] + 1);
   let out = '';
   for (let j = A.starts[idx]; j < A.lineEnd(idx); j++) if (A.kinds[j] === 1) out += A.text[j];
   return out;
@@ -701,29 +1000,26 @@ function trailingComment(A, idx) {
 /** Arm B: rising unevidenced file-local timeout constants, in post-image line order. */
 function armB(baseline, post, skipLines) {
   const isTimeout = (n) => /timeout/i.test(n);
-  const baseVals = new Map();
+  // The highest resolved baseline value per name, computed once (security review LOW-7).
+  const baseMax = new Map();
   for (const d of declarations(analyze(baseline), false)) {
     if (!isTimeout(d.name)) continue;
     const v = evalNumeric(d.rhs, null);
-    if (!baseVals.has(d.name)) baseVals.set(d.name, []);
-    if (v !== null) baseVals.get(d.name).push(v);
+    if (!baseMax.has(d.name)) baseMax.set(d.name, null);
+    if (v !== null && (baseMax.get(d.name) === null || v > baseMax.get(d.name))) baseMax.set(d.name, v);
   }
   const A = analyze(post);
   const decls = declarations(A, false).filter((d) => isTimeout(d.name));
-  // Runs of adjacent timeout declarations, found in one pass; each run's comment text is built once (linear,
-  // T-261120-04).
+  // Runs of adjacent timeout declarations, found in one pass; each run's comment text is built once.
   const runOf = new Map();
-  const runs = [];
   for (const d of decls) {
+    spend(1);
     const prev = runOf.get(d.line - 1);
+    if (runOf.has(d.line)) continue;
     if (prev) {
       prev.end = d.line;
       runOf.set(d.line, prev);
-    } else if (!runOf.has(d.line)) {
-      const r = { start: d.line, end: d.line, text: null };
-      runs.push(r);
-      runOf.set(d.line, r);
-    }
+    } else runOf.set(d.line, { start: d.line, end: d.line, text: null });
   }
   const runText = (r) => {
     if (r.text !== null) return r.text;
@@ -736,12 +1032,11 @@ function armB(baseline, post, skipLines) {
   };
   const flagged = [];
   for (const d of decls) {
+    spend(1);
     if (skipLines && skipLines.has(d.line)) continue;
     const value = evalNumeric(d.rhs, null);
     if (value === null) continue;
-    const vals = baseVals.get(d.name) || [];
-    let max = null;
-    for (const v of vals) if (max === null || v > max) max = v;
+    const max = baseMax.has(d.name) ? baseMax.get(d.name) : null;
     if (!(max === null || value > max)) continue;
     if (statesEvidence(runText(runOf.get(d.line)))) continue;
     flagged.push({ name: d.name, old: max, value, line: d.line + 1 });
@@ -750,10 +1045,12 @@ function armB(baseline, post, skipLines) {
 }
 
 function advisoryText(rel, flagged) {
+  const listed = flagged.slice(0, MAX_LISTED).map((f) => '- ' + label(f.name) + ' ' + shown(f.old) + ' -> ' + plain(f.value) + ' (line ' + f.line + ')');
+  if (flagged.length > MAX_LISTED) listed.push('- ... and ' + (flagged.length - MAX_LISTED) + ' more constant(s)');
   return (
     'ENF-27 timeout-evidence note (context only; nothing was blocked): this edit raises or adds ' + flagged.length +
-    ' file-local timeout constant(s) in `' + rel + '` whose comment states no evidence:\n' +
-    flagged.map((f) => '- ' + f.name + ' ' + shown(f.old) + ' -> ' + f.value + ' (line ' + f.line + ')').join('\n') + '\n' +
+    ' file-local timeout constant(s) in ' + label(rel) + ' whose comment states no evidence:\n' +
+    listed.join('\n') + '\n' +
     'gsd-core TESTING-STANDARDS.md "Every new or changed timeout constant states its evidence": the comment directly ' +
     'above the declaration should state (1) the observed range (the worst observed duration, p50/p99 where known, ' +
     'and the sample count), (2) the worst platform (win32, darwin or linux), (3) the margin (the constant over the ' +
@@ -764,13 +1061,7 @@ function advisoryText(rel, flagged) {
 
 // ---------------------------------------------------------------- the decision
 
-/**
- * The pure decision over a relative target path, its baseline, its post-image and (for a helper) the on-disk
- * timeouts.cjs text. Returns a deny object, an advisory object ({additionalContext}) or null.
- *
- * @param {{rel:string, baseline:string, post:string, timeoutsText?:string|null}} args
- */
-function judge({ rel, baseline, post, timeoutsText }) {
+function judgeCore({ rel, baseline, post, timeoutsText }) {
   const b = lf(String(baseline));
   const p = lf(String(post));
   if (rel === TIMEOUTS_REL) {
@@ -779,7 +1070,7 @@ function judge({ rel, baseline, post, timeoutsText }) {
   }
   let skip = new Set();
   if (/^tests\/helpers\/[^/]+$/.test(rel)) {
-    const r = armAReexport(rel, b, p, timeoutsText);
+    const r = armAReexport(rel, b, p, typeof timeoutsText === 'string' ? lf(timeoutsText) : timeoutsText);
     if (r.failures.length) return { permissionDecision: 'deny', permissionDecisionReason: denyReason(r.failures) };
     skip = r.handledLines;
   }
@@ -788,10 +1079,30 @@ function judge({ rel, baseline, post, timeoutsText }) {
 }
 
 /**
+ * The pure decision over a relative target path, its baseline, its post-image and (for a helper) the on-disk
+ * timeouts.cjs text. Returns a deny object, an advisory object ({additionalContext}) or null. Called outside gate()
+ * it runs under its own budget (args.workBudget, default WORK_BUDGET) and returns the budget note when it runs out.
+ *
+ * @param {{rel:string, baseline:string, post:string, timeoutsText?:string|null, workBudget?:number}} args
+ */
+function judge(args) {
+  if (CURRENT !== null) return judgeCore(args);
+  return withBudget(args.workBudget, () => {
+    try {
+      return judgeCore(args);
+    } catch (err) {
+      if (err instanceof BudgetExceeded) return budgetNote(args.rel);
+      throw err;
+    }
+  });
+}
+
+/**
  * Apply Edit/MultiEdit edits to an image as Claude Code does, or null when the tool would fail: CRLF normalised,
  * an empty old_string creates only on an empty or whitespace-only image, an absent old_string or a non-unique one
  * without replace_all fails, an empty new_string also removes a following newline, split/join (never a string
- * replace, where `$&` would expand), each edit on the running image.
+ * replace, where `$&` would expand), each edit on the running image. A replace_all is counted first and refused
+ * when its result would pass the 1 MiB cap, before the string is built (security review LOW-6).
  *
  * @param {string} image
  * @param {Array<{old_string:string,new_string:string,replace_all?:boolean}>} edits
@@ -805,6 +1116,7 @@ function applyEdits(image, edits) {
     if (typeof e.old_string !== 'string' || typeof e.new_string !== 'string') return null;
     let oldS = lf(e.old_string);
     const newS = lf(e.new_string);
+    spend(img.length + newS.length + 1);
     if (bytes(newS) > MAX_BYTES) return null;
     if (oldS === '') {
       if (img.trim() !== '') return null;
@@ -816,8 +1128,13 @@ function applyEdits(image, edits) {
     if (first === -1) return null;
     if (e.replace_all !== true && img.indexOf(oldS, first + oldS.length) !== -1) return null;
     if (newS === '' && !oldS.endsWith('\n') && img.includes(oldS + '\n')) oldS += '\n';
-    if (e.replace_all === true) img = img.split(oldS).join(newS);
-    else {
+    if (e.replace_all === true) {
+      let count = 0;
+      for (let at = img.indexOf(oldS); at !== -1; at = img.indexOf(oldS, at + oldS.length)) count++;
+      spend(count);
+      if (img.length + count * (newS.length - oldS.length) > MAX_BYTES) return null;
+      img = img.split(oldS).join(newS);
+    } else {
       const at = img.indexOf(oldS);
       img = img.slice(0, at) + newS + img.slice(at + oldS.length);
     }
@@ -828,6 +1145,7 @@ function applyEdits(image, edits) {
 
 /** realpath of p; for a missing path, the realpath of its nearest existing ancestor joined with the rest. */
 function realpathNearest(p) {
+  if (typeof p !== 'string' || p.length > MAX_PATH_CHARS || p.split(/[\\/]/).length > MAX_PATH_SEGMENTS) return null;
   try {
     return fs.realpathSync.native(p);
   } catch (_) {
@@ -848,11 +1166,46 @@ function realpathNearest(p) {
 }
 
 /**
+ * The relative path of `real` under the OUTERMOST gsd-core checkout above it whose tests/ holds it, or null
+ * (security review MEDIUM-2). resolveRoot throws when no further ancestor carries the sentinel; that ends the walk.
+ */
+function relUnderOutermostRoot(real, resolveRoot) {
+  const roots = [];
+  let start = path.dirname(real);
+  for (let k = 0; k < MAX_ROOT_WALK; k++) {
+    let r;
+    try {
+      r = resolveRoot(start);
+    } catch (_) {
+      break;
+    }
+    roots.push(r);
+    const parent = path.dirname(r);
+    if (parent === r) break;
+    start = parent;
+  }
+  for (let i = roots.length - 1; i >= 0; i--) {
+    let rootReal;
+    try {
+      rootReal = fs.realpathSync.native(roots[i]);
+    } catch (_) {
+      continue;
+    }
+    const relNative = path.relative(rootReal, real);
+    if (!relNative || path.isAbsolute(relNative)) continue;
+    const segs = relNative.split(path.sep);
+    if (segs.length < 2 || segs[0] !== 'tests' || segs.includes('..')) continue;
+    return { rootReal, segs, rel: segs.join('/') };
+  }
+  return null;
+}
+
+/**
  * The decision over a PreToolUse payload: a deny object, an advisory object or null. May throw; runEditGuard
  * turns any throw into a silent pass.
  *
  * @param {string} stdinString
- * @param {{resolveRoot?: (startDir:string) => string}} [deps]
+ * @param {{resolveRoot?: (startDir:string) => string, workBudget?: number}} [deps]
  */
 function gate(stdinString, deps = {}) {
   const input = JSON.parse(stdinString);
@@ -862,7 +1215,7 @@ function gate(stdinString, deps = {}) {
   const ti = input.tool_input;
   if (!ti || typeof ti !== 'object') return null;
   const filePath = ti.file_path;
-  if (typeof filePath !== 'string' || filePath.length === 0) return null;
+  if (typeof filePath !== 'string' || filePath.length === 0 || filePath.length > MAX_PATH_CHARS) return null;
 
   const cwd = typeof input.cwd === 'string' && input.cwd.length > 0 ? input.cwd : process.cwd();
   const abs = path.isAbsolute(filePath) ? path.resolve(filePath) : path.resolve(cwd, filePath);
@@ -870,12 +1223,9 @@ function gate(stdinString, deps = {}) {
   if (!real || !JS_EXT_RE.test(real)) return null;
 
   const resolveRoot = deps.resolveRoot || require('./lib/resolve.cjs').resolveGsdCoreRoot;
-  const rootReal = fs.realpathSync.native(resolveRoot(path.dirname(real)));
-  const relNative = path.relative(rootReal, real);
-  if (!relNative || path.isAbsolute(relNative)) return null;
-  const segs = relNative.split(path.sep);
-  if (segs.length < 2 || segs[0] !== 'tests' || segs.includes('..')) return null;
-  const rel = segs.join('/');
+  const where = relUnderOutermostRoot(real, resolveRoot);
+  if (!where) return null;
+  const { rootReal, segs, rel } = where;
 
   const { readRegularFileBounded } = require('./lib/regular-file.cjs');
   let baseline;
@@ -886,18 +1236,6 @@ function gate(stdinString, deps = {}) {
     else return null;
   }
   baseline = lf(baseline);
-
-  let post;
-  if (tool === 'Write') {
-    if (typeof ti.content !== 'string' || bytes(ti.content) > MAX_BYTES) return null;
-    post = lf(ti.content);
-  } else if (tool === 'Edit') {
-    post = applyEdits(baseline, [{ old_string: ti.old_string, new_string: ti.new_string, replace_all: ti.replace_all }]);
-  } else {
-    post = applyEdits(baseline, ti.edits);
-  }
-  if (typeof post !== 'string' || bytes(post) > MAX_BYTES) return null;
-
   let timeoutsText = null;
   if (rel !== TIMEOUTS_REL && segs.length === 3 && segs[1] === 'helpers') {
     try {
@@ -906,13 +1244,31 @@ function gate(stdinString, deps = {}) {
       timeoutsText = null;
     }
   }
-  return judge({ rel, baseline, post, timeoutsText });
+
+  return withBudget(deps.workBudget, () => {
+    try {
+      let post;
+      if (tool === 'Write') {
+        if (typeof ti.content !== 'string' || bytes(ti.content) > MAX_BYTES) return null;
+        post = lf(ti.content);
+      } else if (tool === 'Edit') {
+        post = applyEdits(baseline, [{ old_string: ti.old_string, new_string: ti.new_string, replace_all: ti.replace_all }]);
+      } else {
+        post = applyEdits(baseline, ti.edits);
+      }
+      if (typeof post !== 'string' || bytes(post) > MAX_BYTES) return null;
+      return judgeCore({ rel, baseline, post, timeoutsText });
+    } catch (err) {
+      if (err instanceof BudgetExceeded) return budgetNote(rel);
+      throw err;
+    }
+  });
 }
 
 /**
  * The entry seam: a deny object only for a result whose permissionDecision is exactly 'deny' with a non-empty
  * reason; an advisory object only for a non-empty additionalContext with no permissionDecision key; null (a silent
- * pass) for every other result and for any throw.
+ * pass) for every other result and for any throw. Only a deny is written to the verdict log.
  *
  * @param {string} stdinString
  * @param {Object} [deps] gate deps, plus deps.gateImpl (test seam replacing gate)
@@ -996,4 +1352,5 @@ module.exports = {
   realpathNearest,
   main,
   MAX_EDITS,
+  WORK_BUDGET,
 };

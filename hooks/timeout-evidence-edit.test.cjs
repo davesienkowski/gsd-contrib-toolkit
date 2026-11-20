@@ -343,11 +343,12 @@ test('#6143: the same Write with the comment hunk left at its old text (13.21x, 
     '`margin <M>x`',
     '`margin at least <M>x`',
     'first',
-    'comment-only or evidence-only edit',
     'arithmetic',
     'cannot check that an observation is real',
     '(ENF-27, fail-open edit guard)'
   );
+  // R2-I2 W-05 (protected needle change): the reason no longer claims a comment-only edit is never denied.
+  assert.ok(!/never denied/.test(r.permissionDecisionReason), r.permissionDecisionReason);
 });
 
 test('#6143: the compliant sequence (comment, entry, value; each applied to disk) passes at every step', () => {
@@ -733,7 +734,7 @@ test('cost (T-261120-04): a 30000-line run of adjacent timeout declarations and 
   const run = Array.from({ length: 30000 }, (_, i) => 'const t' + i + 'Timeout = 1;').join('\n') + '\n';
   const t0 = Date.now();
   const r = mod.judge({ rel: 'tests/p.test.cjs', baseline: '', post: run, timeoutsText: null });
-  assertAdvisory(r, 't0Timeout', 't29999Timeout');
+  assertAdvisory(r, 't0Timeout', 'and 29975 more'); // R2 LOW-4: the note lists at most 25 names
   const longRhs = 'const xTimeoutMs = ' + '1 + '.repeat(60000) + '1;\n';
   assertAdvisory(mod.judge({ rel: 'tests/p.test.cjs', baseline: '', post: longRhs, timeoutsText: null }), 'xTimeoutMs', '60001');
   assert.ok(Date.now() - t0 < 5000, 'judged in ' + (Date.now() - t0) + ' ms');
@@ -968,6 +969,285 @@ test('spawned: a FIFO and a directory target pass within the spawn timeout (REVI
     assert.strictEqual(r.stdout, '', rel);
   }
   if (mk.status !== 0) t.diagnostic('mkfifo unavailable; the FIFO case did not run');
+});
+
+// ---------------------------------------------------------------- fix round 2 (REVIEW, SECURITY-AUDIT-R1, FIX-PLAN-R2, R2-I2)
+
+/** The margin a deny reason asks for (the first `margin <M>x` it prints after "it needs"). */
+function neededMargin(reason) {
+  const m = /it needs (?:`worst observed [0-9.]+ms` and )?`margin ([0-9.]+)x`/.exec(reason);
+  assert.ok(m, 'the reason names a margin: ' + reason);
+  return m[1];
+}
+
+test('R2 CR-01: a fractional observedMaxMs (7424.5) is satisfiable: the restated comment passes, the stale one denies', () => {
+  const frac = sub(sub(TIMEOUTS, 'observedMaxMs: 7424,', 'observedMaxMs: 7424.5,'), 'worst observed 7424ms', 'worst observed 7424.5ms');
+  const root = makeRoot({ [TO]: frac });
+  const raise = { old_string: PROBE_DECL, new_string: 'const PROBE_TIMEOUT_MS = 16000;' };
+  const stale = guardMulti(root, TO, [raise]);
+  assertDeny(stale, 'PROBE_TIMEOUT_MS', 'worst observed 7424.5ms', 'margin 2.15x');
+  assertSilent(guardMulti(root, TO, [{ old_string: 'margin 2.02x', new_string: 'margin ' + neededMargin(stale.permissionDecisionReason) + 'x' }, raise]));
+});
+
+test('R2 N-01: an exponent-form observedMaxMs is printed in a form the check accepts, and that form passes', () => {
+  const tiny = sub(TIMEOUTS, 'observedMaxMs: 7424,', 'observedMaxMs: 1e-7,');
+  const root = makeRoot({ [TO]: tiny });
+  const raise = { old_string: PROBE_DECL, new_string: 'const PROBE_TIMEOUT_MS = 16000;' };
+  const r = guardMulti(root, TO, [raise]);
+  assertDeny(r, 'worst observed 0.0000001ms');
+  assert.ok(!/\de-\d/.test(r.permissionDecisionReason.split('\n')[1]), r.permissionDecisionReason);
+  assertSilent(guardMulti(root, TO, [
+    { old_string: 'worst observed 7424ms', new_string: 'worst observed 0.0000001ms' },
+    { old_string: 'margin 2.02x', new_string: 'margin ' + neededMargin(r.permissionDecisionReason) + 'x' },
+    raise,
+  ]));
+});
+
+const QUOTED_EXTRA = sub(TIMEOUTS, ENTRY_ANCHOR, ENTRY_ANCHOR + "  'EXTRA_NOTE': { kind: 'fixture-data', reason: 'not an export' },\n");
+const STALE_PROBE = (t) => sub(t, PROBE_DECL, 'const PROBE_TIMEOUT_MS = 30000;');
+const ADD_NEW = (t) => sub(sub(t, CI_ANCHOR, 'const NEW_CLASS_TIMEOUT_MS = 30000;\n\n' + CI_ANCHOR), EXPORT_ANCHOR, EXPORT_ANCHOR + '  NEW_CLASS_TIMEOUT_MS,\n');
+
+test('R2 WR-01: an unrelated quoted key no longer switches off the stale-comment deny of a readable entry', () => {
+  assertDeny(guardWrite(makeRoot({ [TO]: QUOTED_EXTRA }), TO, STALE_PROBE(QUOTED_EXTRA)), 'PROBE_TIMEOUT_MS', 'margin 4.04x');
+});
+
+test('R2 WR-05 (readable alone): an unrelated quoted key keeps the missing-entry deny off; without it the same Write denies', () => {
+  assertSilent(guardWrite(makeRoot({ [TO]: QUOTED_EXTRA }), TO, ADD_NEW(QUOTED_EXTRA)));
+  assertDeny(guardWrite(ROOT, TO, ADD_NEW(TIMEOUTS)), 'NEW_CLASS_TIMEOUT_MS');
+});
+
+test('R2 WR-05 (othersCovered alone): another exported constant without an entry keeps the missing-entry deny off', () => {
+  const orphan = sub(sub(TIMEOUTS, CI_ANCHOR, 'const ORPHAN_TIMEOUT_MS = 1000;\n' + CI_ANCHOR), EXPORT_ANCHOR, EXPORT_ANCHOR + '  ORPHAN_TIMEOUT_MS,\n');
+  const root = makeRoot({ [TO]: orphan });
+  assertSilent(guardWrite(root, TO, ADD_NEW(orphan)));
+});
+
+test('R2 WR-05 (in-comment declaration): a column-0 declaration inside a block comment is not judged', () => {
+  const post = sub(TIMEOUTS, '/**\n * A short CLI probe.', '/*\nconst PROBE_TIMEOUT_MS = 99999;\n*/\n\n/**\n * A short CLI probe.');
+  assertSilent(guardWrite(ROOT, TO, post));
+  // the commented declaration comes first; if it counted, it would shadow the real one and hide this stale raise
+  assertDeny(guardWrite(ROOT, TO, STALE_PROBE(post)), 'PROBE_TIMEOUT_MS', 'margin 4.04x');
+});
+
+test('R2 W-03: a later spread, computed or same-key quoted member may override an entry, so that constant is not judged', () => {
+  const backstops = "const BACKSTOPS = { PROBE_TIMEOUT_MS: { kind: 'test-backstop', reason: 'outer guard' } };\n";
+  const withMember = (member) => sub(sub(TIMEOUTS, ENTRY_ANCHOR, backstops + ENTRY_ANCHOR), '\n});\n\nmodule.exports', '\n' + member + '\n});\n\nmodule.exports');
+  for (const member of ['  ...BACKSTOPS,', "  [KEY]: { kind: 'test-backstop', reason: 'x' },", "  'PROBE_TIMEOUT_MS': { kind: 'test-backstop', reason: 'x' },"]) {
+    const base = withMember(member);
+    assertSilent(guardWrite(makeRoot({ [TO]: base }), TO, sub(base, PROBE_DECL, 'const PROBE_TIMEOUT_MS = 60000;')), member);
+  }
+  // control: the spread BEFORE the entry cannot override it, so the stale raise is judged and denies
+  const before = sub(TIMEOUTS, ENTRY_ANCHOR, backstops + ENTRY_ANCHOR + '  ...BACKSTOPS,\n');
+  assertDeny(guardWrite(makeRoot({ [TO]: before }), TO, sub(before, PROBE_DECL, 'const PROBE_TIMEOUT_MS = 60000;')), 'PROBE_TIMEOUT_MS');
+});
+
+test('R2 WR-04 / W-04: a trailing tag after code is ignored, never reads the next block, and the reason says why', () => {
+  const noOwnTag = sub(TIMEOUTS, 'Evidence (TIMEOUT_EVIDENCE.PROBE_TIMEOUT_MS): ', '');
+  const trailing = (figures) => sub(noOwnTag, PROBE_DECL, 'const PROBE_TIMEOUT_MS = 60000; // Evidence (TIMEOUT_EVIDENCE.PROBE_TIMEOUT_MS): ' + figures);
+  for (const figures of ['see below', 'worst observed 7424ms on darwin, margin 8.08x']) {
+    const r = guardWrite(ROOT, TO, trailing(figures));
+    assertDeny(r, 'PROBE_TIMEOUT_MS', 'follows code', 'ignored');
+    assert.ok(!r.permissionDecisionReason.includes('23514'), 'the next block was read: ' + r.permissionDecisionReason);
+  }
+});
+
+test('R2 WR-04: a one-line block comment and a star-less block line are accepted comment starts', () => {
+  const oneLine = sub(
+    TIMEOUTS,
+    ' */\n' + PROBE_DECL,
+    ' */\n/** Evidence (TIMEOUT_EVIDENCE.PROBE_TIMEOUT_MS): worst observed 7424ms on darwin, margin 4.04x */\nconst PROBE_TIMEOUT_MS = 30000;'
+  );
+  assertSilent(guardWrite(ROOT, TO, sub(oneLine, 'Evidence (TIMEOUT_EVIDENCE.PROBE_TIMEOUT_MS): worst observed 7424ms on darwin (p50', 'Old note: worst observed 7424ms on darwin (p50')));
+  const starless = sub(
+    sub(TIMEOUTS, ' * Evidence (TIMEOUT_EVIDENCE.PROBE_TIMEOUT_MS): ', '   Evidence (TIMEOUT_EVIDENCE.PROBE_TIMEOUT_MS): '),
+    'margin 2.02x',
+    'margin 4.04x'
+  );
+  assertSilent(guardWrite(ROOT, TO, STALE_PROBE(starless)));
+});
+
+test('R2 W-04: the FIRST ACCEPTED tag is read; an earlier trailing mention after code does not hide it', () => {
+  // The trailing mention comes first in the file, with an unrelated block (wrong figures) before PROBE's own block.
+  const post = sub(
+    STALE_PROBE(sub(TIMEOUTS, 'margin 2.02x', 'margin 4.04x')),
+    '/**\n * A short CLI probe.',
+    'const NOTE = 1; // Evidence (TIMEOUT_EVIDENCE.PROBE_TIMEOUT_MS): moved\n/** other: worst observed 99ms on linux, margin 1.00x */\n\n/**\n * A short CLI probe.'
+  );
+  assertSilent(guardWrite(ROOT, TO, post));
+});
+
+test('R2 WR-02 / W-08: multi-declarators are judged on one line and across lines', () => {
+  for (const decl of [
+    'const PROBE_TIMEOUT_MS = 30000, UNUSED_X = 0;',
+    'const UNUSED_X = 0, PROBE_TIMEOUT_MS = 30000;',
+    'const UNUSED_X = 0,\n  PROBE_TIMEOUT_MS = 30000;',
+  ]) {
+    assertDeny(guardWrite(ROOT, TO, sub(TIMEOUTS, PROBE_DECL, decl)), 'PROBE_TIMEOUT_MS', '30000');
+  }
+  assertAdvisory(guardWrite(ROOT, 'tests/md.test.cjs', T(['const a = 1, waitTimeoutMs = 5000;'])), 'waitTimeoutMs');
+  assertAdvisory(guardWrite(ROOT, 'tests/md2.test.cjs', T(['let a = 1,', '  spawnTimeoutMs = 5000;'])), 'spawnTimeoutMs');
+});
+
+test('R2 WR-02: a plain TypeScript annotation in arm B is a timeout declaration', () => {
+  assertAdvisory(guardWrite(ROOT, 'tests/ann.test.ts', T(['const SPAWN_TIMEOUT_MS: number = 90000;'])), 'SPAWN_TIMEOUT_MS');
+});
+
+function plantSentinel(dir) {
+  write(dir, 'scripts/issue-dedupe.cjs', '// planted\n');
+  fs.mkdirSync(path.join(dir, 'gsd-core', 'bin', 'lib'), { recursive: true });
+}
+
+test('R2 MEDIUM-2: a sentinel planted at tests/ (or stacked at tests/ and tests/helpers/) does not switch the guard off', () => {
+  const one = makeRoot();
+  plantSentinel(path.join(one, 'tests'));
+  assertDeny(guardWrite(one, TO, STALE_6143), 'GSD_TOOLS_CLI_MODERATE_TIMEOUT_MS');
+  const two = makeRoot();
+  plantSentinel(path.join(two, 'tests'));
+  plantSentinel(path.join(two, 'tests', 'helpers'));
+  assertDeny(guardWrite(two, TO, STALE_6143), 'GSD_TOOLS_CLI_MODERATE_TIMEOUT_MS');
+});
+
+test('R2 MEDIUM-2: a checkout nested at .claude/worktrees/w1 is judged against itself', () => {
+  const outer = makeRoot();
+  const w1 = path.join(outer, '.claude', 'worktrees', 'w1');
+  plantSentinel(w1);
+  write(w1, TO, TIMEOUTS);
+  assertDeny(guardWrite(w1, TO, STALE_6143), 'GSD_TOOLS_CLI_MODERATE_TIMEOUT_MS');
+});
+
+test('R2 LOW-3: a regex literal holding a slash-star does not open a phantom comment (comment-only edit passes)', () => {
+  const body = T([
+    "'use strict';",
+    'const SLASH_STAR_RE = /[/*]/;',
+    '// marker line',
+    'const A_MS = 5000;',
+    '// end of block */',
+    "const TIMEOUT_EVIDENCE = Object.freeze({",
+    "  A_MS: { kind: 'measured', observedMaxMs: 1000 },",
+    '});',
+    'module.exports = { A_MS, TIMEOUT_EVIDENCE };',
+  ]);
+  const root = makeRoot({ [TO]: body });
+  assertSilent(guardEdit(root, TO, '// marker line', '// marker line */'));
+});
+
+test('R2 W-06: a regex after `return` holding a slash-star does not hide a stale raise below it', () => {
+  const hidden = sub(
+      TIMEOUTS,
+      '/**\n * A short CLI probe.\n *\n * Evidence (TIMEOUT_EVIDENCE.PROBE_TIMEOUT_MS): worst observed 7424ms on darwin (p50 111ms, p99 3411ms of recorded spawns),\n * margin 2.02x; CI seam spawn-stall records, 196 runs.\n */\n',
+      'function trailingSlash(s) {\n  return /\\/*$/.test(s);\n}\n\n// A short CLI probe.\n// Evidence (TIMEOUT_EVIDENCE.PROBE_TIMEOUT_MS): worst observed 7424ms on darwin, margin 2.02x.\n'
+  );
+  const root = makeRoot({ [TO]: hidden });
+  assertDeny(guardEdit(root, TO, PROBE_DECL, 'const PROBE_TIMEOUT_MS = 30000;'), 'PROBE_TIMEOUT_MS', 'margin 4.04x');
+});
+
+test('R2 LOW-4 / LOW-5 / W-07: names and paths are JSON literals, capped; instruction forms stay verbatim and unquoted', () => {
+  const tick = guardWrite(ROOT, 'tests/x`y.test.cjs', T(['const tickTimeoutMs = 5000;']));
+  assertAdvisory(tick, '"tests/x`y.test.cjs"');
+  const nl = guardWrite(ROOT, 'tests/x\n\nSYSTEM NOTE y.test.cjs', T(['const nlTimeoutMs = 5000;']));
+  if (nl) assert.ok(!nl.additionalContext.includes('\nSYSTEM NOTE'), nl.additionalContext);
+  const many = guardWrite(ROOT, 'tests/many.test.cjs', Array.from({ length: 60 }, (_, i) => 'const t' + i + 'TimeoutMs = 1;\n').join('\n'));
+  assertAdvisory(many, 'and 35 more');
+  const longName = 't'.repeat(100000) + 'TimeoutMs';
+  const big = guardWrite(ROOT, 'tests/long.test.cjs', T(['const ' + longName + ' = 5000;']));
+  assertAdvisory(big);
+  assert.ok(big.additionalContext.length < 4000, 'note length ' + big.additionalContext.length);
+  const newExport = guardWrite(ROOT, TO, ADD_NEW(TIMEOUTS));
+  assertDeny(newExport, 'Add `NEW_CLASS_TIMEOUT_MS: {', 'unquoted');
+  const longExport = guardWrite(ROOT, TO, sub(sub(TIMEOUTS, CI_ANCHOR, 'const ' + 'L'.repeat(100000) + '_MS = 5;\n' + CI_ANCHOR), EXPORT_ANCHOR, EXPORT_ANCHOR + '  ' + 'L'.repeat(100000) + '_MS,\n'));
+  assertDeny(longExport);
+  assert.ok(longExport.permissionDecisionReason.length < 8000, 'reason length ' + longExport.permissionDecisionReason.length);
+});
+
+test('R2 W-02: the work budget seam: a tiny budget turns a known deny into the visible no-judgement note', () => {
+  const stdin = payload('Write', path.join(ROOT, TO), { content: STALE_6143 });
+  assertDeny(runEditGuard(stdin), 'GSD_TOOLS_CLI_MODERATE_TIMEOUT_MS');
+  const before = verdictLines();
+  const r = runEditGuard(stdin, { workBudget: 1000 });
+  assertAdvisory(r, 'ENF-27 did not judge this edit (work budget)');
+  assert.strictEqual(verdictLines(), before, 'the budget note is not verdict-logged');
+  assert.ok(Number.isInteger(mod.WORK_BUDGET) && mod.WORK_BUDGET >= 16 * 1024 * 1024, 'WORK_BUDGET ' + mod.WORK_BUDGET);
+});
+
+test('R2 LOW-8: a very long missing path is a silent pass at once', { timeout: 8000 }, () => {
+  const t0 = Date.now();
+  assertSilent(guardWrite(ROOT, 'tests/' + 'a/'.repeat(25000) + 'f.cjs', T(['const deepTimeoutMs = 5000;'])));
+  assert.ok(Date.now() - t0 < 1000, 'judged in ' + (Date.now() - t0) + ' ms');
+});
+
+test('R2 LOW-6: a replace_all whose result would pass the cap is refused before the string is built', { timeout: 8000 }, () => {
+  const t0 = Date.now();
+  assert.strictEqual(mod.applyEdits('a'.repeat(1000000), [{ old_string: 'a', new_string: 'b'.repeat(500), replace_all: true }]), null);
+  assert.ok(Date.now() - t0 < 300, 'refused in ' + (Date.now() - t0) + ' ms');
+});
+
+/** A 1 MiB-class timeouts.cjs: N tagged measured constants whose Evidence comments share ONE `//` run. */
+function sharedRunTimeouts(n, value) {
+  let t = '';
+  for (let i = 0; i < n; i++) t += '// Evidence (TIMEOUT_EVIDENCE.C' + i + '_MS): worst observed 10ms on linux, margin 2.00x\n';
+  for (let i = 0; i < n; i++) t += 'const C' + i + '_MS = ' + value + ';\n';
+  t += 'const TIMEOUT_EVIDENCE = Object.freeze({\n';
+  for (let i = 0; i < n; i++) t += '  C' + i + "_MS: { kind: 'measured', observedMaxMs: 10 },\n";
+  t += '});\nmodule.exports = {\n';
+  for (let i = 0; i < n; i++) t += '  C' + i + '_MS,\n';
+  return t + '  TIMEOUT_EVIDENCE,\n};\n';
+}
+
+test('R2 cost (MEDIUM-1, LOW-1, LOW-2, LOW-7): each shape near the 1 MiB cap is judged, with a DENY where one is due, well inside the budget', { timeout: 30000 }, () => {
+  const times = [];
+  const timed = (label, f) => {
+    const t0 = Date.now();
+    f();
+    times.push(label + ' ' + (Date.now() - t0) + ' ms');
+  };
+  // MEDIUM-1: an on-disk timeouts.cjs padded with closed destructures and many declarations; a stale raise denies
+  const stale = T([
+    "'use strict';",
+    '// Evidence (TIMEOUT_EVIDENCE.A_MS): worst observed 1000ms on linux, margin 5.00x',
+    'const A_MS = 5000;',
+    "const TIMEOUT_EVIDENCE = Object.freeze({\n  A_MS: { kind: 'measured', observedMaxMs: 1000 },\n});",
+    'module.exports = { A_MS, TIMEOUT_EVIDENCE };',
+  ]);
+  let pad = '\n// padding below\n';
+  for (let i = 0; i < 15000; i++) pad += 'var d' + i + '=1\n';
+  const parts = Array.from({ length: 700 }, (_, i) => 'p' + i).join(',');
+  for (let i = 0; i < 75; i++) pad += 'const{' + parts + "}=require('./x')\n";
+  const padded = stale + pad;
+  timed('MEDIUM-1 padded', () => assertDeny(mod.judge({ rel: TO, baseline: padded, post: padded.replace('const A_MS = 5000;', 'const A_MS = 9000;') }), 'A_MS'));
+  timed('MEDIUM-1 helper edit', () => mod.judge({ rel: 'tests/helpers/h1.cjs', baseline: 'module.exports = {};\n', post: 'module.exports = { a: 1 };\n', timeoutsText: padded }));
+  // LOW-1: unbalanced evidence members
+  let unbalanced = 'const TIMEOUT_EVIDENCE = Object.freeze({\n';
+  for (let i = 0; i < 40000; i++) unbalanced += '  K' + i + ':{),\n';
+  for (let i = 0; i < 40000; i++) unbalanced += '  Z' + i + ':(},\n';
+  unbalanced += '});\nconst A_MS = 9000;\nmodule.exports = { A_MS };\n';
+  timed('LOW-1 unbalanced members', () => mod.judge({ rel: TO, baseline: '', post: unbalanced }));
+  // LOW-2: 6000 tagged constants (1,015,647 bytes) in one shared `//` run, all raised past their margin: DENY
+  const run = sharedRunTimeouts(6000, 20);
+  timed('LOW-2 shared run', () => assertDeny(mod.judge({ rel: TO, baseline: run, post: run.replace(/ = 20;/g, ' = 30;') }), 'C0_MS'));
+  // LOW-7: 58000 same-name declarations in arm B, one comment edit
+  const same = 'let timeout=1\n'.repeat(58000);
+  timed('LOW-7 same-name', () => mod.judge({ rel: 'tests/big.test.cjs', baseline: same, post: '// note\n' + same }));
+  for (const line of times) assert.ok(Number(line.split(' ').slice(-2)[0]) < 5000, times.join('; '));
+});
+
+test('R2 W-01: the worst inputs the budget admits finish well under the 10 s snippet timeout through gate()', { timeout: 60000 }, (t) => {
+  const root = makeRoot({ [TO]: sharedRunTimeouts(6000, 20) });
+  const shapes = [];
+  // a 1 MiB-class Write of timeouts.cjs with every constant judged
+  shapes.push(['shared-run Write', payload('Write', path.join(root, TO), { content: sharedRunTimeouts(6000, 30) })]);
+  // a MultiEdit at the edit cap of replace_all edits over the same image
+  const edits = [];
+  for (let i = 0; i < mod.MAX_EDITS - 1; i++) edits.push(i % 2 ? { old_string: 'LINUX', new_string: 'linux', replace_all: true } : { old_string: 'linux', new_string: 'LINUX', replace_all: true });
+  edits.push({ old_string: ' = 20;', new_string: ' = 30;', replace_all: true });
+  shapes.push(['MultiEdit at the edit cap', payload('MultiEdit', path.join(root, TO), { edits })]);
+  for (const [label, stdin] of shapes) {
+    const t0 = Date.now();
+    const r = runEditGuard(stdin);
+    const ms = Date.now() - t0;
+    t.diagnostic(label + ': ' + ms + ' ms, ' + (r ? Object.keys(r).join(',') : 'null'));
+    assert.ok(!(r && r.additionalContext && r.additionalContext.includes('work budget')), label + ' was refused by the budget');
+    assert.ok(ms < 5000, label + ' took ' + ms + ' ms');
+  }
 });
 
 // ---------------------------------------------------------------- live rows (read-only gsd-core clone)
