@@ -302,7 +302,7 @@ test('live: ~/repos/gsd-core emitted state.cjs denies, hand-written capability-v
 // ---------------------------------------------------------------- probe env hardening (fix round 2)
 
 test('probeEnvChanges: injects core.fsmonitor=false and safe.bareRepository=explicit after inherited entries', () => {
-  const { probeEnvChanges } = require('./emitted-cjs-read.cjs');
+  const { probeEnvChanges } = require('./lib/hardened-git.cjs');
   const fresh = probeEnvChanges({ PATH: '/usr/bin' });
   assert.deepStrictEqual(
     [fresh.GIT_CONFIG_COUNT, fresh.GIT_CONFIG_KEY_0, fresh.GIT_CONFIG_VALUE_0, fresh.GIT_CONFIG_KEY_1, fresh.GIT_CONFIG_VALUE_1],
@@ -319,7 +319,7 @@ test('probeEnvChanges: injects core.fsmonitor=false and safe.bareRepository=expl
 });
 
 test('probeEnvChanges: no empty or relative PATH entry survives (round 4: PATH is the fixed git directory)', () => {
-  const { probeEnvChanges } = require('./emitted-cjs-read.cjs');
+  const { probeEnvChanges } = require('./lib/hardened-git.cjs');
   assert.strictEqual(probeEnvChanges({ PATH: ':/usr/bin:.:bin:/bin:' }, '/usr/bin/git').PATH, '/usr/bin');
 });
 
@@ -359,7 +359,7 @@ test('real probe: a tree that is not a git work tree passes silently (git exits 
 
 // Fix round 4 (option B, REVIEW-R3 CR-01/IN-01): git is spawned only from a fixed absolute list, never looked up
 // through PATH or the cwd. Rows that need the real probe to answer skip on a host with no listed git (R3-I2 W-03).
-const hookModule = require('./emitted-cjs-read.cjs');
+const hookModule = Object.assign({}, require('./lib/hardened-git.cjs'), require('./emitted-cjs-read.cjs'));
 const LISTED_GIT = typeof hookModule.resolveGitPath === 'function' && Array.isArray(hookModule.GIT_CANDIDATES)
   ? hookModule.resolveGitPath(hookModule.GIT_CANDIDATES)
   : null;
@@ -421,8 +421,10 @@ test('option B: binlib-edit checkIgnoreLive spawns the given absolute gitPath; w
   assert.strictEqual(withIsolatedGitConfig(() => checkIgnoreLive(lib('foo.cjs'), { gitPath: fake })), 'unknown');
   assert.strictEqual(fs.readFileSync(mark, 'utf8'), 'rev-parse\n', 'the given absolute file was spawned');
   assert.strictEqual(withIsolatedGitConfig(() => checkIgnoreLive(lib('foo.cjs'))), 'ignored', 'default spawn unchanged');
-  assert.strictEqual(withIsolatedGitConfig(() => checkIgnoreLive(lib('foo.cjs'), { gitPath: 'relative-git' })), 'ignored',
-    'a non-absolute gitPath is ignored: the default applies');
+  for (const bad of ['relative-git', '', 7, null]) {
+    assert.strictEqual(withIsolatedGitConfig(() => checkIgnoreLive(lib('foo.cjs'), { gitPath: bad })), 'unknown',
+      JSON.stringify(bad) + ': a present but non-absolute gitPath never falls back to a PATH lookup (PLAN-REVIEW-R4 N-03)');
+  }
 });
 
 test('real probe: PATH naming no git no longer decides; the listed git answers (option B replaces the round-2 "git absent from PATH" row)', (t) => {
@@ -487,10 +489,32 @@ test('real probe: a partial-clone lazy fetch never runs a repository-configured 
   const r = spawnHookEnv(payload(path.join(root, 'gsd-core', 'bin', 'lib', 'foo.cjs')), {});
   assert.strictEqual(r.status, 0, r.stderr);
   assert.ok(!fs.existsSync(mark), 'the uploadpack must not run through the hook');
-  // The same with GIT_NO_LAZY_FETCH stripped (it is already absent here) and with an inherited protocol allow.
-  const r2 = spawnHookEnv(payload(path.join(root, 'gsd-core', 'bin', 'lib', 'foo.cjs')), { GIT_ALLOW_PROTOCOL: 'file' });
+  // An inherited GIT_ALLOW_PROTOCOL / GIT_NO_LAZY_FETCH is overwritten by the probe env (the unit row below pins the
+  // values); this sub-row only shows the hook process still runs nothing with them inherited.
+  const r2 = spawnHookEnv(payload(path.join(root, 'gsd-core', 'bin', 'lib', 'foo.cjs')),
+    { GIT_ALLOW_PROTOCOL: 'file', GIT_NO_LAZY_FETCH: '0' });
   assert.strictEqual(r2.status, 0, r2.stderr);
-  assert.ok(!fs.existsSync(mark), 'an inherited GIT_ALLOW_PROTOCOL=file does not reopen the fetch');
+  assert.ok(!fs.existsSync(mark), 'with the two keys inherited permissively the uploadpack still does not run');
+});
+
+test('each lazy-fetch layer alone stops the CR-02 fetch: probe env minus GIT_NO_LAZY_FETCH, and minus GIT_ALLOW_PROTOCOL (PLAN-REVIEW-R4 W-02)', () => {
+  const root = plainTree('lazy-fetch-layers');
+  const mark = path.join(BASE, 'lazy-fetch-layers-mark');
+  armLazyFetch(root, mark);
+  const target = path.join(root, 'gsd-core', 'bin', 'lib', 'foo.cjs');
+  const rawGit = (drop) => {
+    const env = Object.assign({}, FIXTURE_GIT_ENV);
+    Object.assign(env, hookModule.probeEnvChanges(env, '/usr/bin/git'));
+    for (const k of drop) delete env[k];
+    env.PATH = FIXTURE_GIT_ENV.PATH; // the fixture git, so the row runs wherever the suite does
+    fs.rmSync(mark, { force: true });
+    spawnSync('git', ['check-ignore', '-q', '--', target], { cwd: path.dirname(target), env, encoding: 'utf8' });
+    return fs.existsSync(mark);
+  };
+  assert.strictEqual(rawGit(['GIT_ALLOW_PROTOCOL', 'GIT_NO_LAZY_FETCH']), true,
+    'control: with neither key the fetch runs the uploadpack (the fsmonitor/bare-repo keys do not stop it)');
+  assert.strictEqual(rawGit(['GIT_NO_LAZY_FETCH']), false, 'GIT_ALLOW_PROTOCOL alone (the unpatched-git layer) blocks it');
+  assert.strictEqual(rawGit(['GIT_ALLOW_PROTOCOL']), false, 'GIT_NO_LAZY_FETCH alone blocks it on this git build');
 });
 
 test('probeEnvChanges: sets GIT_ALLOW_PROTOCOL to a name no transport has and GIT_NO_LAZY_FETCH=1 (REVIEW-R3 CR-02)', () => {
@@ -562,7 +586,7 @@ test('real probe: a core.fsmonitor command in the checkout\'s own .git/config, o
 });
 
 test('probeEnvChanges: the injected pairs are appended to an inherited GIT_CONFIG_PARAMETERS', () => {
-  const { probeEnvChanges } = require('./emitted-cjs-read.cjs');
+  const { probeEnvChanges } = require('./lib/hardened-git.cjs');
   assert.strictEqual(probeEnvChanges({}).GIT_CONFIG_PARAMETERS, "'core.fsmonitor=false' 'safe.bareRepository=explicit'");
   assert.strictEqual(
     probeEnvChanges({ GIT_CONFIG_PARAMETERS: "'core.fsmonitor=evil'" }).GIT_CONFIG_PARAMETERS,
@@ -600,7 +624,7 @@ test('real probe: with PATH unset, or with no absolute PATH entry, a committed g
 });
 
 test('probeEnvChanges: the probe PATH is exactly the directory of the fixed git, whatever the inherited PATH (round 4)', () => {
-  const { probeEnvChanges } = require('./emitted-cjs-read.cjs');
+  const { probeEnvChanges } = require('./lib/hardened-git.cjs');
   for (const p of [undefined, '', '.', 'rel', '::', 'rel:.:', '/attacker/dir:/usr/bin']) {
     const env = p === undefined ? {} : { PATH: p };
     assert.strictEqual(probeEnvChanges(env, '/usr/bin/git').PATH, '/usr/bin', JSON.stringify(p));
@@ -619,7 +643,7 @@ test('a guarded Read with PATH unset leaves PATH unset (an env-restore row, not 
 });
 
 test('the env layer alone (no pinning) stops the committed bare-dir fsmonitor command (REVIEW-R2 INFO-R2-01)', () => {
-  const { probeEnvChanges } = require('./emitted-cjs-read.cjs');
+  const { probeEnvChanges } = require('./lib/hardened-git.cjs');
   const clone = path.join(BASE, 'bare-clone');
   const target = path.join(clone, 'gsd-core', 'bin', 'lib', 'sub', 'a.cjs');
   if (!fs.existsSync(path.join(clone, 'gsd-core', 'bin', 'lib', 'sub', 'config'))) {

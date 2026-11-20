@@ -17,14 +17,17 @@
  *   (b) git reports the target ignored (generated), through binlib-edit's repository-PINNED
  *       `checkIgnoreLive` (no `.git` entry between the target and bin/, a toplevel strictly above bin/
  *       and not nested in another repository unless a genuine linked worktree, no core.worktree, env
- *       scrubbed), run with core.fsmonitor=false and safe.bareRepository=explicit injected through the
- *       environment, and with PATH cut to its absolute entries (an unset PATH stays unset; a PATH with
- *       no absolute entry becomes one absolute directory that does not exist, never an empty PATH,
- *       which libuv would search as the cwd). A Read can therefore not make git adopt a committed
- *       bare-shaped directory or run a repository-configured fsmonitor command, nor find an executable
- *       named git in the target's directory through an empty or relative PATH entry (security review
- *       HIGH-01, LOW-01, re-review LOW-R2-01). A pinning refusal is a silent pass. A TRACKED hand-written bin/lib file stays readable even when a twin
- *       exists (a module being ported), matching binlib-edit, which allows editing that file.
+ *       scrubbed). git is spawned ONLY by an absolute path from a fixed list (GIT_CANDIDATES:
+ *       /usr/bin/git, /usr/local/bin/git, /bin/git, /opt/homebrew/bin/git; none on win32), never looked
+ *       up through PATH or the cwd (fix round 4, option B). Its environment injects core.fsmonitor=false
+ *       and safe.bareRepository=explicit, allows no transport (GIT_ALLOW_PROTOCOL names none) and no
+ *       lazy fetch (GIT_NO_LAZY_FETCH=1), and sets PATH to the fixed git's own directory. Measured on
+ *       Linux (git 2.43, Node 24): a Read does not run a committed git beside the target or on a PATH
+ *       entry into the checkout, a repository-configured fsmonitor command, a committed bare-shaped
+ *       directory's config, or a partial-clone lazy fetch's uploadpack (security review HIGH-01, LOW-01,
+ *       re-reviews LOW-R2-01 and REVIEW-R3 CR-01, CR-02, IN-01). Native Windows is source-read only. A
+ *       pinning refusal is a silent pass. A TRACKED hand-written bin/lib file stays readable even when a
+ *       twin exists (a module being ported), matching binlib-edit, which allows editing that file.
  * At gsd-core 36e60c09f the two signals agree on every bin/lib .cjs file (287 with a twin, all
  * ignored; 13 without, none ignored). That is a file count, not a measured rate over Reads.
  *
@@ -56,11 +59,18 @@
  * unrelated repository (not a linked worktree of it), a repository with core.worktree set, and a
  * `.git` entry between the target and bin/ all pass silently; the emitted file is then readable. So
  * do a committed bare-shaped directory under bin/lib (the pinning or safe.bareRepository refuses it),
- * a malformed inherited git -c environment (git refuses to run) and a PATH with no absolute entry
- * (git is not found).
+ * a malformed inherited git -c environment (git refuses to run), a host with git at none of the
+ * GIT_CANDIDATES paths, and native Windows (no candidate: the guard never spawns git and never denies).
+ * macOS is unmeasured: /usr/bin/git there may be the xcrun shim, which fails without the Command Line
+ * Tools, which would make every Read a silent pass.
  *
  * READ-ONLY. It stats files, realpaths paths and runs binlib-edit's read-only git probes (rev-parse,
- * config --get, check-ignore; no index lock). Its one write is the best-effort verdict-log line on a
+ * config --get, check-ignore; no index lock) through hooks/lib/hardened-git.cjs. Those subcommands can
+ * still be made to run a program by repository or inherited configuration; the environment suppresses
+ * the routes measured so far: a core.fsmonitor command, a committed bare-shaped repository, and a
+ * partial-clone lazy fetch's uploadpack or sshCommand (no transport, no lazy fetch). Other configuration
+ * keys were probed on git 2.43 by the round-3 security review (REVIEW-R3) and ran nothing; that is a
+ * measured list, not a proof for every git version. Its one write is the best-effort verdict-log line on a
  * deny (hooks/lib/verdict-log.cjs, total). It changes process.env only for the duration of the probe
  * call and restores it.
  *
@@ -90,94 +100,23 @@ function tryRealpath(p) {
 }
 
 /**
- * Git config injected through the environment for every probe spawn (command-line scope, so a repository's
- * own config cannot override it). core.fsmonitor=false stops a repository-configured fsmonitor command;
- * safe.bareRepository=explicit stops git from adopting a committed bare-shaped directory as the repository
- * (SECURITY-REVIEW HIGH-01, quick 261119-szk). Measured on git 2.43: each one alone stops the planted command.
- */
-const INJECTED_GIT_CONFIG = Object.freeze([
-  ['core.fsmonitor', 'false'],
-  ['safe.bareRepository', 'explicit'],
-]);
-
-/** The probe's PATH when the inherited PATH has no absolute entry: absolute, and never created. */
-const NO_ABSOLUTE_PATH = '/nonexistent/emitted-cjs-read-no-absolute-path';
-
-/**
- * The env changes for one probe: the injected config appended after any inherited GIT_CONFIG_COUNT entries
- * (a count that is not a plain non-negative integer is replaced; git rejects such a count anyway), and a PATH
- * rule so `git` is never looked up in the target's directory (SECURITY-REVIEW LOW-01, REVIEW-R2 LOW-R2-01):
- * an unset PATH is not touched, a set PATH keeps only its absolute entries, and a set PATH with none becomes
- * NO_ABSOLUTE_PATH.
- *
- * @param {Object} env
- * @returns {Object} key -> new value
- */
-function probeEnvChanges(env) {
-  const changes = {};
-  const raw = env.GIT_CONFIG_COUNT;
-  let n = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : 0;
-  for (const [key, value] of INJECTED_GIT_CONFIG) {
-    changes['GIT_CONFIG_KEY_' + n] = key;
-    changes['GIT_CONFIG_VALUE_' + n] = value;
-    n += 1;
-  }
-  changes.GIT_CONFIG_COUNT = String(n);
-  // GIT_CONFIG_PARAMETERS (what `git -c` exports to child processes) is read after the COUNT entries, so an
-  // inherited `core.fsmonitor=<cmd>` there would win; the injected pairs are appended to it as well, and the
-  // last occurrence wins inside it (PLAN-REVIEW-R2 W-01). A malformed inherited value makes git refuse to run,
-  // which is a silent pass.
-  const inheritedParams = typeof env.GIT_CONFIG_PARAMETERS === 'string' ? env.GIT_CONFIG_PARAMETERS.trim() : '';
-  const injectedParams = INJECTED_GIT_CONFIG.map(([key, value]) => "'" + key + '=' + value + "'").join(' ');
-  changes.GIT_CONFIG_PARAMETERS = inheritedParams ? inheritedParams + ' ' + injectedParams : injectedParams;
-  // PATH: never empty. libuv searches the cwd (the Read target's directory) for an empty PATH, so an unset
-  // PATH stays unset (Node's default lookup, as before this hardening) and a PATH with no absolute entry
-  // becomes one absolute directory that does not exist, so git is not found: a silent pass (REVIEW-R2
-  // LOW-R2-01).
-  if (typeof env.PATH === 'string') {
-    const absolute = env.PATH.split(path.delimiter).filter((e) => e.length > 0 && path.isAbsolute(e));
-    changes.PATH = absolute.length > 0 ? absolute.join(path.delimiter) : NO_ABSOLUTE_PATH;
-  }
-  return changes;
-}
-
-/**
- * Run fn with probeEnvChanges applied to process.env, restoring every changed key afterwards (binlib-edit's
- * probe reads process.env through its probeEnv, so this is how the hardening reaches its spawns without
- * editing binlib-edit). fn is synchronous.
- *
- * @param {() => *} fn
- * @returns {*}
- */
-function withHardenedProbeEnv(fn) {
-  const changes = probeEnvChanges(process.env);
-  const saved = {};
-  for (const k of Object.keys(changes)) {
-    saved[k] = Object.prototype.hasOwnProperty.call(process.env, k) ? process.env[k] : undefined;
-    process.env[k] = changes[k];
-  }
-  try {
-    return fn();
-  } finally {
-    for (const k of Object.keys(saved)) {
-      if (saved[k] === undefined) delete process.env[k];
-      else process.env[k] = saved[k];
-    }
-  }
-}
-
-/**
  * The default probe: binlib-edit's repository-PINNED `checkIgnoreLive` (no `.git` entry between the target
  * and bin/, a discovered toplevel strictly above bin/ and not nested in another repository unless a genuine
  * linked worktree, no core.worktree, env scrubbed, one 3000 ms deadline), run under withHardenedProbeEnv.
  * 'ignored' only when git answers exit 0 for a pinned repository; every other answer is a silent pass.
  *
+ * Spawns only the fixed git (fixedGit, or opts.candidates in tests); no listed git -> 'unknown', nothing spawned.
+ *
  * @param {string} absPath
+ * @param {{candidates?: string[], checkIgnoreLive?: Function}} [opts] test seams
  * @returns {'ignored'|'not-ignored'|'unknown'}
  */
-function checkIgnorePinned(absPath) {
-  const { checkIgnoreLive } = require('./binlib-edit.cjs');
-  return withHardenedProbeEnv(() => checkIgnoreLive(absPath));
+function checkIgnorePinned(absPath, opts = {}) {
+  const { resolveGitPath, fixedGit, withHardenedProbeEnv } = require('./lib/hardened-git.cjs');
+  const gitPath = Array.isArray(opts.candidates) ? resolveGitPath(opts.candidates) : fixedGit();
+  if (gitPath === null) return 'unknown';
+  const checkIgnoreLive = opts.checkIgnoreLive || require('./binlib-edit.cjs').checkIgnoreLive;
+  return withHardenedProbeEnv(() => checkIgnoreLive(absPath, { gitPath }), gitPath);
 }
 
 /**
@@ -322,8 +261,6 @@ module.exports = {
   gate,
   runReadGuard,
   checkIgnorePinned,
-  probeEnvChanges,
   readDenyReason,
   tryRealpath,
-  INJECTED_GIT_CONFIG,
 };

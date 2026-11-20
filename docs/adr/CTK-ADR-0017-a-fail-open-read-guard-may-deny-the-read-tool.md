@@ -75,8 +75,11 @@ one it prevents. So the existing rules leave two choices: a non-denying advisory
 - **Known silent passes from the pinning.** A gsd-core checkout nested inside an unrelated repository (not a
   linked worktree of it), a repository with `core.worktree` set, and a `.git` entry between the file and
   `bin/` all make the probe refuse to answer, so the Read passes. So do a committed bare-shaped directory
-  under `bin/lib`, a malformed inherited `git -c` environment and a `PATH` with no absolute entry. That is the fail-open direction: the
-  guard trades those reads for never letting the read-from repository choose what git runs.
+  under `bin/lib`, a malformed inherited `git -c` environment, a host with no `git` at any of the guard's fixed
+  absolute paths, and native Windows, where the list is empty (macOS is unmeasured: its `/usr/bin/git` may be a
+  shim that fails without the Command Line Tools, which would also be a silent pass). That is the fail-open direction: the guard trades
+  those reads for never letting the read-from repository choose which git runs or what it runs (git is spawned
+  only from the fixed list, with no transport and no lazy fetch; quick 261119-szk fix round 4).
 - **Counts.** The documented "fail-closed `PreToolUse` gates" stay the Bash, Write|Edit and EnterWorktree gates;
   the read guard is its own category, and every "can deny" sentence names both.
 - **Timeout.** A `PreToolUse` command hook that Claude Code cancels at its timeout does not block the call (the
