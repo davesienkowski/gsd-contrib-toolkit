@@ -729,6 +729,16 @@ test('arm B: JS-family extensions in any case are judged (.ts, .MTS); .json is n
   assertSilent(guardWrite(ROOT, 'tests/x.json', T(['const jsonTimeoutMs = 5000;'])));
 });
 
+test('cost (T-261120-04): a 30000-line run of adjacent timeout declarations and a 60000-term right-hand side are judged in well under the 10 s hook timeout', { timeout: 8000 }, () => {
+  const run = Array.from({ length: 30000 }, (_, i) => 'const t' + i + 'Timeout = 1;').join('\n') + '\n';
+  const t0 = Date.now();
+  const r = mod.judge({ rel: 'tests/p.test.cjs', baseline: '', post: run, timeoutsText: null });
+  assertAdvisory(r, 't0Timeout', 't29999Timeout');
+  const longRhs = 'const xTimeoutMs = ' + '1 + '.repeat(60000) + '1;\n';
+  assertAdvisory(mod.judge({ rel: 'tests/p.test.cjs', baseline: '', post: longRhs, timeoutsText: null }), 'xTimeoutMs', '60001');
+  assert.ok(Date.now() - t0 < 5000, 'judged in ' + (Date.now() - t0) + ' ms');
+});
+
 // ---------------------------------------------------------------- creation, deletion, CRLF (truths 10, 11, 15)
 
 test('creation: an Edit with an empty old_string on a missing, empty or whitespace-only target is a creation', () => {

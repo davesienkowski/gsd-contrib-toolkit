@@ -157,18 +157,16 @@ function classify(text) {
  */
 function analyze(text) {
   const kinds = classify(text);
-  let blanked = '';
   const parts = [];
-  let runStart = 0;
-  for (let i = 0; i < text.length; i++) {
-    if (kinds[i] === 1 && text[i] !== '\n') {
-      if (runStart < i) parts.push(text.slice(runStart, i));
-      parts.push(' ');
-      runStart = i + 1;
-    }
+  let i = 0;
+  while (i < text.length) {
+    let j = i;
+    const blank = kinds[i] === 1 && text[i] !== '\n';
+    while (j < text.length && (kinds[j] === 1 && text[j] !== '\n') === blank) j++;
+    parts.push(blank ? ' '.repeat(j - i) : text.slice(i, j));
+    i = j;
   }
-  parts.push(text.slice(runStart));
-  blanked = parts.join('');
+  const blanked = parts.join('');
   const starts = [0];
   for (let i = 0; i < text.length; i++) if (text[i] === '\n') starts.push(i + 1);
   const lineEnd = (idx) => (idx + 1 < starts.length ? starts[idx + 1] - 1 : text.length);
@@ -178,8 +176,8 @@ function analyze(text) {
 // ---------------------------------------------------------------- numbers
 
 const NUM_RE =
-  /^(?:0[xX][0-9a-fA-F](?:_?[0-9a-fA-F])*|0[oO][0-7](?:_?[0-7])*|0[bB][01](?:_?[01])*|(?:\d(?:_?\d)*(?:\.(?:\d(?:_?\d)*)?)?|\.\d(?:_?\d)*)(?:[eE][+-]?\d(?:_?\d)*)?)(?![A-Za-z0-9_$])/;
-const ID_RE = /^[A-Za-z_$][A-Za-z0-9_$]*/;
+  /(?:0[xX][0-9a-fA-F](?:_?[0-9a-fA-F])*|0[oO][0-7](?:_?[0-7])*|0[bB][01](?:_?[01])*|(?:\d(?:_?\d)*(?:\.(?:\d(?:_?\d)*)?)?|\.\d(?:_?\d)*)(?:[eE][+-]?\d(?:_?\d)*)?)(?![A-Za-z0-9_$])/y;
+const ID_RE = /[A-Za-z_$][A-Za-z0-9_$]*/y;
 
 /**
  * Resolve a right-hand side statically: numeric literals (decimal with `_`, fraction, exponent, 0x, 0o, 0b), unary
@@ -217,13 +215,15 @@ function evalNumeric(src, symtab) {
       const v = primary(depth + 1);
       return c === '-' ? -v : v;
     }
-    const rest = s.slice(i);
-    const num = NUM_RE.exec(rest);
+    // sticky regexes at i: no per-token copy of the rest of the line (linear in the line, T-261120-04)
+    NUM_RE.lastIndex = i;
+    const num = NUM_RE.exec(s);
     if (num) {
       i += num[0].length;
       return Number(num[0].replace(/_/g, ''));
     }
-    const id = ID_RE.exec(rest);
+    ID_RE.lastIndex = i;
+    const id = ID_RE.exec(s);
     if (id && symtab && Object.prototype.hasOwnProperty.call(symtab, id[0])) {
       i += id[0].length;
       return symtab[id[0]];
@@ -686,23 +686,41 @@ function armB(baseline, post, skipLines) {
   }
   const A = analyze(post);
   const decls = declarations(A, false).filter((d) => isTimeout(d.name));
-  const declLines = new Set(decls.map((d) => d.line));
+  // Runs of adjacent timeout declarations, found in one pass; each run's comment text is built once (linear,
+  // T-261120-04).
+  const runOf = new Map();
+  const runs = [];
+  for (const d of decls) {
+    const prev = runOf.get(d.line - 1);
+    if (prev) {
+      prev.end = d.line;
+      runOf.set(d.line, prev);
+    } else if (!runOf.has(d.line)) {
+      const r = { start: d.line, end: d.line, text: null };
+      runs.push(r);
+      runOf.set(d.line, r);
+    }
+  }
+  const runText = (r) => {
+    if (r.text !== null) return r.text;
+    const above = [];
+    for (let i = r.start - 1; i >= 0 && commentLine(A, i); i--) above.push(A.text.slice(A.starts[i], A.lineEnd(i)));
+    const trailing = [];
+    for (let i = r.start; i <= r.end; i++) trailing.push(trailingComment(A, i));
+    r.text = above.reverse().join('\n') + '\n' + trailing.join('\n');
+    return r.text;
+  };
   const flagged = [];
   for (const d of decls) {
     if (skipLines && skipLines.has(d.line)) continue;
     const value = evalNumeric(d.rhs, null);
     if (value === null) continue;
     const vals = baseVals.get(d.name) || [];
-    if (!(vals.length === 0 || vals.every((v) => value > v))) continue;
-    let runStart = d.line;
-    while (runStart > 0 && declLines.has(runStart - 1)) runStart--;
-    let runEnd = d.line;
-    while (declLines.has(runEnd + 1)) runEnd++;
-    let text = '';
-    for (let i = runStart - 1; i >= 0 && commentLine(A, i); i--) text = A.text.slice(A.starts[i], A.lineEnd(i)) + '\n' + text;
-    for (let i = runStart; i <= runEnd; i++) text += '\n' + trailingComment(A, i);
-    if (statesEvidence(text)) continue;
-    flagged.push({ name: d.name, old: vals.length ? Math.max(...vals) : null, value, line: d.line + 1 });
+    let max = null;
+    for (const v of vals) if (max === null || v > max) max = v;
+    if (!(max === null || value > max)) continue;
+    if (statesEvidence(runText(runOf.get(d.line)))) continue;
+    flagged.push({ name: d.name, old: max, value, line: d.line + 1 });
   }
   return flagged;
 }
