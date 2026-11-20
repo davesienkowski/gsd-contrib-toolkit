@@ -951,3 +951,539 @@ test('MJ-01 variant: a harness worktree nested in an OUTSIDE linked worktree (<o
     fx.cleanup();
   }
 });
+
+// --- quick 261120-28y: binlib-edit's own probe spawns only the fixed git, hardened ---------
+// DESIGN.md ## RED rows required, ## Amendment 1 (D8, corrected D7) and ## Amendment 2 (W-01 default-branch PATH
+// row). Every row title carries the tag "28y". Helpers below are function declarations with names no earlier
+// top-level declaration uses (R1 I2 N-02), and they read no module-level constant of this section, so a row
+// earlier in the file can call them. Preloads live only in temp dirs with every value baked in (D3: no seam).
+
+/** The listed git on this host (hooks/lib/hardened-git.cjs), or null. Rows needing a real answer skip on null. */
+function listedGit28() {
+  const hg = require('./lib/hardened-git.cjs');
+  return hg.resolveGitPath(hg.GIT_CANDIDATES);
+}
+const NO_LISTED_GIT_28 = 'no git at any fixed candidate path on this host (binlib-edit then denies every candidate)';
+
+/**
+ * Write a --require preload into a fresh temp dir. It appends "loaded" to its record file, patches the
+ * hardened-git module object's fixedGit when asked (mode 'keep', 'null', 'win32' or an absolute path), and
+ * wraps child_process.spawnSync so each call appends "spawn <file>" before delegating. It reads no env value.
+ */
+function writePreload(mode) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-28y-preload-'));
+  const record = path.join(dir, 'record.txt');
+  const preload = path.join(dir, 'preload.cjs');
+  const hg = path.join(__dirname, 'lib', 'hardened-git.cjs');
+  fs.writeFileSync(
+    preload,
+    [
+      "'use strict';",
+      "const fs = require('node:fs');",
+      "const cp = require('node:child_process');",
+      'const RECORD = ' + JSON.stringify(record) + ';',
+      'const MODE = ' + JSON.stringify(mode) + ';',
+      'const hg = require(' + JSON.stringify(hg) + ');',
+      "fs.appendFileSync(RECORD, 'loaded\\n');",
+      "if (MODE === 'null') hg.fixedGit = () => null;",
+      "else if (MODE === 'win32') hg.fixedGit = () => hg.resolveGitPath(hg.gitCandidates('win32'));",
+      "else if (MODE !== 'keep') hg.fixedGit = () => MODE;",
+      'const original = cp.spawnSync;',
+      'cp.spawnSync = function (file, ...rest) {',
+      "  fs.appendFileSync(RECORD, 'spawn ' + String(file) + '\\n');",
+      '  return original.call(this, file, ...rest);',
+      '};',
+      '',
+    ].join('\n')
+  );
+  return {
+    dir,
+    preload,
+    lines: () => (fs.existsSync(record) ? fs.readFileSync(record, 'utf8').split('\n').filter(Boolean) : []),
+    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
+/** spawnHookWithEnv with NODE_OPTIONS --require <preload> layered on env (spawnHookWithEnv itself unchanged). */
+function spawnPreloaded(stdin, { cwd, env = {}, preload }) {
+  return spawnHookWithEnv(stdin, {
+    cwd,
+    env: Object.assign({}, env, { NODE_OPTIONS: '--require ' + JSON.stringify(preload.preload) }),
+  });
+}
+
+/** The preload's record: asserts it loaded (A4) and returns the spawned files. */
+function preloadSpawns(preload) {
+  const lines = preload.lines();
+  assert.ok(lines.includes('loaded'), 'the preload must have loaded: ' + JSON.stringify(lines));
+  return lines.filter((l) => l.startsWith('spawn ')).map((l) => l.slice('spawn '.length));
+}
+
+/** Run fn with process.env.PATH set to value, restored afterwards (model: emitted-cjs-read.test.cjs withPath). */
+function withPath28(value, fn) {
+  const had = Object.prototype.hasOwnProperty.call(process.env, 'PATH');
+  const saved = process.env.PATH;
+  process.env.PATH = value;
+  try {
+    return fn();
+  } finally {
+    if (had) process.env.PATH = saved;
+    else delete process.env.PATH;
+  }
+}
+
+/** An executable `git` in dir that appends "ran <args>" to mark and exits 1. */
+function markingGit(dir, mark) {
+  fs.mkdirSync(dir, { recursive: true });
+  const p = path.join(dir, 'git');
+  fs.writeFileSync(p, '#!/bin/sh\necho "ran $*" >> ' + JSON.stringify(mark) + '\nexit 1\n');
+  fs.chmodSync(p, 0o755);
+  return p;
+}
+
+function markText(mark) {
+  return fs.existsSync(mark) ? fs.readFileSync(mark, 'utf8') : '';
+}
+
+/**
+ * An executable `git` in dir that logs, per spawn, its PATH, the lazy-fetch keys and every env-injected config
+ * pair to log, then execs the listed git by absolute path. Shell builtins only (echo, printf, test, eval, exec),
+ * because under the hardened probe its PATH is its own directory.
+ */
+function envLoggingGit(dir, log, realGit) {
+  fs.mkdirSync(dir, { recursive: true });
+  const p = path.join(dir, 'git');
+  const L = JSON.stringify(log);
+  fs.writeFileSync(
+    p,
+    [
+      '#!/bin/sh',
+      'echo BEGIN >> ' + L,
+      'printf "PATH=%s\\n" "$PATH" >> ' + L,
+      'printf "ALLOW=%s\\n" "${GIT_ALLOW_PROTOCOL-<unset>}" >> ' + L,
+      'printf "NOLAZY=%s\\n" "${GIT_NO_LAZY_FETCH-<unset>}" >> ' + L,
+      'printf "COUNT=%s\\n" "${GIT_CONFIG_COUNT-<unset>}" >> ' + L,
+      'i=0',
+      'while [ "$i" -lt "${GIT_CONFIG_COUNT:-0}" ]; do',
+      '  eval "k=\\${GIT_CONFIG_KEY_$i-}; v=\\${GIT_CONFIG_VALUE_$i-}"',
+      '  printf "PAIR=%s=%s\\n" "$k" "$v" >> ' + L,
+      '  i=$((i + 1))',
+      'done',
+      'printf "PARAMS=%s\\n" "${GIT_CONFIG_PARAMETERS-<unset>}" >> ' + L,
+      'exec ' + JSON.stringify(realGit) + ' "$@"',
+      '',
+    ].join('\n')
+  );
+  fs.chmodSync(p, 0o755);
+  return p;
+}
+
+/** Parse envLoggingGit's log into one record per spawn. */
+function readEnvLog(log) {
+  if (!fs.existsSync(log)) return [];
+  const spawns = [];
+  for (const line of fs.readFileSync(log, 'utf8').split('\n')) {
+    if (line === 'BEGIN') spawns.push({ pairs: [] });
+    else if (spawns.length === 0 || line === '') continue;
+    else {
+      const cur = spawns[spawns.length - 1];
+      const eq = line.indexOf('=');
+      const key = line.slice(0, eq);
+      const value = line.slice(eq + 1);
+      if (key === 'PAIR') {
+        const e2 = value.indexOf('=');
+        cur.pairs.push([value.slice(0, e2), value.slice(e2 + 1)]);
+      } else cur[key] = value;
+    }
+  }
+  return spawns;
+}
+
+/** Assert every logged spawn saw the hardened env: lazy-fetch keys, PATH = wrapperDir, injected pairs last. */
+function assertHardenedSpawnEnv(spawns, wrapperDir) {
+  const hg = require('./lib/hardened-git.cjs');
+  assert.ok(spawns.length >= 1, 'the wrapper must have been spawned at least once');
+  for (const s of spawns) {
+    assert.strictEqual(s.ALLOW, hg.NO_PROTOCOL, 'GIT_ALLOW_PROTOCOL names no transport');
+    assert.strictEqual(s.NOLAZY, '1', 'GIT_NO_LAZY_FETCH=1');
+    assert.strictEqual(s.PATH, wrapperDir, 'the spawned PATH is exactly the git directory');
+    assert.strictEqual(String(s.pairs.length), s.COUNT, 'every counted pair was logged');
+    assert.deepStrictEqual(
+      s.pairs.slice(-2),
+      [['core.fsmonitor', 'false'], ['safe.bareRepository', 'explicit']],
+      'the injected pairs are the last two env-injected config pairs'
+    );
+    assert.ok(
+      s.PARAMS.endsWith("'core.fsmonitor=false' 'safe.bareRepository=explicit'"),
+      'the -c parameter list ends with the injected pairs: ' + s.PARAMS
+    );
+  }
+}
+
+function commit28(cwd, message) {
+  fixtureGit(cwd, [
+    '-c', 'user.name=binlib-test',
+    '-c', 'user.email=binlib-test@example.invalid',
+    '-c', 'commit.gpgsign=false',
+    'commit', '-q', '-m', message,
+  ]);
+}
+
+/**
+ * A partial-clone fixture whose skip-worktree gsd-core/bin/.gitignore (rule lib/foo.cjs) blob is missing, with a
+ * planted transport program that appends to mark and exits 1 (REVIEW-R3 CR-02; ported from
+ * hooks/emitted-cjs-read.test.cjs armLazyFetch and r3-probes/p6-lazyfetch.cjs). layout 'root': git init at the
+ * root; 'archive': the root .git is a FILE naming a gitdir shipped inside the tree. transport 'uploadpack'
+ * (remote.origin.uploadpack, local URL) or 'ssh' (core.sshCommand, ssh:// URL). rootRule (default true) adds
+ * a root .gitignore line /gsd-core/bin/lib/foo.cjs, a locally present rule; rootRule false leaves the missing blob
+ * as the only rule (the blob-only layout, root layout only). Callers MUST cleanup() in finally.
+ */
+function makeLazyFixture(layout, transport, { rootRule = true } = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-28y-lazy-'));
+  try {
+    const libDir = path.join(root, 'gsd-core', 'bin', 'lib');
+    fs.mkdirSync(libDir, { recursive: true });
+    fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+    const target = path.join(libDir, 'foo.cjs');
+    fs.writeFileSync(target, "'use strict';\n");
+    fs.writeFileSync(path.join(root, 'src', 'foo.cts'), 'export {};\n');
+    fs.writeFileSync(path.join(root, '.gitignore'), rootRule ? '/gsd-core/bin/lib/foo.cjs\n' : '');
+    let gitdir;
+    if (layout === 'archive') {
+      gitdir = path.join(root, 'vendor-gitdir');
+      fixtureGit(root, ['init', '-q', '--separate-git-dir', gitdir]);
+      fixtureGit(root, ['add', '-A']);
+    } else {
+      gitdir = path.join(root, '.git');
+      fixtureGit(root, ['init', '-q']);
+      fixtureGit(root, ['add', '--', '.gitignore', 'src/foo.cts']);
+    }
+    commit28(root, 'fixture');
+    const ig = 'gsd-core/bin/.gitignore';
+    fs.writeFileSync(path.join(root, ig), 'lib/foo.cjs\n');
+    fixtureGit(root, ['add', '-f', '--', ig]);
+    commit28(root, 'ig');
+    const oid = fixtureGit(root, ['rev-parse', ':' + ig]).stdout.trim();
+    fixtureGit(root, ['update-index', '--skip-worktree', '--', ig]);
+    fs.unlinkSync(path.join(root, ig));
+    fs.unlinkSync(path.join(gitdir, 'objects', oid.slice(0, 2), oid.slice(2)));
+    const mark = path.join(root, 'MARK');
+    const prog = path.join(gitdir, transport === 'ssh' ? 'ssh.sh' : 'up.sh');
+    fs.writeFileSync(prog, '#!/bin/sh\necho "' + transport + ' $*" >> ' + JSON.stringify(mark) + '\nexit 1\n');
+    fs.chmodSync(prog, 0o755);
+    fixtureGit(root, ['config', 'core.repositoryformatversion', '1']);
+    fixtureGit(root, ['config', 'extensions.partialClone', 'origin']);
+    fixtureGit(root, ['config', 'remote.origin.promisor', 'true']);
+    fixtureGit(root, ['config', 'protocol.file.allow', 'always']);
+    if (transport === 'ssh') {
+      fixtureGit(root, ['config', 'remote.origin.url', 'ssh://example.invalid/x.git']);
+      fixtureGit(root, ['config', 'core.sshCommand', prog]);
+    } else {
+      fixtureGit(root, ['config', 'remote.origin.url', gitdir]);
+      fixtureGit(root, ['config', 'remote.origin.uploadpack', prog]);
+    }
+    return { root, libDir, target, gitdir, oid, mark, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
+  } catch (err) {
+    fs.rmSync(root, { recursive: true, force: true });
+    throw err;
+  }
+}
+
+/** Raw PATH git check-ignore from the target's directory, the way the 57bcc77 probe ran it (control rows). */
+function rawCheckIgnore28(target, extraEnv = {}) {
+  return spawnSync('git', ['check-ignore', '-q', '--', target], {
+    cwd: path.dirname(target),
+    env: Object.assign({}, FIXTURE_GIT_ENV, extraEnv),
+    encoding: 'utf8',
+  });
+}
+
+/** Is object oid present locally? Checked with lazy fetch off, so the check itself cannot fetch it. */
+function objectPresent28(root, oid) {
+  return spawnSync('git', ['cat-file', '-e', oid], {
+    cwd: root,
+    env: Object.assign({}, FIXTURE_GIT_ENV, { GIT_NO_LAZY_FETCH: '1' }),
+    encoding: 'utf8',
+  }).status === 0;
+}
+
+/**
+ * R1 PLAN-REVIEW B-01 state (ported from probes/r1-measure3.cjs): the only rule gsd-core/bin/.gitignore =
+ * lib/foo.cjs is committed, a bare server clone serves it (allowAnySHA1InWant, allowFilter), then the client makes
+ * the rule skip-worktree, deletes its work-tree file and loose blob and becomes a partial clone of that honest
+ * server. No planted program. Callers MUST cleanup() in finally.
+ */
+function makeHonestRemoteFixture() {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-28y-honest-'));
+  try {
+    const root = path.join(base, 'client');
+    const libDir = path.join(root, 'gsd-core', 'bin', 'lib');
+    fs.mkdirSync(libDir, { recursive: true });
+    fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+    const target = path.join(libDir, 'foo.cjs');
+    fs.writeFileSync(target, "'use strict';\n");
+    fs.writeFileSync(path.join(root, 'src', 'foo.cts'), 'export {};\n');
+    const ig = 'gsd-core/bin/.gitignore';
+    fs.writeFileSync(path.join(root, ig), 'lib/foo.cjs\n');
+    fixtureGit(root, ['init', '-q']);
+    fixtureGit(root, ['add', '-f', '--', ig, 'src/foo.cts']);
+    commit28(root, 'ig');
+    const server = path.join(base, 'server.git');
+    fixtureGit(base, ['clone', '-q', '--bare', root, server]);
+    fixtureGit(server, ['config', 'uploadpack.allowAnySHA1InWant', 'true']);
+    fixtureGit(server, ['config', 'uploadpack.allowFilter', 'true']);
+    const oid = fixtureGit(root, ['rev-parse', ':' + ig]).stdout.trim();
+    fixtureGit(root, ['update-index', '--skip-worktree', '--', ig]);
+    fs.unlinkSync(path.join(root, ig));
+    fs.unlinkSync(path.join(root, '.git', 'objects', oid.slice(0, 2), oid.slice(2)));
+    fixtureGit(root, ['config', 'core.repositoryformatversion', '1']);
+    fixtureGit(root, ['config', 'extensions.partialClone', 'origin']);
+    fixtureGit(root, ['config', 'remote.origin.promisor', 'true']);
+    fixtureGit(root, ['config', 'remote.origin.url', server]);
+    fixtureGit(root, ['config', 'protocol.file.allow', 'always']);
+    return { root, libDir, target, oid, cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
+  } catch (err) {
+    fs.rmSync(base, { recursive: true, force: true });
+    throw err;
+  }
+}
+
+// CR-02 (REVIEW-R3): 2 layouts x 2 transports; each row has its own raw-git control (non-vacuous).
+for (const layout of ['root', 'archive']) {
+  for (const transport of ['uploadpack', 'ssh']) {
+    test('28y CR-02: ' + layout + ' layout, ' + transport + ': a lazy fetch never runs the planted program on an Edit, and the ignored target denies', (t) => {
+      const fx = makeLazyFixture(layout, transport);
+      try {
+        const ctl = rawCheckIgnore28(fx.target);
+        t.diagnostic('control raw git check-ignore exit=' + ctl.status + ' (' + layout + ', ' + transport + ')');
+        assert.ok(fs.existsSync(fx.mark), 'control: raw git lazily fetches and runs the planted program (exit ' + ctl.status + ')');
+        fs.rmSync(fx.mark);
+        const r = spawnHookWithEnv(input(fx.target, 'Edit', fx.root), { cwd: fx.root });
+        assert.strictEqual(markText(fx.mark), '', 'the planted program must not run through the hook');
+        assert.strictEqual(r.decision, 'deny', r.reason);
+        assert.ok(r.reason.startsWith(binLibDenyReason(fx.target)), r.reason);
+        t.diagnostic('hook reason undecidable=' + UNDECIDABLE.test(r.reason));
+      } finally {
+        fx.cleanup();
+      }
+    });
+  }
+}
+
+// CR-01 POSIX analog (REVIEW-R3 CR-01, SECURITY-AUDIT-R1 LOW-01, REVIEW-R3 IN-01): a PATH entry that resolves to the
+// target's own bin/lib, which holds an executable git, never reaches the probe; the listed git answers.
+for (const [label, entry] of [
+  ['an empty PATH entry', () => ''],
+  ['a "." PATH entry', () => '.'],
+  ['an absolute PATH entry naming the target bin/lib', (fx) => fx.libDir],
+]) {
+  test('28y CR-01: ' + label + ' cannot run a planted git beside the target; the tracked file is allowed', (t) => {
+    const lg = listedGit28();
+    if (!lg) return t.skip(NO_LISTED_GIT_28);
+    const fx = makeFixtureRepo();
+    const mark = path.join(fx.root, 'PLANTED-MARK');
+    try {
+      markingGit(fx.libDir, mark);
+      const r = spawnHookWithEnv(input(fx.tracked, 'Edit', fx.root), {
+        cwd: fx.root,
+        env: { PATH: entry(fx) + path.delimiter + path.dirname(lg) },
+      });
+      assert.strictEqual(markText(mark), '', 'the planted git must not run');
+      assert.strictEqual(r.decision, 'allow', r.reason);
+    } finally {
+      fx.cleanup();
+    }
+  });
+}
+
+test('28y spawn record: every git the spawned hook runs is an absolute GIT_CANDIDATES entry, never the bare name', (t) => {
+  if (!listedGit28()) return t.skip(NO_LISTED_GIT_28);
+  const { GIT_CANDIDATES } = require('./lib/hardened-git.cjs');
+  const fx = makeFixtureRepo();
+  const pre = writePreload('keep');
+  try {
+    const r = spawnPreloaded(input(fx.ignored, 'Edit', fx.root), { cwd: fx.root, preload: pre });
+    const files = preloadSpawns(pre);
+    assert.ok(files.length >= 1, 'the probe spawned git');
+    for (const f of files) {
+      assert.ok(path.isAbsolute(f) && GIT_CANDIDATES.includes(f), 'spawned file ' + JSON.stringify(f) + ' must be a listed absolute git');
+    }
+    assert.strictEqual(r.decision, 'deny');
+    assert.strictEqual(r.reason, binLibDenyReason(fx.ignored));
+  } finally {
+    pre.cleanup();
+    fx.cleanup();
+  }
+});
+
+test('28y no candidate: with fixedGit resolving gitCandidates(win32) nothing is spawned and even the tracked file is the undecidable deny', () => {
+  const fx = makeFixtureRepo();
+  const pre = writePreload('win32');
+  try {
+    const r = spawnPreloaded(input(fx.tracked, 'Edit', fx.root), { cwd: fx.root, preload: pre });
+    assert.deepStrictEqual(preloadSpawns(pre), [], 'no git may be spawned without a fixed git');
+    assertUndecidableDeny(r.decision, r.reason, fx.tracked);
+  } finally {
+    pre.cleanup();
+    fx.cleanup();
+  }
+});
+
+test('28y IN-01: checkIgnoreLive with an own gitPath key holding undefined answers unknown and spawns no PATH git', () => {
+  const { checkIgnoreLive } = require('./binlib-edit.cjs');
+  const fx = makeFixtureRepo();
+  const planted = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-28y-pathgit-'));
+  const mark = path.join(planted, 'mark');
+  try {
+    markingGit(planted, mark);
+    const verdict = withPath28(planted + path.delimiter + process.env.PATH,
+      () => withIsolatedGitConfig(() => checkIgnoreLive(fx.ignored, { gitPath: undefined })));
+    assert.strictEqual(markText(mark), '', 'the planted PATH git must not run');
+    assert.strictEqual(verdict, 'unknown');
+  } finally {
+    fs.rmSync(planted, { recursive: true, force: true });
+    fx.cleanup();
+  }
+});
+
+test('28y IN-01: checkIgnoreLive with no options spawns the fixed git, not a planted PATH git, and answers ignored', (t) => {
+  if (!listedGit28()) return t.skip(NO_LISTED_GIT_28);
+  const { checkIgnoreLive } = require('./binlib-edit.cjs');
+  const fx = makeFixtureRepo();
+  const planted = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-28y-pathgit-'));
+  const mark = path.join(planted, 'mark');
+  try {
+    markingGit(planted, mark);
+    const verdict = withPath28(planted + path.delimiter + process.env.PATH,
+      () => withIsolatedGitConfig(() => checkIgnoreLive(fx.ignored)));
+    assert.strictEqual(markText(mark), '', 'the planted PATH git must not run');
+    assert.strictEqual(verdict, 'ignored');
+  } finally {
+    fs.rmSync(planted, { recursive: true, force: true });
+    fx.cleanup();
+  }
+});
+
+test('28y D6b: a PATH that names no git no longer decides; the listed git allows the tracked file', (t) => {
+  if (!listedGit28()) return t.skip(NO_LISTED_GIT_28);
+  const fx = makeFixtureRepo();
+  const emptyBin = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-28y-nogit-'));
+  try {
+    const r = spawnHookWithEnv(input(fx.tracked, 'Edit', fx.root), { cwd: fx.root, env: { PATH: emptyBin } });
+    assert.strictEqual(r.decision, 'allow', r.reason);
+  } finally {
+    fs.rmSync(emptyBin, { recursive: true, force: true });
+    fx.cleanup();
+  }
+});
+
+test('28y env record: checkIgnoreLive with an absolute gitPath spawns it with the hardened env and leaves process.env unchanged', (t) => {
+  const lg = listedGit28();
+  if (!lg) return t.skip(NO_LISTED_GIT_28);
+  const { checkIgnoreLive } = require('./binlib-edit.cjs');
+  const fx = makeFixtureRepo();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-28y-envlog-'));
+  const log = path.join(dir, 'env.log');
+  try {
+    const wrapperDir = path.join(dir, 'bin');
+    const wrapper = envLoggingGit(wrapperDir, log, lg);
+    const verdict = withIsolatedGitConfig(() => {
+      const before = Object.assign({}, process.env);
+      const v = checkIgnoreLive(fx.ignored, { gitPath: wrapper });
+      assert.deepStrictEqual(Object.assign({}, process.env), before, 'process.env must not change');
+      return v;
+    });
+    assertHardenedSpawnEnv(readEnvLog(log), wrapperDir);
+    assert.strictEqual(verdict, 'ignored');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fx.cleanup();
+  }
+});
+
+test('28y env record, default branch: the gate\'s own call (no options) spawns fixedGit with PATH = its directory and the hardened env (R1 I2 W-01)', (t) => {
+  const lg = listedGit28();
+  if (!lg) return t.skip(NO_LISTED_GIT_28);
+  const fx = makeFixtureRepo();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-28y-envlog-'));
+  const log = path.join(dir, 'env.log');
+  const wrapperDir = path.join(dir, 'bin');
+  const wrapper = envLoggingGit(wrapperDir, log, lg);
+  const pre = writePreload(wrapper);
+  try {
+    const r = spawnPreloaded(input(fx.ignored, 'Edit', fx.root), { cwd: fx.root, preload: pre });
+    preloadSpawns(pre);
+    assertHardenedSpawnEnv(readEnvLog(log), wrapperDir);
+    assert.strictEqual(r.decision, 'deny');
+    assert.strictEqual(r.reason, binLibDenyReason(fx.ignored));
+  } finally {
+    pre.cleanup();
+    fs.rmSync(dir, { recursive: true, force: true });
+    fx.cleanup();
+  }
+});
+
+test('28y D8 honest remote: a blob-only partial clone served by an honest remote is the undecidable deny with no fetch', () => {
+  const fx = makeHonestRemoteFixture();
+  try {
+    assert.strictEqual(objectPresent28(fx.root, fx.oid), false, 'precondition: the rule blob is missing locally');
+    const r = spawnHookWithEnv(input(fx.target, 'Edit', fx.root), { cwd: fx.root });
+    assertUndecidableDeny(r.decision, r.reason, fx.target);
+    assert.strictEqual(objectPresent28(fx.root, fx.oid), false, 'the hook must not fetch the missing blob');
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('28y D7 corrected: a blob-only partial clone with a failing planted remote is the undecidable deny and runs nothing', (t) => {
+  const fx = makeLazyFixture('root', 'uploadpack', { rootRule: false });
+  try {
+    const ctl = rawCheckIgnore28(fx.target);
+    t.diagnostic('control raw git check-ignore exit=' + ctl.status);
+    assert.ok(fs.existsSync(fx.mark), 'control: raw git lazily fetches and runs the planted uploadpack');
+    fs.rmSync(fx.mark);
+    const r = spawnHookWithEnv(input(fx.target, 'Edit', fx.root), { cwd: fx.root });
+    assert.strictEqual(markText(fx.mark), '', 'the planted program must not run through the hook');
+    assertUndecidableDeny(r.decision, r.reason, fx.target);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('28y fsmonitor: a core.fsmonitor command in the fixture .git/config never runs on an Edit of the emitted or the tracked file', (t) => {
+  if (!listedGit28()) return t.skip(NO_LISTED_GIT_28);
+  const fx = makeFixtureRepo();
+  const mark = path.join(fx.root, 'FSMONITOR-MARK');
+  try {
+    fixtureGit(fx.root, ['config', 'core.fsmonitor', 'echo own >> ' + JSON.stringify(mark) + ' #']);
+    rawCheckIgnore28(fx.ignored);
+    assert.ok(fs.existsSync(mark), 'control: raw git runs the repository fsmonitor command');
+    fs.rmSync(mark);
+    const e = spawnHookWithEnv(input(fx.ignored, 'Edit', fx.root), { cwd: fx.root });
+    assert.strictEqual(markText(mark), '', 'the fsmonitor command must not run on the emitted Edit');
+    assert.strictEqual(e.decision, 'deny');
+    assert.strictEqual(e.reason, binLibDenyReason(fx.ignored));
+    const k = spawnHookWithEnv(input(fx.tracked, 'Edit', fx.root), { cwd: fx.root });
+    assert.strictEqual(markText(mark), '', 'the fsmonitor command must not run on the tracked Edit');
+    assert.strictEqual(k.decision, 'allow', k.reason);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('28y fsmonitor: an inherited -c core.fsmonitor command never runs on an Edit of the tracked file', (t) => {
+  if (!listedGit28()) return t.skip(NO_LISTED_GIT_28);
+  const fx = makeFixtureRepo();
+  const mark = path.join(fx.root, 'FSMONITOR-ENV-MARK');
+  try {
+    const params = { GIT_CONFIG_PARAMETERS: "'core.fsmonitor=echo env >> " + JSON.stringify(mark) + " #'" };
+    rawCheckIgnore28(fx.tracked, params);
+    assert.ok(fs.existsSync(mark), 'control: raw git runs the inherited -c fsmonitor command');
+    fs.rmSync(mark);
+    const r = spawnHookWithEnv(input(fx.tracked, 'Edit', fx.root), { cwd: fx.root, env: params });
+    assert.strictEqual(markText(mark), '', 'the inherited -c fsmonitor command must not run');
+    assert.strictEqual(r.decision, 'allow', r.reason);
+  } finally {
+    fx.cleanup();
+  }
+});
