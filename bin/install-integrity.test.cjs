@@ -63,6 +63,7 @@ const WIRED = (() => {
   let bash = 0;
   let writeEdit = 0;
   let enterWorktree = 0;
+  let read = 0;
   for (const [event, groups] of Object.entries(snip.hooks || {})) {
     for (const g of groups) {
       const n = (g.hooks || []).length;
@@ -70,9 +71,10 @@ const WIRED = (() => {
       if (event === 'PreToolUse' && g.matcher === 'Bash') bash += n;
       if (event === 'PreToolUse' && g.matcher === 'Write|Edit') writeEdit += n;
       if (event === 'PreToolUse' && g.matcher === 'EnterWorktree') enterWorktree += n;
+      if (event === 'PreToolUse' && g.matcher === 'Read') read += n;
     }
   }
-  return { total, bash, writeEdit, enterWorktree };
+  return { total, bash, writeEdit, enterWorktree, read };
 })();
 
 // The REAL canonical binlib-edit entrypoint (never the sandbox copy) — the 260630-v1h fix under test.
@@ -357,6 +359,19 @@ test('INST-03(b) MATCHER SCOPE: the installed binlib-edit entry keeps its scoped
       assert.ok(
         /(^|[\\/])worktree-fresh-base\.cjs$/.test(t.scriptPath),
         'every EnterWorktree-scoped target must run worktree-fresh-base.cjs; got: ' + JSON.stringify(t.scriptPath)
+      );
+    }
+    // ENF-26 (quick 261119-szk): the fail-open emitted-cjs Read guard is the one Read-scoped target.
+    const readScoped = targets.filter((t) => t.matcher === 'Read');
+    assert.strictEqual(
+      readScoped.length, WIRED.read,
+      'exactly ' + WIRED.read + ' Read-scoped target(s) (emitted-cjs-read), got ' +
+        JSON.stringify(readScoped.map((t) => t.scriptPath))
+    );
+    for (const t of readScoped) {
+      assert.ok(
+        /(^|[\\/])emitted-cjs-read\.cjs$/.test(t.scriptPath),
+        'every Read-scoped target must run emitted-cjs-read.cjs; got: ' + JSON.stringify(t.scriptPath)
       );
     }
   } finally {

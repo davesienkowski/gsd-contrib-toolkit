@@ -291,6 +291,16 @@ const PROOF_TABLE = [
   // here would change the committed baseline without adding any evidence.
   //
   // If a future proof KIND is introduced for non-decision hooks, this is the entry to add.
+  //
+  // ── DELIBERATE EXCLUSION: hooks/emitted-cjs-read.cjs (ENF-26, quick 261119-szk) ─────────────────
+  // WIRED (PreToolUse, matcher 'Read') with no entry here, for the same reason as OBS-01: neither proof
+  // KIND fits. It DENIES a Read of an emitted gsd-core bin/lib .cjs (src twin AND git-ignored) and on
+  // every other path writes NOTHING (a silent pass, never an explicit allow: an allow would skip Claude
+  // Code's permission prompt). kind:'deny' needs a conclusive `allow` on its clean case, which this hook
+  // never emits, and kind:'advisory' needs no permissionDecision on both cases. Its deny fixture also
+  // needs a git-ignored emitted file with a twin, i.e. a real checkout, and an absolute path in the
+  // committed artifact. The deny envelope and the empty-stdout pass are proven on the SPAWNED hook in
+  // hooks/emitted-cjs-read.test.cjs (hermetic fixture checkout plus a read-only live gsd-core row).
 ];
 
 /**
