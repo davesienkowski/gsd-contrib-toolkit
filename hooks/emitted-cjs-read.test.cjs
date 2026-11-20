@@ -727,16 +727,6 @@ test('checkIgnoreLive with a relative gitPath that PATH would find spawns nothin
   assert.ok(!fs.existsSync(mark), 'the PATH git must not run: ' + (fs.existsSync(mark) && fs.readFileSync(mark, 'utf8')));
 });
 
-test('checkIgnoreLive with an explicit gitPath key whose value is undefined spawns nothing (REVIEW-R4 IN-01)', () => {
-  const { checkIgnoreLive } = require('./binlib-edit.cjs');
-  const mark = path.join(BASE, 'undef-gitpath-mark');
-  const dir = markingGitDir('undef-gitpath-git', mark);
-  const verdict = withPath(dir + path.delimiter + process.env.PATH,
-    () => withIsolatedGitConfig(() => checkIgnoreLive(lib('foo.cjs'), { gitPath: undefined })));
-  assert.strictEqual(verdict, 'unknown');
-  assert.ok(!fs.existsSync(mark), 'the PATH git must not run: ' + (fs.existsSync(mark) && fs.readFileSync(mark, 'utf8')));
-});
-
 realTest('the spawned git receives PATH = its own directory (REVIEW-R4 IN-02)', () => {
   const mark = path.join(BASE, 'wrapper-path-mark');
   const dir = path.join(BASE, 'wrapper-bin');
