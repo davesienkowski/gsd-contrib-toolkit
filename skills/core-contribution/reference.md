@@ -46,7 +46,7 @@ npm run lint:ci   # composes eslint + dozens of project linters; must exit 0
 
 ## Issue types (all six) (KNOW-04)
 
-The repo ships **six** issue templates, not three — route a contribution to the one that fits so a `chore`/`docs_issue`/`config` change isn't force-fit into the bug/enhancement/feature shape. (Source for the set: the project gap-analysis `C5` (internal project notes, not published) — templates exist for `bug_report, enhancement, feature_request, chore, docs_issue, config`.)
+The repo ships **six** issue templates, not three - route a contribution to the one that fits so a `chore`/`docs_issue`/`config` change isn't force-fit into the bug/enhancement/feature shape. (Source for the set: the project gap-analysis `C5` (internal project notes, not published); templates exist for `bug_report, enhancement, feature_request, chore, docs_issue, config`.)
 
 | # | Issue type (template) | Use for | Typical labels |
 |---|---|---|---|
@@ -255,7 +255,7 @@ Separate workflows: `security-scan.yml` (dependency integrity + prompt-injection
 (Upstream testing norms — regression-test-first for a fix, no-source-grep, "CI green is not sufficient", generated `bin/lib`, the per-surface QA checklist — are in *QA matrix by surface (KNOW-01)* and *Test bar by contribution type (KNOW-02)* below plus the SKILL Gotchas; not re-pasted here.)
 
 ### RULESET.* tokens (verified against gsd-core 2026-07-05)
-Trek-e's directives cite named `RULESET.*` tokens; the ones below are the ones **verified real against gsd-core** (source of the ✓/⚠/❌ verdicts: (internal project notes, not published) — verified items only). They sharpen the classification + test-quality bar the toolkit's gates already partially enforce.
+Trek-e's directives cite named `RULESET.*` tokens; the ones below are the ones **verified real against gsd-core** (source of the check-mark, warning and cross verdicts: internal project notes, not published; verified items only). They sharpen the classification + test-quality bar the toolkit's gates already partially enforce.
 
 **Classification gates (require the approval label before code — the token form of *Issue-first* above):**
 - `RULESET.CONTRIB.CLASSIFY.fix` — requires `confirmed-bug` before implementation
