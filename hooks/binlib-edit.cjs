@@ -107,8 +107,9 @@
  * not ignored. A newly generated .cjs whose per-file .gitignore line has not been added yet is
  * ALLOWED, as is a generated file force-added to the index or un-ignored by a .gitignore edit.
  * One reason per route (quick 261120-28y round 2, REVIEW WR-01, PLAN-REVIEW-R2-I2 W-05):
- *   - not yet ignored: needs no extra step; the file shows as untracked, and its edit shows in the
- *     diff when the .gitignore line lands;
+ *   - not yet ignored: needs no extra step and is not made safe by visibility either: until its
+ *     .gitignore line lands the file shows only as untracked in `git status` (its content is in no
+ *     diff), and after that the gate denies it; the hand edit is still lost on the next build;
  *   - force-added: the index change is the file itself, staged in the contribution diff;
  *   - un-ignored by a visible .gitignore edit: needs a deliberate extra step, and the edit shows in
  *     the contribution diff;
