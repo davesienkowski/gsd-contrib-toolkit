@@ -7,12 +7,14 @@
  * One place that decides WHICH git a hook spawns and WITH WHAT environment, so a repository a hook reads from
  * cannot choose the executable or make git run a program:
  *   - gitCandidates / GIT_CANDIDATES / resolveGitPath / fixedGit: git is spawned only by an absolute path from a
- *     fixed list (never a PATH or cwd lookup; none on win32, where callers then do not spawn and fail open).
+ *     fixed list (never a PATH or cwd lookup; none on win32, where callers then do not spawn: the Read guard fails
+ *     open, binlib-edit's Write|Edit gate fails closed).
  *   - probeEnvChanges / withHardenedProbeEnv: core.fsmonitor=false and safe.bareRepository=explicit injected
  *     through the environment config, GIT_ALLOW_PROTOCOL naming no transport, GIT_NO_LAZY_FETCH=1, and PATH set
  *     to the fixed git's own directory.
- * Used by hooks/emitted-cjs-read.cjs. binlib-edit's own Write|Edit probe does NOT use it yet (a deferred Tier A
- * follow-up adopts it); this module changes nothing about binlib-edit.
+ * Used by hooks/emitted-cjs-read.cjs and, since quick 261120-28y (CTK-ADR-0018 Proposed), by binlib-edit's own
+ * checkIgnoreLive: every binlib-edit probe spawn uses fixedGit (or an absolute options.gitPath) and probeEnvChanges,
+ * so the Write|Edit gate and the Read guard spawn git the same way.
  *
  * Pure apart from the stat/access calls in resolveGitPath and the process.env swap in withHardenedProbeEnv
  * (restored in a finally block).
@@ -38,8 +40,9 @@ const INJECTED_GIT_CONFIG = Object.freeze([
  * The fixed git executables the probe may spawn (fix round 4, option B; REVIEW-R3 CR-01, IN-01). git is never
  * looked up through PATH or the cwd: libuv searches the spawn cwd (the Read target's bin/lib) before PATH for a bare
  * name on native Windows (src/win/process.c search_path, source-read), and a PATH entry can point into the checkout.
- * POSIX: root-owned system locations plus Homebrew's prefix on Apple silicon. win32: none, so the guard never spawns
- * git there and never denies (fail open; not measured on Windows).
+ * POSIX: root-owned system locations plus Homebrew's prefix on Apple silicon. win32: none, so no caller spawns git
+ * there: the Read guard never denies (fail open) and binlib-edit denies every bin/lib candidate Write|Edit as
+ * undecidable (fail closed, CTK-ADR-0018 Proposed). Not measured on Windows.
  *
  * @param {string} platform a process.platform value
  * @returns {string[]}
@@ -121,9 +124,12 @@ function probeEnvChanges(env, gitPath) {
 }
 
 /**
- * Run fn with probeEnvChanges applied to process.env, restoring every changed key afterwards (binlib-edit's
- * probe reads process.env through its probeEnv, so this is how the hardening reaches its spawns without
- * editing binlib-edit). fn is synchronous.
+ * Run fn with probeEnvChanges applied to process.env, restoring every changed key afterwards. fn is synchronous.
+ * Written in 261119-szk so the hardening reached binlib-edit's probe without editing binlib-edit; since quick
+ * 261120-28y binlib-edit applies probeEnvChanges itself, so under the Read guard the changes stack (D4): the
+ * injected config pairs appear twice (idempotent values) and PATH is the same directory both times. Accepted as
+ * defense in depth; this outer layer is now redundant and no longer independently tested by the Read guard's
+ * suite.
  *
  * @param {() => *} fn
  * @param {string} [gitPath] the absolute fixed git (sets the probe PATH to its directory)

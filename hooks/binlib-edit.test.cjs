@@ -472,36 +472,44 @@ test('BINLIB-03: candidate in an existing directory that is NOT a git work tree 
   }
 });
 
-test('BINLIB-03: git MISSING from PATH → spawned hook denies even the TRACKED file, with the note', () => {
+test('BINLIB-03: NO fixed git (fixedGit null; quick 261120-28y re-point, PATH no longer decides) → spawned hook denies even the TRACKED file, with the note', () => {
   const fx = makeFixtureRepo();
-  const emptyBin = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-nogit-'));
+  const pre = writePreload('null');
   try {
-    const r = spawnHookWithEnv(input(fx.tracked, 'Edit', fx.root), {
-      cwd: fx.root,
-      env: { PATH: emptyBin },
-    });
+    const r = spawnPreloaded(input(fx.tracked, 'Edit', fx.root), { cwd: fx.root, preload: pre });
+    assert.deepStrictEqual(preloadSpawns(pre), [], 'nothing is spawned without a fixed git');
     assertUndecidableDeny(r.decision, r.reason, fx.tracked);
   } finally {
-    fs.rmSync(emptyBin, { recursive: true, force: true });
+    pre.cleanup();
     fx.cleanup();
   }
 });
 
-test('BINLIB-03: git HANGS past the probe timeout → spawned hook denies the TRACKED file, with the note, under 10 s', () => {
+test('BINLIB-03: the fixed git HANGS past the probe timeout (quick 261120-28y re-point) → spawned hook denies the TRACKED file, with the note, under 10 s', () => {
+  const { CHECK_IGNORE_TIMEOUT_MS } = require('./binlib-edit.cjs');
   const fx = makeFixtureRepo();
   const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-hang-'));
   try {
+    // The probe PATH is the shim's own dir and /bin/sh may be dash (no sleep builtin), so the shim writes a
+    // started mark with the echo builtin and execs an absolute sleep (R1 W-01). exec is required: a grandchild
+    // sleep holding the stderr pipe would keep spawnSync waiting past its timeout.
+    const sleepBin = ['/bin/sleep', '/usr/bin/sleep'].find((p) => fs.existsSync(p));
+    assert.ok(sleepBin, 'an absolute sleep must exist at /bin/sleep or /usr/bin/sleep');
+    const started = path.join(shimDir, 'started');
     const shim = path.join(shimDir, 'git');
-    // exec is required: a grandchild sleep holding the stderr pipe would keep spawnSync
-    // waiting past its timeout.
-    fs.writeFileSync(shim, '#!/bin/sh\nexec sleep 30\n');
+    fs.writeFileSync(shim, '#!/bin/sh\necho started >> ' + JSON.stringify(started) + '\nexec ' + JSON.stringify(sleepBin) + ' 30\n');
     fs.chmodSync(shim, 0o755);
-    const r = spawnHookWithEnv(input(fx.tracked, 'Edit', fx.root), {
-      cwd: fx.root,
-      env: { PATH: shimDir + path.delimiter + process.env.PATH },
-    });
-    assertUndecidableDeny(r.decision, r.reason, fx.tracked);
-    assert.ok(r.ms < 10000, 'hook took ' + r.ms + ' ms (must stay under the 10 s hook timeout)');
+    const pre = writePreload(shim);
+    try {
+      const r = spawnPreloaded(input(fx.tracked, 'Edit', fx.root), { cwd: fx.root, preload: pre });
+      assert.deepStrictEqual(preloadSpawns(pre), [shim], 'the hanging fixed git was spawned once');
+      assert.ok(fs.existsSync(started), 'the shim started, so the hang really happened');
+      assertUndecidableDeny(r.decision, r.reason, fx.tracked);
+      assert.ok(r.ms < 10000, 'hook took ' + r.ms + ' ms (must stay under the 10 s hook timeout)');
+      assert.ok(r.ms >= CHECK_IGNORE_TIMEOUT_MS - 200, 'hook took ' + r.ms + ' ms: the probe must have waited out its deadline');
+    } finally {
+      pre.cleanup();
+    }
   } finally {
     fs.rmSync(shimDir, { recursive: true, force: true });
     fx.cleanup();
@@ -1483,6 +1491,20 @@ test('28y fsmonitor: an inherited -c core.fsmonitor command never runs on an Edi
     const r = spawnHookWithEnv(input(fx.tracked, 'Edit', fx.root), { cwd: fx.root, env: params });
     assert.strictEqual(markText(mark), '', 'the inherited -c fsmonitor command must not run');
     assert.strictEqual(r.decision, 'allow', r.reason);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+// D9 (R1 I2 W-03, DESIGN Amendment 2): a GREEN-phase guard row, not RED (at 57bcc77 the allow already holds).
+test('28y-guard D9: an inherited GIT_TRACE=1 or GIT_TRACE2=1 keeps the tracked-file allow (trace output is not a D8 non-answer)', (t) => {
+  if (!listedGit28()) return t.skip(NO_LISTED_GIT_28);
+  const fx = makeFixtureRepo();
+  try {
+    for (const env of [{ GIT_TRACE: '1' }, { GIT_TRACE2: '1' }]) {
+      const r = spawnHookWithEnv(input(fx.tracked, 'Edit', fx.root), { cwd: fx.root, env });
+      assert.strictEqual(r.decision, 'allow', JSON.stringify(env) + ': ' + r.reason);
+    }
   } finally {
     fx.cleanup();
   }

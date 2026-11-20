@@ -40,6 +40,15 @@
  * TRACKED file is reported not-ignored even when a pattern matches it — tracked means
  * hand-written.
  *
+ * WHICH GIT, AND WITH WHAT ENV (quick 261120-28y, CTK-ADR-0018 Proposed): git is spawned only by
+ * an absolute path from hooks/lib/hardened-git.cjs (fixedGit: the first of a fixed list of system
+ * paths), never looked up through PATH or the cwd; with no listed git (native Windows, or a host
+ * whose git is elsewhere) nothing is spawned and every candidate is the undecidable deny. Every
+ * spawn runs with core.fsmonitor=false and safe.bareRepository=explicit injected, no transport and
+ * no lazy fetch (GIT_ALLOW_PROTOCOL naming none, GIT_NO_LAZY_FETCH=1), PATH = that git's own
+ * directory and no inherited GIT_TRACE* variable. A check-ignore exit 1 with any stderr is no
+ * answer (D8: a partial clone whose ignore-rule blob is missing locally) and denies with the note.
+ *
  * REPOSITORY PINNING (MJ-01, 35-02). check-ignore answers for whatever repository git DISCOVERS
  * from the target's directory, and in-repo state that never shows in `git status` can move that
  * discovery to a repository that does not ignore the emitted file: a nested `git init` in
@@ -68,9 +77,9 @@
  *
  *   - exit 0 (ignored → generated)                         → DENY, ADR-457 reason unchanged
  *   - exit 1 (tracked, or untracked and not ignored)       → ALLOW
- *   - anything else: spawn error, git missing, timeout or null status, exit 128 (not a git
- *     work tree), directory absent, a repository-pinning failure above, or an injected seam
- *     value other than 'not-ignored'                       → DENY, ADR-457 reason + a
+ *   - anything else: spawn error, no listed git, timeout or null status, exit 128 (not a git
+ *     work tree), exit 1 with stderr (D8), directory absent, a repository-pinning failure
+ *     above, or an injected seam value other than 'not-ignored' → DENY, ADR-457 reason + a
  *     "could not be determined" note (HARD-01, BINLIB-03). Returned as a policy deny, exactly
  *     like the pre-v2.8 deny-all behavior, so GSD_CONTRIB_OVERRIDE (thrown errors only) cannot
  *     flip it.
@@ -126,6 +135,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { runGate, readHookInput, deny, allow, emit, FailClosed } = require('./lib/failclosed.cjs');
+// Module-object access (style; a --require preload patches the module before this file loads either way).
+const hardenedGit = require('./lib/hardened-git.cjs');
 
 // FailClosed: shared IN-03 helper from failclosed.cjs (binlib-edit has no safeCommand —
 // it uses safeFilePath; Write/Edit gates read file_path, not command).
@@ -433,7 +444,8 @@ function isStrictAncestor(ancestor, descendant) {
  * @param {string} cwd
  * @param {Object} env
  * @param {number} deadline epoch ms
- * @param {string} gitPath the executable: 'git' (a PATH lookup) or an absolute path from the caller
+ * @param {string} gitPath the executable: always an absolute path (hardened-git's fixed git, or an absolute
+ *   options.gitPath checked by checkIgnoreLive); never a bare name, so there is no PATH or cwd lookup
  * @returns {Object|null} spawnSync result
  */
 function runGitProbe(argv, cwd, env, deadline, gitPath) {
@@ -459,11 +471,22 @@ function runGitProbe(argv, cwd, env, deadline, gitPath) {
  * variables scrubbed (probeEnv) and against one shared CHECK_IGNORE_TIMEOUT_MS deadline; the
  * first non-answer returns 'unknown' without running the rest.
  *
- * Optional `options.gitPath` (quick 261119-szk round 4, the Read guard's fixed git): an ABSOLUTE path is
- * spawned instead of `'git'`; a defined gitPath that is not an absolute string answers 'unknown' and spawns
- * nothing. A gitPath of undefined counts as no gitPath (the PATH lookup of `'git'`; REVIEW-R4 IN-01, deferred to
- * the binlib-edit follow-up). This gate's own call passes no options, so its spawn is the PATH lookup of `'git'`
- * exactly as before.
+ * Which git (quick 261120-28y, CTK-ADR-0018 Proposed; REVIEW-R3 CR-01, REVIEW-R4 IN-01): never a PATH or cwd
+ * lookup. An `options` object with an OWN `gitPath` key is a pinned request: its value must be an absolute
+ * string (path.isAbsolute on the raw value), else 'unknown' and nothing is spawned, undefined included. With no
+ * such key (this gate's own call passes no options) the git is hooks/lib/hardened-git.cjs fixedGit(), the first
+ * listed absolute git on this host; when there is none (native Windows, or no git at a listed path) the answer is
+ * 'unknown' and nothing is spawned, which the gate turns into the undecidable deny (fail closed, CTK-ADR-0001).
+ *
+ * Probe env (quick 261120-28y, D1/D9): every spawn gets a fresh env object built from process.env (never
+ * written): probeEnv's scrub, every inherited GIT_TRACE* variable removed, then hardened-git probeEnvChanges:
+ * core.fsmonitor=false and safe.bareRepository=explicit injected as env config, GIT_ALLOW_PROTOCOL naming no
+ * transport and GIT_NO_LAZY_FETCH=1 (REVIEW-R3 CR-02: no partial-clone lazy fetch runs a repository-configured
+ * uploadpack or sshCommand), and PATH = the spawned git's own directory.
+ *
+ * D8: a check-ignore exit 1 with any text on stderr answers 'unknown'. With the lazy fetch refused, git can exit
+ * 1 while an ignore rule it could not read is missing (a partial clone's skip-worktree .gitignore blob), so that
+ * exit 1 is not an answer. Exit 0 stays 'ignored' whatever stderr says.
  *
  * @param {string} absPath
  * @param {{gitPath?: string}} [options]
@@ -471,14 +494,30 @@ function runGitProbe(argv, cwd, env, deadline, gitPath) {
  */
 function checkIgnoreLive(absPath, options) {
   try {
-    const requested = options && typeof options === 'object' ? options.gitPath : undefined;
-    if (requested !== undefined && !(typeof requested === 'string' && path.isAbsolute(requested))) {
-      return 'unknown'; // a defined non-absolute gitPath never falls back to a PATH lookup (undefined does: IN-01)
+    // Which git (D2): an options object carrying its OWN gitPath key is a pinned request, and its value must be
+    // an absolute string, else 'unknown' with nothing spawned (undefined included: REVIEW-R4 IN-01). Without
+    // that key, only hardened-git's fixed absolute git; none (native Windows, or no git at a listed path) is
+    // 'unknown' with nothing spawned, which this gate turns into the undecidable deny (fail closed). Never a
+    // PATH or cwd lookup.
+    let git;
+    if (options !== null && typeof options === 'object' && Object.prototype.hasOwnProperty.call(options, 'gitPath')) {
+      git = options.gitPath;
+      if (!(typeof git === 'string' && path.isAbsolute(git))) return 'unknown';
+    } else {
+      git = hardenedGit.fixedGit();
+      if (!(typeof git === 'string' && path.isAbsolute(git))) return 'unknown';
     }
-    const git = requested === undefined ? 'git' : requested;
     const deadline = Date.now() + CHECK_IGNORE_TIMEOUT_MS;
     const cwd = path.dirname(absPath);
+    // A fresh env object (process.env is never written): the repo-redirect scrub, then no inherited GIT_TRACE*
+    // variable (D9: trace output on stderr would otherwise trip the D8 rule below), then the hardened probe env
+    // (D1): injected core.fsmonitor=false and safe.bareRepository=explicit, no transport, no lazy fetch, and
+    // PATH = the directory of the git being spawned.
     const env = probeEnv(process.env);
+    for (const k of Object.keys(env)) {
+      if (k.startsWith('GIT_TRACE')) delete env[k];
+    }
+    Object.assign(env, hardenedGit.probeEnvChanges(env, git));
 
     const binDir = binDirOf(absPath);
     if (binDir === null) return 'unknown';
@@ -496,6 +535,9 @@ function checkIgnoreLive(absPath, options) {
 
     const result = runGitProbe(['check-ignore', '-q', '--', absPath], cwd, env, deadline, git);
     if (!result) return 'unknown';
+    // D8: an exit 1 with anything on stderr is no answer. With lazy fetch refused, git can report "not ignored"
+    // while a rule it could not read (a missing partial-clone blob) is unread; exit 0 already denies.
+    if (result.status === 1 && typeof result.stderr === 'string' && result.stderr.length > 0) return 'unknown';
     return classifyCheckIgnore(result);
   } catch (_) {
     return 'unknown';

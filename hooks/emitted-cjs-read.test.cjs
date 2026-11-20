@@ -425,7 +425,7 @@ test('option B: no listed git -> unknown, nothing spawned (fail open)', () => {
   assertSilent(r);
 });
 
-test('option B: binlib-edit checkIgnoreLive spawns the given absolute gitPath; with no second argument it spawns "git" as before', () => {
+test('option B: binlib-edit checkIgnoreLive spawns the given absolute gitPath; with no second argument it spawns the fixed listed git (quick 261120-28y)', () => {
   const { checkIgnoreLive } = require('./binlib-edit.cjs');
   const mark = path.join(BASE, 'gitpath-mark');
   const fake = write(path.join(BASE, 'fake-bin2'), 'git', '#!/bin/sh\necho "$1" >> ' + JSON.stringify(mark) + '\nexit 1\n');
