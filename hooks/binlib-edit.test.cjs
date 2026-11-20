@@ -1511,13 +1511,16 @@ test('28y-guard D9: an inherited GIT_TRACE=1 or GIT_TRACE2=1 keeps the tracked-f
 });
 
 // --- quick 261120-28y fix round 2 (FIX-PLAN-R2 as amended by its R1 dispositions): rows tagged "28y-r2" ---------
-// Round-1 security review CR-02 (replace refs), WR-02 (inherited exec path), WR-03 (trace2 targets in git config),
-// IN-01 (the single-file git config variable). Appended only; every helper below is a new function declaration whose
-// name no earlier top-level declaration uses (PLAN-REVIEW-R2 W-04, R2-I2 N-02).
+// Round-1 security review WR-02 (inherited exec path), WR-03 (trace2 targets in git config), IN-01 (the single-file
+// git config variable). CR-02 (replace refs) is NOT fixed here: refusing replace objects is two-edged (CR-02 F4 allow
+// at base, the M2 mirror deny at base), so it is deferred with CR-01 (orchestrator decision on the round-2
+// checkpoint); the 28y-r2-guard row below pins both verdicts as they were at 57bcc77 and abbd1d4. Appended only;
+// every helper below is a new function declaration whose name no earlier top-level declaration uses (PLAN-REVIEW-R2
+// W-04, R2-I2 N-02).
 
 /** The env keys the round-2 wrapper records for every spawn. */
 function r2EnvKeys() {
-  return ['GIT_NO_REPLACE_OBJECTS', 'GIT_TRACE2', 'GIT_TRACE2_EVENT', 'GIT_TRACE2_PERF', 'GIT_EXEC_PATH', 'GIT_CONFIG'];
+  return ['GIT_TRACE2', 'GIT_TRACE2_EVENT', 'GIT_TRACE2_PERF', 'GIT_EXEC_PATH', 'GIT_CONFIG'];
 }
 
 /**
@@ -1550,11 +1553,10 @@ function readEnvR2(log) {
   return spawns;
 }
 
-/** Every recorded spawn refuses replace objects, has trace2 off, and carries no exec path or single-file config. */
+/** Every recorded spawn has trace2 off and carries no exec path or single-file config. */
 function assertR2SpawnEnv(spawns) {
   assert.ok(spawns.length >= 1, 'the recording wrapper must have been spawned at least once');
   for (const s of spawns) {
-    assert.strictEqual(s.GIT_NO_REPLACE_OBJECTS, '1', 'GIT_NO_REPLACE_OBJECTS=1 (CR-02): ' + JSON.stringify(s));
     assert.strictEqual(s.GIT_TRACE2, '0', 'GIT_TRACE2=0 (WR-03): ' + JSON.stringify(s));
     assert.strictEqual(s.GIT_TRACE2_EVENT, '0', 'GIT_TRACE2_EVENT=0 (WR-03): ' + JSON.stringify(s));
     assert.strictEqual(s.GIT_TRACE2_PERF, '0', 'GIT_TRACE2_PERF=0 (WR-03): ' + JSON.stringify(s));
@@ -1588,11 +1590,12 @@ function withEnvR2(over, fn) {
 }
 
 /**
- * REVIEW CR-02 block F4: the only rule for gsd-core/bin/lib/gen.cjs lives in a committed gsd-core/bin/.gitignore
- * whose index entry is skip-worktree and whose work-tree file is absent; a replace ref swaps its blob for a rule-less
- * blob. Nothing is missing from the object store. Callers MUST cleanup() in finally.
+ * A skip-worktree gsd-core/bin/.gitignore whose work-tree file is absent, with a replace ref on its blob. mode 'f4'
+ * (REVIEW CR-02 block F4): the committed blob holds the only rule for gsd-core/bin/lib/gen.cjs and the replacement
+ * holds none. mode 'm2' (probes/r2-exec/q2-mirror-amended.out row M2): the committed blob holds no rule and the
+ * replacement supplies it. Nothing is missing from the object store. Callers MUST cleanup() in finally.
  */
-function makeReplaceFixtureR2() {
+function makeReplaceFixtureR2(mode) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-28y-r2-replace-'));
   try {
     const libDir = path.join(root, 'gsd-core', 'bin', 'lib');
@@ -1602,17 +1605,19 @@ function makeReplaceFixtureR2() {
     fs.writeFileSync(target, "'use strict';\n");
     fs.writeFileSync(path.join(root, 'src', 'gen.cts'), 'export {};\n');
     const ig = 'gsd-core/bin/.gitignore';
-    fs.writeFileSync(path.join(root, ig), 'lib/gen.cjs\n');
+    const RULE = 'lib/gen.cjs\n';
+    const NO_RULE = '# no rule\n';
+    fs.writeFileSync(path.join(root, ig), mode === 'm2' ? NO_RULE : RULE);
     fixtureGit(root, ['init', '-q']);
     fixtureGit(root, ['add', '--', ig, 'src/gen.cts']);
     commit28(root, 'rule');
-    const ruleOid = fixtureGit(root, ['rev-parse', ':' + ig]).stdout.trim();
+    const indexOid = fixtureGit(root, ['rev-parse', ':' + ig]).stdout.trim();
     fixtureGit(root, ['update-index', '--skip-worktree', '--', ig]);
     fs.unlinkSync(path.join(root, ig));
-    const noRule = path.join(root, '.git', 'r2-no-rule.txt');
-    fs.writeFileSync(noRule, '# no rule\n');
-    const noRuleOid = fixtureGit(root, ['hash-object', '-w', '--', noRule]).stdout.trim();
-    fixtureGit(root, ['replace', ruleOid, noRuleOid]);
+    const other = path.join(root, '.git', 'r2-replacement.txt');
+    fs.writeFileSync(other, mode === 'm2' ? RULE : NO_RULE);
+    const otherOid = fixtureGit(root, ['hash-object', '-w', '--', other]).stdout.trim();
+    fixtureGit(root, ['replace', indexOid, otherOid]);
     return { root, libDir, target, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
   } catch (err) {
     fs.rmSync(root, { recursive: true, force: true });
@@ -1620,22 +1625,34 @@ function makeReplaceFixtureR2() {
   }
 }
 
-test('28y-r2 replace (CR-02, D6h): a replace ref that swaps the skip-worktree rule blob no longer un-ignores the generated file: Edit denied, Read-guard probe ignored', (t) => {
+// A guard row, not a RED row and not desired behaviour: it pins that replace-ref verdicts are unchanged from 57bcc77
+// and abbd1d4 in both directions. The F4 allow is a PINNED PRE-EXISTING RESIDUAL (REVIEW CR-02, deferred with CR-01
+// to .planning/todos/pending/2026-11-20-skip-worktree-unreadable-ignore-rule-fail-open.md); the fix for that todo is
+// expected to turn it into a deny and must update this row. M2 (the mirror) denies with the plain reason.
+test('28y-r2-guard replace refs (CR-02 F4, M2): verdicts pinned as at 57bcc77 and abbd1d4; the F4 allow is a pinned pre-existing residual, see the CR-01 todo', (t) => {
   if (!listedGit28()) return t.skip(NO_LISTED_GIT_28);
-  const fx = makeReplaceFixtureR2();
+  const { checkIgnorePinned } = require('./emitted-cjs-read.cjs');
+  const f4 = makeReplaceFixtureR2('f4');
   try {
-    const ctl = rawCheckIgnore28(fx.target);
+    const ctl = rawCheckIgnore28(f4.target);
     assert.strictEqual(ctl.status, 1, 'control: raw git follows the replace ref and reports not ignored');
-    assert.strictEqual(ctl.stderr, '', 'control: with empty stderr, so D8 alone cannot catch it');
-    const real = rawCheckIgnore28(fx.target, { GIT_NO_REPLACE_OBJECTS: '1' });
-    assert.strictEqual(real.status, 0, 'control: the real rule blob ignores the target');
-    const r = spawnHookWithEnv(input(fx.target, 'Edit', fx.root), { cwd: fx.root });
-    assert.strictEqual(r.decision, 'deny', r.reason);
-    assert.strictEqual(r.reason, binLibDenyReason(fx.target));
-    const { checkIgnorePinned } = require('./emitted-cjs-read.cjs');
-    assert.strictEqual(withIsolatedGitConfig(() => checkIgnorePinned(fx.target)), 'ignored', 'the Read guard probe answers ignored too');
+    assert.strictEqual(ctl.stderr, '', 'control: with empty stderr, so D8 does not catch it');
+    const r = spawnHookWithEnv(input(f4.target, 'Edit', f4.root), { cwd: f4.root });
+    assert.strictEqual(r.decision, 'allow', 'pinned pre-existing residual (CR-01 todo), not desired behaviour: ' + r.reason);
+    assert.strictEqual(withIsolatedGitConfig(() => checkIgnorePinned(f4.target)), 'not-ignored', 'pinned residual: Read-guard probe');
   } finally {
-    fx.cleanup();
+    f4.cleanup();
+  }
+  const m2 = makeReplaceFixtureR2('m2');
+  try {
+    const ctl = rawCheckIgnore28(m2.target);
+    assert.strictEqual(ctl.status, 0, 'control: raw git follows the replace ref and reports ignored');
+    const r = spawnHookWithEnv(input(m2.target, 'Edit', m2.root), { cwd: m2.root });
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.strictEqual(r.reason, binLibDenyReason(m2.target));
+    assert.strictEqual(withIsolatedGitConfig(() => checkIgnorePinned(m2.target)), 'ignored', 'Read-guard probe');
+  } finally {
+    m2.cleanup();
   }
 });
 
@@ -1685,7 +1702,7 @@ test('28y-r2 D6k (IN-01): an inherited single-file git config no longer blinds t
   }
 });
 
-test('28y-r2 env record, default branch (WR-02, IN-01, CR-02, WR-03): the gate\'s own call spawns git with replace objects refused, trace2 off, and no inherited exec path or single-file config', (t) => {
+test('28y-r2 env record, default branch (WR-02, IN-01, WR-03): the gate\'s own call spawns git with trace2 off and no inherited exec path or single-file config', (t) => {
   const lg = listedGit28();
   if (!lg) return t.skip(NO_LISTED_GIT_28);
   const fx = makeFixtureRepo();

@@ -750,7 +750,7 @@ function envRecordR2(dir, log, realGit) {
   fs.mkdirSync(dir, { recursive: true });
   const p = path.join(dir, 'git');
   const L = JSON.stringify(log);
-  const keys = ['GIT_NO_REPLACE_OBJECTS', 'GIT_TRACE2', 'GIT_TRACE2_EVENT', 'GIT_TRACE2_PERF', 'GIT_EXEC_PATH', 'GIT_CONFIG'];
+  const keys = ['GIT_TRACE2','GIT_TRACE2_EVENT', 'GIT_TRACE2_PERF', 'GIT_EXEC_PATH', 'GIT_CONFIG'];
   const lines = ['#!/bin/sh', 'echo BEGIN >> ' + L];
   for (const k of keys) lines.push('printf "' + k + '=%s\\n" "${' + k + '-<unset>}" >> ' + L);
   lines.push('exec ' + JSON.stringify(realGit) + ' "$@"', '');
@@ -776,7 +776,7 @@ function withEnvR2(over, fn) {
   }
 }
 
-realTest('28y-r2 readguard env record: checkIgnorePinned spawns git with replace objects refused, trace2 off, and no inherited exec path or single-file config', () => {
+realTest('28y-r2 readguard env record: checkIgnorePinned spawns git with trace2 off and no inherited exec path or single-file config', () => {
   const dir = path.join(BASE, 'r2-envrec');
   const log = path.join(dir, 'env.log');
   const wrapper = envRecordR2(path.join(dir, 'bin'), log, LISTED_GIT);
@@ -800,7 +800,6 @@ realTest('28y-r2 readguard env record: checkIgnorePinned spawns git with replace
     assert.deepStrictEqual(
       s,
       {
-        GIT_NO_REPLACE_OBJECTS: '1',
         GIT_TRACE2: '0',
         GIT_TRACE2_EVENT: '0',
         GIT_TRACE2_PERF: '0',
