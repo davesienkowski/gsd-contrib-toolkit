@@ -10,8 +10,8 @@
  *     fixed list (never a PATH or cwd lookup; none on win32, where callers then do not spawn: the Read guard fails
  *     open, binlib-edit's Write|Edit gate fails closed).
  *   - probeEnvChanges / withHardenedProbeEnv: core.fsmonitor=false and safe.bareRepository=explicit injected
- *     through the environment config, GIT_ALLOW_PROTOCOL naming no transport, GIT_NO_LAZY_FETCH=1, and PATH set
- *     to the fixed git's own directory.
+ *     through the environment config, GIT_ALLOW_PROTOCOL naming no transport, GIT_NO_LAZY_FETCH=1, trace2 off
+ *     (quick 261120-28y round 2), and PATH set to the fixed git's own directory.
  * Used by hooks/emitted-cjs-read.cjs and, since quick 261120-28y (CTK-ADR-0018 Proposed), by binlib-edit's own
  * checkIgnoreLive: every binlib-edit probe spawn uses fixedGit (or an absolute options.gitPath) and probeEnvChanges,
  * so the Write|Edit gate and the Read guard spawn git the same way.
@@ -89,12 +89,16 @@ const NO_PROTOCOL = 'emitted-cjs-read-none';
  * The env changes for one probe: the injected config appended after any inherited GIT_CONFIG_COUNT entries
  * (a count that is not a plain non-negative integer is replaced; git rejects such a count anyway); no transport
  * and no lazy fetch (REVIEW-R3 CR-02: a partial clone missing a skip-worktree .gitignore blob otherwise fetches
- * and runs a repository-configured uploadpack or sshCommand; GIT_ALLOW_PROTOCOL names no protocol, which holds on
- * any git and outranks a repository protocol.<t>.allow, and GIT_NO_LAZY_FETCH=1 covers git builds with the
- * CVE-2024-32465 fix); and, when gitPath is given, PATH set to exactly the fixed git's directory, so no inherited
- * PATH entry (one pointing into the checkout, an empty or relative one) reaches a program git looks up. git still
- * prepends its exec path (GIT_EXEC_PATH when inherited), which is outside a checkout's control (PLAN-REVIEW-R4
- * N-01). Round 4; it replaces the round-3 absolute-entry filter.
+ * and runs a repository-configured uploadpack or sshCommand; GIT_ALLOW_PROTOCOL names no protocol and outranks a
+ * repository protocol.<t>.allow, so no transport runs, but on a git without the CVE-2024-32465 fix it does not stop
+ * git from spawning the fetch child (quick 261120-28y REVIEW WR-02, row 243); GIT_NO_LAZY_FETCH=1 stops the fetch
+ * itself on git builds with that fix); trace2 off (GIT_TRACE2, GIT_TRACE2_EVENT and GIT_TRACE2_PERF = 0: the env
+ * value outranks a trace2 target in global or system git config, which would otherwise write to stderr on every
+ * probe, quick 261120-28y REVIEW WR-03, row 269); and, when gitPath is given, PATH set to exactly the fixed git's
+ * directory, so no inherited PATH entry (one pointing into the checkout, an empty or relative one) reaches a
+ * program git looks up. git still prepends its exec path: an inherited GIT_EXEC_PATH can point into a checkout and
+ * is outside this helper's control; binlib-edit's probe env (REPO_REDIRECT_ENV) drops it, and both callers reach
+ * that scrub (quick 261120-28y, PLAN-REVIEW-R2 W-06). Round 4; it replaces the round-3 absolute-entry filter.
  *
  * @param {Object} env
  * @param {string} [gitPath] the absolute fixed git
@@ -119,6 +123,9 @@ function probeEnvChanges(env, gitPath) {
   changes.GIT_CONFIG_PARAMETERS = inheritedParams ? inheritedParams + ' ' + injectedParams : injectedParams;
   changes.GIT_ALLOW_PROTOCOL = NO_PROTOCOL;
   changes.GIT_NO_LAZY_FETCH = '1';
+  changes.GIT_TRACE2 = '0';
+  changes.GIT_TRACE2_EVENT = '0';
+  changes.GIT_TRACE2_PERF = '0';
   if (typeof gitPath === 'string' && path.isAbsolute(gitPath)) changes.PATH = path.dirname(gitPath);
   return changes;
 }

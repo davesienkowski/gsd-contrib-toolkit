@@ -46,7 +46,8 @@
  * whose git is elsewhere) nothing is spawned and every candidate is the undecidable deny. Every
  * spawn runs with core.fsmonitor=false and safe.bareRepository=explicit injected, no transport and
  * no lazy fetch (GIT_ALLOW_PROTOCOL naming none, GIT_NO_LAZY_FETCH=1), PATH = that git's own
- * directory and no inherited GIT_TRACE* variable. A check-ignore exit 1 with any stderr is no
+ * directory, no inherited GIT_TRACE* variable and trace2 off (GIT_TRACE2, GIT_TRACE2_EVENT and
+ * GIT_TRACE2_PERF = 0, round 2: a trace2 target in git config no longer reaches stderr). A check-ignore exit 1 with any stderr is no
  * answer (D8: a partial clone whose ignore-rule blob is missing locally) and denies with the note.
  *
  * REPOSITORY PINNING (MJ-01, 35-02). check-ignore answers for whatever repository git DISCOVERS
@@ -95,7 +96,8 @@
  * GIT_CEILING_DIRECTORIES are removed too. Measured 2026-10-05 (git 2.43): each pathspec mode
  * makes check-ignore exit 128 ("pathspec magic not supported by this command"), and a ceiling
  * at or above the repo root stops discovery (exit 128). Either way every candidate was
- * false-denied, including tracked hand-written files.
+ * false-denied, including tracked hand-written files. Quick 261120-28y round 2 adds GIT_EXEC_PATH and
+ * the single-file git config variable (see REPO_REDIRECT_ENV).
  *
  * DIVERGENCE (recorded): the discriminator idea comes from Trek-e's
  * `emitted-cjs-read-guard.cjs`, which fails OPEN when git cannot answer. This gate fails
@@ -104,7 +106,18 @@
  * ACCEPTED RESIDUAL (flagged assumption A-01, threat T-35-07): "hand-written" means tracked or
  * not ignored. A newly generated .cjs whose per-file .gitignore line has not been added yet is
  * ALLOWED, as is a generated file force-added to the index or un-ignored by a .gitignore edit.
- * Each of those routes leaves a visible .gitignore or index change in the contribution diff.
+ * One reason per route (quick 261120-28y round 2, REVIEW WR-01, PLAN-REVIEW-R2-I2 W-05):
+ *   - not yet ignored: needs no extra step; the file shows as untracked, and its edit shows in the
+ *     diff when the .gitignore line lands;
+ *   - force-added: the index change is the file itself, staged in the contribution diff;
+ *   - un-ignored by a visible .gitignore edit: needs a deliberate extra step, and the edit shows in
+ *     the contribution diff;
+ *   - un-ignored by a .gitignore that hides itself (self-ignoring, skip-worktree or
+ *     assume-unchanged): only the emitted file shows, as untracked, and the self-ignoring variant uses
+ *     only the Write and Edit tools this gate governs. This one is NOT made safe by visibility; it is a
+ *     residual accepted only by deferral, with the candidate-rule option (treat a .gitignore at or
+ *     below a bin/lib pair as a candidate), in the high CR-01 todo
+ *     (.planning/todos/pending/2026-11-20-skip-worktree-unreadable-ignore-rule-fail-open.md).
  * The verdict still depends on git's repository discovery. The pinning checks above close the
  * known invisible routes into a different repository (nested repo, `gitdir:` file, core.worktree)
  * at or below `bin`, and, inside an enclosing repository, above it too. Not covered: hand-crafting
@@ -155,6 +168,11 @@ const CHECK_IGNORE_TIMEOUT_MS = 3000;
  * exit 0 into exit 1; T-35-02). The rest change how git reads the path or finds the repository:
  * the four pathspec modes make check-ignore exit 128, and GIT_CEILING_DIRECTORIES can stop
  * discovery before the repo root. Either way every candidate would be false-denied (MN-01).
+ * Quick 261120-28y round 2 (round-1 security review): GIT_EXEC_PATH (WR-02: on a git without the lazy-fetch kill
+ * switch an inherited exec path into the checkout supplies the fetch child; dropped, git uses its compiled-in exec
+ * path) and GIT_CONFIG, the single-file variable `git config` honours (IN-01: it blinds the core.worktree pinning
+ * probe, or makes it refuse). The object-store variables are deliberately NOT here: scrubbing them moves verdicts
+ * both ways in states where git cannot read a rule blob, the deferred CR-01 family (CTK-ADR-0018).
  */
 const REPO_REDIRECT_ENV = [
   'GIT_DIR',
@@ -166,11 +184,13 @@ const REPO_REDIRECT_ENV = [
   'GIT_ICASE_PATHSPECS',
   'GIT_LITERAL_PATHSPECS',
   'GIT_CEILING_DIRECTORIES',
+  'GIT_EXEC_PATH',
+  'GIT_CONFIG',
 ];
 
 /**
  * A shallow copy of env with exactly the REPO_REDIRECT_ENV keys removed. Every other variable,
- * including other GIT_* config such as GIT_CONFIG_GLOBAL, is kept.
+ * including the other git config variables such as GIT_CONFIG_GLOBAL, is kept.
  *
  * @param {Object} env
  * @returns {Object}
@@ -482,7 +502,9 @@ function runGitProbe(argv, cwd, env, deadline, gitPath) {
  * written): probeEnv's scrub, every inherited GIT_TRACE* variable removed, then hardened-git probeEnvChanges:
  * core.fsmonitor=false and safe.bareRepository=explicit injected as env config, GIT_ALLOW_PROTOCOL naming no
  * transport and GIT_NO_LAZY_FETCH=1 (REVIEW-R3 CR-02: no partial-clone lazy fetch runs a repository-configured
- * uploadpack or sshCommand), and PATH = the spawned git's own directory.
+ * uploadpack or sshCommand), trace2 off (round 2, REVIEW WR-03: a config trace2 target would trip D8), and
+ * PATH = the spawned git's own directory. probeEnv's scrub also drops GIT_EXEC_PATH and the single-file git config
+ * variable (round 2, REVIEW WR-02 and IN-01).
  *
  * D8: a check-ignore exit 1 with any text on stderr answers 'unknown'. With the lazy fetch refused, git can exit
  * 1 while an ignore rule it could not read is missing (a partial clone's skip-worktree .gitignore blob), so that
@@ -511,8 +533,8 @@ function checkIgnoreLive(absPath, options) {
     const cwd = path.dirname(absPath);
     // A fresh env object (process.env is never written): the repo-redirect scrub, then no inherited GIT_TRACE*
     // variable (D9: trace output on stderr would otherwise trip the D8 rule below), then the hardened probe env
-    // (D1): injected core.fsmonitor=false and safe.bareRepository=explicit, no transport, no lazy fetch, and
-    // PATH = the directory of the git being spawned.
+    // (D1): injected core.fsmonitor=false and safe.bareRepository=explicit, no transport, no lazy fetch, trace2
+    // off, and PATH = the directory of the git being spawned.
     const env = probeEnv(process.env);
     for (const k of Object.keys(env)) {
       if (k.startsWith('GIT_TRACE')) delete env[k];
