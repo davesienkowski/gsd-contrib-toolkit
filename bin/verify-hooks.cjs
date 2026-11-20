@@ -301,6 +301,16 @@ const PROOF_TABLE = [
   // needs a git-ignored emitted file with a twin, i.e. a real checkout, and an absolute path in the
   // committed artifact. The deny envelope and the empty-stdout pass are proven on the SPAWNED hook in
   // hooks/emitted-cjs-read.test.cjs (hermetic fixture checkout plus a read-only live gsd-core row).
+  //
+  // ── DELIBERATE EXCLUSION: hooks/timeout-evidence-edit.cjs (ENF-27, quick 261120-2a2) ────────────
+  // WIRED (PreToolUse, matcher 'Write|Edit|MultiEdit') with no entry here, for the same reason: neither proof
+  // KIND fits. It has three outputs: a deny (a stale or missing timeout evidence in gsd-core
+  // tests/helpers/timeouts.cjs), a context-only note (additionalContext and NO permissionDecision, for an
+  // unevidenced file-local timeout constant elsewhere in tests/**), and a silent pass (empty stdout, never an
+  // explicit allow). kind:'deny' needs a conclusive `allow` on its clean case and kind:'advisory' needs no
+  // permissionDecision on both cases; neither describes a hook that can deny on one case and only advise on
+  // another. The three envelopes are proven on the SPAWNED hook in hooks/timeout-evidence-edit.test.cjs
+  // (hermetic fs-only fixture plus read-only live gsd-core rows).
 ];
 
 /**

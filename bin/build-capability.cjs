@@ -13,9 +13,10 @@
  *   node bin/build-capability.cjs --check   # CHECK: exit 1 if the bundle is stale vs source, 0 if fresh
  *
  * THE WIRED SET IS DATA-DRIVEN (never a hardcoded list): the canonical script basenames are read
- * from `settings.snippet.json` (currently 21 wired scripts / 23 registrations — 17 PreToolUse Bash
+ * from `settings.snippet.json` (currently 22 wired scripts / 24 registrations — 17 PreToolUse Bash
  * gates, one of which (worktree-fresh-base, ENF-25) is also registered under EnterWorktree, + the
  * binlib-edit Write|Edit gate + the emitted-cjs-read fail-open Read guard (ENF-26) + the
+ * timeout-evidence-edit fail-open Write|Edit|MultiEdit edit guard (ENF-27) + the
  * protocol-reminder advisory + the tool-recorder observability
  * hook, which is wired on both PostToolUse and PostToolUseFailure; the numbers here
  * are descriptive — the code reads the snippet, and `docs-hook-counts.test.cjs` guards the prose
