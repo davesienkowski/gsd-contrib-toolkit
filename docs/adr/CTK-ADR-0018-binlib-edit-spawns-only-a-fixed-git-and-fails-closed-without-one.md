@@ -2,14 +2,18 @@
 
 - **Status:** Proposed (2026-11-20), implemented on the `binlib-edit-hardening` branch (quick 261120-28y). The
   gsd-contrib-toolkit orchestrator dispatched the work under the approved Tier A brief for the binlib-edit
-  follow-up; Dave has not reviewed the content of this record.
+  follow-up; Dave has not reviewed the content of this record. Fix round 2 (2026-11-20, answering the round-1
+  security review) added trace2 off to the probe env and the exec path and single-file git config to the scrub
+  (D10), corrected D3 and the A-01 residual, and recorded the deferred CR-01 family below; still Proposed.
 - **Review:** Published for maintainer review and open to revision. A changed decision will be recorded by a
   superseding or amending CTK-ADR, never by a silent edit to an accepted record.
 - **Date:** 2026-11-20 (milestone v2.8).
 - **Scope:** GSD Contribution Toolkit: `checkIgnoreLive` in `hooks/binlib-edit.cjs` (ENF-03, the Write/Edit
-  generated-file gate) and its bundle copy, plus comments in `hooks/lib/hardened-git.cjs`. The deny reasons,
-  `classifyCheckIgnore`, the repository pinning, the probe order and the 3000 ms deadline are unchanged. The code of
-  `hooks/emitted-cjs-read.cjs` (ENF-26) is unchanged. Every other gate is unchanged.
+  generated-file gate) and its bundle copy, plus `hooks/lib/hardened-git.cjs` (comments, and in round 2 the trace2
+  keys of `probeEnvChanges`). The deny reasons, `classifyCheckIgnore`, the repository pinning, the probe order and
+  the 3000 ms deadline are unchanged. The code of `hooks/emitted-cjs-read.cjs` (ENF-26) is unchanged, but its probe
+  calls `checkIgnoreLive` and `probeEnvChanges`, so every probe-env change here reaches the Read guard too (its
+  effects are listed per change below). Every other gate is unchanged.
 - **Relates to:** CTK-ADR-0001 Decision 2 (a gate fails closed), which this record applies to the git lookup;
   CTK-ADR-0017 Decision 4 (the Read guard's probe runs through `hooks/lib/hardened-git.cjs`), whose helper this
   record reuses unchanged. It amends no record.
@@ -42,7 +46,8 @@ gate, which runs on the same files, did not.
    builds a fresh env object from `process.env` (which it never writes): the existing repository-redirect scrub,
    then `hardened-git` `probeEnvChanges`: `core.fsmonitor=false` and `safe.bareRepository=explicit` injected as
    environment config after any inherited entries, `GIT_ALLOW_PROTOCOL` naming no transport, `GIT_NO_LAZY_FETCH=1`,
-   and `PATH` set to the directory of the git being spawned. The bare name `git` is gone from the module.
+   trace2 off (round 2, D10), and `PATH` set to the directory of the git being spawned. The bare name `git` is gone
+   from the module.
 2. **Which git (D2).** An options object with its own `gitPath` key is a pinned request: the value must be an
    absolute string, else the probe answers `unknown` and spawns nothing (an explicit `undefined` included). With no
    such key, which is the gate's own call, the git is `hardened-git` `fixedGit()`: the first of `/usr/bin/git`,
@@ -50,15 +55,18 @@ gate, which runs on the same files, did not.
    (native Windows has no candidates), the probe answers `unknown` and spawns nothing, and the gate denies with the
    existing undecidable reason. The gate fails closed here where the Read guard fails open, because CTK-ADR-0001
    Decision 2 governs a gate that can stop an edit. There is never a PATH or cwd lookup.
-3. **No production seam chooses git (D3).** No environment variable, payload field, argv flag or config file
-   selects the executable. Tests reach "no fixed git" and "a hanging fixed git" with a `--require` preload
+3. **No production seam chooses git (D3).** No environment variable read by the hook, payload field, argv flag or
+   config file selects the executable. A Node preload in `NODE_OPTIONS` runs before the hook and is out of its reach
+   (round-1 security review IN-02: a preload that patches `fixedGit` ran a planted git; that is arbitrary code in the
+   hook process, not a git lookup). Tests reach "no fixed git" and "a hanging fixed git" with a `--require` preload
    generated in a temp dir that patches `fixedGit` before the hook loads.
 4. **The Read guard is unchanged in code (D4).** Its own `withHardenedProbeEnv` wrapper now stacks on the inner
    hardening: the injected config pairs appear twice (idempotent values) and `PATH` is the same directory both
    times. That outer layer is now redundant defense in depth, and the Read guard's suite no longer tests it
    independently (the 261119-szk wrapper mutants no longer apply).
-5. **The helper's API is unchanged (D5).** No Windows candidates are added, since that would flip the Read
-   guard's fail-open on win32.
+5. **The helper's API is unchanged (D5).** Its exports are the same; round 2 adds three keys to what
+   `probeEnvChanges` returns (D10). No Windows candidates are added, since that would flip the Read guard's
+   fail-open on win32.
 6. **A check-ignore exit 1 with stderr is no answer (D8).** With the lazy fetch refused, git can exit 1 ("not
    ignored") while the ignore rule it could not read is still missing: it prints a lazy-fetch warning, or on an
    older git that honours only the no-transport layer, a transport error. So an exit 1 with any text on stderr
@@ -68,6 +76,19 @@ gate, which runs on the same files, did not.
 7. **Trace variables are dropped (D9).** The fresh env removes every inherited variable whose name starts with
    `GIT_TRACE` (`GIT_TRACE`, `GIT_TRACE2`, `GIT_TRACE_SETUP` and the rest). They carry no security role, and their
    output on stderr would otherwise trip the D8 rule and deny every hand-written file in a session that debugs git.
+8. **Round 2 probe env (D10; round-1 security review WR-02, WR-03, IN-01).**
+   - `probeEnvChanges` sets `GIT_TRACE2`, `GIT_TRACE2_EVENT` and `GIT_TRACE2_PERF` to `0`. A trace2 target in global
+     or system git config writes to stderr on every probe, and D9 only drops trace variables from the env; the env
+     value `0` outranks the config target (review row 269), while a command-line `-c trace2.normalTarget=0` does not
+     (row 268).
+   - binlib-edit's scrub (`REPO_REDIRECT_ENV`) also drops `GIT_EXEC_PATH` (on a git without the lazy-fetch kill
+     switch, an inherited exec path into the checkout supplies the fetch child even with `GIT_ALLOW_PROTOCOL` set,
+     review row 243; git then uses its compiled-in exec path) and `GIT_CONFIG`, the single-file variable
+     `git config` honours (it blinds the `core.worktree` pinning probe, or makes it refuse).
+   - Deliberately not changed: replace objects (`GIT_NO_REPLACE_OBJECTS`) and the object-store variables
+     (`GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`). Each moves verdicts in both directions in states
+     where git reads a rule blob from somewhere other than the work tree, so they belong to the deferred CR-01
+     family (Residual, below).
 
 ## Consequences
 
@@ -88,18 +109,42 @@ Each verdict change, as measured on this host (git 2.43 at `/usr/bin/git`) unles
   file (allow to deny), since the probe cannot read that file.
 - **D6d: a warning on a clean exit 1 denies.** A host where check-ignore prints any warning on an otherwise clean
   exit 1 now gets the undecidable deny for a tracked or hand-written file (fail-closed direction). An inherited
-  `GIT_TRACE*` variable no longer reaches the probe, so it is not such a warning (D9).
+  `GIT_TRACE*` variable no longer reaches the probe, so it is not such a warning (D9), and since round 2 neither is
+  a trace2 target in git config (D6i). An example that still is: a legacy global setting that git warns about on
+  every call, such as `core.fsyncObjectFiles` (quick 261120-28y probes/r1-r2/p3-cfgwarn.out); not fixed here.
 - **D6e: a malformed inherited config count no longer denies.** The helper replaces a count that is not a plain
   non-negative integer, so git no longer refuses to run and the real verdict applies (deny to allow for a tracked
   file).
 - **D6f: an old listed git denies.** When `/usr/bin/git` is older than the repository's `extensions.*` need, every
   candidate is the undecidable deny where a newer PATH git used to answer.
+- **D6i: a trace2 target in git config no longer denies (round 2).** With `trace2.normalTarget`, `eventTarget` or
+  `perfTarget` routed to stderr in global or system config, a tracked or hand-written file was the undecidable deny
+  at the 28y round-1 tip (D8 saw the trace output); it is allowed again, as it was at 57bcc77 before D8 (deny to
+  allow). The emitted file keeps the plain deny. Read guard: the tracked file's probe moves from `unknown` to
+  `not-ignored`, both a silent pass, so no visible change.
+- **D6k: an inherited single-file git config no longer reaches the pinning probe (round 2).** Measured moves
+  (quick 261120-28y probes/r2-exec/q3-r2-verdicts.out, abbd1d4 to the round-2 GREEN commit):
+  - the variable naming a malformed file, or a file that sets `core.worktree`: `git config --get core.worktree`
+    refused or answered, so every candidate was the undecidable deny; now the real verdict applies: a tracked file
+    is allowed (deny to allow) and an emitted file keeps the deny with the plain reason. Read guard: the emitted
+    file's probe moves from `unknown` to `ignored`, so its Read is now denied (silent pass to deny).
+  - a repository `core.worktree` plus the variable naming `/dev/null`: the pinning probe was blind, so an emitted
+    file was denied with the plain reason and a tracked file was allowed; now the pin fails, and both get the
+    undecidable deny (a reason change for the emitted file, allow to deny for the tracked one). Read guard: the
+    emitted file's probe moves from `ignored` to `unknown`, so its Read deny becomes a silent pass (the guard fails
+    open by design; the same repository without the variable already passed silently).
+- **No measured effect of the exec-path scrub on this host.** git 2.43 has the lazy-fetch kill switch, and an
+  inherited `GIT_EXEC_PATH` naming a missing, empty or the real exec path changed no verdict of either caller; the
+  scrub is defense in depth for an older git. No behavioural row exercises it here; an env-record row pins it.
 
-D6b and D6e are the deny-to-allow changes the plan names. One more was measured during execution (D6g, quick
+D6b and D6e are the deny-to-allow changes the round-1 plan names. One more was measured during execution (D6g, quick
 261120-28y probes/x-fsmonitor-hang-measure.out): a repository-configured `core.fsmonitor` command that hung past the
 3000 ms deadline used to deny a tracked file with the undecidable note (3068 ms, the command ran); it no longer runs,
-so the real verdict applies (allow in 76 ms). All three move a tracked or hand-written file to its correct verdict;
-every other measured change is toward deny. The two old test rows that
+so the real verdict applies (allow in 76 ms). Round 2 adds D6i and D6k. The measured deny-to-allow changes are D6b,
+D6e, D6g, D6i and D6k, and each allows a tracked or hand-written file that git answers for. Every other measured
+change is toward deny or is a reason change within deny (D6k), except one Read-guard move from deny to a silent
+pass, named in D6k.
+The two old test rows that
 pinned the PATH behaviour ("git missing from PATH" and "git hangs", both shims on PATH) now test the same outcome
 through the fixed git (no fixed git; a hanging fixed git).
 
@@ -110,10 +155,30 @@ through the fixed git (no fixed git; a hanging fixed git).
 - with an honest remote that serves the blob, the base gate fetched it and denied with the plain reason; it now
   denies with the undecidable note and fetches nothing.
 
-**Residual, open.** A plain repository (no partial-clone config) whose skip-worktree only-rule blob is deleted makes
-check-ignore exit 1 with empty stderr, so the Edit is allowed, as it was before this record (measured at both
-commits). It needs a damaged or attacker-written `.git`, which can un-ignore a file by other means anyway. It is
-tracked as a pending toolkit todo.
+**Residual, open: the CR-01 family (deferred, high-priority toolkit todo).** check-ignore exits 1 with empty stderr,
+so D8 does not fire and the Edit of a generated file is allowed, whenever git cannot read the ignore rule from the
+work tree and reads it from somewhere else or not at all. The verdicts below are the same at 57bcc77, at the
+round-1 tip and after round 2; none was introduced by this record:
+
+- an fsck-clean repository reaches it through one skip-worktree index bit on the `.gitignore` that holds the only
+  rule plus one work-tree change: an empty directory in its place (round-1 security review CR-01 F5; `git fsck
+  --strict` exits 0). It does not need a damaged or attacker-written `.git`;
+- the same bit with the rule blob deleted (F3, a damaged store);
+- replace refs, in both directions: a replace ref swapping the rule blob for a rule-less one allows (CR-02 F4), and
+  a replace ref supplying a rule to a rule-less blob denies (the mirror, quick 261120-28y
+  probes/r2-exec/q2-mirror-amended.out row M2). Refusing replace objects would flip both, so round 2 left them as
+  they were; a guard row pins both verdicts;
+- inherited object-store variables, in both directions: an empty inherited object directory reaches an allow, and
+  scrubbing the variables turns a deny into an allow when the repository's own store lacks the rule blob
+  (probes/r1-r2/p1-objdir.out, probes/r1-r2-i2/q2-mirror.out);
+- a `.gitignore` that un-ignores the file and hides itself (self-ignoring, skip-worktree or assume-unchanged): only
+  the emitted file shows, as untracked (review WR-01; A-01 in `hooks/binlib-edit.cjs`).
+
+The review's sketch closes the first four together: for an untracked candidate, refuse an exit 1 when an ignore file
+on the path is not a regular file or is a skip-worktree or assume-unchanged index entry. It costs a deny for an
+untracked hand-written file in a sparse checkout that excludes an ignore file on its path. The fifth needs the
+candidate rule (a Write or Edit of a `.gitignore` at or below a `bin/lib` pair). Both are tracked in the todo
+`2026-11-20-skip-worktree-unreadable-ignore-rule-fail-open.md`.
 
 **What was not run.** Native Windows was not run (no host); the CR-01 Windows route is covered by the POSIX analog
 rows (an empty, `.` and in-checkout PATH entry with a planted git) and by a row where `fixedGit` resolves the win32
@@ -123,7 +188,10 @@ approximated by dropping `GIT_NO_LAZY_FETCH`, not run.
 **Evidence.** 18 rows written failing first, plus a guard row for D9; 13 mutants, each removing one element (the
 bare name, each lazy-fetch key, both keys, the PATH rule, the injected config, the own-key rule, the no-git
 fallback, the D8 rule, the spawn timeout, the config on the default branch only, the PATH on the default branch
-only, the trace scrub), and each fails at least one row.
+only, the trace scrub), and each fails at least one row. Round 2: 5 rows written failing first (trace2 config, D6k,
+the env record on the default branch and through the Read guard, the `probeEnvChanges` unit row), plus a guard row
+for replace refs. 5 mutants (dropping each trace2 key, the exec-path scrub, the single-file config scrub) each fail
+at least one row across the three focused suites, and the 13 round-1 mutants still each fail one.
 
 ## Alternatives considered
 
