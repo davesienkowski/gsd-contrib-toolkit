@@ -1079,3 +1079,56 @@ test('szk: the amended records link back to CTK-ADR-0017 (0007 keeps exactly one
   assert.strictEqual(seven.length, 1, JSON.stringify(seven));
   assert.ok(seven[0].includes('CTK-ADR-0011') && seven[0].includes('CTK-ADR-0017'), seven[0]);
 });
+
+// -- quick 261120-2a2: CTK-ADR-0018 (a fail-open edit guard may deny a stale timeout-evidence edit) --
+
+test('2a2: CTK-ADR-0018 exists once, is Proposed, amends 0001, 0005 and 0007 (naming 0001 and 0005 Decision 3), README row', () => {
+  assert.match(statusLine(adrFile(18)), /^- \*\*Status:\*\* Proposed \(2026-11-20\)/);
+  const amends = headerBullet(adrFile(18), 'Amends');
+  assert.strictEqual(amends.length, 1, JSON.stringify(amends));
+  for (const id of ['CTK-ADR-0001', 'CTK-ADR-0005', 'CTK-ADR-0007']) assert.ok(amends[0].includes(id), amends[0]);
+  assert.match(amends[0], /CTK-ADR-0001 Decision 2/);
+  assert.match(amends[0], /CTK-ADR-0001 Decision 3/);
+  assert.match(amends[0], /CTK-ADR-0005 Decision 2/);
+  assert.match(amends[0], /CTK-ADR-0005 Decision 3/);
+  assert.match(amends[0], /CTK-ADR-0005 Decision 4/);
+  assert.ok(headerBullet(adrFile(18), 'Relates to').some((b) => b.includes('CTK-ADR-0017')));
+  const cells = readmeRow('CTK-ADR-0018').split('|').map((c) => c.trim());
+  assert.ok(cells.includes('Proposed'), JSON.stringify(cells));
+});
+
+test('2a2: CTK-ADR-0018 is plain ASCII, with no em dash, no account login and no local path', () => {
+  const text = fs.readFileSync(adrFile(18), 'utf8');
+  assert.match(text, /^[\x00-\x7f]*$/);
+  assert.doesNotMatch(text, /dave[a-z]+/i);
+  assert.doesNotMatch(text, LOCAL_PATH_RE);
+});
+
+test('2a2: CTK-ADR-0018 states what the guard checks, what it does not see, the context-only arm and its own waiver', () => {
+  const text = fs.readFileSync(adrFile(18), 'utf8').replace(/\s+/g, ' ');
+  assert.match(text, /arithmetically current/);
+  assert.match(text, /cannot check that an observation is real/);
+  assert.match(text, /Write, Edit and MultiEdit/);
+  for (const tool of ['Bash', 'NotebookEdit', 'git apply']) assert.ok(text.includes(tool), tool);
+  assert.match(text, /fails open/);
+  assert.match(text, /context-only/);
+  assert.match(text, /additionalContext/);
+  assert.match(text, /format drift/);
+  assert.match(text, /names a passing order/);
+  assert.match(text, /costs one edit/);
+  assert.match(text, /not a false-positive rate/);
+  assert.match(text, /degrades to allow/);
+  assert.match(text, /-p/);
+  assert.match(text, /stalled/);
+});
+
+test('2a2: the amended records link back to CTK-ADR-0018 (0005 and 0007 keep exactly one Amended by line)', () => {
+  assert.ok(headerBullet(adrFile(1), 'Amended by').some((b) => b.includes('CTK-ADR-0018')));
+  const five = headerBullet(adrFile(5), 'Amended by');
+  assert.strictEqual(five.length, 1, JSON.stringify(five));
+  assert.ok(five[0].includes('CTK-ADR-0017') && five[0].includes('CTK-ADR-0018'), five[0]);
+  const seven = headerBullet(adrFile(7), 'Amended by');
+  assert.strictEqual(seven.length, 1, JSON.stringify(seven));
+  assert.ok(seven[0].includes('CTK-ADR-0011') && seven[0].includes('CTK-ADR-0017') && seven[0].includes('CTK-ADR-0018'), seven[0]);
+  assert.doesNotMatch(seven[0], /\]\(CTK-ADR-0018/, '0007 names 0018 as plain text: its bundle copy has no 0018 to link to');
+});

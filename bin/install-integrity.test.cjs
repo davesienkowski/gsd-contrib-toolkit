@@ -64,6 +64,7 @@ const WIRED = (() => {
   let writeEdit = 0;
   let enterWorktree = 0;
   let read = 0;
+  let edit = 0;
   for (const [event, groups] of Object.entries(snip.hooks || {})) {
     for (const g of groups) {
       const n = (g.hooks || []).length;
@@ -72,9 +73,10 @@ const WIRED = (() => {
       if (event === 'PreToolUse' && g.matcher === 'Write|Edit') writeEdit += n;
       if (event === 'PreToolUse' && g.matcher === 'EnterWorktree') enterWorktree += n;
       if (event === 'PreToolUse' && g.matcher === 'Read') read += n;
+      if (event === 'PreToolUse' && g.matcher === 'Write|Edit|MultiEdit') edit += n;
     }
   }
-  return { total, bash, writeEdit, enterWorktree, read };
+  return { total, bash, writeEdit, enterWorktree, read, edit };
 })();
 
 // The REAL canonical binlib-edit entrypoint (never the sandbox copy) — the 260630-v1h fix under test.
@@ -374,6 +376,25 @@ test('INST-03(b) MATCHER SCOPE: the installed binlib-edit entry keeps its scoped
         'every Read-scoped target must run emitted-cjs-read.cjs; got: ' + JSON.stringify(t.scriptPath)
       );
     }
+    // ENF-27 (quick 261120-2a2): the fail-open timeout-evidence edit guard is the one Write|Edit|MultiEdit-scoped
+    // target, in its own group; binlib-edit stays the sole Write|Edit entry (asserted above).
+    assert.strictEqual(WIRED.edit, 1, 'the snippet wires exactly one Write|Edit|MultiEdit edit guard (timeout-evidence-edit)');
+    const editScoped = targets.filter((t) => t.matcher === 'Write|Edit|MultiEdit');
+    assert.strictEqual(
+      editScoped.length, WIRED.edit,
+      'exactly ' + WIRED.edit + ' Write|Edit|MultiEdit-scoped target(s) (timeout-evidence-edit), got ' +
+        JSON.stringify(editScoped.map((t) => t.scriptPath))
+    );
+    for (const t of editScoped) {
+      assert.ok(
+        /(^|[\\/])timeout-evidence-edit\.cjs$/.test(t.scriptPath),
+        'every Write|Edit|MultiEdit-scoped target must run timeout-evidence-edit.cjs; got: ' + JSON.stringify(t.scriptPath)
+      );
+    }
+    assert.ok(
+      writeEdit.every((t) => /(^|[\\/])binlib-edit\.cjs$/.test(t.scriptPath)),
+      'binlib-edit stays the sole Write|Edit entry; got: ' + JSON.stringify(writeEdit.map((t) => t.scriptPath))
+    );
   } finally {
     sb.dispose();
   }

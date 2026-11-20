@@ -15,9 +15,9 @@
  *   (1) Derivation self-consistency: registrations = Σ per-event; distinct scripts = registrations
  *       minus the extra registrations (counted PER SCRIPT REGISTRATION, so a script on two events
  *       and a script under two matchers of one event both count); PreToolUse registrations =
- *       Bash + Write|Edit + EnterWorktree; every EnterWorktree script is also a Bash script; distinct
- *       PreToolUse GATES = Bash + Write|Edit registrations. An unknown PreToolUse matcher fails the
- *       categorisation check (a synthetic `Read` row proves it).
+ *       Bash + Write|Edit + EnterWorktree + Read + Write|Edit|MultiEdit; every EnterWorktree script is
+ *       also a Bash script; distinct PreToolUse GATES = Bash + Write|Edit registrations. An unknown
+ *       PreToolUse matcher fails the categorisation check (a synthetic `Grep` row proves it).
  *       COUNT SEMANTICS: "N gates" counts DISTINCT gate scripts (`preGates`); registrations are
  *       counted separately. ENF-25 (`worktree-fresh-base`) is ONE gate with TWO registrations.
  *   (2) The two deliberately-UNWIRED scripts (`doctor.cjs`, `preflight-shipped-paths.cjs`) exist on
@@ -90,6 +90,11 @@ const DELIBERATELY_UNWIRED = ['doctor.cjs', 'preflight-shipped-paths.cjs'];
  *                               quick 261119-szk): it can deny a Read but fails open and passes
  *                               silently otherwise (CTK-ADR-0017), so it is NOT counted in `preGates`;
  *                               every "can deny" claim names both categories.
+ *   - edit guard / fail-open  = every DISTINCT script with a `PreToolUse` `Write|Edit|MultiEdit`
+ *                               registration (ENF-27, quick 261120-2a2): it can deny a stale
+ *                               timeout-evidence edit, adds a context-only note otherwise, fails open
+ *                               (CTK-ADR-0018), so it is NOT counted in `preGates`; every "can deny"
+ *                               claim names it too.
  *   - advisory / fail-open    = every `UserPromptSubmit` registration (reminds, never denies)
  *   - observability / fail-open = every `PostToolUse` + `PostToolUseFailure` registration
  *
@@ -141,6 +146,7 @@ function deriveCounts(snip) {
     ...scriptsOn('PreToolUse|EnterWorktree'),
   ]);
   const readGuardScripts = scriptsOn('PreToolUse|Read');
+  const editGuardScripts = scriptsOn('PreToolUse|Write|Edit|MultiEdit');
   const observabilityScripts = new Set([
     ...scriptsOnEvent('PostToolUse'),
     ...scriptsOnEvent('PostToolUseFailure'),
@@ -152,7 +158,7 @@ function deriveCounts(snip) {
     scriptCount: scriptRegs.size,
     perEvent,
     perEventMatcher,
-    /** PreToolUse REGISTRATIONS (Bash + Write|Edit + EnterWorktree + Read) — NOT the gate count. */
+    /** PreToolUse REGISTRATIONS (Bash + Write|Edit + EnterWorktree + Read + Write|Edit|MultiEdit) — NOT the gate count. */
     pre,
     /** DISTINCT fail-closed PreToolUse scripts — the GATE count every "N gates" claim uses. */
     preGates: preGateScripts.size,
@@ -160,6 +166,10 @@ function deriveCounts(snip) {
     readGuards: readGuardScripts.size,
     readGuardScripts,
     read: perEventMatcher['PreToolUse|Read'] || 0,
+    /** DISTINCT fail-open PreToolUse `Write|Edit|MultiEdit` edit guard scripts (ENF-27). */
+    editGuards: editGuardScripts.size,
+    editGuardScripts,
+    edit: perEventMatcher['PreToolUse|Write|Edit|MultiEdit'] || 0,
     bash: perEventMatcher['PreToolUse|Bash'] || 0,
     writeEdit: perEventMatcher['PreToolUse|Write|Edit'] || 0,
     enterWorktree: perEventMatcher['PreToolUse|EnterWorktree'] || 0,
@@ -202,9 +212,9 @@ function consistencyViolations(c) {
         `extra registrations contributed by multi-registration scripts (${JSON.stringify(c.multiRegScripts)})`
     );
   }
-  if (c.pre !== c.bash + c.writeEdit + c.enterWorktree + c.read) {
+  if (c.pre !== c.bash + c.writeEdit + c.enterWorktree + c.read + c.edit) {
     v.push(
-      `every PreToolUse registration is Bash, Write|Edit, EnterWorktree or Read — an unknown PreToolUse ` +
+      `every PreToolUse registration is Bash, Write|Edit, EnterWorktree, Read or Write|Edit|MultiEdit — an unknown PreToolUse ` +
         `matcher was wired (${JSON.stringify(Object.keys(c.perEventMatcher).filter((k) => k.startsWith('PreToolUse|')))}) ` +
         `and this guard does not know how to count it`
     );
@@ -226,6 +236,13 @@ function consistencyViolations(c) {
     (f) => c.bashScripts.has(f) || c.writeEditScripts.has(f) || c.enterWorktreeScripts.has(f)
   );
   if (doubled.length) v.push(`a Read guard is also a fail-closed gate: ${JSON.stringify(doubled)}`);
+  if (c.editGuards !== c.edit) {
+    v.push(`each edit guard has exactly one Write|Edit|MultiEdit registration (${c.editGuards} scripts, ${c.edit} registrations)`);
+  }
+  const editDoubled = [...c.editGuardScripts].filter(
+    (f) => c.bashScripts.has(f) || c.writeEditScripts.has(f) || c.enterWorktreeScripts.has(f) || c.readGuardScripts.has(f)
+  );
+  if (editDoubled.length) v.push(`an edit guard is also a fail-closed gate or a Read guard: ${JSON.stringify(editDoubled)}`);
   if (!(c.registrations > 0 && c.scriptCount > 0)) v.push('the snippet must wire something');
   return v;
 }
@@ -238,8 +255,9 @@ function derivedTruth(c = C) {
   return (
     `DERIVED TRUTH: ${c.registrations} registrations across ${c.scriptCount} scripts — ` +
     `${c.pre} PreToolUse registrations (${c.bash} Bash + ${c.writeEdit} Write|Edit + ` +
-    `${c.enterWorktree} EnterWorktree + ${c.read} Read) from ${c.preGates} fail-closed PreToolUse gates ` +
-    `and ${c.readGuards} fail-open Read guard(s), ` +
+    `${c.enterWorktree} EnterWorktree + ${c.read} Read + ${c.edit} Write|Edit|MultiEdit) from ` +
+    `${c.preGates} fail-closed PreToolUse gates, ${c.readGuards} fail-open Read guard(s) and ` +
+    `${c.editGuards} fail-open edit guard(s), ` +
     `${c.ups} UserPromptSubmit (advisory), ${c.observabilityRegistrations} post-tool registrations from ` +
     `${c.observabilityScripts} observability script(s).`
   );
@@ -280,11 +298,13 @@ const PRE_SPLIT =
   `${C.enterWorktree} of the \`Bash\` gates also on \`EnterWorktree\`)`;
 
 /**
- * The "only these can deny" sentence (R1 W-01, quick 261119-szk): it names BOTH categories that can return
- * `deny`, so adding the fail-open Read guard did not make "Only the N gates block" silently false.
+ * The "only these can deny" sentence (R1 W-01, quick 261119-szk; reworded for ENF-27, quick 261120-2a2): it names
+ * EVERY category that can return `deny`, so adding a fail-open guard did not make "Only the N gates block" silently
+ * false.
  */
 const ONLY_THESE_DENY =
-  `Only the ${C.preGates} fail-closed \`PreToolUse\` gates and the ${C.readGuards} fail-open \`Read\` guard can deny`;
+  `Only the ${C.preGates} fail-closed \`PreToolUse\` gates, the ${C.readGuards} fail-open \`Read\` guard and the ` +
+  `${C.editGuards} fail-open edit guard can deny`;
 
 // ───────────────────────────── (1) derivation sanity ─────────────────────────────
 
@@ -301,7 +321,7 @@ test('the categorisation check REJECTS an unknown PreToolUse matcher (synthetic 
   });
   const violations = consistencyViolations(deriveCounts(synthetic));
   assert.ok(
-    violations.some((m) => m.startsWith('every PreToolUse registration is Bash, Write|Edit, EnterWorktree or Read')),
+    violations.some((m) => m.startsWith('every PreToolUse registration is Bash, Write|Edit, EnterWorktree, Read or Write|Edit|MultiEdit')),
     `a PreToolUse \`Grep\` group must fail the categorisation check; got: ${JSON.stringify(violations)}`
   );
   // and the real snippet passes the same check (the rejection is the Grep group, not the harness)
@@ -320,6 +340,32 @@ test('ENF-26: the snippet wires exactly one fail-open Read guard, emitted-cjs-re
   assert.deepEqual([...C.readGuardScripts], ['emitted-cjs-read.cjs'], derivedTruth());
   assert.equal(C.read, 1, derivedTruth());
 });
+
+test('ENF-27: the snippet wires exactly one fail-open edit guard, timeout-evidence-edit, outside the gate count', () => {
+  assert.deepEqual([...C.editGuardScripts], ['timeout-evidence-edit.cjs'], derivedTruth());
+  assert.equal(C.edit, 1, derivedTruth());
+  assert.ok(!C.writeEditScripts.has('timeout-evidence-edit.cjs'), 'the edit guard is not a Write|Edit gate');
+  assert.equal(C.preGates, C.bash + C.writeEdit, 'the edit guard does not count as a fail-closed gate');
+});
+
+for (const [label, matcher, cmd] of [
+  ['a fail-closed Write|Edit gate', 'Write|Edit', 'node "$HOME/repos/gsd-contrib-toolkit/hooks/timeout-evidence-edit.cjs"'],
+  ['a fail-closed Bash gate', 'Bash', 'node "$HOME/repos/gsd-contrib-toolkit/hooks/timeout-evidence-edit.cjs"'],
+  ['a Read guard', 'Read', 'node "$HOME/repos/gsd-contrib-toolkit/hooks/timeout-evidence-edit.cjs"'],
+]) {
+  test(`the categorisation check REJECTS an edit guard also wired as ${label} (synthetic ${matcher} row)`, () => {
+    const synthetic = JSON.parse(JSON.stringify(SNIP));
+    let group = synthetic.hooks.PreToolUse.find((g) => g.matcher === matcher);
+    group.hooks.push({ type: 'command', command: cmd });
+    const extra = synthetic.hooks.PreToolUse.find((g) => g.matcher === 'Write|Edit|MultiEdit');
+    if (!extra) synthetic.hooks.PreToolUse.push({ matcher: 'Write|Edit|MultiEdit', hooks: [{ type: 'command', command: cmd }] });
+    const violations = consistencyViolations(deriveCounts(synthetic));
+    assert.ok(
+      violations.some((m) => m.startsWith('an edit guard is also a fail-closed gate or a Read guard')),
+      JSON.stringify(violations)
+    );
+  });
+}
 
 // ───────────────────────────── (2) the deliberately-unwired scripts ─────────────────────────────
 
@@ -381,6 +427,7 @@ test('docs/enforcement-reference.md primary hook-count claims match the derived 
     ],
     ['headline "only these can deny"', ONLY_THESE_DENY],
     ['headline Read guard', `**${C.readGuards} fail-open \`Read\` guard**`],
+    ['headline edit guard', `**${C.editGuards} fail-open edit guard**`],
     ['contributor-workflow blocking count', `**${C.preGates} fail-closed \`PreToolUse\` gates**`],
     ['contributor-workflow wired-set size', `the wired set of ${C.registrations} registrations`],
     ['share-form bundle script count', `**${C.scriptCount} hook scripts** (the ${C.preGates} fail-closed \`PreToolUse\` gates`],
@@ -409,7 +456,7 @@ test('docs/guides/overview.md primary hook-count claims match the derived wired 
     [
       'enforcement-row breakdown',
       `${C.preGates} fail-closed \`PreToolUse\` gates ${PRE_SPLIT} + ` +
-        `${C.readGuards} fail-open \`Read\` guard + ` +
+        `${C.readGuards} fail-open \`Read\` guard + ${C.editGuards} fail-open edit guard + ` +
         `${C.ups} advisory \`UserPromptSubmit\` reminder + ${C.observabilityScripts} observability recorder`,
     ],
     ['enforcement-row "only these can deny"', ONLY_THESE_DENY],
@@ -449,6 +496,10 @@ test('capabilities/contribution-toolkit/README.md primary hook-count claims matc
     [
       "what's-included Read guard row",
       `| \`PreToolUse\` \`Read\` guard (fail-open, denies a Read only) | ${C.readGuards} |`,
+    ],
+    [
+      "what's-included edit guard row",
+      `| \`PreToolUse\` edit guard (fail-open, denies a stale timeout-evidence edit only) | ${C.editGuards} |`,
     ],
     [
       "what's-included advisory row",

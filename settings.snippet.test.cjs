@@ -61,6 +61,12 @@ const WRITE_EDIT_GATES = ['binlib-edit'];
  * ALL_HOOKS, so the exactly-once row and the install-merge proof cover it.
  */
 const READ_GATES = ['emitted-cjs-read'];
+/**
+ * ENF-27 (quick 261120-2a2): the fail-open timeout-evidence EDIT guard, alone under a `Write|Edit|MultiEdit`
+ * matcher (binlib-edit keeps its own `Write|Edit` group). It is in ALL_HOOKS, so the exactly-once row and the
+ * install-merge proof cover it.
+ */
+const EDIT_GUARDS = ['timeout-evidence-edit'];
 const PROMPT_HOOKS = ['protocol-reminder'];
 /**
  * OBS-01: the observation-only recorder. It is the ONE hook wired more than once — the harness
@@ -80,7 +86,7 @@ const RECORDER_EVENTS = ['PostToolUse', 'PostToolUseFailure'];
  */
 const TWO_MATCHER_GATES = ['worktree-fresh-base'];
 const TWO_MATCHER_MATCHERS = ['Bash', 'EnterWorktree'];
-const ALL_HOOKS = [...BASH_GATES, ...WRITE_EDIT_GATES, ...READ_GATES, ...PROMPT_HOOKS];
+const ALL_HOOKS = [...BASH_GATES, ...WRITE_EDIT_GATES, ...READ_GATES, ...EDIT_GUARDS, ...PROMPT_HOOKS];
 /** Every wired script, however many times it appears — the presence set the merge proof uses. */
 const ALL_WIRED_SCRIPTS = [...ALL_HOOKS, ...RECORDER_HOOKS, ...TWO_MATCHER_GATES];
 
@@ -339,6 +345,22 @@ test('ENF-26: the Read group under PreToolUse holds exactly emitted-cjs-read, al
   assert.ok(cmds[0].includes('/hooks/emitted-cjs-read.cjs"'), cmds[0]);
   const elsewhere = allCommands(snip).filter((c) => c.command.includes('/hooks/emitted-cjs-read.cjs"') && c.matcher !== 'Read');
   assert.deepEqual(elsewhere, [], 'emitted-cjs-read is wired under no other matcher');
+});
+
+test('ENF-27: the Write|Edit|MultiEdit group under PreToolUse holds exactly timeout-evidence-edit, alone', () => {
+  const snip = loadSnippet();
+  const groups = snip.hooks.PreToolUse.filter((g) => g.matcher === 'Write|Edit|MultiEdit');
+  assert.equal(groups.length, 1, 'exactly one PreToolUse group with matcher Write|Edit|MultiEdit');
+  const cmds = groups[0].hooks.map((h) => h.command);
+  assert.equal(cmds.length, 1, 'the Write|Edit|MultiEdit group holds one hook: ' + JSON.stringify(cmds));
+  assert.ok(cmds[0].includes('/hooks/timeout-evidence-edit.cjs"'), cmds[0]);
+  const elsewhere = allCommands(snip).filter(
+    (c) => c.command.includes('/hooks/timeout-evidence-edit.cjs"') && c.matcher !== 'Write|Edit|MultiEdit'
+  );
+  assert.deepEqual(elsewhere, [], 'timeout-evidence-edit is wired under no other matcher');
+  const we = snip.hooks.PreToolUse.filter((g) => g.matcher === 'Write|Edit');
+  assert.equal(we.length, 1, 'binlib-edit keeps its own Write|Edit group');
+  assert.deepEqual(we[0].hooks.map((h) => h.command.includes('/hooks/binlib-edit.cjs"')), [true]);
 });
 
 test('protocol-reminder is under UserPromptSubmit', () => {
