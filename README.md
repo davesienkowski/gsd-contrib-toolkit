@@ -36,8 +36,10 @@ Two limits: the `lint:ci` and protocol-artifact checks do not arm for pushes tha
 fork or backup remote (see [the table](docs/enforcement-reference.md)), and the review-evidence check
 looks at the shape of the review artifact, not whether the review itself is honest.
 
-18 of the 21 hook scripts block a contribution outcome. One more, the fail-open `Read` guard, denies
-only a Read of an emitted gsd-core file and points at its source; the other two only remind or record. The full table, with what each
+18 of the 22 hook scripts block a contribution outcome. Two more fail open: the `Read` guard denies
+only a Read of an emitted gsd-core file and points at its source, and the edit guard denies only a Write, Edit
+or MultiEdit that raises a gsd-core test timeout constant while its stated evidence is missing or no longer
+arithmetically current (it cannot check that a measurement is real); the other two only remind or record. The full table, with what each
 one calls, is in [docs/enforcement-reference.md](docs/enforcement-reference.md).
 
 ## What it does not do

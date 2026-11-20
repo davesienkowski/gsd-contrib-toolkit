@@ -21,6 +21,10 @@
   Also amended by [CTK-ADR-0017](CTK-ADR-0017-a-fail-open-read-guard-may-deny-the-read-tool.md) (2026-11-19, Proposed): a read guard on the `Read`
   matcher may deny and still fail open (Decision 4), and its deny rests on two agreeing signals
   rather than a measured false-positive rate (Decision 2); every other gate is unchanged.
+  Also amended by [CTK-ADR-0018](CTK-ADR-0018-a-fail-open-edit-guard-may-deny-a-stale-timeout-evidence-edit.md) (2026-11-20, Proposed): an edit
+  guard on the `Write|Edit|MultiEdit` matcher may deny on a toolkit-owned signal with no LIVE one beside it
+  (Decision 3), waives the measured false-positive rate with its own reason, a deny that names a passing order
+  and costs one edit (Decision 2), and fails open (Decision 4); every other gate is unchanged.
 
 ## Context
 

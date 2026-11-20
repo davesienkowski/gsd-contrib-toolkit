@@ -23,6 +23,10 @@
 - **Amended by:** [CTK-ADR-0017](CTK-ADR-0017-a-fail-open-read-guard-may-deny-the-read-tool.md) (2026-11-19, Proposed): a read guard, a hook
   registered only on the `Read` matcher, may deny a Read of generated output (a step, not an outcome; Decision 1)
   and fails open with a silent pass (Decision 2). Every other gate keeps both decisions unchanged.
+- **Amended by:** [CTK-ADR-0018](CTK-ADR-0018-a-fail-open-edit-guard-may-deny-a-stale-timeout-evidence-edit.md) (2026-11-20, Proposed): an edit guard, a hook
+  registered only on the `Write|Edit|MultiEdit` matcher and scoped to gsd-core `tests/**`, may deny an edit that leaves a
+  test timeout's stated evidence stale on a toolkit-owned signal alone (Decision 3, as narrowed by CTK-ADR-0005) and
+  fails open with a silent pass (Decision 2). Every other gate keeps both decisions unchanged.
 
 ## Context
 

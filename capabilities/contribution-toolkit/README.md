@@ -9,7 +9,9 @@ A `role:feature` capability for **GSD 1.6.0+** (ADR-1244 capability ecosystem). 
 eighteen fail-closed `PreToolUse` enforcement hooks that the **harness** runs (not the model) and
 that call gsd-core's own LIVE gate scripts at runtime (alongside two non-blocking wired hooks — an
 advisory reminder and an observability recorder), plus one fail-open `PreToolUse` `Read` guard,
-`emitted-cjs-read`, that denies only a Read of an emitted gsd-core `bin/lib` file. It installs, toggles, and removes through gsd-core's
+`emitted-cjs-read`, that denies only a Read of an emitted gsd-core `bin/lib` file, and one fail-open
+`PreToolUse` edit guard, `timeout-evidence-edit`, that denies only an edit leaving a gsd-core test timeout's
+evidence stale. It installs, toggles, and removes through gsd-core's
 native capability system, tracked by gsd-core's ledger + consent.
 
 - **Repo:** `github.com/davesienkowski/gsd-contribution-toolkit`
@@ -56,13 +58,14 @@ hooks-only artifact:
 |---|---|---|
 | `PreToolUse` gates (fail-closed — these block) | 18 | `gh-issue-create`, `gh-pr-create`, `gh-edit`, `issue-dedupe`, `policy-invariants`, `lint-ci-marker`, `git-commit-convention`, `containment`, `freshness`, `githooks-seal`, `scan-gate`, `protocol-artifact`, `review-artifact`, `runtime-drift`, `gsd-test-clean-tree`, `gsd-test-viability`, `worktree-fresh-base` (registered on `Bash` and `EnterWorktree`), `binlib-edit` |
 | `PreToolUse` `Read` guard (fail-open, denies a Read only) | 1 | `emitted-cjs-read`: a Read of a tsc-emitted gsd-core `bin/lib/**/*.cjs` is denied and pointed at its `src/**/*.cts` twin; every other path, and every error, is a silent pass |
+| `PreToolUse` edit guard (fail-open, denies a stale timeout-evidence edit only) | 1 | `timeout-evidence-edit`: a Write, Edit or MultiEdit that raises, newly sets or newly exports a gsd-core `tests/helpers/timeouts.cjs` constant whose `TIMEOUT_EVIDENCE` entry is missing or whose Evidence comment is not arithmetically current is denied with the passing order; an unevidenced file-local timeout elsewhere in `tests/**` gets a context-only note; every other path, and every error, is a silent pass |
 | `UserPromptSubmit` advisory (never denies) | 1 | `protocol-reminder` |
 | `PostToolUse` + `PostToolUseFailure` observability (never denies) | 1 script / 2 registrations | `tool-recorder` — the one hook wired on two events |
 | Skills | 2 | `core-contribution`, `maintainer-review-sweep` |
 | Commands | 5 | `gsd-submit`, `gsd-review-sweep`, `gsd-triage-assist`, `gsd-release-preflight`, `gsd-ruleset-drift` |
 | Loop contribution | 1 | an advisory `plan:pre` fragment, gated by the default-off `workflow.gsd_contrib_enforcement` flag |
 
-That is **21 hook scripts** producing **23 `hooks[]` registrations** in `capability.json` (the
+That is **22 hook scripts** producing **24 `hooks[]` registrations** in `capability.json` (the
 recorder is registered on two events, and the `worktree-fresh-base` gate under two `PreToolUse`
 matchers, `Bash` and `EnterWorktree`). The bundled hook scripts **resolve and call the LIVE gsd-core
 gate scripts at runtime** — they never reimplement gsd-core policy. When gsd-core's scripts evolve,
@@ -93,7 +96,7 @@ node <gsd-core>/bin/gsd-tools.cjs capability install \
 - `--scope project` installs into the gsd-core checkout (`.gsd/capabilities/contribution-toolkit/` +
   a `.gsd-capabilities.json` ledger), keeping enforcement project-scoped — never `~/.claude`.
   Use `--scope global` for `~/.gsd/...`.
-- `--yes` grants consent — the capability ships executable surfaces (the 21 hook scripts), so the
+- `--yes` grants consent — the capability ships executable surfaces (the 22 hook scripts), so the
   install discloses them and aborts without consent.
 - `--shared-file .claude/settings.json` is **required to actually wire the hooks** into
   `settings.json`; without it the install records the ledger + overlay but applies no gates.
@@ -162,6 +165,7 @@ Each skill carries an explicit advisory-only note. Full model:
 | `review-artifact` | reviewing/approving/merging a PR without the mechanizable re-review evidence — two orthogonal isolated passes (step 8), the merge gate (step 13), the treadmill guard (step 1), the exogenous self-check (step 10), and, for an approve or request-changes, step 8a memtrace evidence (`get_impact`, `get_symbol_context`, one recorded-decision verb) in tool-recorder's log for the session (`ask` when the log cannot answer, or when a filled `R8a-memtrace.json` attests memtrace was unavailable) — keyed to the PR number + HEAD OID |
 | `binlib-edit` | no hand-edits to generated `bin/lib/*.cjs` (ADR-457) |
 | `emitted-cjs-read` | a Read of a generated `bin/lib/*.cjs` is pointed at its `src/*.cts` twin (Read tool only; fail-open; CTK-ADR-0017, Proposed) |
+| `timeout-evidence-edit` | a raised, new or newly exported gsd-core test timeout in `tests/helpers/timeouts.cjs` keeps an evidence entry and an arithmetically current Evidence comment (Write, Edit and MultiEdit only; checks the arithmetic, not the measurement; fail-open; CTK-ADR-0018, Proposed) |
 
 The two wired **non-blocking** hooks are outside this table by design: `protocol-reminder`
 (`UserPromptSubmit`, advisory) and `tool-recorder` (`PostToolUse`/`PostToolUseFailure`,

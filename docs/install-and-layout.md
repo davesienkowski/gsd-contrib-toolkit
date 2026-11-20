@@ -18,7 +18,7 @@ without losing work, so a reinstall can never lose the toolkit.
 | `bin/`                  | Runnable tools: `contrib-capability` (install/toggle), `build-capability` (bundle rebuild/check), `runtime-sync` (ENF-21 runtime; `runtime-sync where` prints the measured Claude config dir, and `sync` refuses the daily `~/.claude` install, CTK-ADR-0013), `verify-hooks`, `self-test`, `lint-ci-stamp`, `triage-assist`, `release-preflight`, `ruleset-drift`, `verify-capability`, `convention-drift`, `verdict-stats` (advisory), `prove-integrity-provenance`, `pr-status` (read-only PR snapshot and ball-in-court; `--cr` for the latest change request's checklist, activity and re-request trace, `--body` for the body's shas and the Self-test report binding), `base-conflicts` (read-only conflicts vs the base, merge objects in a temp object dir), `issue-status` (read-only issue ball-in-court and linked PRs), `push-target` (the PR's head remote and push command, printed only), plus the `gsd-plan-track`/`gsd-refresh` shell helpers. |
 | `commands/`             | Vendored slash commands: `gsd-submit`, `gsd-review-sweep`, `gsd-triage-assist`, `gsd-release-preflight`, `gsd-ruleset-drift`; symlinked into `~/.claude`. |
 | `skills/`               | Vendored Claude skills: `core-contribution`, `maintainer-review-sweep`; symlinked into `~/.claude`. |
-| `capabilities/`         | The share-form GSD capability: the **self-contained** `contribution-toolkit/` bundle - `capability.json` + `fragments/` + the bundled `hooks/` (21 scripts / 23 wired registrations), `skills/` (2), and `commands/` (5) a remote install delivers (NOT hooks-only). |
+| `capabilities/`         | The share-form GSD capability: the **self-contained** `contribution-toolkit/` bundle - `capability.json` + `fragments/` + the bundled `hooks/` (22 scripts / 24 wired registrations), `skills/` (2), and `commands/` (5) a remote install delivers (NOT hooks-only). |
 | `settings.snippet.json` | The canonical hooks settings block - the wired-set source `build-capability.cjs` reads to generate the capability bundle.         |
 
 ## Source of Truth and Symlinks
@@ -78,7 +78,7 @@ node bin/contrib-capability.cjs remove --reason <w> # remove from ledger + conse
 The toolkit is also published as a **public, git-installable GSD capability** at
 `github.com/davesienkowski/gsd-contribution-toolkit` (tagged `#v2.1.3`). This is the
 distribution path for anyone other than the owner restoring local symlinks - it
-delivers the **self-contained bundle** (the 21 hook scripts + 2 skills + 5 commands), **not**
+delivers the **self-contained bundle** (the 22 hook scripts + 2 skills + 5 commands), **not**
 a hooks-only artifact. Install it through gsd-core's git capability adapter:
 
 ```bash
