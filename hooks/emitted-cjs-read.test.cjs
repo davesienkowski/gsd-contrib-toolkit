@@ -435,6 +435,65 @@ test('probeEnvChanges: the injected pairs are appended to an inherited GIT_CONFI
   );
 });
 
+/** A tree with a committed executable `git` in bin/lib that appends to $EMITTED_READ_MARK. */
+function plantedGitTree(name) {
+  const root = plainTree(name);
+  write(root, 'gsd-core/bin/lib/git', '#!/bin/sh\necho planted >> "$EMITTED_READ_MARK"\nexit 0\n');
+  fs.chmodSync(path.join(root, 'gsd-core', 'bin', 'lib', 'git'), 0o755);
+  return root;
+}
+
+test('real probe: with PATH unset, or with no absolute PATH entry, a committed git beside the target never runs (REVIEW-R2 LOW-R2-01)', () => {
+  for (const [label, pathValue] of [['unset', undefined], ['rel', 'rel'], ['dot', '.'], ['empty', ''], ['colons', '::']]) {
+    const root = plantedGitTree('planted-git-' + label);
+    const mark = path.join(BASE, 'planted-git-' + label + '-mark');
+    const env = Object.assign({}, process.env, ISOLATED_GIT_CONFIG, { GSD_CONTRIB_NO_VERDICT_LOG: '1', EMITTED_READ_MARK: mark });
+    if (pathValue === undefined) delete env.PATH;
+    else env.PATH = pathValue;
+    const r = spawnSync(process.execPath, [HOOK], {
+      input: payload(path.join(root, 'gsd-core', 'bin', 'lib', 'foo.cjs')), env, encoding: 'utf8', timeout: 15000,
+    });
+    assert.strictEqual(r.status, 0, label + ': ' + r.stderr);
+    assert.ok(!fs.existsSync(mark), label + ': the planted git must not run');
+  }
+});
+
+test('probeEnvChanges: PATH unset stays unset; a PATH with no absolute entry becomes a non-resolving absolute constant', () => {
+  const { probeEnvChanges } = require('./emitted-cjs-read.cjs');
+  assert.ok(!('PATH' in probeEnvChanges({})), 'an unset PATH is not touched');
+  for (const p of ['', '.', 'rel', '::', 'rel:.:']) {
+    const out = probeEnvChanges({ PATH: p }).PATH;
+    assert.ok(out.length > 0 && path.isAbsolute(out) && !out.includes(path.delimiter), JSON.stringify(p) + ' -> ' + JSON.stringify(out));
+    assert.ok(!fs.existsSync(out), 'the constant does not resolve: ' + out);
+  }
+});
+
+test('a guarded Read with PATH unset leaves PATH unset', () => {
+  const saved = process.env.PATH;
+  delete process.env.PATH;
+  try {
+    guard(payload(lib('hand.cjs')));
+    assert.ok(!('PATH' in process.env));
+  } finally {
+    process.env.PATH = saved;
+  }
+});
+
+test('the env layer alone (no pinning) stops the committed bare-dir fsmonitor command (REVIEW-R2 INFO-R2-01)', () => {
+  const { probeEnvChanges } = require('./emitted-cjs-read.cjs');
+  const clone = path.join(BASE, 'bare-clone');
+  const target = path.join(clone, 'gsd-core', 'bin', 'lib', 'sub', 'a.cjs');
+  if (!fs.existsSync(path.join(clone, 'gsd-core', 'bin', 'lib', 'sub', 'config'))) {
+    assert.fail('the HIGH-01 bare-dir clone fixture must exist (it is built by the HIGH-01 row above)');
+  }
+  const mark = path.join(BASE, 'env-layer-mark');
+  const env = Object.assign({}, FIXTURE_GIT_ENV, { EMITTED_READ_MARK: mark });
+  Object.assign(env, probeEnvChanges(env));
+  const r = spawnSync('git', ['check-ignore', '-q', '--', target], { cwd: path.dirname(target), env, encoding: 'utf8' });
+  assert.notStrictEqual(r.status, 0, 'the env layer must not let git answer "ignored" here');
+  assert.ok(!fs.existsSync(mark), 'the planted fsmonitor command must not run with the env layer alone');
+});
+
 test('real probe: an empty PATH entry cannot run a committed executable named git beside the target (SECURITY-REVIEW LOW-01)', () => {
   const root = plainTree('planted-git');
   const mark = path.join(BASE, 'planted-git-mark');
