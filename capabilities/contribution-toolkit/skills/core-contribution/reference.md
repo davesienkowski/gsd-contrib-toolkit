@@ -255,7 +255,7 @@ Separate workflows: `security-scan.yml` (dependency integrity + prompt-injection
 (Upstream testing norms — regression-test-first for a fix, no-source-grep, "CI green is not sufficient", generated `bin/lib`, the per-surface QA checklist — are in *QA matrix by surface (KNOW-01)* and *Test bar by contribution type (KNOW-02)* below plus the SKILL Gotchas; not re-pasted here.)
 
 ### RULESET.* tokens (verified against gsd-core 2026-07-05)
-Trek-e's directives cite named `RULESET.*` tokens; the ones below are the ones **verified real against gsd-core** (source of the check-mark, warning and cross verdicts: internal project notes, not published; verified items only). They sharpen the classification + test-quality bar the toolkit's gates already partially enforce.
+Trek-e's directives cite named `RULESET.*` tokens; the ones below are the ones **verified real against gsd-core** (source of the verdicts: internal project notes, not published; verified items only). They sharpen the classification + test-quality bar the toolkit's gates already partially enforce.
 
 **Classification gates (require the approval label before code — the token form of *Issue-first* above):**
 - `RULESET.CONTRIB.CLASSIFY.fix` — requires `confirmed-bug` before implementation
