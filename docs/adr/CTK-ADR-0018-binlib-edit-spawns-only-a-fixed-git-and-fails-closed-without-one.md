@@ -110,8 +110,11 @@ Each verdict change, as measured on this host (git 2.43 at `/usr/bin/git`) unles
 - **D6d: a warning on a clean exit 1 denies.** A host where check-ignore prints any warning on an otherwise clean
   exit 1 now gets the undecidable deny for a tracked or hand-written file (fail-closed direction). An inherited
   `GIT_TRACE*` variable no longer reaches the probe, so it is not such a warning (D9), and since round 2 neither is
-  a trace2 target in git config (D6i). An example that still is: a legacy global setting that git warns about on
-  every call, such as `core.fsyncObjectFiles` (quick 261120-28y probes/r1-r2/p3-cfgwarn.out); not fixed here.
+  a trace2 target in git config (D6i). Still such a warning: a config value git warns about on every call, set in
+  user, system or REPOSITORY config, such as `core.fsync`, `core.fsyncMethod` or `core.fsyncObjectFiles` (quick
+  261120-28y probes/r1-r2/p3-cfgwarn.out and probes/sec-28y-r2/, REVIEW-R2 WR-01). Every hand-written bin/lib file
+  under such a config gets the undecidable deny; this is a fail-closed cost of D8, accepted, with the real fix
+  (stderr-producing config versus D8) tracked as its own todo. A plain clone cannot carry repository config.
 - **D6e: a malformed inherited config count no longer denies.** The helper replaces a count that is not a plain
   non-negative integer, so git no longer refuses to run and the real verdict applies (deny to allow for a tracked
   file).
