@@ -25,7 +25,7 @@ Authoritative source: **`docs/agents/triage-labels.md`** in the repo (read it li
 - **Area:** `area: agents|commands|config|core|docs|hooks|installer|performance|workflow|workflows`
 - **Runtime:** `runtime: claude-code|codex|gemini|opencode|qwen|copilot|cursor|windsurf|...` — apply when the issue is runtime-specific (e.g. #1394 gemini, #1383 codex, #1400 windows→`os: windows`)
 - **PR review state:** `needs-review` -> `review: changes requested` (+`needs changes`) / `review: approved` / `review: approved (merge conflict)` / `review: needs discussion`; `needs rebase`, `needs merge fixes`, `ci: failing`; `needs-review: merge-conflict`, `needs-review: ci/failing`; the bare `changes-requested` (no description, applied by trek-e on #6111 and #6194, 2026-11-14); `approved to merge` (CI green + approved); `no-changelog` (docs-only/changelog-direct, opts out of changeset)
-- **Live labelling is intermittent:** several 2026-11-19/20 conflict-only reviews left the PR with no labels at all (sweep notes 2026-11-19, trek-process-delta.md C6), so a label, or its absence, is not a status signal. Read the review and the checks.
+- **Live labelling is intermittent:** several conflict-only reviews left the PR with no labels at all (observed on #6312 and #6310, 2026-11-19/20), so a label, or its absence, is not a status signal. Read the review and the checks.
 
 ## PR re-review → label transition (mirror trek-e)
 
