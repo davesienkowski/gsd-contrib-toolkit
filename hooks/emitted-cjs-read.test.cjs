@@ -24,6 +24,25 @@ const { spawnSync } = require('node:child_process');
 
 const { runReadGuard } = require('./emitted-cjs-read.cjs');
 
+// Fix round 4 (option B, REVIEW-R3 CR-01/IN-01): git is spawned only from a fixed absolute list, never looked up
+// through PATH or the cwd. Rows that need the real probe to answer skip on a host with no listed git (R3-I2 W-03).
+const hookModule = Object.assign({}, require('./lib/hardened-git.cjs'), require('./emitted-cjs-read.cjs'));
+const LISTED_GIT = typeof hookModule.resolveGitPath === 'function' && Array.isArray(hookModule.GIT_CANDIDATES)
+  ? hookModule.resolveGitPath(hookModule.GIT_CANDIDATES)
+  : null;
+const NO_LISTED_GIT = 'no git at any fixed candidate path on this host (the guard then never denies; fail open)';
+
+/**
+ * A test whose deny assertions need the real probe to answer: skipped with the reason on a host with no git at any
+ * fixed candidate path, where the guard fails open by design (PLAN-REVIEW-R4-I2 W-03).
+ */
+function realTest(name, fn) {
+  return test(name, (t) => {
+    if (!LISTED_GIT) return t.skip(NO_LISTED_GIT);
+    return fn(t);
+  });
+}
+
 const HOOK = path.join(__dirname, 'emitted-cjs-read.cjs');
 const ISOLATED_GIT_CONFIG = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
 const REDIRECT_KEYS = [
@@ -149,33 +168,33 @@ function assertSilent(result) {
 
 // ---------------------------------------------------------------- deny: both signals hold
 
-test('deny: a top-level emitted file with a src twin, reason names the absolute twin and the Bash route', () => {
+realTest('deny: a top-level emitted file with a src twin, reason names the absolute twin and the Bash route', () => {
   assertDeny(guard(payload(lib('foo.cjs'))), path.join(ROOT, 'src', 'foo.cts'), 'Bash');
 });
 
-test('deny: an emitted file in a subdirectory (35-REVIEW MJ-02 class)', () => {
+realTest('deny: an emitted file in a subdirectory (35-REVIEW MJ-02 class)', () => {
   assertDeny(guard(payload(lib('observability/x.cjs'))), path.join(ROOT, 'src', 'observability', 'x.cts'));
 });
 
-test('deny: a relative file_path resolves against the payload cwd and the reason names the relative twin', () => {
+realTest('deny: a relative file_path resolves against the payload cwd and the reason names the relative twin', () => {
   const r = guard(payload('gsd-core/bin/lib/foo.cjs', 'Read', ROOT));
   assertDeny(r, 'src/foo.cts');
   assert.ok(!r.permissionDecisionReason.includes(path.join(ROOT, 'src', 'foo.cts')), r.permissionDecisionReason);
 });
 
-test('deny: a dot-segment path that normalizes into bin/lib', () => {
+realTest('deny: a dot-segment path that normalizes into bin/lib', () => {
   assertDeny(guard(payload(path.join(ROOT, 'gsd-core', 'bin', 'lib') + '/../lib/foo.cjs')), 'src/foo.cts');
 });
 
-test('deny: a leaf named ..x.cjs with a twin (a ".." prefix test would have let it through; R1 N-01)', () => {
+realTest('deny: a leaf named ..x.cjs with a twin (a ".." prefix test would have let it through; R1 N-01)', () => {
   assertDeny(guard(payload(lib('..x.cjs'))), path.join('src', '..x.cts'));
 });
 
-test('deny: a symlink inside the checkout but outside bin/lib that names an emitted file', () => {
+realTest('deny: a symlink inside the checkout but outside bin/lib that names an emitted file', () => {
   assertDeny(guard(payload(path.join(ROOT, 'alias.cjs'))), 'src/foo.cts');
 });
 
-test('deny: a symlink OUTSIDE any checkout that names an emitted file (35-REVIEW NT-02 example)', () => {
+realTest('deny: a symlink OUTSIDE any checkout that names an emitted file (35-REVIEW NT-02 example)', () => {
   assertDeny(guard(payload(path.join(OUTSIDE, 'out.cjs'))), 'src/foo.cts');
 });
 
@@ -210,7 +229,7 @@ test('silent: non-candidates (the .cts source itself, a non-.cjs leaf in bin/lib
   assertSilent(guard(payload(lib('README.md'))));
 });
 
-test('mixed-case alias: deny where this filesystem folds case, silent where it does not', () => {
+realTest('mixed-case alias: deny where this filesystem folds case, silent where it does not', () => {
   const alias = path.join(ROOT, 'GSD-CORE', 'BIN', 'LIB', 'foo.cjs');
   const r = guard(payload(alias));
   if (fs.existsSync(alias)) assertDeny(r, 'foo.cts');
@@ -258,7 +277,7 @@ function spawnHook(stdin) {
   return spawnSync(process.execPath, [HOOK], { input: stdin, env, encoding: 'utf8', timeout: 15000 });
 }
 
-test('entrypoint: a deny is one PreToolUse deny envelope on stdout, exit 0', () => {
+realTest('entrypoint: a deny is one PreToolUse deny envelope on stdout, exit 0', () => {
   const r = spawnHook(payload(lib('foo.cjs')));
   assert.strictEqual(r.status, 0, r.stderr);
   const out = JSON.parse(r.stdout);
@@ -277,7 +296,7 @@ test('entrypoint: a silent pass writes NOTHING to stdout, exit 0 (never an expli
 
 // ---------------------------------------------------------------- live gsd-core (read-only)
 
-test('live: ~/repos/gsd-core emitted state.cjs denies, hand-written capability-validator.cjs passes', (t) => {
+realTest('live: ~/repos/gsd-core emitted state.cjs denies, hand-written capability-validator.cjs passes', (t) => {
   const live = path.join(os.homedir(), 'repos', 'gsd-core');
   const premise = (() => {
     try {
@@ -323,7 +342,7 @@ test('probeEnvChanges: no empty or relative PATH entry survives (round 4: PATH i
   assert.strictEqual(probeEnvChanges({ PATH: ':/usr/bin:.:bin:/bin:' }, '/usr/bin/git').PATH, '/usr/bin');
 });
 
-test('a guarded Read leaves process.env exactly as it found it', () => {
+realTest('a guarded Read leaves process.env exactly as it found it', () => {
   const before = JSON.stringify(Object.entries(process.env).sort());
   assertDeny(guard(payload(lib('foo.cjs'))), 'src/foo.cts');
   assertSilent(guard(payload(lib('hand.cjs'))));
@@ -357,13 +376,6 @@ test('real probe: a tree that is not a git work tree passes silently (git exits 
   assertSilent(guard(payload(path.join(root, 'gsd-core', 'bin', 'lib', 'foo.cjs'))));
 });
 
-// Fix round 4 (option B, REVIEW-R3 CR-01/IN-01): git is spawned only from a fixed absolute list, never looked up
-// through PATH or the cwd. Rows that need the real probe to answer skip on a host with no listed git (R3-I2 W-03).
-const hookModule = Object.assign({}, require('./lib/hardened-git.cjs'), require('./emitted-cjs-read.cjs'));
-const LISTED_GIT = typeof hookModule.resolveGitPath === 'function' && Array.isArray(hookModule.GIT_CANDIDATES)
-  ? hookModule.resolveGitPath(hookModule.GIT_CANDIDATES)
-  : null;
-const NO_LISTED_GIT = 'no git at any fixed candidate path on this host (the guard then never denies; fail open)';
 
 test('option B: GIT_CANDIDATES is a frozen list of absolute system paths; win32 has none (REVIEW-R3 CR-01)', () => {
   const { GIT_CANDIDATES, gitCandidates } = hookModule;
@@ -523,7 +535,7 @@ test('probeEnvChanges: sets GIT_ALLOW_PROTOCOL to a name no transport has and GI
   assert.strictEqual(out.GIT_NO_LAZY_FETCH, '1');
 });
 
-test('real probe: an inherited GIT_DIR naming another repository is scrubbed and the emitted file still denies', () => {
+realTest('real probe: an inherited GIT_DIR naming another repository is scrubbed and the emitted file still denies', () => {
   const other = plainTree('other-repo');
   const r = spawnHookEnv(payload(lib('foo.cjs')), { GIT_DIR: path.join(other, '.git') });
   assert.strictEqual(r.status, 0, r.stderr);
@@ -566,7 +578,7 @@ test('real probe: a COMMITTED bare-shaped dir with core.fsmonitor never runs its
   assert.ok(!fs.existsSync(mark), 'the planted core.fsmonitor command must not run: ' + (fs.existsSync(mark) && fs.readFileSync(mark, 'utf8')));
 });
 
-test('real probe: a core.fsmonitor command in the checkout\'s own .git/config, or inherited through the -c env, never runs (PLAN-REVIEW-R2 W-01, W-02)', () => {
+realTest('real probe: a core.fsmonitor command in the checkout\'s own .git/config, or inherited through the -c env, never runs (PLAN-REVIEW-R2 W-01, W-02)', () => {
   const root = plainTree('own-fsmonitor');
   const mark = path.join(BASE, 'own-fsmonitor-mark');
   fixtureGit(root, ['config', 'core.fsmonitor', 'sh -c "echo own >> $EMITTED_READ_MARK" #']);
@@ -658,7 +670,7 @@ test('the env layer alone (no pinning) stops the committed bare-dir fsmonitor co
   assert.ok(!fs.existsSync(mark), 'the planted fsmonitor command must not run with the env layer alone');
 });
 
-test('real probe: an empty PATH entry cannot run a committed executable named git beside the target (SECURITY-REVIEW LOW-01)', () => {
+realTest('real probe: an empty PATH entry cannot run a committed executable named git beside the target (SECURITY-REVIEW LOW-01)', () => {
   const root = plainTree('planted-git');
   const mark = path.join(BASE, 'planted-git-mark');
   write(root, 'gsd-core/bin/lib/git', '#!/bin/sh\necho planted >> "$EMITTED_READ_MARK"\nexit 0\n');

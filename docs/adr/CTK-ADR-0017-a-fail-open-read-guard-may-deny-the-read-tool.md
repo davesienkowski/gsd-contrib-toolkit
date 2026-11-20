@@ -47,10 +47,13 @@ one it prevents. So the existing rules leave two choices: a non-denying advisory
    readable, matching binlib-edit, which allows editing it. The git answer comes from binlib-edit's
    repository-pinned probe (no `.git` entry between the file and `bin/`, a toplevel strictly above `bin/` and
    not nested in another repository unless a genuine linked worktree, no `core.worktree`, scrubbed env), run
-   with `core.fsmonitor=false` and `safe.bareRepository=explicit` injected through the environment and `PATH`
-   cut to its absolute entries. A guard that fires on every Read must never let the repository it reads from
-   choose what git runs: an unpinned `git check-ignore` from the target's directory ran a committed
-   bare-shaped directory's `core.fsmonitor` command (security review HIGH-01 of quick 261119-szk).
+   through `hooks/lib/hardened-git.cjs`: git is spawned only by an absolute path from a fixed list (none on
+   native Windows), with `core.fsmonitor=false` and `safe.bareRepository=explicit` injected through the
+   environment, no transport and no lazy fetch allowed, and `PATH` set to the fixed git's own directory. A guard
+   that fires on every Read must not let the repository it reads from choose which git runs or make it run a
+   program: an unpinned `git check-ignore` from the target's directory ran a committed bare-shaped directory's
+   `core.fsmonitor` command (security review HIGH-01 of quick 261119-szk), and later reviews found a planted
+   `git` reachable through PATH or, on native Windows, the cwd, and a partial-clone lazy fetch (fix rounds 3-4).
 5. **The false-positive bar.** CTK-ADR-0005 Decision 2 asks for a measured near-zero false-positive rate before a
    deny. No rate over real Reads was measured. What was measured is the agreement of the two signals over the file
    population of one gsd-core commit (36e60c09f: 287 bin/lib `.cjs` files with a twin, all ignored; 13 without,
@@ -78,8 +81,9 @@ one it prevents. So the existing rules leave two choices: a non-denying advisory
   under `bin/lib`, a malformed inherited `git -c` environment, a host with no `git` at any of the guard's fixed
   absolute paths, and native Windows, where the list is empty (macOS is unmeasured: its `/usr/bin/git` may be a
   shim that fails without the Command Line Tools, which would also be a silent pass). That is the fail-open direction: the guard trades
-  those reads for never letting the read-from repository choose which git runs or what it runs (git is spawned
-  only from the fixed list, with no transport and no lazy fetch; quick 261119-szk fix round 4).
+  those reads for not letting the read-from repository choose which git runs, and for closing the measured routes
+  by which it could make git run a program (fsmonitor, a committed bare repository, a lazy fetch; measured on
+  Linux with git 2.43, not proven for every git version; quick 261119-szk fix round 4).
 - **Counts.** The documented "fail-closed `PreToolUse` gates" stay the Bash, Write|Edit and EnterWorktree gates;
   the read guard is its own category, and every "can deny" sentence names both.
 - **Timeout.** A `PreToolUse` command hook that Claude Code cancels at its timeout does not block the call (the
