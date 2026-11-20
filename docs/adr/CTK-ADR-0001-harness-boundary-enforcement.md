@@ -20,6 +20,9 @@
   and narrows §Decision.2 (HARD-01 fail-closed) with one scoped exception — a sub-check that
   **cannot deny** may fail OPEN. Any check that can deny still fails closed, unconditionally.
   Narrowed, not withdrawn: this record stays **Accepted**.
+- **Amended by:** [CTK-ADR-0017](CTK-ADR-0017-a-fail-open-read-guard-may-deny-the-read-tool.md) (2026-11-19, Proposed): a read guard, a hook
+  registered only on the `Read` matcher, may deny a Read of generated output (a step, not an outcome; Decision 1)
+  and fails open with a silent pass (Decision 2). Every other gate keeps both decisions unchanged.
 
 ## Context
 

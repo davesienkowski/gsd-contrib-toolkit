@@ -437,7 +437,7 @@ test('capabilities/contribution-toolkit/README.md primary hook-count claims matc
     ],
     [
       "what's-included Read guard row",
-      `| \`PreToolUse\` \`Read\` guard (fail-open — denies a Read only) | ${C.readGuards} |`,
+      `| \`PreToolUse\` \`Read\` guard (fail-open, denies a Read only) | ${C.readGuards} |`,
     ],
     [
       "what's-included advisory row",

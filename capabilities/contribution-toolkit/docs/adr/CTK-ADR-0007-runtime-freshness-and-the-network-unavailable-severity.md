@@ -12,6 +12,8 @@
   withdrawn.
 - **Amended by:** CTK-ADR-0011 (2026-10-17, Proposed): Decision 1's digest also covers the managed gsd-core hooks
   under ~/.claude/hooks, and Decision 5's fast path also requires the hooks to be built and byte-equal.
+  Also amended by [CTK-ADR-0017](CTK-ADR-0017-a-fail-open-read-guard-may-deny-the-read-tool.md) (2026-11-19, Proposed): a read guard on the `Read` matcher
+  resolves an unobtainable input to a silent pass, not `ask`; every other gate is unchanged.
 - **Relates to:** ENF-21 (`hooks/runtime-drift.cjs`), the first gate whose verdict depends on network
   state; CTK-ADR-0001 §Decision.2 (HARD-01 fail-closed) and §Decision.3 (reuse LIVE, never
   reimplement); CTK-ADR-0006 §Decision.8 (gate on `hasGovernedSegment`, never the chain aggregate).

@@ -18,6 +18,9 @@
   down and no cached tip inside the staleness budget), resolves to **`ask`** — the third severity
   this record introduced — and never to `allow`. Narrowed, not withdrawn: this record stays
   **Accepted**, and every check that can deny still fails closed whenever its input is obtainable.
+  Also amended by [CTK-ADR-0017](CTK-ADR-0017-a-fail-open-read-guard-may-deny-the-read-tool.md) (2026-11-19, Proposed): a read guard on the `Read`
+  matcher may deny and still fail open (Decision 4), and its deny rests on two agreeing signals
+  rather than a measured false-positive rate (Decision 2); every other gate is unchanged.
 
 ## Context
 
