@@ -56,6 +56,11 @@ const BASH_GATES = [
   'gsd-test-viability',
 ];
 const WRITE_EDIT_GATES = ['binlib-edit'];
+/**
+ * ENF-26 (quick 261119-szk): the fail-open emitted-cjs READ guard, alone under a `Read` matcher. It is in
+ * ALL_HOOKS, so the exactly-once row and the install-merge proof cover it.
+ */
+const READ_GATES = ['emitted-cjs-read'];
 const PROMPT_HOOKS = ['protocol-reminder'];
 /**
  * OBS-01: the observation-only recorder. It is the ONE hook wired more than once — the harness
@@ -75,7 +80,7 @@ const RECORDER_EVENTS = ['PostToolUse', 'PostToolUseFailure'];
  */
 const TWO_MATCHER_GATES = ['worktree-fresh-base'];
 const TWO_MATCHER_MATCHERS = ['Bash', 'EnterWorktree'];
-const ALL_HOOKS = [...BASH_GATES, ...WRITE_EDIT_GATES, ...PROMPT_HOOKS];
+const ALL_HOOKS = [...BASH_GATES, ...WRITE_EDIT_GATES, ...READ_GATES, ...PROMPT_HOOKS];
 /** Every wired script, however many times it appears — the presence set the merge proof uses. */
 const ALL_WIRED_SCRIPTS = [...ALL_HOOKS, ...RECORDER_HOOKS, ...TWO_MATCHER_GATES];
 
@@ -323,6 +328,17 @@ test('binlib-edit is under a Write|Edit matcher', () => {
   const hit = allCommands(snip).find((c) => c.command.includes('/hooks/binlib-edit.cjs"'));
   assert.equal(hit.evt, 'PreToolUse');
   assert.equal(hit.matcher, 'Write|Edit');
+});
+
+test('ENF-26: the Read group under PreToolUse holds exactly emitted-cjs-read, alone', () => {
+  const snip = loadSnippet();
+  const groups = snip.hooks.PreToolUse.filter((g) => g.matcher === 'Read');
+  assert.equal(groups.length, 1, 'exactly one PreToolUse group with matcher Read');
+  const cmds = groups[0].hooks.map((h) => h.command);
+  assert.equal(cmds.length, 1, 'the Read group holds one hook: ' + JSON.stringify(cmds));
+  assert.ok(cmds[0].includes('/hooks/emitted-cjs-read.cjs"'), cmds[0]);
+  const elsewhere = allCommands(snip).filter((c) => c.command.includes('/hooks/emitted-cjs-read.cjs"') && c.matcher !== 'Read');
+  assert.deepEqual(elsewhere, [], 'emitted-cjs-read is wired under no other matcher');
 });
 
 test('protocol-reminder is under UserPromptSubmit', () => {

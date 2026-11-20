@@ -1042,3 +1042,40 @@ test('(o) ov8: CTK-ADR-0016 says what the scan is not, names each stays-open row
   }
   assert.match(text, /indicative/);
 });
+
+// -- quick 261119-szk: CTK-ADR-0017 (a fail-open read guard may deny the Read tool) --
+
+test('szk: CTK-ADR-0017 is Proposed, amends CTK-ADR-0001, 0005 and 0007, and has a Proposed README row', () => {
+  assert.match(statusLine(adrFile(17)), /^- \*\*Status:\*\* Proposed \(2026-11-19\)/);
+  const amends = headerBullet(adrFile(17), 'Amends');
+  assert.strictEqual(amends.length, 1, JSON.stringify(amends));
+  for (const id of ['CTK-ADR-0001', 'CTK-ADR-0005', 'CTK-ADR-0007']) assert.ok(amends[0].includes(id), amends[0]);
+  const cells = readmeRow('CTK-ADR-0017').split('|').map((c) => c.trim());
+  assert.ok(cells.includes('Proposed'), JSON.stringify(cells));
+});
+
+test('szk: CTK-ADR-0017 is plain ASCII, with no em dash, no account login and no local path', () => {
+  const text = fs.readFileSync(adrFile(17), 'utf8');
+  assert.match(text, /^[\x00-\x7f]*$/);
+  assert.doesNotMatch(text, /dave[a-z]+/i);
+  assert.doesNotMatch(text, LOCAL_PATH_RE);
+});
+
+test('szk: CTK-ADR-0017 states the Read-only coverage, the silent pass and the false-deny classes', () => {
+  const text = fs.readFileSync(adrFile(17), 'utf8').replace(/\s+/g, ' ');
+  assert.match(text, /only the Read tool/);
+  assert.match(text, /silent pass/);
+  assert.match(text, /stack trace/);
+  assert.match(text, /through Bash/);
+  assert.match(text, /not a false-positive rate/);
+});
+
+test('szk: the amended records link back to CTK-ADR-0017 (0007 keeps exactly one Amended by line)', () => {
+  assert.ok(headerBullet(adrFile(1), 'Amended by').some((b) => b.includes('CTK-ADR-0017')));
+  const five = headerBullet(adrFile(5), 'Amended by');
+  assert.strictEqual(five.length, 1, JSON.stringify(five));
+  assert.ok(five[0].includes('CTK-ADR-0017'), five[0]);
+  const seven = headerBullet(adrFile(7), 'Amended by');
+  assert.strictEqual(seven.length, 1, JSON.stringify(seven));
+  assert.ok(seven[0].includes('CTK-ADR-0011') && seven[0].includes('CTK-ADR-0017'), seven[0]);
+});
