@@ -298,3 +298,91 @@ test('live: ~/repos/gsd-core emitted state.cjs denies, hand-written capability-v
   assertDeny(guard(payload(path.join(live, 'gsd-core', 'bin', 'lib', 'state.cjs'))), path.join(live, 'src', 'state.cts'));
   assertSilent(guard(payload(path.join(live, 'gsd-core', 'bin', 'lib', 'capability-validator.cjs'))));
 });
+
+// ---------------------------------------------------------------- the real git probe (fix round 2)
+// SECURITY-REVIEW HIGH-01 / LOW-01 and REVIEW WR-01 / WR-02: these rows run the DEFAULT probe (no injected
+// checkIgnore), so the probe's own error handling, env scrub and repository pinning are under test.
+
+/** Spawn the real hook with extra env (the host git config shut out, the verdict log off). */
+function spawnHookEnv(stdin, extra) {
+  const env = Object.assign({}, process.env, ISOLATED_GIT_CONFIG, { GSD_CONTRIB_NO_VERDICT_LOG: '1' }, extra || {});
+  return spawnSync(process.execPath, [HOOK], { input: stdin, env, encoding: 'utf8', timeout: 15000 });
+}
+
+/** A gsd-core-shaped tree (sentinel + bin/lib/foo.cjs + src/foo.cts) with or without `git init`. */
+function plainTree(name, { init = true } = {}) {
+  const root = path.join(BASE, name);
+  fs.mkdirSync(root, { recursive: true });
+  if (init) fixtureGit(root, ['init', '-q']);
+  write(root, 'scripts/issue-dedupe.cjs');
+  write(root, 'gsd-core/bin/lib/foo.cjs');
+  write(root, 'src/foo.cts');
+  write(root, '.gitignore', '/gsd-core/bin/lib/foo.cjs\n');
+  return root;
+}
+
+test('real probe: a tree that is not a git work tree passes silently (git exits 128)', () => {
+  const root = plainTree('nogit', { init: false });
+  assertSilent(guard(payload(path.join(root, 'gsd-core', 'bin', 'lib', 'foo.cjs'))));
+});
+
+test('real probe: git absent from PATH passes silently, exit 0, empty stdout', () => {
+  const r = spawnHookEnv(payload(lib('foo.cjs')), { PATH: path.join(BASE, 'no-such-bin') });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.strictEqual(r.stdout, '');
+});
+
+test('real probe: an inherited GIT_DIR naming another repository is scrubbed and the emitted file still denies', () => {
+  const other = plainTree('other-repo');
+  const r = spawnHookEnv(payload(lib('foo.cjs')), { GIT_DIR: path.join(other, '.git') });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.strictEqual(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'deny');
+});
+
+test('real probe: a nested repository in bin/lib that ignores a TRACKED hand-written file does not deny it (REVIEW WR-02)', () => {
+  const root = plainTree('nested');
+  write(root, 'gsd-core/bin/lib/hand.cjs');
+  write(root, 'src/hand.cts');
+  fixtureGit(root, ['add', '--', '.gitignore', 'gsd-core/bin/lib/hand.cjs']);
+  const nested = path.join(root, 'gsd-core', 'bin', 'lib');
+  fixtureGit(nested, ['init', '-q']);
+  write(root, 'gsd-core/bin/lib/.gitignore', 'hand.cjs\n');
+  assertSilent(guard(payload(path.join(nested, 'hand.cjs'))));
+});
+
+test('real probe: a COMMITTED bare-shaped dir with core.fsmonitor never runs its command on a Read (SECURITY-REVIEW HIGH-01)', () => {
+  const up = plainTree('bare-up');
+  const sub = path.join(up, 'gsd-core', 'bin', 'lib', 'sub');
+  write(up, 'gsd-core/bin/lib/sub/objects/keep', '');
+  write(up, 'gsd-core/bin/lib/sub/refs/keep', '');
+  write(up, 'gsd-core/bin/lib/sub/HEAD', 'ref: refs/heads/main\n');
+  write(up, 'gsd-core/bin/lib/sub/config',
+    '[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n' +
+    '\tfsmonitor = "sh -c \\"echo ran >> $EMITTED_READ_MARK\\" #"\n');
+  write(up, 'src/sub/a.cts');
+  const idx = spawnSync('git', ['--git-dir', sub, '--work-tree', sub, 'update-index', '--add', '--cacheinfo',
+    '100644,e69de29bb2d1d6434b8b29ae775a8c2e48c5391d,x'], { env: FIXTURE_GIT_ENV, encoding: 'utf8' });
+  assert.strictEqual(idx.status, 0, 'fixture index: ' + idx.stderr);
+  write(up, '.gitignore', '');
+  fixtureGit(up, ['add', '-A']);
+  fixtureGit(up, ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'fixture']);
+  const clone = path.join(BASE, 'bare-clone');
+  fixtureGit(BASE, ['clone', '-q', up, clone]);
+  const mark = path.join(BASE, 'bare-mark');
+  const r = spawnHookEnv(payload(path.join(clone, 'gsd-core', 'bin', 'lib', 'sub', 'a.cjs')), { EMITTED_READ_MARK: mark });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.strictEqual(r.stdout, '', 'a pinned probe answers unknown here: a silent pass');
+  assert.ok(!fs.existsSync(mark), 'the planted core.fsmonitor command must not run: ' + (fs.existsSync(mark) && fs.readFileSync(mark, 'utf8')));
+});
+
+test('real probe: an empty PATH entry cannot run a committed executable named git beside the target (SECURITY-REVIEW LOW-01)', () => {
+  const root = plainTree('planted-git');
+  const mark = path.join(BASE, 'planted-git-mark');
+  write(root, 'gsd-core/bin/lib/git', '#!/bin/sh\necho planted >> "$EMITTED_READ_MARK"\nexit 0\n');
+  fs.chmodSync(path.join(root, 'gsd-core', 'bin', 'lib', 'git'), 0o755);
+  const r = spawnHookEnv(payload(path.join(root, 'gsd-core', 'bin', 'lib', 'foo.cjs')),
+    { PATH: ':' + process.env.PATH, EMITTED_READ_MARK: mark });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.ok(!fs.existsSync(mark), 'the planted git must not run');
+  assert.strictEqual(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'deny', 'the real git still answers');
+});
