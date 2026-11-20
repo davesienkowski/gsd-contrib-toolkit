@@ -433,12 +433,13 @@ function isStrictAncestor(ancestor, descendant) {
  * @param {string} cwd
  * @param {Object} env
  * @param {number} deadline epoch ms
+ * @param {string} gitPath the executable: 'git' (a PATH lookup) or an absolute path from the caller
  * @returns {Object|null} spawnSync result
  */
-function runGitProbe(argv, cwd, env, deadline) {
+function runGitProbe(argv, cwd, env, deadline, gitPath) {
   const remaining = deadline - Date.now();
   if (remaining <= 0) return null;
-  return spawnSync('git', argv, {
+  return spawnSync(gitPath, argv, {
     cwd,
     timeout: remaining,
     encoding: 'utf8',
@@ -458,11 +459,23 @@ function runGitProbe(argv, cwd, env, deadline) {
  * variables scrubbed (probeEnv) and against one shared CHECK_IGNORE_TIMEOUT_MS deadline; the
  * first non-answer returns 'unknown' without running the rest.
  *
+ * Optional `options.gitPath` (quick 261119-szk round 4, the Read guard's fixed git): an ABSOLUTE path is
+ * spawned instead of `'git'`; a defined gitPath that is not an absolute string answers 'unknown' and spawns
+ * nothing. A gitPath of undefined counts as no gitPath (the PATH lookup of `'git'`; REVIEW-R4 IN-01, deferred to
+ * the binlib-edit follow-up). This gate's own call passes no options, so its spawn is the PATH lookup of `'git'`
+ * exactly as before.
+ *
  * @param {string} absPath
+ * @param {{gitPath?: string}} [options]
  * @returns {'ignored'|'not-ignored'|'unknown'}
  */
-function checkIgnoreLive(absPath) {
+function checkIgnoreLive(absPath, options) {
   try {
+    const requested = options && typeof options === 'object' ? options.gitPath : undefined;
+    if (requested !== undefined && !(typeof requested === 'string' && path.isAbsolute(requested))) {
+      return 'unknown'; // a defined non-absolute gitPath never falls back to a PATH lookup (undefined does: IN-01)
+    }
+    const git = requested === undefined ? 'git' : requested;
     const deadline = Date.now() + CHECK_IGNORE_TIMEOUT_MS;
     const cwd = path.dirname(absPath);
     const env = probeEnv(process.env);
@@ -472,16 +485,16 @@ function checkIgnoreLive(absPath) {
     if (hasGitEntryUpTo(cwd, binDir)) return 'unknown';
     const realBin = fs.realpathSync(binDir);
 
-    const top = runGitProbe(['rev-parse', '--show-toplevel'], cwd, env, deadline);
+    const top = runGitProbe(['rev-parse', '--show-toplevel'], cwd, env, deadline, git);
     if (!top || top.error || top.status !== 0) return 'unknown';
     const toplevel = String(top.stdout).replace(/\r?\n$/, '');
     if (!isStrictAncestor(toplevel, realBin)) return 'unknown';
     if (!enclosingRepoAllows(toplevel)) return 'unknown';
 
-    const worktree = runGitProbe(['config', '--get', 'core.worktree'], cwd, env, deadline);
+    const worktree = runGitProbe(['config', '--get', 'core.worktree'], cwd, env, deadline, git);
     if (!worktree || worktree.error || worktree.status !== 1) return 'unknown';
 
-    const result = runGitProbe(['check-ignore', '-q', '--', absPath], cwd, env, deadline);
+    const result = runGitProbe(['check-ignore', '-q', '--', absPath], cwd, env, deadline, git);
     if (!result) return 'unknown';
     return classifyCheckIgnore(result);
   } catch (_) {

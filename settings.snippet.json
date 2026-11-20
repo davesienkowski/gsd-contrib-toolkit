@@ -102,6 +102,16 @@
         ]
       },
       {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/repos/gsd-contrib-toolkit/hooks/emitted-cjs-read.cjs\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "EnterWorktree",
         "hooks": [
           {

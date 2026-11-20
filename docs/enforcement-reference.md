@@ -15,14 +15,19 @@ or rationalizing model.
 
 Installed into gsd-core's project-scoped `.claude/settings.json` by the capability
 CLI (`node bin/contrib-capability.cjs install` - see [Install / Restore](install-and-layout.md#install--restore)) are
-**22 hook registrations across 20 hook scripts**: **18 fail-closed `PreToolUse`
+**23 hook registrations across 21 hook scripts**: **18 fail-closed `PreToolUse`
 gates** (17 on `Bash`, 1 on `Write`/`Edit`; 1 of the `Bash` gates also on
-`EnterWorktree`), **1 advisory `UserPromptSubmit` reminder**, and **1
+`EnterWorktree`), **1 fail-open `Read` guard** (ENF-26, `emitted-cjs-read.cjs`:
+it denies a Read of an emitted gsd-core `bin/lib` file, passes silently
+otherwise and on any error; [CTK-ADR-0017](adr/CTK-ADR-0017-a-fail-open-read-guard-may-deny-the-read-tool.md),
+Proposed), **1 advisory `UserPromptSubmit` reminder**, and **1
 observability recorder** wired on *both* `PostToolUse` and `PostToolUseFailure`.
 Two scripts are registered twice: the recorder (on two events) and
 `worktree-fresh-base.cjs` (ENF-25, one gate under two `PreToolUse` matchers,
-`Bash` and `EnterWorktree`) - which is why 20 files produce 22 registrations.
-Only the 18 `PreToolUse` gates block; the reminder and the recorder never deny. The wired
+`Bash` and `EnterWorktree`) - which is why 21 files produce 23 registrations.
+Only the 18 fail-closed `PreToolUse` gates and the 1 fail-open `Read` guard can deny;
+the guard denies only a Read, never a contribution outcome, and the reminder and the
+recorder never deny. The wired
 set is derived from the canonical `settings.snippet.json` (the source
 `build-capability.cjs` reads).
 The gates close concrete failure classes a gsd-core
@@ -76,6 +81,7 @@ wired set exactly.
 | `gsd-test-viability.cjs` | Bash | a `gsd-test` dispatch whose `config.toml` is missing, whose named `--bench` is absent from it, or whose local Docker daemon is missing/down (ENF-24; `ask`, never deny, when `docker info` overruns its 8 s bound) | (toolkit-owned config read + `docker info` - no LIVE script) |
 | `worktree-fresh-base.cjs` | Bash + EnterWorktree | cutting a gsd-core worktree from a stale trunk: on a trunk cut it fetches `origin/next` and fast-forwards an unheld stale local `next` (compare-and-swap, never a reset), and denies with the fix when `next` is held by a worktree or has diverged (ENF-25; `ask`, never deny, when origin is unobtainable) | (toolkit-owned bounded `git fetch` + `update-ref` - no LIVE script; see [CTK-ADR-0009](adr/CTK-ADR-0009-gate-bounded-monotonic-ref-refresh.md)) |
 | `binlib-edit.cjs` | Write/Edit | editing a generated `bin/lib/**/*.cjs` instead of its `src/*.cts` source | (generated-path candidate + repository pinning + read-only `git check-ignore` discriminator: ignored -> deny, tracked or not ignored -> allow, undecidable or redirected repository -> deny - no LIVE script) |
+| `emitted-cjs-read.cjs` | Read | reading a tsc-emitted gsd-core `bin/lib/**/*.cjs` (its `src/**/*.cts` twin is a regular file AND `git check-ignore` reports it ignored) instead of the twin; the reason names the twin (ENF-26, [CTK-ADR-0017](adr/CTK-ADR-0017-a-fail-open-read-guard-may-deny-the-read-tool.md) Proposed). *Fail-open:* every other path, including every error, is a silent pass (no decision, never an explicit allow). Covers only the Read tool: Grep, Glob, NotebookRead and Bash reads are not seen, and a deliberate read of the emitted output (a stack-trace line; gsd-core emits no source maps) goes through Bash | (toolkit-owned twin check + binlib-edit's repository-pinned read-only `git check-ignore`, run through `hooks/lib/hardened-git.cjs`: git only from a fixed absolute list, `core.fsmonitor` and bare-repository adoption disabled, no transport and no lazy fetch - no LIVE script) |
 | `protocol-reminder.cjs` | UserPromptSubmit | *(advisory only - reminds, never denies)* | - |
 | `tool-recorder.cjs` | PostToolUse + PostToolUseFailure | *(observability only - records, never denies; the one hook wired on two events)* | - |
 
@@ -206,8 +212,8 @@ surfaces as a fail-closed DENY plus a diagnosable report - not a silent miss.
 - **Install / restore** the toolkit (idempotent):
   `node bin/contrib-capability.cjs install` - see [Install / Restore](install-and-layout.md#install--restore).
 - The **18 fail-closed `PreToolUse` gates** - the blocking part of the wired set of
-  22 registrations; the other entries are the 1 advisory reminder and the 1
-  observability recorder - fire automatically inside the gsd-core repo once the
+  23 registrations; the other entries are the 1 fail-open `Read` guard, the 1 advisory
+  reminder and the 1 observability recorder - fire automatically inside the gsd-core repo once the
   contribution-toolkit capability is installed (`node bin/contrib-capability.cjs install`).
 - Drive a contribution with the **`gsd-submit`** command (file -> push -> PR through
   the gates) and the **`core-contribution`** skill (the contribution knowledge,
@@ -256,10 +262,11 @@ this environment's `get_impact` floor makes grep the authority for callers.
 `capabilities/contribution-toolkit/capability.json` packages the contribution +
 maintainer-review knowledge as an installable, **opt-in** GSD capability (ADR-1244
 `role:feature` manifest). The bundle is **self-contained**: it ships the
-**20 hook scripts** (the 18 fail-closed `PreToolUse` gates on 19 registrations,
-ENF-25 being registered under both `Bash` and `EnterWorktree` + 1 advisory
+**21 hook scripts** (the 18 fail-closed `PreToolUse` gates on 19 registrations,
+ENF-25 being registered under both `Bash` and `EnterWorktree` + 1 fail-open `PreToolUse`
+`Read` guard on 1 registration + 1 advisory
 `UserPromptSubmit` reminder + 1 `PostToolUse`/`PostToolUseFailure` observability
-recorder on 2 registrations = **22 wired registrations**), **both skills**
+recorder on 2 registrations = **23 wired registrations**), **both skills**
 (`core-contribution`, `maintainer-review-sweep`), and
 **all five commands** (`gsd-submit`, `gsd-review-sweep`, `gsd-triage-assist`,
 `gsd-release-preflight`, `gsd-ruleset-drift`) under

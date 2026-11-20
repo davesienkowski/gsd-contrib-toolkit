@@ -117,6 +117,11 @@
     },
     {
       "event": "PreToolUse",
+      "matcher": "Read",
+      "script": "hooks/emitted-cjs-read.cjs"
+    },
+    {
+      "event": "PreToolUse",
       "matcher": "EnterWorktree",
       "script": "hooks/worktree-fresh-base.cjs"
     },
