@@ -1982,7 +1982,7 @@ test('261119-s3h R3 (k): a re-requested maintainer is excluded, so a later contr
 test('261119-s3h R3 (l): a set with a role-less member and no maintainer falls back to the newest, labelled role not read', () => {
   const d = crDerive(CR_SINCE_MS + 5 * DAY_MS, (rs, r) => {
     r.author_association = 'CONTRIBUTOR';
-    rs.push(crReview(r, { login: 'drive-by', submitted_at: '2026-10-09T01:15:23Z' }));
+    rs.push(crReview(r, { login: 'drive-by', author_association: undefined, submitted_at: '2026-10-09T01:15:23Z' }));
   });
   assert.deepEqual(d.ball.authorClock, { since: '2026-10-09T01:15:23Z', login: 'drive-by', days: 3, level: 'warn', why: null, basis: 'role-not-read' });
   assert.equal(lineAfterBall(d), `  author clock: 3 day(s) since the newest change request on the head (2026-10-09T01:15:23Z by drive-by); WARN: 3+ days; author comments not counted${ROLE_TAIL}`);
@@ -1991,7 +1991,7 @@ test('261119-s3h R3 (l): a set with a role-less member and no maintainer falls b
 test('261119-s3h R3 (m): a maintainer change request wins over a later role-less one (the maintainer sets the start)', () => {
   const d = crDerive(CR_SINCE_MS + 7 * DAY_MS, (rs, r) => {
     r.author_association = 'COLLABORATOR';
-    rs.push(crReview(r, { login: 'drive-by', submitted_at: '2026-10-10T01:15:23Z' }));
+    rs.push(crReview(r, { login: 'drive-by', author_association: undefined, submitted_at: '2026-10-10T01:15:23Z' }));
   });
   assert.deepEqual(d.ball.authorClock, { since: CR_SINCE, login: 'trek-e', days: 7, level: 'alarm', why: null, basis: 'maintainer' });
   assert.equal(lineAfterBall(d), `  author clock: 7 day(s) ${NEWEST_MAINT} (${CR_SINCE} by trek-e); ${ALARM_TEXT}; author comments not counted`);
@@ -2003,7 +2003,7 @@ test('261119-s3h R3 (n): a re-requested maintainer is excluded, so a later role-
     (rs, r) => {
       r.user = { login: 'alice', type: 'User' };
       r.author_association = 'COLLABORATOR';
-      rs.push(crReview(r, { login: 'drive-by', submitted_at: '2026-10-10T01:15:23Z' }));
+      rs.push(crReview(r, { login: 'drive-by', author_association: undefined, submitted_at: '2026-10-10T01:15:23Z' }));
     },
     (v) => { v.reviewRequests = [{ __typename: 'User', login: 'Alice' }]; },
   );
@@ -2160,5 +2160,5 @@ test('261119-s3h: runCli deps.now is the clock for an in-process caller', () => 
     stdout: { write: (x) => { stdout += x; } }, stderr: { write: () => {} },
   });
   assert.equal(status, 0);
-  assert.deepEqual(JSON.parse(stdout)[0].ball.authorClock, { since: CR_SINCE, days: 3, level: 'warn', why: null, basis: 'role-not-read' });
+  assert.deepEqual(JSON.parse(stdout)[0].ball.authorClock, { since: CR_SINCE, login: 'trek-e', days: 3, level: 'warn', why: null, basis: 'role-not-read' });
 });

@@ -102,7 +102,9 @@
  * gets none, though upstream may still close that PR. Base set S: reviewers whose latest counted review is
  * CHANGES_REQUESTED on the head and who are not in reviewRequests (login compared case-insensitively); each
  * contributes that latest review only. Maintainer set M: members of S whose review author_association is OWNER,
- * MEMBER or COLLABORATOR. M non-empty: the start is the newest submitted_at in M. Else, when some member of S has no
+ * MEMBER or COLLABORATOR. M non-empty: the start is the newest submitted_at in M (a change request on the head by a
+ * maintainer who is not re-requested sets the start; unread-role change requests are then ignored, so the clock can
+ * read high). Else, when some member of S has no
  * author_association: the start is the newest submitted_at in S and the line ends `; reviewer role not read`. Else
  * (S empty, or every member has a non-maintainer association): `author clock: none (no maintainer change request
  * on the head)`. Days are floored; ok below 3, WARN at 3, ALARM at 5 after the 5-day stale clock (CLOSE_DAYS=5) in
@@ -654,7 +656,7 @@ function derive({ view, reviews, checks, queue, timeline, timelineError, overlap
   // on the head and the reviewer is not re-requested; the clock rule (authorClockOf) picks the used subset.
   const clockSet = [...latest]
     .filter(([login, e]) => head !== '' && e.r.state === 'CHANGES_REQUESTED' && String(e.r.commit_id || '') === head && !req.users.has(login))
-    .map(([, e]) => ({ time: e.r.submitted_at, assoc: String(e.r.author_association || '').toUpperCase() }));
+    .map(([, e]) => ({ time: e.r.submitted_at, login: String(e.r.user.login), assoc: String(e.r.author_association || '').toUpperCase() }));
 
   const q = queue || null; // null = not read (library callers); the CLI always reads it
   const ball = decideBall(v, latest, req, head, checkSummary, q, policies || null, now, clockSet);
@@ -748,14 +750,14 @@ function ballOf(owner, fields) {
 /**
  * The author clock (header: AUTHOR CLOCK) over the base set S.
  *
- * @param {Array<{time: string|undefined, assoc: string}>} set one entry per reviewer in S: the submitted_at and the
+ * @param {Array<{time: string|undefined, login: string, assoc: string}>} set one entry per reviewer in S: the submitted_at and the
  *   upper-cased author_association ('' when absent) of that reviewer's latest review
  * @param {number|undefined|null} now epoch milliseconds; undefined or null = no clock (returns null)
- * @returns {null|{since: string|null, days: number|null, level: 'ok'|'warn'|'alarm'|'unknown'|'none', why: string|null, basis: 'maintainer'|'role-not-read'|null}}
+ * @returns {null|{since: string|null, login: string|null, days: number|null, level: 'ok'|'warn'|'alarm'|'unknown'|'none', why: string|null, basis: 'maintainer'|'role-not-read'|null}}
  */
 function authorClockOf(set, now) {
   if (now === undefined || now === null) return null;
-  const unknown = (why, basis = null, since = null) => ({ since, days: null, level: 'unknown', why, basis });
+  const unknown = (why, basis = null, since = null) => ({ since, login: null, days: null, level: 'unknown', why, basis });
   if (typeof now !== 'number' || !Number.isFinite(now)) return unknown('no readable clock time');
   const maint = set.filter((e) => MAINTAINER_ASSOCIATIONS.has(e.assoc));
   let used;
@@ -766,8 +768,9 @@ function authorClockOf(set, now) {
   } else if (set.some((e) => e.assoc === '')) {
     used = set;
     basis = 'role-not-read';
-  } else return { since: null, days: null, level: 'none', why: null, basis: null };
+  } else return { since: null, login: null, days: null, level: 'none', why: null, basis: null };
   let since = null;
+  let sinceLogin = null;
   let sinceMs = -Infinity;
   // Every member of the used set is checked: a skipped bad value could be the newest and make the clock read high.
   for (const e of used) {
@@ -779,11 +782,12 @@ function authorClockOf(set, now) {
     if (ms > sinceMs) {
       sinceMs = ms;
       since = t;
+      sinceLogin = e.login;
     }
   }
   const days = Math.floor((now - sinceMs) / DAY_MS);
   const level = days >= CLOCK_ALARM_DAYS ? 'alarm' : days >= CLOCK_WARN_DAYS ? 'warn' : 'ok';
-  return { since, days, level, why: null, basis };
+  return { since, login: sinceLogin, days, level, why: null, basis };
 }
 
 /** The `author clock:` text line for a non-null ball.authorClock. */
@@ -797,7 +801,7 @@ function authorClockLine(c) {
         ? `WARN: ${CLOCK_WARN_DAYS}+ days`
         : 'ok';
   const who = c.basis === 'maintainer' ? 'newest maintainer change request' : 'newest change request';
-  return `  author clock: ${c.days} day(s) since the ${who} on the head (${clean(c.since)}); ${text}; author comments not counted${c.basis === 'role-not-read' ? '; reviewer role not read' : ''}`;
+  return `  author clock: ${c.days} day(s) since the ${who} on the head (${clean(c.since)} by ${clean(c.login)}); ${text}; author comments not counted${c.basis === 'role-not-read' ? '; reviewer role not read' : ''}`;
 }
 
 /**
