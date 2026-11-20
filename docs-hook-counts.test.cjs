@@ -165,6 +165,7 @@ function deriveCounts(snip) {
     enterWorktree: perEventMatcher['PreToolUse|EnterWorktree'] || 0,
     bashScripts: scriptsOn('PreToolUse|Bash'),
     enterWorktreeScripts: scriptsOn('PreToolUse|EnterWorktree'),
+    writeEditScripts: scriptsOn('PreToolUse|Write|Edit'),
     ups,
     post,
     postFail,
@@ -221,7 +222,9 @@ function consistencyViolations(c) {
   if (c.readGuards !== c.read) {
     v.push(`each Read guard has exactly one Read registration (${c.readGuards} scripts, ${c.read} registrations)`);
   }
-  const doubled = [...c.readGuardScripts].filter((f) => c.bashScripts.has(f) || c.enterWorktreeScripts.has(f));
+  const doubled = [...c.readGuardScripts].filter(
+    (f) => c.bashScripts.has(f) || c.writeEditScripts.has(f) || c.enterWorktreeScripts.has(f)
+  );
   if (doubled.length) v.push(`a Read guard is also a fail-closed gate: ${JSON.stringify(doubled)}`);
   if (!(c.registrations > 0 && c.scriptCount > 0)) v.push('the snippet must wire something');
   return v;
@@ -303,6 +306,14 @@ test('the categorisation check REJECTS an unknown PreToolUse matcher (synthetic 
   );
   // and the real snippet passes the same check (the rejection is the Grep group, not the harness)
   assert.deepEqual(consistencyViolations(C), []);
+});
+
+test('the categorisation check REJECTS a Read guard also wired as a fail-closed gate (synthetic Write|Edit row)', () => {
+  const synthetic = JSON.parse(JSON.stringify(SNIP));
+  const we = synthetic.hooks.PreToolUse.find((g) => g.matcher === 'Write|Edit');
+  we.hooks.push({ type: 'command', command: 'node "$HOME/repos/gsd-contrib-toolkit/hooks/emitted-cjs-read.cjs"' });
+  const violations = consistencyViolations(deriveCounts(synthetic));
+  assert.ok(violations.some((m) => m.startsWith('a Read guard is also a fail-closed gate')), JSON.stringify(violations));
 });
 
 test('ENF-26: the snippet wires exactly one fail-open Read guard, emitted-cjs-read', () => {

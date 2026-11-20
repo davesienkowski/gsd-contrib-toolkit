@@ -299,6 +299,38 @@ test('live: ~/repos/gsd-core emitted state.cjs denies, hand-written capability-v
   assertSilent(guard(payload(path.join(live, 'gsd-core', 'bin', 'lib', 'capability-validator.cjs'))));
 });
 
+// ---------------------------------------------------------------- probe env hardening (fix round 2)
+
+test('probeEnvChanges: injects core.fsmonitor=false and safe.bareRepository=explicit after inherited entries', () => {
+  const { probeEnvChanges } = require('./emitted-cjs-read.cjs');
+  const fresh = probeEnvChanges({ PATH: '/usr/bin' });
+  assert.deepStrictEqual(
+    [fresh.GIT_CONFIG_COUNT, fresh.GIT_CONFIG_KEY_0, fresh.GIT_CONFIG_VALUE_0, fresh.GIT_CONFIG_KEY_1, fresh.GIT_CONFIG_VALUE_1],
+    ['2', 'core.fsmonitor', 'false', 'safe.bareRepository', 'explicit']
+  );
+  const inherited = probeEnvChanges({ PATH: '/usr/bin', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'user.name', GIT_CONFIG_VALUE_0: 'x' });
+  assert.strictEqual(inherited.GIT_CONFIG_COUNT, '3');
+  assert.strictEqual(inherited.GIT_CONFIG_KEY_1, 'core.fsmonitor');
+  assert.strictEqual(inherited.GIT_CONFIG_KEY_2, 'safe.bareRepository');
+  assert.ok(!('GIT_CONFIG_KEY_0' in inherited), 'an inherited entry is kept, not overwritten');
+  const bogus = probeEnvChanges({ PATH: '/usr/bin', GIT_CONFIG_COUNT: '-1x' });
+  assert.strictEqual(bogus.GIT_CONFIG_COUNT, '2');
+  assert.strictEqual(bogus.GIT_CONFIG_KEY_0, 'core.fsmonitor');
+});
+
+test('probeEnvChanges: PATH keeps only absolute entries (no empty, no relative)', () => {
+  const { probeEnvChanges } = require('./emitted-cjs-read.cjs');
+  assert.strictEqual(probeEnvChanges({ PATH: ':/usr/bin:.:bin:/bin:' }).PATH, '/usr/bin:/bin');
+  assert.strictEqual(probeEnvChanges({}).PATH, '');
+});
+
+test('a guarded Read leaves process.env exactly as it found it', () => {
+  const before = JSON.stringify(Object.entries(process.env).sort());
+  assertDeny(guard(payload(lib('foo.cjs'))), 'src/foo.cts');
+  assertSilent(guard(payload(lib('hand.cjs'))));
+  assert.strictEqual(JSON.stringify(Object.entries(process.env).sort()), before);
+});
+
 // ---------------------------------------------------------------- the real git probe (fix round 2)
 // SECURITY-REVIEW HIGH-01 / LOW-01 and REVIEW WR-01 / WR-02: these rows run the DEFAULT probe (no injected
 // checkIgnore), so the probe's own error handling, env scrub and repository pinning are under test.
@@ -373,6 +405,34 @@ test('real probe: a COMMITTED bare-shaped dir with core.fsmonitor never runs its
   assert.strictEqual(r.status, 0, r.stderr);
   assert.strictEqual(r.stdout, '', 'a pinned probe answers unknown here: a silent pass');
   assert.ok(!fs.existsSync(mark), 'the planted core.fsmonitor command must not run: ' + (fs.existsSync(mark) && fs.readFileSync(mark, 'utf8')));
+});
+
+test('real probe: a core.fsmonitor command in the checkout\'s own .git/config, or inherited through the -c env, never runs (PLAN-REVIEW-R2 W-01, W-02)', () => {
+  const root = plainTree('own-fsmonitor');
+  const mark = path.join(BASE, 'own-fsmonitor-mark');
+  fixtureGit(root, ['config', 'core.fsmonitor', 'sh -c "echo own >> $EMITTED_READ_MARK" #']);
+  fixtureGit(root, ['add', '--', '.gitignore', 'src/foo.cts']);
+  const target = payload(path.join(root, 'gsd-core', 'bin', 'lib', 'foo.cjs'));
+  const r = spawnHookEnv(target, { EMITTED_READ_MARK: mark });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.strictEqual(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'deny', 'a pinned real repo still answers');
+  assert.ok(!fs.existsSync(mark), 'the repository-configured fsmonitor command must not run');
+  fixtureGit(root, ['config', '--unset', 'core.fsmonitor']);
+  const r2 = spawnHookEnv(target, {
+    EMITTED_READ_MARK: mark,
+    GIT_CONFIG_PARAMETERS: "'core.fsmonitor=sh -c \"echo env >> $EMITTED_READ_MARK\" #'",
+  });
+  assert.strictEqual(r2.status, 0, r2.stderr);
+  assert.ok(!fs.existsSync(mark), 'an inherited -c fsmonitor command must not run: ' + (fs.existsSync(mark) && fs.readFileSync(mark, 'utf8')));
+});
+
+test('probeEnvChanges: the injected pairs are appended to an inherited GIT_CONFIG_PARAMETERS', () => {
+  const { probeEnvChanges } = require('./emitted-cjs-read.cjs');
+  assert.strictEqual(probeEnvChanges({}).GIT_CONFIG_PARAMETERS, "'core.fsmonitor=false' 'safe.bareRepository=explicit'");
+  assert.strictEqual(
+    probeEnvChanges({ GIT_CONFIG_PARAMETERS: "'core.fsmonitor=evil'" }).GIT_CONFIG_PARAMETERS,
+    "'core.fsmonitor=evil' 'core.fsmonitor=false' 'safe.bareRepository=explicit'"
+  );
 });
 
 test('real probe: an empty PATH entry cannot run a committed executable named git beside the target (SECURITY-REVIEW LOW-01)', () => {

@@ -43,8 +43,14 @@ one it prevents. So the existing rules leave two choices: a non-denying advisory
    CTK-ADR-0005 Decision 4 and CTK-ADR-0007 for this class only: a false pass costs some context quality; a
    fail-closed read guard would take every Read of the matching paths offline on a hook fault.
 4. **Two signals before a deny.** ENF-26 denies only when the `src/<rel>.cts` twin is a regular file AND
-   `git check-ignore` reports the emitted file ignored. A tracked hand-written file with a twin (a module being
-   ported) stays readable, matching binlib-edit, which allows editing it.
+   git reports the emitted file ignored. A tracked hand-written file with a twin (a module being ported) stays
+   readable, matching binlib-edit, which allows editing it. The git answer comes from binlib-edit's
+   repository-pinned probe (no `.git` entry between the file and `bin/`, a toplevel strictly above `bin/` and
+   not nested in another repository unless a genuine linked worktree, no `core.worktree`, scrubbed env), run
+   with `core.fsmonitor=false` and `safe.bareRepository=explicit` injected through the environment and `PATH`
+   cut to its absolute entries. A guard that fires on every Read must never let the repository it reads from
+   choose what git runs: an unpinned `git check-ignore` from the target's directory ran a committed
+   bare-shaped directory's `core.fsmonitor` command (security review HIGH-01 of quick 261119-szk).
 5. **The false-positive bar.** CTK-ADR-0005 Decision 2 asks for a measured near-zero false-positive rate before a
    deny. No rate over real Reads was measured. What was measured is the agreement of the two signals over the file
    population of one gsd-core commit (36e60c09f: 287 bin/lib `.cjs` files with a twin, all ignored; 13 without,
@@ -64,8 +70,12 @@ one it prevents. So the existing rules leave two choices: a non-denying advisory
   steers an agent that uses Read; it is not a boundary against one that reads another way.
 - **Known false denies.** (a) A Read meant to see the emitted code itself, such as a stack trace line number,
   which exists only in the emitted file because gsd-core emits no source maps. (b) An untracked hand-written file
-  with a twin that a nested repository or a global git excludes file reports ignored. Both are a silent pass away
-  through Bash.
+  with a twin that the user's global git excludes file reports ignored. Both are a Bash call away. A nested
+  repository at or below `bin/` is not a false deny: the pinning refuses it and the Read passes silently.
+- **Known silent passes from the pinning.** A gsd-core checkout nested inside an unrelated repository (not a
+  linked worktree of it), a repository with `core.worktree` set, and a `.git` entry between the file and
+  `bin/` all make the probe refuse to answer, so the Read passes. That is the fail-open direction: the
+  guard trades those reads for never letting the read-from repository choose what git runs.
 - **Counts.** The documented "fail-closed `PreToolUse` gates" stay the Bash, Write|Edit and EnterWorktree gates;
   the read guard is its own category, and every "can deny" sentence names both.
 - **Timeout.** A `PreToolUse` command hook that Claude Code cancels at its timeout does not block the call (the

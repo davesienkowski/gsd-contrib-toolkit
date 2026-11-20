@@ -14,9 +14,15 @@
  *   (a) the twin `<root>/src/<rel minus .cjs>.cts` is a regular file, where <root> is the gsd-core
  *       checkout hooks/lib/resolve.cjs `resolveGsdCoreRoot` finds above the target and <rel> is the
  *       target's path below <root>/gsd-core/bin/lib (compared as realpaths), and
- *   (b) `git check-ignore -q -- <target>` exits 0 (ignored = generated). A TRACKED hand-written
- *       bin/lib file stays readable even when a twin exists (a module being ported), matching
- *       binlib-edit, which allows editing that file.
+ *   (b) git reports the target ignored (generated), through binlib-edit's repository-PINNED
+ *       `checkIgnoreLive` (no `.git` entry between the target and bin/, a toplevel strictly above bin/
+ *       and not nested in another repository unless a genuine linked worktree, no core.worktree, env
+ *       scrubbed), run with core.fsmonitor=false and safe.bareRepository=explicit injected through the
+ *       environment and PATH cut to its absolute entries. A Read can therefore not make git adopt a
+ *       committed bare-shaped directory or run a repository-configured fsmonitor command, nor run an
+ *       executable named git from the target's directory (security review HIGH-01, LOW-01). A pinning
+ *       refusal is a silent pass. A TRACKED hand-written bin/lib file stays readable even when a twin
+ *       exists (a module being ported), matching binlib-edit, which allows editing that file.
  * At gsd-core 36e60c09f the two signals agree on every bin/lib .cjs file (287 with a twin, all
  * ignored; 13 without, none ignored). That is a file count, not a measured rate over Reads.
  *
@@ -27,7 +33,7 @@
  * permissionDecision is exactly 'deny' produces output.
  *
  * FAILS OPEN. A malformed payload, a missing file_path, no gsd-core root, a filesystem error, a git
- * error, a git timeout (CHECK_IGNORE_TIMEOUT_MS, 3000 ms, reused from binlib-edit), a load-time throw of
+ * error, a git timeout (binlib-edit's one 3000 ms deadline), a pinning refusal, a load-time throw of
  * a required module (requires are lazy, inside the try) and any other throw are a silent pass. A hook
  * Claude Code cancels at its own timeout does not block the Read either (hooks reference: a timed-out
  * PreToolUse command hook continues through the normal permission flow). This is the scoped exception
@@ -41,18 +47,23 @@
  * errors in runGate gates, and this hook throws nothing out.
  *
  * KNOWN FALSE DENIES. A Read meant to see the emitted code itself (the trace case above), and an
- * untracked hand-written file with a twin that a nested repository or a global excludes file ignores.
- * Both cost one Bash call.
+ * untracked hand-written file with a twin that the user's global excludes file ignores. Both cost one
+ * Bash call. Not a false deny: a nested repository at or below bin/ (the pinning refuses it, a pass).
  *
- * READ-ONLY. It stats files, realpaths paths and runs one git check-ignore (no index lock). Its one
- * write is the best-effort verdict-log line on a deny (hooks/lib/verdict-log.cjs, total).
+ * KNOWN SILENT PASSES from the pinning (fail-open direction): a gsd-core checkout nested inside an
+ * unrelated repository (not a linked worktree of it), a repository with core.worktree set, and a
+ * `.git` entry between the target and bin/ all pass silently; the emitted file is then readable.
+ *
+ * READ-ONLY. It stats files, realpaths paths and runs binlib-edit's read-only git probes (rev-parse,
+ * config --get, check-ignore; no index lock). Its one write is the best-effort verdict-log line on a
+ * deny (hooks/lib/verdict-log.cjs, total). It changes process.env only for the duration of the probe
+ * call and restores it.
  *
  * @module hooks/emitted-cjs-read
  */
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
 
 /**
  * realpath of p; for a missing leaf, realpath of its directory joined with the leaf; null when neither
@@ -74,24 +85,86 @@ function tryRealpath(p) {
 }
 
 /**
- * The default probe: `git check-ignore -q -- <absPath>` from the file's directory, with binlib-edit's
- * repo-redirecting variables scrubbed and its 3000 ms bound. 'ignored' only on exit 0.
+ * Git config injected through the environment for every probe spawn (command-line scope, so a repository's
+ * own config cannot override it). core.fsmonitor=false stops a repository-configured fsmonitor command;
+ * safe.bareRepository=explicit stops git from adopting a committed bare-shaped directory as the repository
+ * (SECURITY-REVIEW HIGH-01, quick 261119-szk). Measured on git 2.43: each one alone stops the planted command.
+ */
+const INJECTED_GIT_CONFIG = Object.freeze([
+  ['core.fsmonitor', 'false'],
+  ['safe.bareRepository', 'explicit'],
+]);
+
+/**
+ * The env changes for one probe: the injected config appended after any inherited GIT_CONFIG_COUNT entries
+ * (a count that is not a plain non-negative integer is replaced; git rejects such a count anyway), and a PATH
+ * that keeps only absolute entries, so `git` is never looked up in the target's directory through an empty or
+ * relative entry (SECURITY-REVIEW LOW-01).
+ *
+ * @param {Object} env
+ * @returns {Object} key -> new value
+ */
+function probeEnvChanges(env) {
+  const changes = {};
+  const raw = env.GIT_CONFIG_COUNT;
+  let n = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : 0;
+  for (const [key, value] of INJECTED_GIT_CONFIG) {
+    changes['GIT_CONFIG_KEY_' + n] = key;
+    changes['GIT_CONFIG_VALUE_' + n] = value;
+    n += 1;
+  }
+  changes.GIT_CONFIG_COUNT = String(n);
+  // GIT_CONFIG_PARAMETERS (what `git -c` exports to child processes) is read after the COUNT entries, so an
+  // inherited `core.fsmonitor=<cmd>` there would win; the injected pairs are appended to it as well, and the
+  // last occurrence wins inside it (PLAN-REVIEW-R2 W-01). A malformed inherited value makes git refuse to run,
+  // which is a silent pass.
+  const inheritedParams = typeof env.GIT_CONFIG_PARAMETERS === 'string' ? env.GIT_CONFIG_PARAMETERS.trim() : '';
+  const injectedParams = INJECTED_GIT_CONFIG.map(([key, value]) => "'" + key + '=' + value + "'").join(' ');
+  changes.GIT_CONFIG_PARAMETERS = inheritedParams ? inheritedParams + ' ' + injectedParams : injectedParams;
+  changes.PATH = String(env.PATH || '')
+    .split(path.delimiter)
+    .filter((e) => e.length > 0 && path.isAbsolute(e))
+    .join(path.delimiter);
+  return changes;
+}
+
+/**
+ * Run fn with probeEnvChanges applied to process.env, restoring every changed key afterwards (binlib-edit's
+ * probe reads process.env through its probeEnv, so this is how the hardening reaches its spawns without
+ * editing binlib-edit). fn is synchronous.
+ *
+ * @param {() => *} fn
+ * @returns {*}
+ */
+function withHardenedProbeEnv(fn) {
+  const changes = probeEnvChanges(process.env);
+  const saved = {};
+  for (const k of Object.keys(changes)) {
+    saved[k] = Object.prototype.hasOwnProperty.call(process.env, k) ? process.env[k] : undefined;
+    process.env[k] = changes[k];
+  }
+  try {
+    return fn();
+  } finally {
+    for (const k of Object.keys(saved)) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+}
+
+/**
+ * The default probe: binlib-edit's repository-PINNED `checkIgnoreLive` (no `.git` entry between the target
+ * and bin/, a discovered toplevel strictly above bin/ and not nested in another repository unless a genuine
+ * linked worktree, no core.worktree, env scrubbed, one 3000 ms deadline), run under withHardenedProbeEnv.
+ * 'ignored' only when git answers exit 0 for a pinned repository; every other answer is a silent pass.
  *
  * @param {string} absPath
  * @returns {'ignored'|'not-ignored'|'unknown'}
  */
-function checkIgnoreLive(absPath) {
-  const { probeEnv, CHECK_IGNORE_TIMEOUT_MS } = require('./binlib-edit.cjs');
-  const r = spawnSync('git', ['check-ignore', '-q', '--', absPath], {
-    cwd: path.dirname(absPath),
-    env: probeEnv(process.env),
-    timeout: CHECK_IGNORE_TIMEOUT_MS,
-    stdio: ['ignore', 'ignore', 'ignore'],
-  });
-  if (!r || r.error) return 'unknown';
-  if (r.status === 0) return 'ignored';
-  if (r.status === 1) return 'not-ignored';
-  return 'unknown';
+function checkIgnorePinned(absPath) {
+  const { checkIgnoreLive } = require('./binlib-edit.cjs');
+  return withHardenedProbeEnv(() => checkIgnoreLive(absPath));
 }
 
 /**
@@ -103,7 +176,7 @@ function checkIgnoreLive(absPath) {
  */
 function readDenyReason(filePath, twinShown) {
   return (
-    '`' + filePath + '` is tsc output of `' + twinShown + '` (gsd-core ADR-457: gsd-core/bin/lib/**/*.cjs ' +
+    '`' + filePath + '` is (or will be) tsc output of `' + twinShown + '` (gsd-core ADR-457: gsd-core/bin/lib/**/*.cjs ' +
     'is emitted from src/**/*.cts). Read the source `' + twinShown + '` instead. To read the emitted ' +
     'output itself (for example a stack-trace line number: gsd-core emits no source maps), read it ' +
     'through Bash (sed -n or cat); this guard covers only the Read tool. (ENF-26, fail-open read guard)'
@@ -117,7 +190,7 @@ function readDenyReason(filePath, twinShown) {
  * @param {string} stdinString raw PreToolUse JSON
  * @param {Object} [deps]
  * @param {(startDir:string) => string} [deps.resolveRoot] default resolveGsdCoreRoot
- * @param {(absPath:string) => string} [deps.checkIgnore] default checkIgnoreLive
+ * @param {(absPath:string) => string} [deps.checkIgnore] default checkIgnorePinned
  * @returns {{permissionDecision:'deny', permissionDecisionReason:string}|null}
  */
 function gate(stdinString, deps = {}) {
@@ -152,7 +225,7 @@ function gate(stdinString, deps = {}) {
   if (!fs.statSync(twin, { throwIfNoEntry: false })?.isFile()) return null;
 
   // Signal (b): git reports the target ignored (generated).
-  const checkIgnore = deps.checkIgnore || checkIgnoreLive;
+  const checkIgnore = deps.checkIgnore || checkIgnorePinned;
   if (checkIgnore(target) !== 'ignored') return null;
 
   const twinShown = path.isAbsolute(filePath) ? twin : path.relative(base, twin);
@@ -232,4 +305,12 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { gate, runReadGuard, checkIgnoreLive, readDenyReason, tryRealpath };
+module.exports = {
+  gate,
+  runReadGuard,
+  checkIgnorePinned,
+  probeEnvChanges,
+  readDenyReason,
+  tryRealpath,
+  INJECTED_GIT_CONFIG,
+};
