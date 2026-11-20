@@ -25,7 +25,7 @@ phases:
 
 | Phase | Does |
 |---|---|
-| **STEP ZERO** | Create the P0–P7 checklist as **tool-tracked todos** (TodoWrite, or your harness's equivalent) before anything else. |
+| **STEP ZERO** | Create the P-1 to P7 checklist as **tool-tracked todos** before anything else: first a checklist file you keep updating (works in every session), then the TaskCreate/TaskUpdate task tools where the session has them (from Claude Code v2.1.268 they are on by default only on Opus 4.7, Sonnet 4.6, Haiku 4.5 and earlier models, on other models opt in with `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`, while background and cloud sessions get them on every model; TodoWrite is disabled by default). |
 | **P0 — Ground in the canon** | Read CONTRIBUTING + templates + relevant ADRs + CONTEXT first, every time. |
 | **P0c — Prior-art recall** | *(advisory)* Ask MemPalace whether this area was already filed, a premise already falsified, or a gate already tripped — prior filings double as the precedents P4 wants. Search **un-scoped**. |
 | **P1 — Verify the finding** | Reproduce the mechanism live (`trust-but-verify`); if it can't be reproduced, withdraw/correct — don't file. **A withdrawal runs P7's capture before stopping.** |
