@@ -318,10 +318,9 @@ test('probeEnvChanges: injects core.fsmonitor=false and safe.bareRepository=expl
   assert.strictEqual(bogus.GIT_CONFIG_KEY_0, 'core.fsmonitor');
 });
 
-test('probeEnvChanges: PATH keeps only absolute entries (no empty, no relative)', () => {
+test('probeEnvChanges: no empty or relative PATH entry survives (round 4: PATH is the fixed git directory)', () => {
   const { probeEnvChanges } = require('./emitted-cjs-read.cjs');
-  assert.strictEqual(probeEnvChanges({ PATH: ':/usr/bin:.:bin:/bin:' }).PATH, '/usr/bin:/bin');
-  assert.ok(!('PATH' in probeEnvChanges({})), 'an unset PATH is not touched');
+  assert.strictEqual(probeEnvChanges({ PATH: ':/usr/bin:.:bin:/bin:' }, '/usr/bin/git').PATH, '/usr/bin');
 });
 
 test('a guarded Read leaves process.env exactly as it found it', () => {
@@ -358,10 +357,146 @@ test('real probe: a tree that is not a git work tree passes silently (git exits 
   assertSilent(guard(payload(path.join(root, 'gsd-core', 'bin', 'lib', 'foo.cjs'))));
 });
 
-test('real probe: git absent from PATH passes silently, exit 0, empty stdout', () => {
+// Fix round 4 (option B, REVIEW-R3 CR-01/IN-01): git is spawned only from a fixed absolute list, never looked up
+// through PATH or the cwd. Rows that need the real probe to answer skip on a host with no listed git (R3-I2 W-03).
+const hookModule = require('./emitted-cjs-read.cjs');
+const LISTED_GIT = typeof hookModule.resolveGitPath === 'function' && Array.isArray(hookModule.GIT_CANDIDATES)
+  ? hookModule.resolveGitPath(hookModule.GIT_CANDIDATES)
+  : null;
+const NO_LISTED_GIT = 'no git at any fixed candidate path on this host (the guard then never denies; fail open)';
+
+test('option B: GIT_CANDIDATES is a frozen list of absolute system paths; win32 has none (REVIEW-R3 CR-01)', () => {
+  const { GIT_CANDIDATES, gitCandidates } = hookModule;
+  assert.ok(Array.isArray(GIT_CANDIDATES) && Object.isFrozen(GIT_CANDIDATES), 'GIT_CANDIDATES is exported and frozen');
+  assert.deepStrictEqual(gitCandidates('linux'), ['/usr/bin/git', '/usr/local/bin/git', '/bin/git', '/opt/homebrew/bin/git']);
+  assert.deepStrictEqual(gitCandidates('darwin'), gitCandidates('linux'));
+  // Native Windows: libuv searches the spawn cwd before PATH for a bare name (source-read, libuv src/win/process.c
+  // search_path "look in cwd first, then scan path"; not run here). The guard lists no Windows git, so it never
+  // spawns there: a silent pass.
+  assert.deepStrictEqual(gitCandidates('win32'), []);
+  for (const c of GIT_CANDIDATES) assert.ok(path.isAbsolute(c), c);
+});
+
+test('option B: resolveGitPath takes the first executable regular file of the list and nothing else', () => {
+  const { resolveGitPath } = hookModule;
+  const dir = path.join(BASE, 'resolve-git');
+  fs.mkdirSync(dir, { recursive: true });
+  const notExec = write(dir, 'not-exec-git', '#!/bin/sh\n');
+  fs.chmodSync(notExec, 0o644);
+  const exec = write(dir, 'exec-git', '#!/bin/sh\n');
+  fs.chmodSync(exec, 0o755);
+  fs.mkdirSync(path.join(dir, 'dir-git'), { recursive: true });
+  assert.strictEqual(resolveGitPath([path.join(dir, 'missing'), notExec, path.join(dir, 'dir-git'), exec]), exec);
+  assert.strictEqual(resolveGitPath([path.join(dir, 'missing')]), null);
+  assert.strictEqual(resolveGitPath([]), null);
+  assert.strictEqual(resolveGitPath(['relative/git', 'git']), null, 'a relative candidate is never used');
+});
+
+test('option B: checkIgnorePinned hands binlib-edit an absolute listed git path (REVIEW-R3 CR-01 seam)', () => {
+  const calls = [];
+  const stub = (abs, opts) => { calls.push({ abs, opts }); return 'ignored'; };
+  const fake = write(path.join(BASE, 'fake-bin'), 'git', '#!/bin/sh\nexit 0\n');
+  fs.chmodSync(fake, 0o755);
+  assert.strictEqual(hookModule.checkIgnorePinned(lib('foo.cjs'), { candidates: ['/nonexistent/git', fake], checkIgnoreLive: stub }), 'ignored');
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(calls[0].opts.gitPath, fake, 'the spawned file is the resolved absolute candidate, never a bare name');
+});
+
+test('option B: no listed git -> unknown, nothing spawned (fail open)', () => {
+  let called = false;
+  const stub = () => { called = true; return 'ignored'; };
+  assert.strictEqual(hookModule.checkIgnorePinned(lib('foo.cjs'), { candidates: ['/nonexistent/git'], checkIgnoreLive: stub }), 'unknown');
+  assert.strictEqual(called, false);
+  const r = guard(payload(lib('foo.cjs')), {
+    checkIgnore: (abs) => hookModule.checkIgnorePinned(abs, { candidates: [] }),
+  });
+  assertSilent(r);
+});
+
+test('option B: binlib-edit checkIgnoreLive spawns the given absolute gitPath; with no second argument it spawns "git" as before', () => {
+  const { checkIgnoreLive } = require('./binlib-edit.cjs');
+  const mark = path.join(BASE, 'gitpath-mark');
+  const fake = write(path.join(BASE, 'fake-bin2'), 'git', '#!/bin/sh\necho "$1" >> ' + JSON.stringify(mark) + '\nexit 1\n');
+  fs.chmodSync(fake, 0o755);
+  assert.strictEqual(withIsolatedGitConfig(() => checkIgnoreLive(lib('foo.cjs'), { gitPath: fake })), 'unknown');
+  assert.strictEqual(fs.readFileSync(mark, 'utf8'), 'rev-parse\n', 'the given absolute file was spawned');
+  assert.strictEqual(withIsolatedGitConfig(() => checkIgnoreLive(lib('foo.cjs'))), 'ignored', 'default spawn unchanged');
+  assert.strictEqual(withIsolatedGitConfig(() => checkIgnoreLive(lib('foo.cjs'), { gitPath: 'relative-git' })), 'ignored',
+    'a non-absolute gitPath is ignored: the default applies');
+});
+
+test('real probe: PATH naming no git no longer decides; the listed git answers (option B replaces the round-2 "git absent from PATH" row)', (t) => {
+  if (!LISTED_GIT) return t.skip(NO_LISTED_GIT);
   const r = spawnHookEnv(payload(lib('foo.cjs')), { PATH: path.join(BASE, 'no-such-bin') });
   assert.strictEqual(r.status, 0, r.stderr);
-  assert.strictEqual(r.stdout, '');
+  assert.strictEqual(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'deny');
+});
+
+test('real probe: an absolute PATH entry INTO the checkout holding a git never runs it (REVIEW-R3 IN-01)', (t) => {
+  const root = plantedGitTree('planted-git-in-path');
+  const mark = path.join(BASE, 'planted-git-in-path-mark');
+  const r = spawnHookEnv(payload(path.join(root, 'gsd-core', 'bin', 'lib', 'foo.cjs')), {
+    PATH: path.join(root, 'gsd-core', 'bin', 'lib') + path.delimiter + process.env.PATH,
+    EMITTED_READ_MARK: mark,
+  });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.ok(!fs.existsSync(mark), 'the planted git on PATH must not run: ' + (fs.existsSync(mark) && fs.readFileSync(mark, 'utf8')));
+  if (!LISTED_GIT) return t.skip(NO_LISTED_GIT);
+  assert.strictEqual(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'deny');
+});
+
+/**
+ * Make root's own .git a partial clone whose skip-worktree gsd-core/bin/.gitignore blob is missing, with a
+ * repository-configured uploadpack that appends to mark and protocol.file.allow=always (REVIEW-R3 CR-02, ported
+ * from r3-probes/p6-lazyfetch.cjs armLazyFetch).
+ */
+function armLazyFetch(root, mark) {
+  const gitdir = path.join(root, '.git');
+  const run = (argv) => {
+    const r = spawnSync('git', argv, { cwd: root, env: FIXTURE_GIT_ENV, encoding: 'utf8' });
+    if (r.error || r.status !== 0) throw new Error('lazy fixture git ' + argv.join(' ') + ': ' + r.stderr);
+    return r.stdout.trim();
+  };
+  const ig = 'gsd-core/bin/.gitignore';
+  write(root, ig, 'lib/foo.cjs\n');
+  run(['add', '-f', '--', ig]);
+  run(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'ig']);
+  const oid = run(['rev-parse', ':' + ig]);
+  run(['update-index', '--skip-worktree', '--', ig]);
+  fs.unlinkSync(path.join(root, ig));
+  fs.unlinkSync(path.join(gitdir, 'objects', oid.slice(0, 2), oid.slice(2)));
+  const up = write(gitdir, 'up.sh', '#!/bin/sh\necho uploadpack >> ' + JSON.stringify(mark) + '\nexit 1\n');
+  fs.chmodSync(up, 0o755);
+  run(['config', 'core.repositoryformatversion', '1']);
+  run(['config', 'extensions.partialClone', 'origin']);
+  run(['config', 'remote.origin.promisor', 'true']);
+  run(['config', 'remote.origin.url', gitdir]);
+  run(['config', 'remote.origin.uploadpack', up]);
+  run(['config', 'protocol.file.allow', 'always']);
+}
+
+test('real probe: a partial-clone lazy fetch never runs a repository-configured uploadpack on a Read (REVIEW-R3 CR-02)', () => {
+  const root = plainTree('lazy-fetch');
+  const mark = path.join(BASE, 'lazy-fetch-mark');
+  armLazyFetch(root, mark);
+  // Control: raw git in the same fixture does run it, so the row is not vacuous.
+  const ctl = spawnSync('git', ['check-ignore', '-q', '--', path.join(root, 'gsd-core', 'bin', 'lib', 'foo.cjs')],
+    { cwd: path.join(root, 'gsd-core', 'bin', 'lib'), env: FIXTURE_GIT_ENV, encoding: 'utf8' });
+  assert.ok(fs.existsSync(mark), 'control: raw git lazily fetches and runs the uploadpack (exit ' + ctl.status + ')');
+  fs.rmSync(mark);
+  const r = spawnHookEnv(payload(path.join(root, 'gsd-core', 'bin', 'lib', 'foo.cjs')), {});
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.ok(!fs.existsSync(mark), 'the uploadpack must not run through the hook');
+  // The same with GIT_NO_LAZY_FETCH stripped (it is already absent here) and with an inherited protocol allow.
+  const r2 = spawnHookEnv(payload(path.join(root, 'gsd-core', 'bin', 'lib', 'foo.cjs')), { GIT_ALLOW_PROTOCOL: 'file' });
+  assert.strictEqual(r2.status, 0, r2.stderr);
+  assert.ok(!fs.existsSync(mark), 'an inherited GIT_ALLOW_PROTOCOL=file does not reopen the fetch');
+});
+
+test('probeEnvChanges: sets GIT_ALLOW_PROTOCOL to a name no transport has and GIT_NO_LAZY_FETCH=1 (REVIEW-R3 CR-02)', () => {
+  const out = hookModule.probeEnvChanges({ GIT_ALLOW_PROTOCOL: 'file:ssh', GIT_NO_LAZY_FETCH: '0' }, '/usr/bin/git');
+  assert.strictEqual(out.GIT_ALLOW_PROTOCOL, 'emitted-cjs-read-none');
+  assert.strictEqual(out.GIT_NO_LAZY_FETCH, '1');
 });
 
 test('real probe: an inherited GIT_DIR naming another repository is scrubbed and the emitted file still denies', () => {
@@ -443,7 +578,7 @@ function plantedGitTree(name) {
   return root;
 }
 
-test('real probe: with PATH unset, or with no absolute PATH entry, a committed git beside the target never runs (REVIEW-R2 LOW-R2-01)', () => {
+test('real probe: with PATH unset, or with no absolute PATH entry, a committed git beside the target never runs (REVIEW-R2 LOW-R2-01)', (t) => {
   for (const [label, pathValue] of [['unset', undefined], ['rel', 'rel'], ['dot', '.'], ['empty', ''], ['colons', '::']]) {
     const root = plantedGitTree('planted-git-' + label);
     const mark = path.join(BASE, 'planted-git-' + label + '-mark');
@@ -455,22 +590,20 @@ test('real probe: with PATH unset, or with no absolute PATH entry, a committed g
     });
     assert.strictEqual(r.status, 0, label + ': ' + r.stderr);
     assert.ok(!fs.existsSync(mark), label + ': the planted git must not run');
-    if (label === 'unset') {
-      // An unset PATH stays unset, so Node's default lookup finds the system git and the guard still works.
-      assert.strictEqual(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'deny', 'unset: the real git still answers');
-    } else {
-      assert.strictEqual(r.stdout, '', label + ': no absolute PATH entry means git is not found, a silent pass');
+    // Option B (round 4): the fixed listed git answers whatever PATH says, so every shape now denies (before
+    // round 4 a PATH with no absolute entry found no git and passed silently; an expected-verdict change).
+    if (LISTED_GIT) {
+      assert.strictEqual(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'deny', label + ': the listed git answers');
     }
   }
+  if (!LISTED_GIT) t.skip(NO_LISTED_GIT + ' (deny half skipped; the planted-git half ran)');
 });
 
-test('probeEnvChanges: PATH unset stays unset; a PATH with no absolute entry becomes a non-resolving absolute constant', () => {
+test('probeEnvChanges: the probe PATH is exactly the directory of the fixed git, whatever the inherited PATH (round 4)', () => {
   const { probeEnvChanges } = require('./emitted-cjs-read.cjs');
-  assert.ok(!('PATH' in probeEnvChanges({})), 'an unset PATH is not touched');
-  for (const p of ['', '.', 'rel', '::', 'rel:.:']) {
-    const out = probeEnvChanges({ PATH: p }).PATH;
-    assert.ok(out.length > 0 && path.isAbsolute(out) && !out.includes(path.delimiter), JSON.stringify(p) + ' -> ' + JSON.stringify(out));
-    assert.ok(!fs.existsSync(out), 'the constant does not resolve: ' + out);
+  for (const p of [undefined, '', '.', 'rel', '::', 'rel:.:', '/attacker/dir:/usr/bin']) {
+    const env = p === undefined ? {} : { PATH: p };
+    assert.strictEqual(probeEnvChanges(env, '/usr/bin/git').PATH, '/usr/bin', JSON.stringify(p));
   }
 });
 
