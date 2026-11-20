@@ -1998,7 +1998,7 @@ test('261119-s3h R2 (h): a calendar-invalid time is unknown; fractional seconds 
   assert.equal(feb.ball.authorClock.level, 'unknown');
   assert.match(lineAfterBall(feb), /^ {2}author clock: unknown \(unparseable submitted_at /);
   for (const frac of ['.5Z', '.123456Z']) {
-    const d = crDerive(now, (rs, r) => { r.submitted_at = `2026-10-07T01:15:23${frac}`; });
+    const d = crDerive(now + 1000, (rs, r) => { r.submitted_at = `2026-10-07T01:15:23${frac}`; });
     assert.equal(d.ball.authorClock.level, 'alarm', frac);
     assert.equal(d.ball.authorClock.days, 5, frac);
   }
