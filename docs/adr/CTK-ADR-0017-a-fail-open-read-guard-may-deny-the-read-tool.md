@@ -74,7 +74,8 @@ one it prevents. So the existing rules leave two choices: a non-denying advisory
   repository at or below `bin/` is not a false deny: the pinning refuses it and the Read passes silently.
 - **Known silent passes from the pinning.** A gsd-core checkout nested inside an unrelated repository (not a
   linked worktree of it), a repository with `core.worktree` set, and a `.git` entry between the file and
-  `bin/` all make the probe refuse to answer, so the Read passes. That is the fail-open direction: the
+  `bin/` all make the probe refuse to answer, so the Read passes. So do a committed bare-shaped directory
+  under `bin/lib`, a malformed inherited `git -c` environment and a `PATH` with no absolute entry. That is the fail-open direction: the
   guard trades those reads for never letting the read-from repository choose what git runs.
 - **Counts.** The documented "fail-closed `PreToolUse` gates" stay the Bash, Write|Edit and EnterWorktree gates;
   the read guard is its own category, and every "can deny" sentence names both.

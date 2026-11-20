@@ -321,7 +321,7 @@ test('probeEnvChanges: injects core.fsmonitor=false and safe.bareRepository=expl
 test('probeEnvChanges: PATH keeps only absolute entries (no empty, no relative)', () => {
   const { probeEnvChanges } = require('./emitted-cjs-read.cjs');
   assert.strictEqual(probeEnvChanges({ PATH: ':/usr/bin:.:bin:/bin:' }).PATH, '/usr/bin:/bin');
-  assert.strictEqual(probeEnvChanges({}).PATH, '');
+  assert.ok(!('PATH' in probeEnvChanges({})), 'an unset PATH is not touched');
 });
 
 test('a guarded Read leaves process.env exactly as it found it', () => {
@@ -455,6 +455,12 @@ test('real probe: with PATH unset, or with no absolute PATH entry, a committed g
     });
     assert.strictEqual(r.status, 0, label + ': ' + r.stderr);
     assert.ok(!fs.existsSync(mark), label + ': the planted git must not run');
+    if (label === 'unset') {
+      // An unset PATH stays unset, so Node's default lookup finds the system git and the guard still works.
+      assert.strictEqual(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'deny', 'unset: the real git still answers');
+    } else {
+      assert.strictEqual(r.stdout, '', label + ': no absolute PATH entry means git is not found, a silent pass');
+    }
   }
 });
 
@@ -468,7 +474,7 @@ test('probeEnvChanges: PATH unset stays unset; a PATH with no absolute entry bec
   }
 });
 
-test('a guarded Read with PATH unset leaves PATH unset', () => {
+test('a guarded Read with PATH unset leaves PATH unset (an env-restore row, not a regression row)', () => {
   const saved = process.env.PATH;
   delete process.env.PATH;
   try {
@@ -490,7 +496,8 @@ test('the env layer alone (no pinning) stops the committed bare-dir fsmonitor co
   const env = Object.assign({}, FIXTURE_GIT_ENV, { EMITTED_READ_MARK: mark });
   Object.assign(env, probeEnvChanges(env));
   const r = spawnSync('git', ['check-ignore', '-q', '--', target], { cwd: path.dirname(target), env, encoding: 'utf8' });
-  assert.notStrictEqual(r.status, 0, 'the env layer must not let git answer "ignored" here');
+  assert.strictEqual(r.status, 128, 'safe.bareRepository=explicit makes git refuse the bare-shaped dir: ' + r.stderr);
+  assert.match(r.stderr, /cannot use bare repository/);
   assert.ok(!fs.existsSync(mark), 'the planted fsmonitor command must not run with the env layer alone');
 });
 
