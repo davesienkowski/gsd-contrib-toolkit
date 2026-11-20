@@ -75,7 +75,7 @@ function resolveGitPath(candidates) {
   return null;
 }
 
-/** The resolved fixed git for this hook process (one process serves one Read), memoized on first use. */
+/** The resolved fixed git for this hook process (one process serves one Read or one Write/Edit payload), memoized on first use. */
 let resolvedGit;
 function fixedGit() {
   if (resolvedGit === undefined) resolvedGit = resolveGitPath(GIT_CANDIDATES);

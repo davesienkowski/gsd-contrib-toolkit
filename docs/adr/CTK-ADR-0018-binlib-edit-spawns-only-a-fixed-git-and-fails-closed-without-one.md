@@ -95,9 +95,11 @@ Each verdict change, as measured on this host (git 2.43 at `/usr/bin/git`) unles
 - **D6f: an old listed git denies.** When `/usr/bin/git` is older than the repository's `extensions.*` need, every
   candidate is the undecidable deny where a newer PATH git used to answer.
 
-D6b and D6e are the deny-to-allow changes the plan names; every other measured change is toward deny. One more
-follows by reading the code, not measured: a repository-configured `core.fsmonitor` command that hung past the
-3000 ms deadline used to deny every candidate, and it no longer runs, so the real verdict applies. The two old test rows that
+D6b and D6e are the deny-to-allow changes the plan names. One more was measured during execution (D6g, quick
+261120-28y probes/x-fsmonitor-hang-measure.out): a repository-configured `core.fsmonitor` command that hung past the
+3000 ms deadline used to deny a tracked file with the undecidable note (3068 ms, the command ran); it no longer runs,
+so the real verdict applies (allow in 76 ms). All three move a tracked or hand-written file to its correct verdict;
+every other measured change is toward deny. The two old test rows that
 pinned the PATH behaviour ("git missing from PATH" and "git hangs", both shims on PATH) now test the same outcome
 through the fixed git (no fixed git; a hanging fixed git).
 
