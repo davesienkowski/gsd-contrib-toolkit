@@ -82,3 +82,18 @@ test('withHardenedProbeEnv: fn sees the changes; every key is restored afterward
   }
   assert.strictEqual(JSON.stringify(Object.entries(process.env).sort()), before);
 });
+
+// --- quick 261120-28y fix round 2: row tagged "28y-r2" (appended only) ---------------------------------------------
+test('28y-r2 probeEnvChanges: refuses replace objects and turns trace2 off, whatever is inherited (REVIEW CR-02, WR-03)', () => {
+  for (const inherited of [{}, { GIT_NO_REPLACE_OBJECTS: '0', GIT_TRACE2: '1', GIT_TRACE2_EVENT: '/tmp/ev', GIT_TRACE2_PERF: '2' }]) {
+    const out = hg.probeEnvChanges(inherited, '/usr/bin/git');
+    assert.strictEqual(out.GIT_NO_REPLACE_OBJECTS, '1', JSON.stringify(inherited));
+    assert.strictEqual(out.GIT_TRACE2, '0', JSON.stringify(inherited));
+    assert.strictEqual(out.GIT_TRACE2_EVENT, '0', JSON.stringify(inherited));
+    assert.strictEqual(out.GIT_TRACE2_PERF, '0', JSON.stringify(inherited));
+  }
+  const before = JSON.stringify(Object.entries(process.env).sort());
+  const seen = hg.withHardenedProbeEnv(() => [process.env.GIT_NO_REPLACE_OBJECTS, process.env.GIT_TRACE2], '/usr/bin/git');
+  assert.deepStrictEqual(seen, ['1', '0']);
+  assert.strictEqual(JSON.stringify(Object.entries(process.env).sort()), before, 'every key is restored');
+});

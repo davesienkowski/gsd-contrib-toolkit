@@ -1509,3 +1509,203 @@ test('28y-guard D9: an inherited GIT_TRACE=1 or GIT_TRACE2=1 keeps the tracked-f
     fx.cleanup();
   }
 });
+
+// --- quick 261120-28y fix round 2 (FIX-PLAN-R2 as amended by its R1 dispositions): rows tagged "28y-r2" ---------
+// Round-1 security review CR-02 (replace refs), WR-02 (inherited exec path), WR-03 (trace2 targets in git config),
+// IN-01 (the single-file git config variable). Appended only; every helper below is a new function declaration whose
+// name no earlier top-level declaration uses (PLAN-REVIEW-R2 W-04, R2-I2 N-02).
+
+/** The env keys the round-2 wrapper records for every spawn. */
+function r2EnvKeys() {
+  return ['GIT_NO_REPLACE_OBJECTS', 'GIT_TRACE2', 'GIT_TRACE2_EVENT', 'GIT_TRACE2_PERF', 'GIT_EXEC_PATH', 'GIT_CONFIG'];
+}
+
+/**
+ * An executable `git` in dir that appends, per spawn, "BEGIN" and one KEY=value line for each r2EnvKeys() key
+ * (value "<unset>" when the key is absent) to log, then execs realGit by absolute path. Shell builtins only.
+ */
+function envRecordR2(dir, log, realGit) {
+  fs.mkdirSync(dir, { recursive: true });
+  const p = path.join(dir, 'git');
+  const L = JSON.stringify(log);
+  const lines = ['#!/bin/sh', 'echo BEGIN >> ' + L];
+  for (const k of r2EnvKeys()) lines.push('printf "' + k + '=%s\\n" "${' + k + '-<unset>}" >> ' + L);
+  lines.push('exec ' + JSON.stringify(realGit) + ' "$@"', '');
+  fs.writeFileSync(p, lines.join('\n'));
+  fs.chmodSync(p, 0o755);
+  return p;
+}
+
+/** envRecordR2's log as one { KEY: value } record per spawn. */
+function readEnvR2(log) {
+  if (!fs.existsSync(log)) return [];
+  const spawns = [];
+  for (const line of fs.readFileSync(log, 'utf8').split('\n')) {
+    if (line === 'BEGIN') spawns.push({});
+    else if (line !== '' && spawns.length > 0) {
+      const eq = line.indexOf('=');
+      spawns[spawns.length - 1][line.slice(0, eq)] = line.slice(eq + 1);
+    }
+  }
+  return spawns;
+}
+
+/** Every recorded spawn refuses replace objects, has trace2 off, and carries no exec path or single-file config. */
+function assertR2SpawnEnv(spawns) {
+  assert.ok(spawns.length >= 1, 'the recording wrapper must have been spawned at least once');
+  for (const s of spawns) {
+    assert.strictEqual(s.GIT_NO_REPLACE_OBJECTS, '1', 'GIT_NO_REPLACE_OBJECTS=1 (CR-02): ' + JSON.stringify(s));
+    assert.strictEqual(s.GIT_TRACE2, '0', 'GIT_TRACE2=0 (WR-03): ' + JSON.stringify(s));
+    assert.strictEqual(s.GIT_TRACE2_EVENT, '0', 'GIT_TRACE2_EVENT=0 (WR-03): ' + JSON.stringify(s));
+    assert.strictEqual(s.GIT_TRACE2_PERF, '0', 'GIT_TRACE2_PERF=0 (WR-03): ' + JSON.stringify(s));
+    assert.strictEqual(s.GIT_EXEC_PATH, '<unset>', 'an inherited exec path is dropped (WR-02): ' + JSON.stringify(s));
+    assert.strictEqual(s.GIT_CONFIG, '<unset>', 'an inherited single-file git config is dropped (IN-01): ' + JSON.stringify(s));
+  }
+}
+
+/** The listed git's own exec path, so an inherited value that names it leaves every verdict as it was. */
+function execPathR2(lg) {
+  const r = spawnSync(lg, ['--exec-path'], { env: FIXTURE_GIT_ENV, encoding: 'utf8' });
+  assert.strictEqual(r.status, 0, 'git --exec-path: ' + r.stderr);
+  return r.stdout.trim();
+}
+
+/** Run fn with the given keys set in process.env (the in-process probes read it), restored afterwards. */
+function withEnvR2(over, fn) {
+  const saved = {};
+  for (const k of Object.keys(over)) {
+    saved[k] = Object.prototype.hasOwnProperty.call(process.env, k) ? process.env[k] : undefined;
+    process.env[k] = over[k];
+  }
+  try {
+    return fn();
+  } finally {
+    for (const k of Object.keys(saved)) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+}
+
+/**
+ * REVIEW CR-02 block F4: the only rule for gsd-core/bin/lib/gen.cjs lives in a committed gsd-core/bin/.gitignore
+ * whose index entry is skip-worktree and whose work-tree file is absent; a replace ref swaps its blob for a rule-less
+ * blob. Nothing is missing from the object store. Callers MUST cleanup() in finally.
+ */
+function makeReplaceFixtureR2() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-28y-r2-replace-'));
+  try {
+    const libDir = path.join(root, 'gsd-core', 'bin', 'lib');
+    fs.mkdirSync(libDir, { recursive: true });
+    fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+    const target = path.join(libDir, 'gen.cjs');
+    fs.writeFileSync(target, "'use strict';\n");
+    fs.writeFileSync(path.join(root, 'src', 'gen.cts'), 'export {};\n');
+    const ig = 'gsd-core/bin/.gitignore';
+    fs.writeFileSync(path.join(root, ig), 'lib/gen.cjs\n');
+    fixtureGit(root, ['init', '-q']);
+    fixtureGit(root, ['add', '--', ig, 'src/gen.cts']);
+    commit28(root, 'rule');
+    const ruleOid = fixtureGit(root, ['rev-parse', ':' + ig]).stdout.trim();
+    fixtureGit(root, ['update-index', '--skip-worktree', '--', ig]);
+    fs.unlinkSync(path.join(root, ig));
+    const noRule = path.join(root, '.git', 'r2-no-rule.txt');
+    fs.writeFileSync(noRule, '# no rule\n');
+    const noRuleOid = fixtureGit(root, ['hash-object', '-w', '--', noRule]).stdout.trim();
+    fixtureGit(root, ['replace', ruleOid, noRuleOid]);
+    return { root, libDir, target, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
+  } catch (err) {
+    fs.rmSync(root, { recursive: true, force: true });
+    throw err;
+  }
+}
+
+test('28y-r2 replace (CR-02, D6h): a replace ref that swaps the skip-worktree rule blob no longer un-ignores the generated file: Edit denied, Read-guard probe ignored', (t) => {
+  if (!listedGit28()) return t.skip(NO_LISTED_GIT_28);
+  const fx = makeReplaceFixtureR2();
+  try {
+    const ctl = rawCheckIgnore28(fx.target);
+    assert.strictEqual(ctl.status, 1, 'control: raw git follows the replace ref and reports not ignored');
+    assert.strictEqual(ctl.stderr, '', 'control: with empty stderr, so D8 alone cannot catch it');
+    const real = rawCheckIgnore28(fx.target, { GIT_NO_REPLACE_OBJECTS: '1' });
+    assert.strictEqual(real.status, 0, 'control: the real rule blob ignores the target');
+    const r = spawnHookWithEnv(input(fx.target, 'Edit', fx.root), { cwd: fx.root });
+    assert.strictEqual(r.decision, 'deny', r.reason);
+    assert.strictEqual(r.reason, binLibDenyReason(fx.target));
+    const { checkIgnorePinned } = require('./emitted-cjs-read.cjs');
+    assert.strictEqual(withIsolatedGitConfig(() => checkIgnorePinned(fx.target)), 'ignored', 'the Read guard probe answers ignored too');
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('28y-r2 trace2 config (WR-03, D6i): trace2 targets on stderr in the global git config keep the tracked file allowed and the emitted file plainly denied', (t) => {
+  if (!listedGit28()) return t.skip(NO_LISTED_GIT_28);
+  const fx = makeFixtureRepo();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-28y-r2-trace2-'));
+  try {
+    const cfg = path.join(dir, 'gitconfig');
+    fs.writeFileSync(cfg, '[trace2]\n\tnormalTarget = 2\n\teventTarget = 2\n\tperfTarget = 2\n');
+    const env = { GIT_CONFIG_GLOBAL: cfg };
+    const ctl = rawCheckIgnore28(fx.tracked, env);
+    assert.strictEqual(ctl.status, 1, 'control: raw git answers not ignored for the tracked file');
+    assert.ok(ctl.stderr.length > 0, 'control: the config trace2 targets write to stderr');
+    const k = spawnHookWithEnv(input(fx.tracked, 'Edit', fx.root), { cwd: fx.root, env });
+    assert.strictEqual(k.decision, 'allow', k.reason);
+    const e = spawnHookWithEnv(input(fx.ignored, 'Edit', fx.root), { cwd: fx.root, env });
+    assert.strictEqual(e.decision, 'deny');
+    assert.strictEqual(e.reason, binLibDenyReason(fx.ignored));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fx.cleanup();
+  }
+});
+
+test('28y-r2 D6k (IN-01): an inherited single-file git config no longer blinds the core.worktree pin (undecidable deny, Read-guard probe unknown) or makes git refuse (tracked file allowed)', (t) => {
+  if (!listedGit28()) return t.skip(NO_LISTED_GIT_28);
+  const fx = makeFixtureRepo();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-28y-r2-single-'));
+  try {
+    const malformed = path.join(dir, 'malformed.cfg');
+    fs.writeFileSync(malformed, '[core\n');
+    const m = spawnHookWithEnv(input(fx.tracked, 'Edit', fx.root), { cwd: fx.root, env: { GIT_CONFIG: malformed } });
+    assert.strictEqual(m.decision, 'allow', 'a malformed inherited single-file config no longer makes the pin probe refuse: ' + m.reason);
+
+    fixtureGit(fx.root, ['config', 'core.worktree', path.dirname(fx.root)]);
+    const ctl = spawnHookWithEnv(input(fx.ignored, 'Edit', fx.root), { cwd: fx.root });
+    assertUndecidableDeny(ctl.decision, ctl.reason, fx.ignored);
+    const r = spawnHookWithEnv(input(fx.ignored, 'Edit', fx.root), { cwd: fx.root, env: { GIT_CONFIG: '/dev/null' } });
+    assertUndecidableDeny(r.decision, r.reason, fx.ignored);
+    const { checkIgnorePinned } = require('./emitted-cjs-read.cjs');
+    const v = withEnvR2({ GIT_CONFIG: '/dev/null' }, () => withIsolatedGitConfig(() => checkIgnorePinned(fx.ignored)));
+    assert.strictEqual(v, 'unknown', 'the Read-guard probe sees the core.worktree pin fail (silent pass)');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fx.cleanup();
+  }
+});
+
+test('28y-r2 env record, default branch (WR-02, IN-01, CR-02, WR-03): the gate\'s own call spawns git with replace objects refused, trace2 off, and no inherited exec path or single-file config', (t) => {
+  const lg = listedGit28();
+  if (!lg) return t.skip(NO_LISTED_GIT_28);
+  const fx = makeFixtureRepo();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'binlib-28y-r2-envrec-'));
+  const log = path.join(dir, 'env.log');
+  const wrapper = envRecordR2(path.join(dir, 'bin'), log, lg);
+  const pre = writePreload(wrapper);
+  try {
+    const r = spawnPreloaded(input(fx.ignored, 'Edit', fx.root), {
+      cwd: fx.root,
+      preload: pre,
+      env: { GIT_EXEC_PATH: execPathR2(lg), GIT_CONFIG: '/dev/null' },
+    });
+    preloadSpawns(pre);
+    assertR2SpawnEnv(readEnvR2(log));
+    assert.strictEqual(r.decision, 'deny');
+    assert.strictEqual(r.reason, binLibDenyReason(fx.ignored));
+  } finally {
+    pre.cleanup();
+    fs.rmSync(dir, { recursive: true, force: true });
+    fx.cleanup();
+  }
+});
