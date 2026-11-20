@@ -2162,3 +2162,14 @@ test('261119-s3h: runCli deps.now is the clock for an in-process caller', () => 
   assert.equal(status, 0);
   assert.deepEqual(JSON.parse(stdout)[0].ball.authorClock, { since: CR_SINCE, login: 'trek-e', days: 3, level: 'warn', why: null, basis: 'role-not-read' });
 });
+
+test('261119-s3h R4 (o): a control character in the reviewer login is cleaned in the clock line (by trek-e)', () => {
+  const d = crDerive(CR_SINCE_MS + 5 * DAY_MS, (rs, r) => {
+    r.author_association = 'COLLABORATOR';
+    r.user = { login: 'tr\u001bek-e', type: 'User' };
+  });
+  assert.equal(d.ball.authorClock.login, 'tr\u001bek-e', 'derive keeps the raw login; the printer cleans it');
+  const line = lineAfterBall(d);
+  assert.equal(line, `  author clock: 5 day(s) ${NEWEST_MAINT} (${CR_SINCE} by trek-e); ${ALARM_TEXT}; author comments not counted`);
+  assert.ok(!line.includes('\u001b'), 'no ESC in the clock line');
+});
