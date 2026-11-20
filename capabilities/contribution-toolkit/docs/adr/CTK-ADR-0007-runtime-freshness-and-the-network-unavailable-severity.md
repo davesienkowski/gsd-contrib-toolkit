@@ -15,7 +15,8 @@
   Also amended by CTK-ADR-0017 (2026-11-19, Proposed): a read guard on the `Read` matcher
   resolves an unobtainable input to a silent pass, not `ask`; every other gate is unchanged.
   Also amended by CTK-ADR-0018 (2026-11-20, Proposed): an edit guard on the `Write|Edit|MultiEdit` matcher
-  resolves an unreadable input, including format drift, to a silent pass, not `ask`; every other gate is unchanged.
+  resolves an unreadable input to a silent pass (format drift only makes a missing entry undecidable) or, past
+  its work budget, to a context-only note, never to `ask`; every other gate is unchanged.
 - **Relates to:** ENF-21 (`hooks/runtime-drift.cjs`), the first gate whose verdict depends on network
   state; CTK-ADR-0001 §Decision.2 (HARD-01 fail-closed) and §Decision.3 (reuse LIVE, never
   reimplement); CTK-ADR-0006 §Decision.8 (gate on `hasGovernedSegment`, never the chain aggregate).

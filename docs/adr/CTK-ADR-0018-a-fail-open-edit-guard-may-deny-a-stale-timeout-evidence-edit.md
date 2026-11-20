@@ -46,9 +46,11 @@ choices: a non-denying advisory, which leaves the gap open, or a new class.
 2. **What ENF-27 denies (arm A).** In `tests/helpers/timeouts.cjs`, a top-level numeric constant listed in
    `module.exports` is judged when its value rises or when it is newly exported. It is denied when it has no
    `TIMEOUT_EVIDENCE` entry, or when its entry is `measured` with a positive literal `observedMaxMs` and its
-   Evidence comment (bounded at the comment's end) lacks `worst observed <observedMaxMs>ms` (uncensored entries)
-   or a first `margin <M>x` / `margin at least <M>x` equal to value / observedMaxMs rounded down to hundredths. A
-   helper constant that `timeouts.cjs` re-exports is judged against that export's entry and comment. The guard
+   Evidence comment (bounded at the comment's end) lacks `worst observed <observedMaxMs>ms` (uncensored entries;
+   a fraction is accepted) or a first `margin <M>x` / `margin at least <M>x` equal to value / observedMaxMs
+   rounded down to hundredths. The Evidence tag counts only where it starts a comment line (an own-line `//`, a
+   line of a block comment, or the first text after `/*` or `/**`). A helper constant that `timeouts.cjs`
+   re-exports is judged against that export's entry and comment. The guard
    checks only that the stated figures are arithmetically current with the entry; it cannot check that an
    observation is real, so a raise with a recomputed margin and no new measurement passes.
 3. **A third output: the context-only arm (arm B).** For a raised or new file-local timeout constant elsewhere in
@@ -63,10 +65,17 @@ choices: a non-denying advisory, which leaves the gap open, or a new class.
    in a `-p` run, and interactive Orca workers stalled at hook prompts (2026-10-06). Neither path
    adds a check, so the guard never emits it.
 5. **Fail open.** Any error or undecidable input (malformed payload, no gsd-core root, a filesystem error, a
-   non-regular or oversized file, a module that fails to load) is a silent pass. So is format drift: a
-   `TIMEOUT_EVIDENCE` literal the parser cannot read in full (spread-built, a quoted or computed key, empty or
-   missing), because a deny there could name an entry the file already has and could not be satisfied. This
-   amends CTK-ADR-0001 Decision 2, CTK-ADR-0005 Decision 4 and CTK-ADR-0007 for this class only.
+   non-regular or oversized file, a module that fails to load) is a silent pass. A format drift, meaning a
+   `TIMEOUT_EVIDENCE` literal the parser cannot read in full (a spread, a quoted, computed or same-line key, a
+   member that is not an object literal), makes only the MISSING-entry deny undecidable, because CI loads the object
+   and may see an entry the static parse cannot (fix round 2, review WR-01). Every entry the parser did read is
+   still judged for a stale comment, unless a later member of the literal may override it (a later spread,
+   computed or other non-key member, or a later member of the same name the parser cannot read): that constant is
+   not judged, because its effective entry is not the one the parser read (R2-I2 W-03). A missing literal judges
+   nothing. When the guard's fixed work budget (a multiple of the 1 MiB input cap, counted in scan steps, never in
+   time) runs out, it emits a context-only note that it did not judge the edit, with no decision; a file crafted to
+   exhaust the budget is a known fail-open route. This amends CTK-ADR-0001 Decision 2, CTK-ADR-0005 Decision 4 and
+   CTK-ADR-0007 for this class only.
 6. **A toolkit-owned signal alone may deny.** CTK-ADR-0001 Decision 3, as narrowed by CTK-ADR-0005 Decision 3,
    lets a toolkit-owned signal run only beside a LIVE one at a lower severity. ENF-27 denies on a toolkit-owned
    signal alone, because no LIVE signal answers a before/after question (Context). The guard does not reimplement
@@ -79,8 +88,10 @@ choices: a non-denying advisory, which leaves the gap open, or a new class.
    as new) and the 3 consecutive before/after pairs gave 0 denies, and the #6143 post-image with its comment hunk
    reverted denied. That is agreement with every compliant upstream state, not a false-positive rate. The bar is
    waived for this class because ENF-27 does deny an edit, but every deny names a passing order (entry and
-   comment first, then the value, or all in one Write or MultiEdit; a comment-only or evidence-only edit is never
-   denied), so a false deny costs one edit, and every error fails open. CTK-ADR-0017's reason (a deny that blocks
+   comment first, then the value, or all in one Write or MultiEdit), the exact accepted forms and the tag position
+   rule, so a false deny costs one edit, and every error fails open. An edit that changes no value is not judged,
+   with one known exception: a lexer misread (below) can expose a declaration that a comment-only edit uncovers,
+   which is then judged as new; restating that constant's figures passes it. CTK-ADR-0017's reason (a deny that blocks
    no outcome) does not apply here and is not borrowed.
 
 ## Consequences
@@ -91,14 +102,29 @@ choices: a non-denying advisory, which leaves the gap open, or a new class.
   `timeouts.cjs`; a new helper constant re-exported through a new destructure; an entry kind changed from measured
   to an exempt kind; an entry-only change that leaves the comment stale (CI checks the 2x floor); a non-exported
   constant in `timeouts.cjs`; Claude Code's fuzzy quote matching on Edit; production `src/` and `bin/` timeouts.
-  Upstream relies on code review for these, and the guard removes no review. Two parse limits fail open: a
-  right-hand side that starts on the next line is unresolved and trusted, and a MultiEdit with more than 200 edits
-  passes silently.
-- **First tag occurrence.** The Evidence comment is read from the first occurrence of its
-  `Evidence (TIMEOUT_EVIDENCE.<NAME>):` tag. An earlier mention of the same tag text (none upstream today) would be
-  read instead of the comment above the declaration and could cause a false deny until that mention is edited.
-- **Known false denies.** A value edited before its entry or comment, and correct figures in other wording. The
-  reason answers both: it names the passing order and the exact accepted forms.
+  Upstream relies on code review for these, and the guard removes no review. Parse limits that fail open: a
+  right-hand side that starts on the next line, a call (`Number(30000)`) or a `**` expression is unresolved and
+  trusted; a numeric literal inside the `module.exports` object and a later `module.exports.NAME =` assignment are
+  not declarations and are not judged; a declarator after a multi-line object or array in one statement is not
+  seen; a TypeScript annotation beyond one word hides an arm B declaration; a lone CR, U+2028 or U+2029 used as a
+  line break hides what follows on a `//` comment line from the guard but not from Node; and a MultiEdit with more
+  than 200 edits passes silently. Declarators after the first in one statement, on one line or continued after a
+  trailing comma, are judged.
+- **Lexer limits, both directions.** A regex literal is recognised after an operator or punctuator that can start
+  an expression and after keywords such as `return` and `case`; a regex after `)` or `]`, or a template literal
+  nested in `${ }`, is misread. A misread slash-star opens a phantom comment: it can hide a raised declaration from
+  the guard (a silent pass), or a later comment-only edit can expose a declaration the baseline hid, which is
+  judged as new (a false deny, passed by restating that constant's figures).
+- **First accepted tag.** The Evidence comment of a constant starts at the first accepted occurrence of its
+  `Evidence (TIMEOUT_EVIDENCE.<NAME>):` tag and ends at the end of its own comment or at the next accepted tag in
+  it. A tag after code or after other text on its comment line is ignored, and the deny reason says so.
+- **Known false denies.** A value edited before its entry or comment; correct figures in other wording; a correct
+  comment whose tag does not start its comment line; and the phantom-comment case above. The reason answers each:
+  it names the passing order, the exact accepted forms and the position rule.
+- **Root.** The gsd-core root is the outermost checkout above the target whose `tests/` holds it, so a sentinel
+  layout planted inside `tests/` does not move the root; a checkout nested elsewhere (for example
+  `.claude/worktrees/w1`) is judged against itself. A directory outside gsd-core that carries the sentinel layout
+  is judged as gsd-core, as for every gate that uses the shared resolver.
 - **Arm B is advisory and weak.** Its evidence words can be satisfied by a comment with no real evidence, and its
   rise rule (above every baseline value of the same name) misses a raise of the smaller of two same-name locals.
 - **Format dependence.** Arm A reads upstream's current shapes (line-start entry keys, the Evidence tag, a
@@ -107,7 +133,11 @@ choices: a non-denying advisory, which leaves the gap open, or a new class.
 - **Counts.** The documented "fail-closed `PreToolUse` gates" stay the Bash, Write|Edit and EnterWorktree gates;
   the edit guard is its own category beside the read guard, and every "can deny" sentence names it.
 - **Timeout.** A `PreToolUse` command hook that Claude Code cancels at its timeout does not block the call, so a
-  hung guard also passes; the guard reads at most two bounded files and spawns nothing.
+  hung guard also passes; the guard reads at most two bounded files and spawns nothing. The snippet sets 10 s; the
+  capability route writes no timeout key, so Claude Code's documented default for a command hook applies, 600 s
+  (code.claude.com/docs/en/hooks, "Common fields"). The work budget, not either timeout, bounds the judging: on the
+  development machine the two worst inputs it admits at the 1 MiB cap (a 6000-constant Write and a MultiEdit at
+  the 200-edit cap) measured 154 ms and 530 ms through the hook entry (fix round 2).
 
 ## Alternatives considered
 

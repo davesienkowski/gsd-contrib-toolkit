@@ -1159,6 +1159,21 @@ test('R2 LOW-4 / LOW-5 / W-07: names and paths are JSON literals, capped; instru
   assert.ok(longExport.permissionDecisionReason.length < 8000, 'reason length ' + longExport.permissionDecisionReason.length);
 });
 
+test('R2 W-09: the docs no longer say format drift or every non-deny path is a silent pass', () => {
+  const sites = [
+    'docs/enforcement-reference.md',
+    'docs/adr/README.md',
+    'capabilities/contribution-toolkit/README.md',
+    'docs/adr/CTK-ADR-0007-runtime-freshness-and-the-network-unavailable-severity.md',
+    'capabilities/contribution-toolkit/docs/adr/CTK-ADR-0007-runtime-freshness-and-the-network-unavailable-severity.md',
+    'docs/adr/CTK-ADR-0018-a-fail-open-edit-guard-may-deny-a-stale-timeout-evidence-edit.md',
+  ];
+  for (const rel of sites) {
+    const text = fs.readFileSync(path.join(__dirname, '..', rel), 'utf8').replace(/\s+/g, ' ');
+    assert.doesNotMatch(text, /format drift and every error are a silent pass|including on format drift|including format drift, to a silent pass|timeout-evidence-edit`: [^|]*every other path, and every error, is a silent pass/, rel);
+  }
+});
+
 test('R2 W-02: the work budget seam: a tiny budget turns a known deny into the visible no-judgement note', () => {
   const stdin = payload('Write', path.join(ROOT, TO), { content: STALE_6143 });
   assertDeny(runEditGuard(stdin), 'GSD_TOOLS_CLI_MODERATE_TIMEOUT_MS');
