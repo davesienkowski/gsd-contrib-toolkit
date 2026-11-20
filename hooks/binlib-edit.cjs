@@ -460,8 +460,7 @@ function runGitProbe(argv, cwd, env, deadline, gitPath) {
  * first non-answer returns 'unknown' without running the rest.
  *
  * Optional `options.gitPath` (quick 261119-szk round 4, the Read guard's fixed git): an ABSOLUTE path is
- * spawned instead of `'git'`; a gitPath key whose value is not an absolute string (undefined included) answers
- * 'unknown' and spawns nothing.
+ * spawned instead of `'git'`; a gitPath that is present but not absolute answers 'unknown' and spawns nothing.
  * This gate's own call passes no options, so its spawn is the PATH lookup of `'git'` exactly as before.
  *
  * @param {string} absPath
@@ -470,12 +469,11 @@ function runGitProbe(argv, cwd, env, deadline, gitPath) {
  */
 function checkIgnoreLive(absPath, options) {
   try {
-    // A caller that passes a gitPath key asked for a pinned git: it never falls back to a PATH lookup, even when
-    // the value is undefined (REVIEW-R4 IN-01). No options, or options without the key, keep the 'git' lookup.
-    const pinned = options !== null && typeof options === 'object' && 'gitPath' in options;
-    const requested = pinned ? options.gitPath : undefined;
-    if (pinned && !(typeof requested === 'string' && path.isAbsolute(requested))) return 'unknown';
-    const git = pinned ? requested : 'git';
+    const requested = options && typeof options === 'object' ? options.gitPath : undefined;
+    if (requested !== undefined && !(typeof requested === 'string' && path.isAbsolute(requested))) {
+      return 'unknown'; // a caller that asked for a pinned git never falls back to a PATH lookup
+    }
+    const git = requested === undefined ? 'git' : requested;
     const deadline = Date.now() + CHECK_IGNORE_TIMEOUT_MS;
     const cwd = path.dirname(absPath);
     const env = probeEnv(process.env);
