@@ -46,6 +46,10 @@ function assertBall(ball, expected, label) {
   }
 }
 
+// quick 261119-s3h: the clock every stub CLI run reads (NODE_ENV=test + PR_STATUS_NOW), so the author clock
+// line cannot make the --json deepEqual or the determinism test depend on the wall clock.
+const FIXED_NOW = '2026-10-12T12:00:00Z';
+
 // The stub gh (serves fixtures by PR number, logs argv, refuses anything that is not a known read).
 const STUB_FILE = path.join(FIXTURES_DIR, '..', 'pr-status-gh-stub.cjs');
 
@@ -72,6 +76,9 @@ function runThroughStub(t, args, opts = {}) {
     // 261028-owj: no gsd-core checkout resolves unless a test names one (GSD_CORE_ROOT), so a run never
     // reads the real ~/repos/gsd-core (the unknown message still names the cwd and this tmp HOME).
     HOME: stub.home,
+    // 261119-s3h: a pinned clock; opts.env overrides (a row passes '' to test the real clock or the refusal).
+    NODE_ENV: 'test',
+    PR_STATUS_NOW: FIXED_NOW,
   }, opts.env || {});
   if (!(opts.env && opts.env.GSD_CORE_ROOT)) delete env.GSD_CORE_ROOT;
   if (opts.queue) env.PR_STATUS_STUB_QUEUE = path.join(QUEUE_DIR, opts.queue);
@@ -256,7 +263,7 @@ test('end to end: --json prints a JSON array of derive() results in argv order, 
   assert.equal(arr[0].queue.mode, 'absent', 'an empty stub repo reads as no merge queue');
   assert.equal(arr[0].bundle.status, 'no-ledger', 'the stub HOME has no pr-update ledger');
   const { bundle, ...rest } = arr[0];
-  assert.deepEqual(rest, { repo: 'open-gsd/gsd-core', ...prStatus.derive({ ...loadFixture('two-crs-captured.json'), queue: arr[0].queue }) });
+  assert.deepEqual(rest, { repo: 'open-gsd/gsd-core', ...prStatus.derive({ ...loadFixture('two-crs-captured.json'), queue: arr[0].queue, now: Date.parse(FIXED_NOW) }) });
 });
 
 test('end to end: --repo passes through to every gh call', (t) => {
@@ -1831,4 +1838,338 @@ test('owj C3: a relative GSD_CORE_ROOT is ignored (it would resolve against the 
 test('owj C9-5: only Base branch health red over a live green base says re-run on the base line', (t) => {
   const r = runInProc(t, ['900074'], { queue: 'ci-base-green.json', policies: fakePolicies() });
   assert.match(r.stdout, /^ {2}base: next green now .*; Base branch health red is from an earlier run: the live base is green now, re-run the check \(fix-next: absent\)$/m);
+});
+
+// --- quick 261119-s3h: the author clock under an AUTHOR-owes-changes ball (advisory; trek-e CLOSE_DAYS=5) ---
+
+const DAY_MS = 86400000;
+const CR_SINCE = '2026-10-07T01:15:23Z'; // cr-captured: trek-e CHANGES_REQUESTED on the head 22fccc0e
+const CR_SINCE_MS = Date.parse(CR_SINCE);
+const ALARM_TEXT = "ALARM: 5+ days; past the 5-day stale clock in trek-e's published review process (CLOSE_DAYS=5)";
+const ROLE_TAIL = '; reviewer role not read';
+
+/** cr-captured with an optional edit of its flat review list; derive() at nowMs. */
+function crDerive(nowMs, edit, viewEdit) {
+  const fx = loadFixture('cr-captured.json');
+  const reviews = fx.reviews.flat();
+  if (edit) edit(reviews, reviews[0]);
+  if (viewEdit) viewEdit(fx.view);
+  return prStatus.derive({ view: fx.view, reviews: [reviews], checks: fx.checks, now: nowMs });
+}
+
+/** A review like cr-captured's trek-e review, on the same head unless fields say otherwise. */
+function crReview(base, fields) {
+  return Object.assign({}, base, { user: { login: fields.login || base.user.login, type: 'User' } }, fields, { login: undefined });
+}
+
+/** The text line right after the `ball: AUTHOR owes changes` line (undefined when there is none). */
+function lineAfterBall(d) {
+  const L = prStatus.formatText(d).split('\n');
+  const i = L.findIndex((l) => l.startsWith('  ball: AUTHOR owes changes'));
+  return i < 0 ? undefined : L[i + 1];
+}
+
+test('261119-s3h: author clock boundaries (floor days; ok below 3, WARN at 3 and 4, ALARM from 5)', () => {
+  const rows = [
+    [0, 0, 'ok', `; ok; author comments not counted${ROLE_TAIL}`],
+    [3 * DAY_MS - 1, 2, 'ok', `; ok; author comments not counted${ROLE_TAIL}`],
+    [3 * DAY_MS, 3, 'warn', `; WARN: 3+ days; author comments not counted${ROLE_TAIL}`],
+    [5 * DAY_MS - 1000, 4, 'warn', `; WARN: 3+ days; author comments not counted${ROLE_TAIL}`],
+    [5 * DAY_MS, 5, 'alarm', `; ${ALARM_TEXT}; author comments not counted${ROLE_TAIL}`],
+  ];
+  for (const [k, days, level, tail] of rows) {
+    const d = crDerive(CR_SINCE_MS + k);
+    assert.deepEqual(d.ball.authorClock, { since: CR_SINCE, login: 'trek-e', days, level, why: null, basis: 'role-not-read' }, `k=${k}`);
+    assert.equal(
+      lineAfterBall(d),
+      `  author clock: ${days} day(s) since the newest change request on the head (${CR_SINCE} by trek-e)${tail}`,
+      `k=${k}: the clock line is the line right after the ball line`,
+    );
+  }
+});
+
+test('261119-s3h: a missing, unparseable, hostile or future submitted_at prints unknown, never a number', () => {
+  const now = CR_SINCE_MS + 6 * DAY_MS;
+  const missing = crDerive(now, (rs, r) => { delete r.submitted_at; });
+  assert.equal(lineAfterBall(missing), '  author clock: unknown (no submitted_at on the change request)');
+  assert.equal(missing.ball.authorClock.level, 'unknown');
+  assert.equal(missing.ball.authorClock.days, null);
+  const one = crDerive(now, (rs, r) => { r.submitted_at = '1'; });
+  assert.match(lineAfterBall(one), /^ {2}author clock: unknown \(unparseable submitted_at /);
+  const local = crDerive(now, (rs, r) => { r.submitted_at = 'Oct 7, 2026'; });
+  assert.match(lineAfterBall(local), /^ {2}author clock: unknown \(unparseable submitted_at /);
+  const future = crDerive(CR_SINCE_MS - 1000);
+  assert.match(lineAfterBall(future), /^ {2}author clock: unknown \(.*after the clock time\)$/);
+  const esc = crDerive(now, (rs, r) => { r.submitted_at = '\u001b[31m2026-10-07T01:15:23Zé'; });
+  const escLine = lineAfterBall(esc);
+  assert.match(escLine, /^ {2}author clock: unknown \(unparseable submitted_at /);
+  assert.ok(isPrintableAscii(prStatus.formatText(esc)), 'ASCII only');
+  for (const d of [missing, one, local, future, esc]) assert.doesNotMatch(prStatus.formatText(d), /author clock: \d/);
+});
+
+const NEWEST_MAINT = 'since the newest maintainer change request on the head';
+
+test('261119-s3h R2 (a): a later CONTRIBUTOR change request does not move the maintainer start', () => {
+  const now = CR_SINCE_MS + 5 * DAY_MS;
+  const d = crDerive(now, (rs, r) => {
+    r.author_association = 'COLLABORATOR';
+    rs.push(crReview(r, { login: 'drive-by', author_association: 'CONTRIBUTOR', submitted_at: '2026-10-11T01:15:23Z' }));
+  });
+  assert.equal(d.ball.owner, 'author');
+  assert.equal(d.ball.login, 'drive-by', 'the ball rule is unchanged: the newest change request names the login');
+  assert.deepEqual(d.ball.authorClock, { since: CR_SINCE, login: 'trek-e', days: 5, level: 'alarm', why: null, basis: 'maintainer' });
+  assert.equal(lineAfterBall(d), `  author clock: 5 day(s) ${NEWEST_MAINT} (${CR_SINCE} by trek-e); ${ALARM_TEXT}; author comments not counted`);
+});
+
+test('261119-s3h R2 (b): one maintainer change request at day 0 and again at day 8 starts at day 8', () => {
+  const d = crDerive(CR_SINCE_MS + 9 * DAY_MS, (rs, r) => {
+    r.author_association = 'COLLABORATOR';
+    rs.push(crReview(r, { author_association: 'COLLABORATOR', submitted_at: '2026-10-15T01:15:23Z' }));
+  });
+  assert.equal(d.ball.owner, 'author');
+  assert.deepEqual(d.ball.authorClock, { since: '2026-10-15T01:15:23Z', login: 'trek-e', days: 1, level: 'ok', why: null, basis: 'maintainer' });
+});
+
+test('261119-s3h R2 (c): maintainer change request, approval, change request again starts at the last one', () => {
+  const d = crDerive(CR_SINCE_MS + 9 * DAY_MS, (rs, r) => {
+    r.author_association = 'MEMBER';
+    rs.push(crReview(r, { state: 'APPROVED', author_association: 'MEMBER', submitted_at: '2026-10-08T01:15:23Z' }));
+    rs.push(crReview(r, { author_association: 'MEMBER', submitted_at: '2026-10-15T01:15:23Z' }));
+  });
+  assert.deepEqual(d.ball.authorClock, { since: '2026-10-15T01:15:23Z', login: 'trek-e', days: 1, level: 'ok', why: null, basis: 'maintainer' });
+});
+
+test('261119-s3h R2 (d): a re-requested reviewer is not in the set; the other maintainer starts the clock', () => {
+  const d = crDerive(
+    CR_SINCE_MS + 7 * DAY_MS,
+    (rs, r) => {
+      r.user = { login: 'alice', type: 'User' };
+      r.author_association = 'COLLABORATOR';
+      rs.push(crReview(r, { login: 'trek-e', author_association: 'COLLABORATOR', submitted_at: '2026-10-08T01:15:23Z' }));
+    },
+    (v) => { v.reviewRequests = [{ __typename: 'User', login: 'Alice' }]; },
+  );
+  assert.equal(d.ball.owner, 'author');
+  assert.equal(d.ball.login, 'trek-e');
+  assert.deepEqual(d.ball.authorClock, { since: '2026-10-08T01:15:23Z', login: 'trek-e', days: 6, level: 'alarm', why: null, basis: 'maintainer' });
+});
+
+test('261119-s3h R3 (j): two non-requested maintainers at day 0 and day 3 start at the newest (day 3)', () => {
+  const d = crDerive(CR_SINCE_MS + 7 * DAY_MS, (rs, r) => {
+    r.user = { login: 'alice', type: 'User' };
+    r.author_association = 'COLLABORATOR';
+    rs.push(crReview(r, { login: 'trek-e', author_association: 'MEMBER', submitted_at: '2026-10-10T01:15:23Z' }));
+  });
+  assert.deepEqual(d.ball.authorClock, { since: '2026-10-10T01:15:23Z', login: 'trek-e', days: 4, level: 'warn', why: null, basis: 'maintainer' });
+  assert.equal(lineAfterBall(d), `  author clock: 4 day(s) ${NEWEST_MAINT} (2026-10-10T01:15:23Z by trek-e); WARN: 3+ days; author comments not counted`);
+});
+
+test('261119-s3h R3 (k): a re-requested maintainer is excluded, so a later contributor change request prints none', () => {
+  const d = crDerive(
+    CR_SINCE_MS + 7 * DAY_MS,
+    (rs, r) => {
+      r.user = { login: 'alice', type: 'User' };
+      r.author_association = 'COLLABORATOR';
+      rs.push(crReview(r, { login: 'drive-by', author_association: 'CONTRIBUTOR', submitted_at: '2026-10-10T01:15:23Z' }));
+    },
+    (v) => { v.reviewRequests = [{ __typename: 'User', login: 'Alice' }]; },
+  );
+  assert.equal(d.ball.owner, 'author');
+  assert.deepEqual(d.ball.authorClock, { since: null, login: null, days: null, level: 'none', why: null, basis: null });
+  assert.equal(lineAfterBall(d), '  author clock: none (no maintainer change request on the head)');
+});
+
+test('261119-s3h R3 (l): a set with a role-less member and no maintainer falls back to the newest, labelled role not read', () => {
+  const d = crDerive(CR_SINCE_MS + 5 * DAY_MS, (rs, r) => {
+    r.author_association = 'CONTRIBUTOR';
+    rs.push(crReview(r, { login: 'drive-by', author_association: undefined, submitted_at: '2026-10-09T01:15:23Z' }));
+  });
+  assert.deepEqual(d.ball.authorClock, { since: '2026-10-09T01:15:23Z', login: 'drive-by', days: 3, level: 'warn', why: null, basis: 'role-not-read' });
+  assert.equal(lineAfterBall(d), `  author clock: 3 day(s) since the newest change request on the head (2026-10-09T01:15:23Z by drive-by); WARN: 3+ days; author comments not counted${ROLE_TAIL}`);
+});
+
+test('261119-s3h R3 (m): a maintainer change request wins over a later role-less one (the maintainer sets the start)', () => {
+  const d = crDerive(CR_SINCE_MS + 7 * DAY_MS, (rs, r) => {
+    r.author_association = 'COLLABORATOR';
+    rs.push(crReview(r, { login: 'drive-by', author_association: undefined, submitted_at: '2026-10-10T01:15:23Z' }));
+  });
+  assert.deepEqual(d.ball.authorClock, { since: CR_SINCE, login: 'trek-e', days: 7, level: 'alarm', why: null, basis: 'maintainer' });
+  assert.equal(lineAfterBall(d), `  author clock: 7 day(s) ${NEWEST_MAINT} (${CR_SINCE} by trek-e); ${ALARM_TEXT}; author comments not counted`);
+});
+
+test('261119-s3h R3 (n): a re-requested maintainer is excluded, so a later role-less change request sets the start with the label', () => {
+  const d = crDerive(
+    CR_SINCE_MS + 7 * DAY_MS,
+    (rs, r) => {
+      r.user = { login: 'alice', type: 'User' };
+      r.author_association = 'COLLABORATOR';
+      rs.push(crReview(r, { login: 'drive-by', author_association: undefined, submitted_at: '2026-10-10T01:15:23Z' }));
+    },
+    (v) => { v.reviewRequests = [{ __typename: 'User', login: 'Alice' }]; },
+  );
+  assert.deepEqual(d.ball.authorClock, { since: '2026-10-10T01:15:23Z', login: 'drive-by', days: 4, level: 'warn', why: null, basis: 'role-not-read' });
+  assert.equal(lineAfterBall(d), `  author clock: 4 day(s) since the newest change request on the head (2026-10-10T01:15:23Z by drive-by); WARN: 3+ days; author comments not counted${ROLE_TAIL}`);
+});
+
+test('261119-s3h R2 (e): no author_association anywhere gives the newest change request and says the role was not read', () => {
+  const d = crDerive(CR_SINCE_MS + 5 * DAY_MS, (rs, r) => rs.push(crReview(r, { login: 'drive-by', submitted_at: '2026-10-11T01:15:23Z' })));
+  assert.deepEqual(d.ball.authorClock, { since: '2026-10-11T01:15:23Z', login: 'drive-by', days: 1, level: 'ok', why: null, basis: 'role-not-read' });
+  assert.equal(lineAfterBall(d), `  author clock: 1 day(s) since the newest change request on the head (2026-10-11T01:15:23Z by drive-by); ok; author comments not counted${ROLE_TAIL}`);
+});
+
+test('261119-s3h R2 (f): only non-maintainer change requests on the head print none', () => {
+  const d = crDerive(CR_SINCE_MS + 5 * DAY_MS, (rs, r) => {
+    r.author_association = 'COLLABORATOR';
+    rs.push(crReview(r, { state: 'APPROVED', author_association: 'COLLABORATOR', submitted_at: '2026-10-08T01:15:23Z' }));
+    rs.push(crReview(r, { login: 'x', author_association: 'CONTRIBUTOR', submitted_at: '2026-10-10T01:15:23Z' }));
+  });
+  assert.equal(d.ball.owner, 'author');
+  assert.deepEqual(d.ball.authorClock, { since: null, login: null, days: null, level: 'none', why: null, basis: null });
+  assert.equal(lineAfterBall(d), '  author clock: none (no maintainer change request on the head)');
+  assert.doesNotMatch(prStatus.formatText(d), /author clock: \d/);
+});
+
+test('261119-s3h R2 (g): a malformed time inside the used set is unknown; outside it is ignored', () => {
+  const now = CR_SINCE_MS + 5 * DAY_MS;
+  const inside = crDerive(now, (rs, r) => { r.author_association = 'COLLABORATOR'; r.submitted_at = 'garbage'; });
+  assert.equal(inside.ball.authorClock.level, 'unknown');
+  assert.match(lineAfterBall(inside), /^ {2}author clock: unknown \(unparseable submitted_at /);
+  const outside = crDerive(now, (rs, r) => {
+    r.author_association = 'COLLABORATOR';
+    rs.push(crReview(r, { login: 'x', author_association: 'CONTRIBUTOR', submitted_at: '1' }));
+  });
+  assert.deepEqual(outside.ball.authorClock, { since: CR_SINCE, login: 'trek-e', days: 5, level: 'alarm', why: null, basis: 'maintainer' });
+  // Role not read: every member of S is in the used set, so a bad time on any of them is unknown.
+  const fallback = crDerive(now, (rs, r) => {
+    const x = crReview(r, { login: 'drive-by', submitted_at: '2026-10-11T01:15:23Z' });
+    delete x.submitted_at;
+    rs.push(x);
+  });
+  assert.equal(fallback.ball.authorClock.level, 'unknown');
+  assert.doesNotMatch(prStatus.formatText(fallback), /author clock: \d/);
+});
+
+test('261119-s3h R2 (h): a calendar-invalid time is unknown; fractional seconds are accepted; bad clock times are refused', (t) => {
+  const now = CR_SINCE_MS + 5 * DAY_MS;
+  const feb = crDerive(now, (rs, r) => { r.submitted_at = '2026-02-30T01:15:23Z'; });
+  assert.equal(feb.ball.authorClock.level, 'unknown');
+  assert.match(lineAfterBall(feb), /^ {2}author clock: unknown \(unparseable submitted_at /);
+  for (const frac of ['.5Z', '.123456Z']) {
+    const d = crDerive(now + 1000, (rs, r) => { r.submitted_at = `2026-10-07T01:15:23${frac}`; });
+    assert.equal(d.ball.authorClock.level, 'alarm', frac);
+    assert.equal(d.ball.authorClock.days, 5, frac);
+  }
+  const nan = crDerive(NaN);
+  assert.equal(nan.ball.authorClock.level, 'unknown');
+  assert.match(lineAfterBall(nan), /unknown \(no readable clock time\)/);
+  const r = runThroughStub(t, ['5235'], { env: { PR_STATUS_NOW: '2026-02-30T00:00:00Z' } });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /PR_STATUS_NOW/);
+  assert.equal(r.log.length, 0, 'no gh call');
+});
+
+test('261119-s3h (R1 i2 W-02): a reviewer whose latest review on the head is an approval is not a start candidate', () => {
+  const now = CR_SINCE_MS + 5 * DAY_MS;
+  const d = crDerive(now, (rs, r) => {
+    rs.push(crReview(r, { state: 'APPROVED', submitted_at: '2026-10-09T01:15:23Z' }));
+    rs.push(crReview(r, { login: 'drive-by', submitted_at: '2026-10-11T01:15:23Z' }));
+  });
+  assert.equal(d.ball.owner, 'author');
+  assert.deepEqual(d.ball.authorClock, { since: '2026-10-11T01:15:23Z', login: 'drive-by', days: 1, level: 'ok', why: null, basis: 'role-not-read' });
+});
+
+test('261119-s3h (R1 i2 B-01b, known limit): a verdict posted as COMMENTED is not seen, so the clock can read LOW', () => {
+  // trek-e's verdict on the head lands as a COMMENTED review at day 0; drive-by requests changes at day 3.
+  // derive drops COMMENTED reviews (IGNORED_REVIEW_STATES), so the clock starts at day 3 and prints a low,
+  // numeric "ok" at day 5 while upstream's clock may have run out. Pinned as known, not as correct: the skill
+  // text sends the reader to the newest maintainer review's Verdict line.
+  const now = CR_SINCE_MS + 5 * DAY_MS;
+  const d = crDerive(now, (rs, r) => {
+    r.state = 'COMMENTED';
+    rs.push(crReview(r, { state: 'CHANGES_REQUESTED', login: 'drive-by', submitted_at: '2026-10-10T01:15:23Z' }));
+  });
+  assert.equal(d.ball.login, 'drive-by');
+  assert.deepEqual(d.ball.authorClock, { since: '2026-10-10T01:15:23Z', login: 'drive-by', days: 2, level: 'ok', why: null, basis: 'role-not-read' });
+});
+
+test('261119-s3h: derive without now has no clock; other balls get authorClock null and no clock line', () => {
+  const fx = loadFixture('cr-captured.json');
+  const d = prStatus.derive({ view: fx.view, reviews: fx.reviews, checks: fx.checks });
+  assert.equal(d.ball.owner, 'author');
+  assert.equal(d.ball.authorClock, null);
+  assert.ok(!prStatus.formatText(d).includes('author clock:'));
+  const now = Date.parse(FIXED_NOW);
+  for (const f of ['reviewer-rerequested-captured.json', 'approved-ready.json', 'approved-checks-failing.json', 'no-reviews-no-requests.json']) {
+    const x = loadFixture(f);
+    const dx = prStatus.derive({ view: x.view, reviews: x.reviews, checks: x.checks, now });
+    assert.equal(dx.ball.authorClock, null, `${f}: authorClock null (owner ${dx.ball.owner})`);
+    assert.ok(!prStatus.formatText(dx).includes('author clock:'), `${f}: no clock line`);
+  }
+  assert.equal(prStatus.derive({ view: loadFixture('approved-checks-failing.json').view, reviews: loadFixture('approved-checks-failing.json').reviews, checks: loadFixture('approved-checks-failing.json').checks, now }).ball.owner, 'author', 'approved-but-blocked is an author ball with no clock');
+});
+
+test('261119-s3h: stub CLI with the pinned clock prints the json key and the text line', (t) => {
+  const j = runThroughStub(t, ['--json', '5079']);
+  assert.equal(j.status, 0, j.stderr);
+  assert.deepEqual(JSON.parse(j.stdout)[0].ball.authorClock, { since: '2026-10-07T01:25:32Z', login: 'trek-e', days: 5, level: 'alarm', why: null, basis: 'role-not-read' });
+  const r = runThroughStub(t, ['5235']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^ {2}author clock: \d+ day\(s\) since the newest change request on the head \(2026-10-07T01:15:23Z by [A-Za-z0-9-]+\); .*; reviewer role not read$/m);
+});
+
+test('261119-s3h (R1 W-01): the ALARM clause names open-gsd/gsd-core whatever --repo is given', (t) => {
+  const r = runThroughStub(t, ['--repo', 'other-org/other.repo', '5235']);
+  assert.equal(r.status, 0, r.stderr);
+  const line = r.stdout.split('\n').find((l) => l.startsWith('  author clock:'));
+  assert.ok(line, 'a clock line');
+  assert.ok(line.includes(ALARM_TEXT), line);
+  assert.ok(!/upstream closes|open-gsd\/gsd-core closes/.test(r.stdout), 'no unattributed or invented close rule');
+});
+
+test('261119-s3h (R1 W-02): with PR_STATUS_NOW and NODE_ENV empty the CLI reads the real clock', (t) => {
+  const r = runThroughStub(t, ['5235'], { env: { PR_STATUS_NOW: '', NODE_ENV: '' } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^ {2}author clock: \d+ day\(s\) since/m);
+  assert.doesNotMatch(r.stdout, /author clock: unknown/);
+});
+
+test('261119-s3h: PR_STATUS_NOW outside NODE_ENV=test, or not strict ISO UTC, exits 2 before any read', (t) => {
+  const r = runThroughStub(t, ['5235'], { env: { NODE_ENV: '', PR_STATUS_NOW: FIXED_NOW } });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /PR_STATUS_NOW/);
+  assert.equal(r.log.length, 0, 'no gh call');
+  const one = runThroughStub(t, ['5235'], { env: { NODE_ENV: 'test', PR_STATUS_NOW: '1' } });
+  assert.equal(one.status, 2);
+  assert.match(one.stderr, /PR_STATUS_NOW/);
+  assert.equal(one.log.length, 0, 'no gh call');
+});
+
+test('261119-s3h: runCli deps.now is the clock for an in-process caller', () => {
+  const fx = loadFixture('cr-captured.json');
+  const gh = (a) => {
+    if (a[0] === 'pr' && a[1] === 'view') return fx.view;
+    if (a[0] === 'pr' && a[1] === 'checks') return fx.checks;
+    if (a[0] === 'api' && /\/pulls\/\d+\/reviews\?/.test(a.join(' '))) return fx.reviews;
+    if (a[0] === 'api') return [[]];
+    throw new Error('stub: unexpected read ' + a.join(' '));
+  };
+  let stdout = '';
+  const status = prStatus.runCli(['--json', '5235'], {
+    gh, sleep: () => {}, now: () => CR_SINCE_MS + 3 * DAY_MS,
+    ledgerDir: path.join(os.tmpdir(), 'pr-status-no-ledger-261119-s3h'),
+    stdout: { write: (x) => { stdout += x; } }, stderr: { write: () => {} },
+  });
+  assert.equal(status, 0);
+  assert.deepEqual(JSON.parse(stdout)[0].ball.authorClock, { since: CR_SINCE, login: 'trek-e', days: 3, level: 'warn', why: null, basis: 'role-not-read' });
+});
+
+test('261119-s3h R4 (o): a control character in the reviewer login is cleaned in the clock line (by trek-e)', () => {
+  const d = crDerive(CR_SINCE_MS + 5 * DAY_MS, (rs, r) => {
+    r.author_association = 'COLLABORATOR';
+    r.user = { login: 'tr\u001bek-e', type: 'User' };
+  });
+  assert.equal(d.ball.authorClock.login, 'tr\u001bek-e', 'derive keeps the raw login; the printer cleans it');
+  const line = lineAfterBall(d);
+  assert.equal(line, `  author clock: 5 day(s) ${NEWEST_MAINT} (${CR_SINCE} by trek-e); ${ALARM_TEXT}; author comments not counted`);
+  assert.ok(!line.includes('\u001b'), 'no ESC in the clock line');
 });

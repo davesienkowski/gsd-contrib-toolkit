@@ -46,7 +46,7 @@ npm run lint:ci   # composes eslint + dozens of project linters; must exit 0
 
 ## Issue types (all six) (KNOW-04)
 
-The repo ships **six** issue templates, not three — route a contribution to the one that fits so a `chore`/`docs_issue`/`config` change isn't force-fit into the bug/enhancement/feature shape. (Source for the set: the project gap-analysis `C5`, `.planning/notes/gap-analysis-2026-06-21.md` — templates exist for `bug_report, enhancement, feature_request, chore, docs_issue, config`.)
+The repo ships **six** issue templates, not three - route a contribution to the one that fits so a `chore`/`docs_issue`/`config` change isn't force-fit into the bug/enhancement/feature shape. (Source for the set: the project gap-analysis `C5` (internal project notes, not published); templates exist for `bug_report, enhancement, feature_request, chore, docs_issue, config`.)
 
 | # | Issue type (template) | Use for | Typical labels |
 |---|---|---|---|
@@ -184,16 +184,16 @@ Then apply the firing `skills-from-the-artificer` law-lenses to the diff (Hyrum'
 
 ## Intake reality (verified)
 
-> **Grounding:** every intake claim in this section is verified against the live `open-gsd/gsd-core` repo (`path:line` citations). The repo moves — **re-verify before trusting.** Last verified: 2026-07-02 against `origin/next`. This is the actual upstream intake reality every contribution must satisfy *by construction*; the reuse/methodology decisions it serves are the canonical ALIGN record (linked at the top of this file). Its verified-intake content was folded here (SYNC-01) so the intake facts travel WITH the skill to every runtime.
+> **Grounding:** every intake claim in this section is verified against the live `open-gsd/gsd-core` repo (`path:line` citations). The repo moves - **re-verify before trusting.** Last verified: 2026-07-02 against `origin/next`; the CONTRIBUTING.md and TESTING-STANDARDS.md cites, the PR-governance table cites, the changeset and docs gates and the CI test structure below were re-checked on 2026-11-19 against `next` at 36e60c09f and cite sections by name, not line. This is the actual upstream intake reality every contribution must satisfy *by construction*; the reuse/methodology decisions it serves are the canonical ALIGN record (linked at the top of this file). Its verified-intake content was folded here (SYNC-01) so the intake facts travel WITH the skill to every runtime.
 
 The gates below are what a submission is measured against upstream. The pipeline's job is to pre-satisfy each one **locally, before the push** — correct by construction, not by retry (see the *Local gate ⇒ CI gate* table at the end of this section).
 
 ### Issue-first — no code before approval
-`CONTRIBUTING.md:111-119` — *"## The Issue-First Rule — No Exceptions … No code before approval."*
+CONTRIBUTING.md, the "The Issue-First Rule" section - *"No code before approval."*
 - **Fix:** open issue → maintainer applies **`confirmed-bug`** → then fix. `confirmed-bug` is the fix gate (`docs/agents/triage-labels.md:9,18`: *"the gate the fix workflow requires before any code is written"*).
-- **Enhancement:** a maintainer must label the issue **`approved-enhancement`** before you write a single line of code (`CONTRIBUTING.md:62`).
-- **Feature:** same with **`approved-feature`**; *"Incomplete specs are closed, not revised by maintainers."* (`CONTRIBUTING.md:74`).
-- **PR without an approved linked issue is auto-closed:** *"PRs without a linked issue are closed without review, no exceptions."* (`CONTRIBUTING.md:182`); link with a closing keyword (`Closes/Fixes/Resolves #N`, `:186`); **no draft PRs** (`:184`).
+- **Enhancement:** a maintainer must label the issue **`approved-enhancement`** before you write a single line of code (CONTRIBUTING.md, the "Enhancement" section).
+- **Feature:** same with **`approved-feature`**; *"Incomplete specs are closed, not revised by maintainers."* (CONTRIBUTING.md, the "Feature" section).
+- **PR without an approved linked issue is auto-closed:** *"PRs without a linked issue are closed without review, no exceptions."* (CONTRIBUTING.md, the "Pull Request Guidelines" section); link with a closing keyword (`Closes/Fixes/Resolves #N`, same section; a docs-only or test-only follow-up with no open issue may use a non-closing `Refs #N` instead); **no draft PRs** (same section).
 
 (Route through the correct one of the six templates — see *Issue types (all six) (KNOW-04)* above; a `chore`/`docs_issue`/`config` change force-fit into `bug_report` trips the wrong gate.)
 
@@ -216,10 +216,10 @@ The label lifecycle is driven by GitHub Actions, not by CONTRIBUTING.md prose:
 ### PR-governance gates (all enforcing unless noted)
 | Workflow | Enforces |
 |---|---|
-| `require-issue-link.yml` | PR body must contain `(closes\|fixes\|resolves) #N` or `setFailed` (`:85`) |
-| `pr-title-validator.yml` | title `type(#issue): summary`; matcher loaded from the **base** branch so a PR can't edit its own ruler (`:60-64`); enforcing |
+| `require-issue-link.yml` | PR body must contain `(closes\|fixes\|resolves) #N`, else the gate step's `core.setFailed` fails the check (`:266` at 36e60c09f) |
+| `pr-title-validator.yml` | title `type(#issue): summary`; matcher loaded from the **base** branch so a PR can't edit its own ruler (the "Checkout base branch (trusted policy source)" step, `:81` at 36e60c09f); enforcing |
 | `pr-template-format.yml` | `scripts/pr-template-policy.cjs`; **warns** trusted contributors, **fails+comments** untrusted (`action=='close'`) |
-| `auto-close-unsolicited-prs.yml` | closes external PRs whose linked issue lacks `approved-feature,approved-enhancement,confirmed-bug` (`:50`); fails **open** on API error |
+| `auto-close-unsolicited-prs.yml` | closes external PRs whose linked issue lacks `approved-feature,approved-enhancement,confirmed-bug` (`APPROVAL_LABELS`, `:51` at 36e60c09f); fails **open** on API error |
 | `close-draft-prs.yml` / `-sweep.yml` | closes non-maintainer draft PRs (per-PR + 6-hourly sweep) |
 | `pr-target-validator.yml` | branch model; **skips maintainers** (OWNER/MEMBER/COLLABORATOR) |
 | `branch-naming.yml` | valid prefix (`feat/ fix/ hotfix/ docs/ chore/ …`); **warn-only**, non-blocking |
@@ -230,21 +230,24 @@ The label lifecycle is driven by GitHub Actions, not by CONTRIBUTING.md prose:
 (The three typed PR templates + the `pr-template-policy.cjs` required headings are captured as skeletons in *Fix PR body skeleton* below; escape hatch `<!-- pr-template-exempt: <reason> -->`.)
 
 ### Changeset & docs gates
-- `changeset-required.yml` (`scripts/changeset/lint.cjs`): a PR touching `bin/ gsd-core/ agents/ commands/ hooks/ sdk/src/` **without** a `.changeset/*.md` fragment fails. Opt-out: `no-changelog` label (`CONTRIBUTING.md:206-208`).
-- `docs-required.yml` (`scripts/lint-docs-required.cjs`): a changeset typed `Added/Changed/Deprecated/Removed` **without** a `docs/` change fails. Opt-out: `no-docs` label or `<!-- docs-exempt: <reason> -->` (`:260,287`). `Fixed`/`Security` do **not** trip docs-lint.
-- Changelog is built from **PR titles** — do not edit `CHANGELOG.md` directly (`:195`).
+- `changeset-required.yml` (`scripts/changeset/lint.cjs`): a PR touching `bin/`, `gsd-core/`, `src/`, `agents/`, `commands/`, `hooks/` or `sdk/src/` **without** a `.changeset/*.md` fragment fails (`src/` holds the TypeScript source of `gsd-core/bin/lib/*.cjs`, so editing it counts even though the generated `.cjs` never appears in the diff). Opt-out: `no-changelog` label (CONTRIBUTING.md, the "CHANGELOG Entries" section, "CI enforcement" and "Opt-out" paragraphs).
+- `docs-required.yml` (`scripts/lint-docs-required.cjs`): a changeset typed `Added/Changed/Deprecated/Removed` **without** a `docs/` change fails. Opt-out: `no-docs` label or `<!-- docs-exempt: <reason> -->` (CONTRIBUTING.md, the "Opt-outs (with paper trail)" section). `Fixed`/`Security` do **not** trip docs-lint.
+- Do not edit `CHANGELOG.md` directly: each PR with user-facing changes adds a `.changeset/` fragment, and the release workflow consolidates the fragments into `CHANGELOG.md` at release time (CONTRIBUTING.md, the "CHANGELOG Entries" section).
 
 ### CI test structure (the gates run as `node --test` suites inside `test.yml`)
 `test.yml` (`name: Tests`) is the aggregate gate. Scope is computed by `scripts/ci-test-scope.cjs`, then:
-- `lint-tests` → `npm run lint:ci` (ESLint + skill-deps + test-file-count + command-contract + PR-checks + legacy-name + regression-test-names + resolution-provenance + allow-test-rule-refs). **`lint:ci` ≠ `eslint .`.**
-- `test` matrix: **ubuntu-22** (targeted), **ubuntu-24** (full + coverage gate ≥70% on `gsd-core/bin/lib` + scripts floor ≥55% + integration/security/install/slow), **windows-24** (windows scope).
-- `test-full`: sharded parity — **windows-22 ×3, macos-22 ×3, macos-24 ×3** (`name: full test (<os>, <node>, shard N/3)`). Unit suite sharded `i/3`; integration+security on shard 1 only.
+- `lint-tests` -> `npm run lint:ci` (ESLint + skill-deps + test-file-count + command-contract + PR-checks + legacy-name + regression-test-names + resolution-provenance + allow-test-rule-refs, and dozens more; the full chain is the `lint:ci` script in package.json). **`lint:ci` != `eslint .`.**
+- `test` matrix (ubuntu only at 36e60c09f): **ubuntu-latest / Node 24** `targeted`, plus `full` in shards 1/3, 2/3 and 3/3 (raw coverage per shard); integration and security run on shard 1/3, install and slow on shard 1/3 when the scope is the full matrix. Its old `scope: windows` lane was deleted by #4641.
+- `test-conformance` (`conformance test (<os>, <node>, shard N)`): the platform-conformance tier on real runners, **windows-latest x6** and **macos-latest x3** shards at 36e60c09f; since #4641 it is the only Windows selector.
+- `coverage-gate` (`Coverage gate (merged shards)`): merges the `full` shards' coverage and applies the >=70% `gsd-core/bin/lib` and >=55% scripts floors defined in package.json.
+- `test-inert` (`test (inert CI)`).
+- The old full-matrix job (`test-full`, windows and macos parity shards) was retired by 181c4c865 (#4604).
 - `required-tests` — the branch-protection aggregate.
 
 **Gates that live *inside* those test jobs (no standalone workflow):**
-- **workflow/agent size budget** — `tests/workflow-size-budget.test.cjs` (XL_CAP; `CONTRIBUTING.md:882-890`; ADR-1610). Update via `npm run size:baseline`.
-- **phase-6 capstone / loop-body ratchet** — `tests/phase6-capstone-conformance.test.cjs` (hardcoded `PRE_PHASE6` per-file byte ceilings; #1168/#1139). Runs in **shard 1/3** — a `plan-phase.md`/`execute-phase.md` growth over its frozen ceiling fails macOS/Windows shard-1/3 + ubuntu-24, *not* every shard.
-- **golden install parity** — `npm run test:install` / `tests/golden-install-parity.test.cjs` (16 runtime fixtures; regen with `UPDATE_GOLDEN=1`), gated on `full_matrix`.
+- **workflow/agent size budget** - `tests/workflow-size-budget.test.cjs` (tier hard caps, `XL_CAP`; ADR-1610) and `tests/agent-size-budget.test.cjs`; CONTRIBUTING.md (the "File Structure" section) points to docs/TESTING-SUITES.md (Workflow & agent size budget). The per-file size baseline was removed by #2724 (ADR-2719): per-file growth is caught by the attribution check `tests/emitted-attribution.test.cjs`, which asks for an `Emitted-Drift-Ack-Growth` commit trailer; package.json has no size-baseline script at 36e60c09f.
+- **phase-6 capstone / loop-body ratchet** - `tests/phase6-capstone-conformance.test.cjs` (hardcoded `PRE_PHASE6` per-file byte ceilings; #1168/#1139). Which shard or lane runs it is unverified at 36e60c09f (the macOS and Windows shards it used to fail on were moved or retired, #4604 and #4641).
+- **golden install** - `npm run test:install` (shard 1/3, gated on `full_matrix`); the old golden parity test file was deleted (1c1af70a4, #2767), and `tests/golden-install-tree.test.cjs` and `tests/golden-parity-single-source.test.cjs` exist at 36e60c09f (fixture count and regen variable unverified at 36e60c09f).
 - **inventory manifest sync** — `tests/inventory-manifest-sync.test.cjs` (+ `docs/INVENTORY.md`).
 
 Separate workflows: `security-scan.yml` (dependency integrity + prompt-injection/base64/secret scans + `.planning/`-not-committed check), `install-smoke.yml` (tarball install + mode-644 class), `mutation.yml` (Stryker per changed module; required check *"Stryker mutation score (changed files only)"*).
@@ -252,17 +255,17 @@ Separate workflows: `security-scan.yml` (dependency integrity + prompt-injection
 (Upstream testing norms — regression-test-first for a fix, no-source-grep, "CI green is not sufficient", generated `bin/lib`, the per-surface QA checklist — are in *QA matrix by surface (KNOW-01)* and *Test bar by contribution type (KNOW-02)* below plus the SKILL Gotchas; not re-pasted here.)
 
 ### RULESET.* tokens (verified against gsd-core 2026-07-05)
-Trek-e's directives cite named `RULESET.*` tokens; the ones below are the ones **verified real against gsd-core** (source of the ✓/⚠/❌ verdicts: `.planning/notes/trek-e-directives-reconciliation-2026-07-05.md` — verified items only). They sharpen the classification + test-quality bar the toolkit's gates already partially enforce.
+Trek-e's directives cite named `RULESET.*` tokens; the ones below are the ones **verified real against gsd-core** (source of the verdicts: internal project notes, not published; verified items only). They sharpen the classification + test-quality bar the toolkit's gates already partially enforce.
 
 **Classification gates (require the approval label before code — the token form of *Issue-first* above):**
 - `RULESET.CONTRIB.CLASSIFY.fix` — requires `confirmed-bug` before implementation
 - `RULESET.CONTRIB.CLASSIFY.enhancement` — requires `approved-enhancement` before implementation
 - `RULESET.CONTRIB.CLASSIFY.feature` — requires `approved-feature` before implementation
-- `CI.GATE.issue-link-required` — a PR missing a linked issue → request-changes / HALT (`CONTRIBUTING.md:468`; the enforcing workflow is `require-issue-link.yml`, above)
-- `META.RULE.canonical-source-precedence` — when sources disagree, precedence is `CONTRIBUTING.md > docs/adr/* > CONTEXT.md > agent memory` (`CONTRIBUTING.md:549`)
+- `CI.GATE.issue-link-required` - a PR missing a linked issue -> request-changes / HALT (CONTRIBUTING.md, the "Pull Request Guidelines" section: "Every PR must link to an approved issue"; the enforcing workflow is `require-issue-link.yml`, above)
+- `META.RULE.canonical-source-precedence` - when sources disagree, precedence is `CONTRIBUTING.md > docs/adr/* > CONTEXT.md > agent memory` (not located in CONTRIBUTING.md at 36e60c09f; trek-e's directive is the source)
 
 **Test-quality ruleset (`RULESET.TESTS.*` — what a "good test" means upstream):**
-- `mutation-score` — Stryker incremental (`--since origin/next`), default **80% killed**; surviving mutants block merge (ADR-456 / `TESTING-STANDARDS.md:141`). Already covered by the toolkit's ENF-18 `mutation.yml` and the `mutation.yml` required check listed above.
+- `mutation-score` - Stryker incremental (`--since origin/next`), default **80% killed**; surviving mutants block merge (ADR-456 / TESTING-STANDARDS.md, the "Mutation testing" section). Already covered by the toolkit's ENF-18 `mutation.yml` and the `mutation.yml` required check listed above.
 - `boundary-coverage` — exercise inputs at N ∈ {limit-1, limit, limit+1}, not a trivial-fit/overflow pair.
 - `no-timing-assertion` — no wall-clock elapsed assertions; use a clock-seam + `node:test` `mock.timers`.
 - `property-based-testing` — parsing / transformation / budget-limit / bijective modules need ≥1 `fast-check` property test.
@@ -314,6 +317,17 @@ All three sit **on top of** the RED-before-GREEN gate and `npm run lint:ci` — 
 - **Timeout constants state their evidence (#4689).** Every new or changed timeout constant states the worst observed duration, the platform it came from, and a margin of at least 2x over it. A constant exported from `tests/helpers/timeouts.cjs` also needs a matching `TIMEOUT_EVIDENCE` entry, checked by `tests/timeout-evidence.test.cjs`. `TESTING-STANDARDS.md` has the shape and the exempt kinds.
 - **A spawned child's env comes from the isolation helper (#4635, #6033).** Build it with `isolatedEnv({ home })` from `tests/helpers/isolated-env.cjs`, never a hand-written `{ ...process.env, HOME: x }` or a filtered `process.env.PATH`. Pass `override` to keep a variable the helper strips.
 
+**TESTING-STANDARDS.md pointers (read the live section; this is not a copy).** Section names verified at gsd-core 36e60c09f; cite them by name, never by line:
+- "Test architecture policies (ADR 6315)": where rules for test authors now live, with the sections below it.
+- "In-process CLI tests: the rules": pick the helper by what the test is about (`runGsdTools`, `runGsdToolsAsync`, `runGsdToolsProcess`); a test that needs a real process lives in a `*.process.test.cjs` file and says why in its title.
+- "A test does not start an external tool it is not testing": no real `npm`, `gh` or `docker` unless that tool's own behavior is what the test asserts.
+- "A git fixture is a copy of a template": `createFixture({ git: true })` copies a template built once per run instead of running git per test.
+- "One installer run per runtime configuration per run": an installed tree comes from `tests/helpers/install-shared.cjs` (for example `installRuntimeFixture`), one install per configuration for the whole run.
+- "No ad hoc timeout literals" and "Every new or changed timeout constant states its evidence": named timeout constants with their evidence (the timeout bullet above).
+- "Mutation testing": the Stryker threshold on changed files (80 % at 36e60c09f).
+- "Delete-bad-tests policy": a pass-always, vacuous-truth, source-grep, elapsed-time or real-race test (its table has the full list) is deleted and replaced in the same PR.
+- **I11 check (P3d).** A PR that adds or changes a rule for test authors, or changes product code for the sake of testability, states the rule in the same PR: in TESTING-STANDARDS.md under "Test architecture policies (ADR 6315)" and, for placement and naming, in docs/TESTING-SUITES.md. Source: the maintainer instruction of 2026-11-19 (#6367), recorded as I11 in docs/adr/6315-ci-redesign.md, an ADR whose status is Proposed at 36e60c09f.
+
 ## Worktree setup (per fix; fresh worktrees have no deps, and bin/lib is gitignored)
 
 ```bash
@@ -342,6 +356,10 @@ git push --force-with-lease=<head.ref>:<head.sha> <remote> HEAD:<head.ref>   # o
 The explicit lease fails closed on a wrong remote and on a moved head. Put `head.repo` in any push hand-off to a worker or to the `!` channel. **After approval, push only when a change is needed** (a push dismisses the approval), and never rebase only for BEHIND (CTK-ADR-0012).
 
 RED-before-GREEN when the fix is already written: `git stash push src/<file>.cts` → `build:lib` → run test (watch fail) → `git stash pop` → `build:lib` → run test (green).
+
+### Generated files in a merge conflict
+
+Never hand-merge a generated file. Take `next`'s side of it, finish the merge, then run its generator from the merged tree with `--write` and confirm with `--check`. The three generators seen in live conflict reviews (2026-11-19/20) are `scripts/gen-context-index.cjs`, `scripts/gen-platform-conformance-tier.cjs` and `scripts/gen-pi-package-skills.cjs` (each takes `--write` and `--check` at 36e60c09f). For any other generated file, find the generator its header names. Before a re-request, `git fetch origin` and `git merge-tree --write-tree origin/next <head>` show whether the head still conflicts (SKILL.md, *Conflict-only review*).
 
 ## Issue body skeleton (bug_report, engine-internal)
 

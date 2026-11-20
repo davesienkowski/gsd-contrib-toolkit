@@ -97,6 +97,29 @@
  *     a red base is base-side, a red Reviewed or maintainer is reviewer-side, a red Self-test report is advisory.
  *   - Only dismissed reviews and nobody requested -> maintainer, re-approval needed. Pending requests
  *     -> reviewer. Else none. A draft or non-OPEN PR gets no ball.
+ * AUTHOR CLOCK (quick 261119-s3h; advisory, never a gate): printed as `author clock:` right after the ball line, only
+ * for the author ball whose newest change request is on the head. An `AUTHOR owes fixes` ball (approved but blocked)
+ * gets none, though upstream may still close that PR. Base set S: reviewers whose latest counted review is
+ * CHANGES_REQUESTED on the head and who are not in reviewRequests (login compared case-insensitively); each
+ * contributes that latest review only. Maintainer set M: members of S whose review author_association is OWNER,
+ * MEMBER or COLLABORATOR. M non-empty: the start is the newest submitted_at in M (a change request on the head by a
+ * maintainer who is not re-requested sets the start; unread-role change requests are then ignored, so the clock can
+ * read high). Else, when some member of S has no
+ * author_association: the start is the newest submitted_at in S and the line ends `; reviewer role not read`. Else
+ * (S empty, or every member has a non-maintainer association): `author clock: none (no maintainer change request
+ * on the head)`. Days are floored; ok below 3, WARN at 3, ALARM at 5 after the 5-day stale clock (CLOSE_DAYS=5) in
+ * trek-e's published review process. A missing, non-ISO, calendar-invalid or future submitted_at on any member of the
+ * set actually used prints `unknown (<why>)`, never a number; times outside that set are ignored.
+ * The clock is an ESTIMATE. Author comments and replies, which upstream may count as activity, are not read, and
+ * maintainer responses other than change requests are not counted, so it can read HIGHER than upstream's. A maintainer
+ * verdict posted as a COMMENTED review is not a change request here (COMMENTED reviews are ignored by the ball
+ * rule), so the clock can read LOWER or print none. Excluding re-requested reviewers can move it either way. The
+ * reader checks the Verdict line of the newest maintainer review. In pr-status a push moves the head, so the ball
+ * leaves the author and the line goes away; whether a push or a comment stops the upstream clock is unverified.
+ * The clock is read once per run (deps.now, else PR_STATUS_NOW, else Date.now), so a change request newer than that
+ * read prints unknown; library callers that pass derive() no now get authorClock null. PR_STATUS_NOW is a
+ * caller-trusted test seam honoured only under NODE_ENV=test (exit 2 otherwise, as bin/pr-update.cjs does for
+ * PR_UPDATE_PRSTATUS): the guard catches a stray export, not a deliberate caller.
  * CI CHECKS (quick 261028-owj): "Required tests" red counts as base health, not this PR, only when "Base branch
  * health" itself fails and no other job of workflow Tests fails (otherwise it stays author work); "Base branch
  * health" red is base-side (the base owner waits for a fix-forward, or fix-next when this PR is the fix);
@@ -141,6 +164,18 @@ const POLICY_FOOTER =
 const MAX_BUFFER = 64 * 1024 * 1024; // review listings carry full bodies; 1 MiB (the default) is not enough
 const UNKNOWN_RETRY_MS = 2000;
 const MERGE_CAVEAT = 'Update branch at merge time; never --admin';
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/; // the only time shape the author clock reads
+
+/** Epoch ms of a strict ISO-8601 UTC time that is also a real calendar time (2026-02-30 is NaN), else NaN. */
+function parseIsoUtc(s) {
+  if (typeof s !== 'string' || !ISO_UTC.test(s)) return NaN;
+  const ms = Date.parse(s);
+  if (!Number.isFinite(ms)) return NaN;
+  return new Date(ms).toISOString().slice(0, 19) === s.slice(0, 19) ? ms : NaN;
+}
+const DAY_MS = 86400000;
+const CLOCK_WARN_DAYS = 3;
+const CLOCK_ALARM_DAYS = 5; // trek-e's published CLOSE_DAYS; a display constant, not a gate
 const COMPARE_FILE_CAP = 300; // GitHub's compare endpoint lists at most 300 files
 const PR_FILE_CAP = 3000; // GitHub's pulls/N/files lists at most 3000 files
 const BRANCH_PATTERN = /^[A-Za-z0-9._/-]+$/;
@@ -570,10 +605,11 @@ function summarizeChecks(checks) {
  *
  * @param {{view: object, reviews: object[], checks: object[], queue?: object, policies?: object}} input reviews may be
  *   flat or page-nested; queue is a fetchQueue/deriveQueue result for the PR's base (absent input = not read);
- *   policies is a fetchPolicies result (absent = not read; the ball never depends on it, only on the check names)
+ *   policies is a fetchPolicies result (absent = not read; the ball never depends on it, only on the check names);
+ *   now is the clock in epoch milliseconds for the author clock (absent = no clock: ball.authorClock stays null)
  * @returns {object} snapshot with checks summary, reviewers, requested, queue and ball
  */
-function derive({ view, reviews, checks, queue, timeline, timelineError, overlap, cr, body, policies }) {
+function derive({ view, reviews, checks, queue, timeline, timelineError, overlap, cr, body, policies, now }) {
   const v = view || {};
   const head = String(v.headRefOid || '');
   const authorLogin = lower(v.author && v.author.login);
@@ -616,8 +652,14 @@ function derive({ view, reviews, checks, queue, timeline, timelineError, overlap
     }))
     .sort((a, b) => (a.login < b.login ? -1 : a.login > b.login ? 1 : 0));
 
+  // Author clock base set S (261119-s3h round 2): each reviewer's latest counted review when it is a change request
+  // on the head and the reviewer is not re-requested; the clock rule (authorClockOf) picks the used subset.
+  const clockSet = [...latest]
+    .filter(([login, e]) => head !== '' && e.r.state === 'CHANGES_REQUESTED' && String(e.r.commit_id || '') === head && !req.users.has(login))
+    .map(([, e]) => ({ time: e.r.submitted_at, login: String(e.r.user.login), assoc: String(e.r.author_association || '').toUpperCase() }));
+
   const q = queue || null; // null = not read (library callers); the CLI always reads it
-  const ball = decideBall(v, latest, req, head, checkSummary, q, policies || null);
+  const ball = decideBall(v, latest, req, head, checkSummary, q, policies || null, now, clockSet);
 
   return {
     number: v.number,
@@ -702,7 +744,64 @@ function decisionNote(reviewDecision, latest) {
 }
 
 function ballOf(owner, fields) {
-  return Object.assign({ owner, login: null, reRequested: null, reason: '', ready: false, blockers: [], mergeCaveat: null }, fields);
+  return Object.assign({ owner, login: null, reRequested: null, reason: '', ready: false, blockers: [], mergeCaveat: null, authorClock: null }, fields);
+}
+
+/**
+ * The author clock (header: AUTHOR CLOCK) over the base set S.
+ *
+ * @param {Array<{time: string|undefined, login: string, assoc: string}>} set one entry per reviewer in S: the submitted_at and the
+ *   upper-cased author_association ('' when absent) of that reviewer's latest review
+ * @param {number|undefined|null} now epoch milliseconds; undefined or null = no clock (returns null)
+ * @returns {null|{since: string|null, login: string|null, days: number|null, level: 'ok'|'warn'|'alarm'|'unknown'|'none', why: string|null, basis: 'maintainer'|'role-not-read'|null}}
+ */
+function authorClockOf(set, now) {
+  if (now === undefined || now === null) return null;
+  const unknown = (why, basis = null, since = null) => ({ since, login: null, days: null, level: 'unknown', why, basis });
+  if (typeof now !== 'number' || !Number.isFinite(now)) return unknown('no readable clock time');
+  const maint = set.filter((e) => MAINTAINER_ASSOCIATIONS.has(e.assoc));
+  let used;
+  let basis;
+  if (maint.length) {
+    used = maint;
+    basis = 'maintainer';
+  } else if (set.some((e) => e.assoc === '')) {
+    used = set;
+    basis = 'role-not-read';
+  } else return { since: null, login: null, days: null, level: 'none', why: null, basis: null };
+  let since = null;
+  let sinceLogin = null;
+  let sinceMs = -Infinity;
+  // Every member of the used set is checked: a skipped bad value could be the newest and make the clock read high.
+  for (const e of used) {
+    const t = e.time == null ? '' : String(e.time);
+    if (t === '') return unknown('no submitted_at on the change request', basis);
+    const ms = parseIsoUtc(t);
+    if (!Number.isFinite(ms)) return unknown(`unparseable submitted_at ${clean(t).slice(0, 40)}`, basis);
+    if (ms > now) return unknown('the change request time is after the clock time', basis, t);
+    if (ms > sinceMs) {
+      sinceMs = ms;
+      since = t;
+      sinceLogin = e.login;
+    }
+  }
+  const days = Math.floor((now - sinceMs) / DAY_MS);
+  const level = days >= CLOCK_ALARM_DAYS ? 'alarm' : days >= CLOCK_WARN_DAYS ? 'warn' : 'ok';
+  return { since, login: sinceLogin, days, level, why: null, basis };
+}
+
+/** The `author clock:` text line for a non-null ball.authorClock. */
+function authorClockLine(c) {
+  if (c.level === 'unknown') return `  author clock: unknown (${clean(c.why)})`;
+  if (c.level === 'none') return '  author clock: none (no maintainer change request on the head)';
+  const text =
+    c.level === 'alarm'
+      ? `ALARM: ${CLOCK_ALARM_DAYS}+ days; past the ${CLOCK_ALARM_DAYS}-day stale clock in trek-e's published review process (CLOSE_DAYS=${CLOCK_ALARM_DAYS})`
+      : c.level === 'warn'
+        ? `WARN: ${CLOCK_WARN_DAYS}+ days`
+        : 'ok';
+  const who = c.basis === 'maintainer' ? 'newest maintainer change request' : 'newest change request';
+  return `  author clock: ${c.days} day(s) since the ${who} on the head (${clean(c.since)} by ${clean(c.login)}); ${text}; author comments not counted${c.basis === 'role-not-read' ? '; reviewer role not read' : ''}`;
 }
 
 /**
@@ -726,7 +825,7 @@ function reviewedBlocker(reviewed) {
   return 'Reviewed or maintainer red (reviewer-side)';
 }
 
-function decideBall(v, latest, req, head, checks, queue, policies) {
+function decideBall(v, latest, req, head, checks, queue, policies, now, clockSet) {
   if (v.state !== 'OPEN') return ballOf('n/a', { reason: `state ${v.state}` });
   if (v.isDraft) return ballOf('n/a', { reason: 'draft' });
   const entries = [...latest.values()];
@@ -741,7 +840,7 @@ function decideBall(v, latest, req, head, checks, queue, policies) {
     const byLogin = req.users.has(lower(login));
     if (head !== '' && String(newestCr.r.commit_id || '') === head) {
       if (byLogin) return ballOf('reviewer', { login, reRequested: true, reason: 're-requested without a new commit' });
-      return ballOf('author', { login, reason: 'newest change request is on the head' });
+      return ballOf('author', { login, reason: 'newest change request is on the head', authorClock: authorClockOf(clockSet || [], now) });
     }
     const reRequested = byLogin ? true : req.teams.length ? 'unknown' : false;
     return ballOf('reviewer', { login, reRequested, reason: 'the head moved after the change request' });
@@ -908,6 +1007,7 @@ function formatText(d) {
   lines.push(...policyLines(d.policies));
   const bl = ballLine(d);
   if (bl) lines.push(bl);
+  if (d.ball && d.ball.authorClock != null) lines.push(authorClockLine(d.ball.authorClock));
   if (d.mergeStateStatus === 'BEHIND') lines.push(behindNote(d.queue));
   if (d.decisionNote) lines.push(`  note: ${clean(d.decisionNote)}`);
   lines.push(...bundleLines(d.bundle));
@@ -2259,7 +2359,8 @@ function parseArgs(argv) {
  *
  * @param {string[]} argv
  * @param {{ledgerDir?: string, gh?: Function, sleep?: Function, stdout?: {write: Function}, stderr?: {write: Function}, policies?: object, policyRoot?: string}} [deps]
- *   policies injects the three gsd-core policy modules (tests); policyRoot names the only gsd-core root to load them from
+ *   policies injects the three gsd-core policy modules (tests); policyRoot names the only gsd-core root to load them from;
+ *   now returns the clock in epoch milliseconds for the author clock (else PR_STATUS_NOW under NODE_ENV=test, else Date.now)
  * @returns {number}
  */
 function runCli(argv, deps = {}) {
@@ -2270,6 +2371,23 @@ function runCli(argv, deps = {}) {
     errOut.write(`pr-status: ${args.usageError}\n${USAGE}\n`);
     return 2;
   }
+  // 261119-s3h: one clock read per run, before any read. PR_STATUS_NOW (non-empty) is a test seam: refused outside
+  // NODE_ENV=test, and it must be strict ISO-8601 UTC.
+  const envNow = process.env.PR_STATUS_NOW;
+  const envNowSet = typeof envNow === 'string' && envNow !== '';
+  if (envNowSet && process.env.NODE_ENV !== 'test') {
+    errOut.write(`pr-status: PR_STATUS_NOW is a test seam honoured only under NODE_ENV=test; unset it\n${USAGE}\n`);
+    return 2;
+  }
+  let now;
+  if (typeof deps.now === 'function') now = deps.now();
+  else if (envNowSet) {
+    now = parseIsoUtc(envNow);
+    if (!Number.isFinite(now)) {
+      errOut.write(`pr-status: PR_STATUS_NOW is not an ISO-8601 UTC time (YYYY-MM-DDTHH:MM:SSZ): ${clean(envNow).slice(0, 40)}\n${USAGE}\n`);
+      return 2;
+    }
+  } else now = Date.now();
   let failed = false;
   const queues = new Map(); // base branch -> fetchQueue result, one set of queue reads per repo and base
   const policyCache = newPolicyCache(); // policy modules, base runs, MAINTAINERS and permissions: once per run
@@ -2284,7 +2402,7 @@ function runCli(argv, deps = {}) {
       const bodySink = {};
       const body = args.body ? fetchBody(n, args.repo, pr, deps, bodySink) : null;
       const policies = fetchPolicies(args.repo, pr, { body: args.body, bodyView: bodySink.bodyView, bodyError: bodySink.bodyError }, deps, policyCache);
-      return { repo: args.repo, ...derive({ ...pr, queue: queues.get(base), overlap, cr, body, policies }), bundle: readBundle(args.repo, n, ledgerDir) };
+      return { repo: args.repo, ...derive({ ...pr, queue: queues.get(base), overlap, cr, body, policies, now }), bundle: readBundle(args.repo, n, ledgerDir) };
     } catch (err) {
       failed = true;
       return { repo: args.repo, number: Number(n), error: firstErrorLine(err) };
