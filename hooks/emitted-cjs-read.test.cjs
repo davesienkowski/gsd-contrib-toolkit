@@ -681,3 +681,70 @@ realTest('real probe: an empty PATH entry cannot run a committed executable name
   assert.ok(!fs.existsSync(mark), 'the planted git must not run');
   assert.strictEqual(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'deny', 'the real git still answers');
 });
+
+// ---------------------------------------------------------------- fix round 5: guard rows that can fail (REVIEW-R4)
+
+/** A dir holding an executable `git` that appends its argv to mark; returns the dir. */
+function markingGitDir(name, mark) {
+  const dir = path.join(BASE, name);
+  write(dir, 'git', '#!/bin/sh\necho "ran $*" >> ' + JSON.stringify(mark) + '\nexit 1\n');
+  fs.chmodSync(path.join(dir, 'git'), 0o755);
+  return dir;
+}
+
+/** Run fn with process.env.PATH set to value, restored afterwards. */
+function withPath(value, fn) {
+  const saved = process.env.PATH;
+  process.env.PATH = value;
+  try {
+    return fn();
+  } finally {
+    process.env.PATH = saved;
+  }
+}
+
+test('resolveGitPath never returns a relative candidate even when it resolves from the cwd (REVIEW-R4 WR-01)', () => {
+  const { resolveGitPath } = hookModule;
+  const dir = markingGitDir('rel-cwd-git', path.join(BASE, 'rel-cwd-mark'));
+  const saved = process.cwd();
+  process.chdir(dir);
+  try {
+    assert.ok(fs.existsSync('git'), 'the relative name exists from the cwd, so the row can fail');
+    assert.strictEqual(resolveGitPath(['git']), null);
+    assert.strictEqual(resolveGitPath(['./git']), null);
+  } finally {
+    process.chdir(saved);
+  }
+});
+
+test('checkIgnoreLive with a relative gitPath that PATH would find spawns nothing (REVIEW-R4 WR-01)', () => {
+  const { checkIgnoreLive } = require('./binlib-edit.cjs');
+  const mark = path.join(BASE, 'rel-gitpath-mark');
+  const dir = markingGitDir('rel-gitpath-git', mark);
+  const verdict = withPath(dir + path.delimiter + process.env.PATH,
+    () => withIsolatedGitConfig(() => checkIgnoreLive(lib('foo.cjs'), { gitPath: 'git' })));
+  assert.strictEqual(verdict, 'unknown');
+  assert.ok(!fs.existsSync(mark), 'the PATH git must not run: ' + (fs.existsSync(mark) && fs.readFileSync(mark, 'utf8')));
+});
+
+test('checkIgnoreLive with an explicit gitPath key whose value is undefined spawns nothing (REVIEW-R4 IN-01)', () => {
+  const { checkIgnoreLive } = require('./binlib-edit.cjs');
+  const mark = path.join(BASE, 'undef-gitpath-mark');
+  const dir = markingGitDir('undef-gitpath-git', mark);
+  const verdict = withPath(dir + path.delimiter + process.env.PATH,
+    () => withIsolatedGitConfig(() => checkIgnoreLive(lib('foo.cjs'), { gitPath: undefined })));
+  assert.strictEqual(verdict, 'unknown');
+  assert.ok(!fs.existsSync(mark), 'the PATH git must not run: ' + (fs.existsSync(mark) && fs.readFileSync(mark, 'utf8')));
+});
+
+realTest('the spawned git receives PATH = its own directory (REVIEW-R4 IN-02)', () => {
+  const mark = path.join(BASE, 'wrapper-path-mark');
+  const dir = path.join(BASE, 'wrapper-bin');
+  write(dir, 'git', '#!/bin/sh\necho "$PATH" >> ' + JSON.stringify(mark) + '\nexec ' + JSON.stringify(LISTED_GIT) + ' "$@"\n');
+  fs.chmodSync(path.join(dir, 'git'), 0o755);
+  const verdict = withIsolatedGitConfig(() => hookModule.checkIgnorePinned(lib('foo.cjs'), { candidates: [path.join(dir, 'git')] }));
+  assert.strictEqual(verdict, 'ignored', 'the wrapper execs the listed git, which answers');
+  const seen = fs.readFileSync(mark, 'utf8').trim().split('\n');
+  assert.ok(seen.length >= 1);
+  for (const p of seen) assert.strictEqual(p, dir, 'every probe spawn saw PATH = the wrapper directory');
+});
