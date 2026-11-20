@@ -460,8 +460,10 @@ function runGitProbe(argv, cwd, env, deadline, gitPath) {
  * first non-answer returns 'unknown' without running the rest.
  *
  * Optional `options.gitPath` (quick 261119-szk round 4, the Read guard's fixed git): an ABSOLUTE path is
- * spawned instead of `'git'`; a gitPath that is present but not absolute answers 'unknown' and spawns nothing.
- * This gate's own call passes no options, so its spawn is the PATH lookup of `'git'` exactly as before.
+ * spawned instead of `'git'`; a defined gitPath that is not an absolute string answers 'unknown' and spawns
+ * nothing. A gitPath of undefined counts as no gitPath (the PATH lookup of `'git'`; REVIEW-R4 IN-01, deferred to
+ * the binlib-edit follow-up). This gate's own call passes no options, so its spawn is the PATH lookup of `'git'`
+ * exactly as before.
  *
  * @param {string} absPath
  * @param {{gitPath?: string}} [options]
@@ -471,7 +473,7 @@ function checkIgnoreLive(absPath, options) {
   try {
     const requested = options && typeof options === 'object' ? options.gitPath : undefined;
     if (requested !== undefined && !(typeof requested === 'string' && path.isAbsolute(requested))) {
-      return 'unknown'; // a caller that asked for a pinned git never falls back to a PATH lookup
+      return 'unknown'; // a defined non-absolute gitPath never falls back to a PATH lookup (undefined does: IN-01)
     }
     const git = requested === undefined ? 'git' : requested;
     const deadline = Date.now() + CHECK_IGNORE_TIMEOUT_MS;
