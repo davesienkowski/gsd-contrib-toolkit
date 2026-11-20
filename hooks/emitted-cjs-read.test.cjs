@@ -425,7 +425,7 @@ test('option B: no listed git -> unknown, nothing spawned (fail open)', () => {
   assertSilent(r);
 });
 
-test('option B: binlib-edit checkIgnoreLive spawns the given absolute gitPath; with no second argument it spawns "git" as before', () => {
+test('option B: binlib-edit checkIgnoreLive spawns the given absolute gitPath; with no second argument it spawns the fixed listed git (quick 261120-28y)', () => {
   const { checkIgnoreLive } = require('./binlib-edit.cjs');
   const mark = path.join(BASE, 'gitpath-mark');
   const fake = write(path.join(BASE, 'fake-bin2'), 'git', '#!/bin/sh\necho "$1" >> ' + JSON.stringify(mark) + '\nexit 1\n');
@@ -737,4 +737,76 @@ realTest('the spawned git receives PATH = its own directory (REVIEW-R4 IN-02)', 
   const seen = fs.readFileSync(mark, 'utf8').trim().split('\n');
   assert.ok(seen.length >= 1);
   for (const p of seen) assert.strictEqual(p, dir, 'every probe spawn saw PATH = the wrapper directory');
+});
+
+// --- quick 261120-28y fix round 2: rows tagged "28y-r2" (the Read guard is the second caller of the shared probe) ---
+// Appended only; the helpers below are new function declarations whose names no earlier top-level declaration uses.
+
+/**
+ * An executable `git` in dir that appends, per spawn, "BEGIN" and one KEY=value line (value "<unset>" when absent)
+ * for each round-2 key to log, then execs realGit by absolute path. Shell builtins only.
+ */
+function envRecordR2(dir, log, realGit) {
+  fs.mkdirSync(dir, { recursive: true });
+  const p = path.join(dir, 'git');
+  const L = JSON.stringify(log);
+  const keys = ['GIT_TRACE2','GIT_TRACE2_EVENT', 'GIT_TRACE2_PERF', 'GIT_EXEC_PATH', 'GIT_CONFIG'];
+  const lines = ['#!/bin/sh', 'echo BEGIN >> ' + L];
+  for (const k of keys) lines.push('printf "' + k + '=%s\\n" "${' + k + '-<unset>}" >> ' + L);
+  lines.push('exec ' + JSON.stringify(realGit) + ' "$@"', '');
+  fs.writeFileSync(p, lines.join('\n'));
+  fs.chmodSync(p, 0o755);
+  return p;
+}
+
+/** Run fn with the given keys set in process.env, restored afterwards. */
+function withEnvR2(over, fn) {
+  const saved = {};
+  for (const k of Object.keys(over)) {
+    saved[k] = Object.prototype.hasOwnProperty.call(process.env, k) ? process.env[k] : undefined;
+    process.env[k] = over[k];
+  }
+  try {
+    return fn();
+  } finally {
+    for (const k of Object.keys(saved)) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+}
+
+realTest('28y-r2 readguard env record: checkIgnorePinned spawns git with trace2 off and no inherited exec path or single-file config', () => {
+  const dir = path.join(BASE, 'r2-envrec');
+  const log = path.join(dir, 'env.log');
+  const wrapper = envRecordR2(path.join(dir, 'bin'), log, LISTED_GIT);
+  const execPath = spawnSync(LISTED_GIT, ['--exec-path'], { env: FIXTURE_GIT_ENV, encoding: 'utf8' }).stdout.trim();
+  assert.ok(path.isAbsolute(execPath), 'the listed git reports its exec path: ' + execPath);
+  const before = JSON.stringify(Object.entries(process.env).sort());
+  const verdict = withEnvR2({ GIT_EXEC_PATH: execPath, GIT_CONFIG: '/dev/null' },
+    () => withIsolatedGitConfig(() => hookModule.checkIgnorePinned(lib('foo.cjs'), { candidates: [wrapper] })));
+  assert.strictEqual(JSON.stringify(Object.entries(process.env).sort()), before, 'process.env is restored');
+  assert.strictEqual(verdict, 'ignored', 'the wrapper execs the listed git, which answers');
+  const spawns = [];
+  for (const line of fs.readFileSync(log, 'utf8').split('\n')) {
+    if (line === 'BEGIN') spawns.push({});
+    else if (line !== '' && spawns.length > 0) {
+      const eq = line.indexOf('=');
+      spawns[spawns.length - 1][line.slice(0, eq)] = line.slice(eq + 1);
+    }
+  }
+  assert.ok(spawns.length >= 1, 'the recording wrapper was spawned');
+  for (const s of spawns) {
+    assert.deepStrictEqual(
+      s,
+      {
+        GIT_TRACE2: '0',
+        GIT_TRACE2_EVENT: '0',
+        GIT_TRACE2_PERF: '0',
+        GIT_EXEC_PATH: '<unset>',
+        GIT_CONFIG: '<unset>',
+      },
+      'every Read-guard probe spawn'
+    );
+  }
 });
