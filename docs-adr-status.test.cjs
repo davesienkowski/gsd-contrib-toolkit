@@ -50,6 +50,10 @@
  *   (o) Quick 261104-ov8: CTK-ADR-0016 exists once, is Proposed (2026-11-04), amends CTK-ADR-0015, is plain ASCII
  *       with no account login and no local path, has a Proposed row in docs/adr/README.md, says the scan is no
  *       seal against a workaround, and names each stays-open row and the three timing ranges.
+ *   (p) Quick 261120-28y: CTK-ADR-0018 (binlib-edit spawns only a fixed git and fails closed without one) exists
+ *       once, is Proposed (2026-11-20), amends nothing, relates to CTK-ADR-0001 and CTK-ADR-0017, is plain ASCII
+ *       with no account login and no local path, has a Proposed README row, and names native Windows, fails
+ *       closed, lazy fetch, stderr, "not run" and each verdict change D6a through D6f.
  *
  * Dave accepted CTK-ADR-0008, CTK-ADR-0009 and CTK-ADR-0010 on 2026-10-06 by explicit sign-off (quick
  * 261006-p4t); (a), (b), (e) and (f) pin that acceptance. A later change of decision is a superseding or
@@ -1078,4 +1082,34 @@ test('szk: the amended records link back to CTK-ADR-0017 (0007 keeps exactly one
   const seven = headerBullet(adrFile(7), 'Amended by');
   assert.strictEqual(seven.length, 1, JSON.stringify(seven));
   assert.ok(seven[0].includes('CTK-ADR-0011') && seven[0].includes('CTK-ADR-0017'), seven[0]);
+});
+
+// -- quick 261120-28y (p): CTK-ADR-0018 (binlib-edit spawns only a fixed git and fails closed without one) --
+
+test('28y: CTK-ADR-0018 is Proposed, amends nothing, relates to CTK-ADR-0001 and CTK-ADR-0017, and has a Proposed README row', () => {
+  assert.match(statusLine(adrFile(18)), /^- \*\*Status:\*\* Proposed \(2026-11-20\)/);
+  assert.deepStrictEqual(headerBullet(adrFile(18), 'Amends'), []);
+  const relates = headerBullet(adrFile(18), 'Relates to');
+  assert.strictEqual(relates.length, 1, JSON.stringify(relates));
+  for (const id of ['CTK-ADR-0001', 'CTK-ADR-0017']) assert.ok(relates[0].includes(id), relates[0]);
+  const cells = readmeRow('CTK-ADR-0018').split('|').map((c) => c.trim());
+  assert.ok(cells.includes('Proposed'), JSON.stringify(cells));
+});
+
+test('28y: CTK-ADR-0018 is plain ASCII, with no em dash, no account login and no local path', () => {
+  const text = fs.readFileSync(adrFile(18), 'utf8');
+  assert.match(text, /^[\x00-\x7f]*$/);
+  assert.doesNotMatch(text, /dave[a-z]+/i);
+  assert.doesNotMatch(text, LOCAL_PATH_RE);
+});
+
+test('28y: CTK-ADR-0018 names native Windows, fail closed, lazy fetch, stderr, what was not run and each of D6a to D6f', () => {
+  const text = fs.readFileSync(adrFile(18), 'utf8').replace(/\s+/g, ' ');
+  assert.match(text, /native Windows/);
+  assert.match(text, /fails closed/);
+  assert.match(text, /lazy fetch/);
+  assert.match(text, /stderr/);
+  assert.match(text, /not run/);
+  for (const d of ['D6a', 'D6b', 'D6c', 'D6d', 'D6e', 'D6f']) assert.ok(text.includes(d), 'CTK-ADR-0018 names ' + d);
+  assert.doesNotMatch(text, /same decision/i, 'D6c is not "same decision" (R1 I2 W-04)');
 });
