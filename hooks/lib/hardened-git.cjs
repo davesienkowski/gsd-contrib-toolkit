@@ -93,7 +93,7 @@ const NO_PROTOCOL = 'emitted-cjs-read-none';
  * repository protocol.<t>.allow, so no transport runs, but on a git without the CVE-2024-32465 fix it does not stop
  * git from spawning the fetch child (quick 261120-28y REVIEW WR-02, row 243); GIT_NO_LAZY_FETCH=1 stops the fetch
  * itself on git builds with that fix); trace2 off (GIT_TRACE2, GIT_TRACE2_EVENT and GIT_TRACE2_PERF = 0: the env
- * value outranks a trace2 target in global or system git config, which would otherwise write to stderr on every
+ * value outranks a trace2 target in global git config (measured; system config not run), which would write to stderr on every
  * probe, quick 261120-28y REVIEW WR-03, row 269); and, when gitPath is given, PATH set to exactly the fixed git's
  * directory, so no inherited PATH entry (one pointing into the checkout, an empty or relative one) reaches a
  * program git looks up. git still prepends its exec path: an inherited GIT_EXEC_PATH can point into a checkout and

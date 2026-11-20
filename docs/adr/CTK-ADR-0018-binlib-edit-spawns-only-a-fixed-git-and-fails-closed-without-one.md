@@ -78,7 +78,7 @@ gate, which runs on the same files, did not.
    output on stderr would otherwise trip the D8 rule and deny every hand-written file in a session that debugs git.
 8. **Round 2 probe env (D10; round-1 security review WR-02, WR-03, IN-01).**
    - `probeEnvChanges` sets `GIT_TRACE2`, `GIT_TRACE2_EVENT` and `GIT_TRACE2_PERF` to `0`. A trace2 target in global
-     or system git config writes to stderr on every probe, and D9 only drops trace variables from the env; the env
+     git config (measured; system config is read the same way, not run) writes to stderr on every probe, and D9 only drops trace variables from the env; the env
      value `0` outranks the config target (review row 269), while a command-line `-c trace2.normalTarget=0` does not
      (row 268).
    - binlib-edit's scrub (`REPO_REDIRECT_ENV`) also drops `GIT_EXEC_PATH` (on a git without the lazy-fetch kill
@@ -118,7 +118,7 @@ Each verdict change, as measured on this host (git 2.43 at `/usr/bin/git`) unles
 - **D6f: an old listed git denies.** When `/usr/bin/git` is older than the repository's `extensions.*` need, every
   candidate is the undecidable deny where a newer PATH git used to answer.
 - **D6i: a trace2 target in git config no longer denies (round 2).** With `trace2.normalTarget`, `eventTarget` or
-  `perfTarget` routed to stderr in global or system config, a tracked or hand-written file was the undecidable deny
+  `perfTarget` routed to stderr in global config (system config not run), a tracked or hand-written file was the undecidable deny
   at the 28y round-1 tip (D8 saw the trace output); it is allowed again, as it was at 57bcc77 before D8 (deny to
   allow). The emitted file keeps the plain deny. Read guard: the tracked file's probe moves from `unknown` to
   `not-ignored`, both a silent pass, so no visible change.
